@@ -1,6 +1,6 @@
 # Docker ChatGPT Devbox MCP
 
-This repo runs a ChatGPT-compatible remote MCP server on Windows. The main execution environment is a reproducible Linux Docker devbox. An optional Windows host bridge exposes native host tools such as PowerShell, Git, Docker CLI, Node, Python, and winget.
+This repo runs a ChatGPT-compatible remote MCP server on Windows. The main execution environment is a reproducible Linux Docker devbox. An optional Windows host bridge exposes native host tools such as PowerShell, Git, Docker CLI, Node, Python, and winget. Please note ChatGPT may become too powerful you have been warned!!!!!
 
 ## What is included
 
