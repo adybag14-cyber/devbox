@@ -1,0 +1,20 @@
+{
+  "name": "docker-chatgpt-devbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ChatGPT-facing MCP server for a reproducible Docker devbox plus optional Windows host tooling.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/adybag14-cyber/devbox.git"
+  },
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.28.0",
+    "express": "5.1.0",
+    "jose": "^6.1.0",
+    "zod": "4.1.11"
+  }
+}
