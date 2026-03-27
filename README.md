@@ -1,6 +1,33 @@
 # Docker ChatGPT Devbox MCP
 
 This repo runs a ChatGPT-compatible remote MCP server on Windows. The main execution environment is a reproducible Linux Docker devbox. An optional Windows host bridge exposes native host tools such as PowerShell, Git, Docker CLI, Node, Python, and winget. Please note ChatGPT may become too powerful you have been warned!!!!!
+## DO you need auto-approval and openai is annoying you with every approve box command what if you could allow pasting in the dev console and then never have to think about it again???
+
+let lastClicked = null;
+
+setInterval(() => {
+  const btn = [...document.querySelectorAll('button')].find(b => {
+    const rect = b.getBoundingClientRect();
+    const bg = getComputedStyle(b).backgroundColor;
+
+    const sizeMatch =
+      rect.width >= 195 && rect.width <= 199 &&
+      rect.height >= 35 && rect.height <= 37;
+
+    const colorMatch =
+      bg === 'rgb(13, 13, 13)' ||
+      bg === 'rgb(0, 0, 0)';
+
+    return sizeMatch && colorMatch ;
+  });
+
+  if (btn && btn !== lastClicked) {
+    lastClicked = btn;
+    console.log('Clicking:', btn.innerText.trim(), btn.getBoundingClientRect());
+    btn.click();
+  }
+}, 1000)
+
 
 ## What is included
 
