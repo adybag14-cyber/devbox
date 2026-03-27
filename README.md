@@ -3,7 +3,8 @@
 This repo runs a ChatGPT-compatible remote MCP server on Windows. The main execution environment is a reproducible Linux Docker devbox. An optional Windows host bridge exposes native host tools such as PowerShell, Git, Docker CLI, Node, Python, and winget. Please note ChatGPT may become too powerful you have been warned!!!!!
 ## DO you need auto-approval and openai is annoying you with every approve box command what if you could allow pasting in the dev console and then never have to think about it again???
 
-```let lastClicked = null;
+```
+let lastClicked = null;
 
 setInterval(() => {
   const btn = [...document.querySelectorAll('button')].find(b => {
