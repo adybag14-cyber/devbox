@@ -55,6 +55,8 @@ cd .\devbox
 
 If `.env` contains both `CLOUDFLARED_PUBLIC_HOSTNAME` and `CLOUDFLARED_TUNNEL_TOKEN`, `-Public` uses the named Cloudflare tunnel and keeps the MCP URL stable on your domain.
 
+If you want the stack to stay available across logon and recover from basic runtime failures, install the guardian with `.\scripts\Install-ChatGptDevboxGuardian.ps1` for local mode or `.\scripts\Install-ChatGptDevboxGuardian.ps1 -Public -OAuth` for the public OAuth path. Setup and status commands are in [docs/GUARDIAN.md](./docs/GUARDIAN.md).
+
 ## ChatGPT connector values
 
 After startup:
