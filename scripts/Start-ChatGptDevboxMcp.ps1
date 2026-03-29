@@ -6,8 +6,35 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Get-DockerLogsText {
+    param([string]$ContainerName)
+
+    $output = cmd /d /c "docker logs $ContainerName 2>&1"
+    return ($output | Out-String)
+}
+
+function Enter-ChatGptDevboxLifecycleMutex {
+    $script:lifecycleMutex = New-Object System.Threading.Mutex($false, 'Global\ChatGptDevboxMcpLifecycle')
+    $script:lifecycleMutexHeld = $script:lifecycleMutex.WaitOne(300000, $false)
+    if (-not $script:lifecycleMutexHeld) {
+        throw "Timed out waiting for another ChatGPT Devbox lifecycle action to finish."
+    }
+}
+
+function Exit-ChatGptDevboxLifecycleMutex {
+    if ($script:lifecycleMutexHeld) {
+        $script:lifecycleMutex.ReleaseMutex()
+        $script:lifecycleMutexHeld = $false
+    }
+
+    if ($script:lifecycleMutex) {
+        $script:lifecycleMutex.Dispose()
+        $script:lifecycleMutex = $null
+    }
+}
+
 function Test-DockerEngine {
-    docker version --format '{{.Server.Version}}' *> $null
+    cmd /c "docker version --format ""{{.Server.Version}}"" >NUL 2>NUL"
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -21,6 +48,7 @@ function Start-DockerDesktopIfNeeded {
         throw "Docker Desktop is not installed at $dockerDesktop"
     }
 
+    Write-Host "Docker engine is not ready. Starting Docker Desktop..."
     Start-Process -FilePath $dockerDesktop | Out-Null
     for ($i = 0; $i -lt 60; $i++) {
         Start-Sleep -Seconds 2
@@ -136,6 +164,52 @@ function Ensure-Directory {
     }
 }
 
+function Write-JsonStateFile {
+    param(
+        [string]$Path,
+        [object]$Value
+    )
+
+    $directory = Split-Path -Parent $Path
+    if ($directory) {
+        Ensure-Directory -Path $directory
+    }
+
+    $Value | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
+}
+
+function Write-GuardianDesiredState {
+    param(
+        [string]$RunDir,
+        [bool]$ShouldRun,
+        [string]$Source
+    )
+
+    $statePath = Join-Path $RunDir "guardian.desired-state.json"
+    Write-JsonStateFile -Path $statePath -Value @{
+        ShouldRun = $ShouldRun
+        UpdatedAtUtc = [DateTime]::UtcNow.ToString('o')
+        Source = $Source
+    }
+}
+
+function Write-GuardianSettings {
+    param(
+        [string]$RunDir,
+        [hashtable]$Settings
+    )
+
+    $settingsPath = Join-Path $RunDir "guardian.settings.json"
+    $payload = @{}
+    foreach ($key in $Settings.Keys) {
+        $payload[$key] = $Settings[$key]
+    }
+    $payload.UpdatedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $payload.Source = "Start-ChatGptDevboxMcp.ps1"
+
+    Write-JsonStateFile -Path $settingsPath -Value $payload
+}
+
 function Resolve-NodeExecutable {
     param([string]$ConfiguredPath)
 
@@ -171,8 +245,25 @@ function Test-DockerObjectExists {
         [string]$Name
     )
 
-    docker inspect --type $Type $Name *> $null
+    cmd /d /c "docker inspect --type $Type $Name >NUL 2>NUL"
     return ($LASTEXITCODE -eq 0)
+}
+
+function Remove-DockerContainerIfPresent {
+    param([string]$ContainerName)
+
+    cmd /d /c "docker rm -f $ContainerName >NUL 2>NUL"
+}
+
+function Get-DockerContainerRunningState {
+    param([string]$ContainerName)
+
+    $result = cmd /d /c "docker inspect --type container $ContainerName --format ""{{.State.Running}}"" 2>NUL"
+    if ($LASTEXITCODE -ne 0) {
+        return $null
+    }
+
+    return $result.Trim()
 }
 
 function Ensure-RuntimeImage {
@@ -205,10 +296,7 @@ function Ensure-DevboxContainer {
 
     $exists = Test-DockerObjectExists -Type container -Name $ContainerName
     if ($exists -and $Recreate) {
-        docker rm -f $ContainerName *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to remove existing devbox container $ContainerName."
-        }
+        Remove-DockerContainerIfPresent -ContainerName $ContainerName
         $exists = $false
     }
 
@@ -220,7 +308,7 @@ function Ensure-DevboxContainer {
         return
     }
 
-    $running = docker inspect --type container $ContainerName --format '{{.State.Running}}'
+    $running = Get-DockerContainerRunningState -ContainerName $ContainerName
     if ($running.Trim() -ne "true") {
         docker start $ContainerName *> $null
         if ($LASTEXITCODE -ne 0) {
@@ -236,7 +324,7 @@ function Start-CloudflaredQuickTunnel {
     )
 
     if (Test-DockerObjectExists -Type container -Name $ContainerName) {
-        docker rm -f $ContainerName *> $null
+        Remove-DockerContainerIfPresent -ContainerName $ContainerName
     }
 
     docker run -d --name $ContainerName cloudflare/cloudflared:latest tunnel --no-autoupdate --url "http://host.docker.internal:$Port" | Out-Null
@@ -246,14 +334,15 @@ function Start-CloudflaredQuickTunnel {
 
     for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Seconds 2
-        $logs = docker logs $ContainerName 2>&1
-        $match = [regex]::Match(($logs | Out-String), 'https://[a-z0-9-]+\.trycloudflare\.com')
+        $logs = Get-DockerLogsText -ContainerName $ContainerName
+        $match = [regex]::Match($logs, 'https://[a-z0-9-]+\.trycloudflare\.com')
         if ($match.Success) {
             return $match.Value.TrimEnd("/")
         }
     }
 
-    throw "Cloudflare quick tunnel did not publish a URL."
+    $logs = Get-DockerLogsText -ContainerName $ContainerName
+    throw "Cloudflare quick tunnel did not publish a URL. Logs:`n$logs"
 }
 
 function Normalize-PublicBaseUrl {
@@ -270,6 +359,33 @@ function Normalize-PublicBaseUrl {
     }
 
     return "https://$trimmed"
+}
+
+function Wait-ForHealthyPublicEndpoint {
+    param(
+        [string]$ContainerName,
+        [string]$PublicBaseUrl
+    )
+
+    $healthUrl = "$($PublicBaseUrl.TrimEnd('/'))/healthz"
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Seconds 2
+        $running = Get-DockerContainerRunningState -ContainerName $ContainerName
+        if ($null -eq $running -or $running -ne "true") {
+            break
+        }
+
+        try {
+            $response = Invoke-WebRequest -Uri $healthUrl -UseBasicParsing -TimeoutSec 5
+            if ($response.Content -match "ok") {
+                return
+            }
+        } catch {
+        }
+    }
+
+    $logs = Get-DockerLogsText -ContainerName $ContainerName
+    throw "The Cloudflare tunnel did not expose a healthy public endpoint at $healthUrl. Logs:`n$logs"
 }
 
 function Start-CloudflaredNamedTunnel {
@@ -290,7 +406,7 @@ function Start-CloudflaredNamedTunnel {
     }
 
     if (Test-DockerObjectExists -Type container -Name $ContainerName) {
-        docker rm -f $ContainerName *> $null
+        Remove-DockerContainerIfPresent -ContainerName $ContainerName
     }
 
     docker run -d --name $ContainerName cloudflare/cloudflared:latest tunnel --no-autoupdate run --token $TunnelToken --url "http://host.docker.internal:$Port" | Out-Null
@@ -300,17 +416,17 @@ function Start-CloudflaredNamedTunnel {
 
     for ($i = 0; $i -lt 15; $i++) {
         Start-Sleep -Seconds 2
-        $running = docker inspect --type container $ContainerName --format '{{.State.Running}}' 2>$null
-        if ($LASTEXITCODE -ne 0) {
+        $running = Get-DockerContainerRunningState -ContainerName $ContainerName
+        if ($null -eq $running) {
             break
         }
 
-        if ($running.Trim() -eq "true") {
+        if ($running -eq "true") {
             return $publicBaseUrl
         }
     }
 
-    $logs = docker logs $ContainerName 2>&1 | Out-String
+    $logs = Get-DockerLogsText -ContainerName $ContainerName
     throw "The named Cloudflare tunnel did not stay healthy. Logs:`n$logs"
 }
 
@@ -336,6 +452,8 @@ function Start-CloudflaredPublicTunnel {
     return Start-CloudflaredQuickTunnel -ContainerName $ContainerName -Port $Port
 }
 
+Enter-ChatGptDevboxLifecycleMutex
+try {
 $root = Split-Path -Parent $PSScriptRoot
 $envFile = Join-Path $root ".env"
 $runtimeEnvFile = Join-Path $root ".env.runtime"
@@ -351,6 +469,7 @@ if (-not (Test-Path $envFile)) {
 Start-DockerDesktopIfNeeded
 
 Ensure-Directory -Path $runDir
+Write-GuardianDesiredState -RunDir $runDir -ShouldRun $true -Source "Start-ChatGptDevboxMcp.ps1"
 
 $nodeExe = Resolve-NodeExecutable -ConfiguredPath (Get-EnvValue -FilePath $envFile -Name "NODE_EXE")
 
@@ -403,6 +522,16 @@ $authMode = if ($OAuth -or $Public) {
     $configuredAuthMode
 }
 
+Write-GuardianSettings -RunDir $runDir -Settings @{
+    Public = [bool]$Public
+    OAuth = [bool]$OAuth
+    Port = $port
+    DevboxContainerName = $containerName
+    CloudflaredContainerName = $cloudflaredContainerName
+    PublicBaseUrl = $publicBaseUrl
+    AuthMode = $authMode
+}
+
 $overrides = @{
     "MCP_AUTH_MODE" = $authMode
     "PUBLIC_BASE_URL" = $publicBaseUrl
@@ -446,8 +575,15 @@ try {
     throw "The MCP server failed to become healthy. stderr:`n$stderr"
 }
 
+if ($Public) {
+    Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl
+}
+
 Write-Host "Local MCP URL: $localUrl/mcp"
 if ($Public) {
     Write-Host "Public MCP URL: $publicBaseUrl/mcp"
 }
 Write-Host "Authentication mode: $(if ($authMode -eq 'none') { 'No Authentication' } else { 'OAuth' })"
+} finally {
+    Exit-ChatGptDevboxLifecycleMutex
+}

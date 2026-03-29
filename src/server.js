@@ -10,6 +10,7 @@ import {
   DockerCommandError,
   ensureDevboxRunning,
   execInDevbox,
+  execReadOnlyInDevbox,
   getDevboxInfo,
   getDevboxGithubAuthStatus,
   getDevboxVersions,
@@ -41,6 +42,51 @@ const outputSchema = {
   exitCode: z.number().nullable().optional(),
   truncated: z.boolean().optional(),
 };
+
+const withToolHints = (
+  descriptor,
+  {
+    readOnlyHint,
+    destructiveHint = false,
+    openWorldHint = false,
+    idempotentHint,
+    invoking,
+    invoked,
+  },
+) => ({
+  ...descriptor,
+  annotations: {
+    ...descriptor.annotations,
+    readOnlyHint,
+    destructiveHint,
+    openWorldHint,
+    ...(idempotentHint === undefined ? {} : { idempotentHint }),
+  },
+  _meta: {
+    ...descriptor._meta,
+    "openai/toolInvocation/invoking": invoking,
+    "openai/toolInvocation/invoked": invoked,
+  },
+});
+
+const safeReadOnlyTool = (descriptor, invoking, invoked) =>
+  withToolHints(descriptor, {
+    readOnlyHint: true,
+    destructiveHint: false,
+    openWorldHint: false,
+    idempotentHint: true,
+    invoking,
+    invoked,
+  });
+
+const safeActionTool = (descriptor, invoking, invoked) =>
+  withToolHints(descriptor, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    openWorldHint: false,
+    invoking,
+    invoked,
+  });
 
 const textFromResult = (summary, data, stdout, stderr) => {
   const parts = [summary];
@@ -153,15 +199,15 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_github_auth_status",
-    {
-      title: "Docker Devbox GitHub Auth Status",
-      description: "Use this when you need to confirm whether the Docker devbox is authenticated to GitHub and which git identity is configured.",
-      outputSchema,
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: true,
+    safeReadOnlyTool(
+      {
+        title: "Docker Devbox GitHub Auth Status",
+        description: "Use this when you need to confirm whether the Docker devbox is authenticated to GitHub and which git identity is configured.",
+        outputSchema,
       },
-    },
+      "Checking Docker devbox GitHub auth",
+      "Docker devbox GitHub auth checked",
+    ),
     async () => {
       try {
         const data = await getDevboxGithubAuthStatus();
@@ -174,12 +220,16 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_sync_github_auth_from_host",
-    {
-      title: "Sync Host GitHub Auth Into Docker Devbox",
-      description:
-        "Use this when the Windows host already has a valid GitHub CLI login and the Docker devbox should inherit GitHub authentication and git identity from the host.",
-      outputSchema,
-    },
+    safeActionTool(
+      {
+        title: "Sync Host GitHub Auth Into Docker Devbox",
+        description:
+          "Use this when the Windows host already has a valid GitHub CLI login and the Docker devbox should inherit GitHub authentication and git identity from the host.",
+        outputSchema,
+      },
+      "Syncing host GitHub auth",
+      "Host GitHub auth synced",
+    ),
     async () => {
       try {
         const hostGithub = await getHostGithubAuthContext();
@@ -204,15 +254,15 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_status",
-    {
-      title: "Docker Devbox Status",
-      description: "Use this when you need the current state of the reproducible Docker devbox and its installed toolchain.",
-      outputSchema,
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: true,
+    safeReadOnlyTool(
+      {
+        title: "Docker Devbox Status",
+        description: "Use this when you need the current state of the reproducible Docker devbox and its installed toolchain.",
+        outputSchema,
       },
-    },
+      "Checking Docker devbox status",
+      "Docker devbox status ready",
+    ),
     async () => {
       try {
         const info = await getDevboxInfo();
@@ -236,11 +286,15 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_start",
-    {
-      title: "Start Docker Devbox",
-      description: "Use this when the Docker devbox is stopped or missing and needs to be brought online.",
-      outputSchema,
-    },
+    safeActionTool(
+      {
+        title: "Start Docker Devbox",
+        description: "Use this when the Docker devbox is stopped or missing and needs to be brought online.",
+        outputSchema,
+      },
+      "Starting Docker devbox",
+      "Docker devbox started",
+    ),
     async () => {
       try {
         const info = await ensureDevboxRunning();
@@ -253,11 +307,15 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_stop",
-    {
-      title: "Stop Docker Devbox",
-      description: "Use this when the Docker devbox should be shut down without deleting the workspace.",
-      outputSchema,
-    },
+    safeActionTool(
+      {
+        title: "Stop Docker Devbox",
+        description: "Use this when the Docker devbox should be shut down without deleting the workspace.",
+        outputSchema,
+      },
+      "Stopping Docker devbox",
+      "Docker devbox stopped",
+    ),
     async () => {
       try {
         const info = await stopDevbox();
@@ -270,11 +328,15 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_restart",
-    {
-      title: "Restart Docker Devbox",
-      description: "Use this when the Docker devbox container needs a clean restart.",
-      outputSchema,
-    },
+    safeActionTool(
+      {
+        title: "Restart Docker Devbox",
+        description: "Use this when the Docker devbox container needs a clean restart.",
+        outputSchema,
+      },
+      "Restarting Docker devbox",
+      "Docker devbox restarted",
+    ),
     async () => {
       try {
         const info = await restartDevbox();
@@ -287,11 +349,15 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_recreate",
-    {
-      title: "Recreate Docker Devbox",
-      description: "Use this when the Docker devbox container itself should be rebuilt from the configured image while preserving the mounted workspace.",
-      outputSchema,
-    },
+    safeActionTool(
+      {
+        title: "Recreate Docker Devbox",
+        description: "Use this when the Docker devbox container itself should be rebuilt from the configured image while preserving the mounted workspace.",
+        outputSchema,
+      },
+      "Recreating Docker devbox",
+      "Docker devbox recreated",
+    ),
     async () => {
       try {
         const info = await recreateDevbox();
@@ -303,19 +369,56 @@ const buildServer = () => {
   );
 
   server.registerTool(
-    "devbox_exec",
-    {
-      title: "Run Shell Command In Docker Devbox",
-      description:
-        "Use this when you need agentic shell access inside the reproducible Docker devbox, such as builds, tests, package installs, git operations, or runtime inspection.",
-      inputSchema: {
-        command: z.string().min(1).describe("Shell command to run inside the Docker devbox."),
-        working_dir: z.string().default(config.devboxWorkspacePath).describe("Working directory inside the Docker devbox."),
-        timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
-        user: z.string().default(config.devboxDefaultUser).describe("Linux user inside the devbox container."),
+    "devbox_exec_readonly",
+    safeReadOnlyTool(
+      {
+        title: "Run Read-Only Shell Command In Docker Devbox",
+        description:
+          "Prefer this for inspection-only shell work such as ls, find, cat, sed -n, rg, git diff, git log, or config inspection. It runs in a disposable container with the workspace mounted read-only and network disabled, so project writes and outbound network access should fail.",
+        inputSchema: {
+          command: z.string().min(1).describe("Read-only shell command to run inside the Docker devbox."),
+          working_dir: z.string().default(config.devboxWorkspacePath).describe("Working directory inside the Docker devbox."),
+          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+          user: z.string().default(config.devboxDefaultUser).describe("Linux user inside the disposable read-only container."),
+        },
+        outputSchema,
       },
-      outputSchema,
+      "Running read-only shell command in devbox",
+      "Read-only devbox shell command finished",
+    ),
+    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }) => {
+      try {
+        const result = await execReadOnlyInDevbox({
+          command,
+          workingDir,
+          timeoutMs: (timeoutSeconds + 5) * 1000,
+          user,
+        });
+        return fromProcessResult(`Ran a read-only shell command in the Docker devbox at ${workingDir}.`, result);
+      } catch (error) {
+        return errorResult(error, "Failed to run the read-only Docker devbox shell command.");
+      }
     },
+  );
+
+  server.registerTool(
+    "devbox_exec",
+    safeActionTool(
+      {
+        title: "Run Mutating Shell Command In Docker Devbox",
+        description:
+          "Use this only when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the devbox or workspace. Prefer devbox_exec_readonly for inspection, search, and file-reading commands.",
+        inputSchema: {
+          command: z.string().min(1).describe("Shell command to run inside the Docker devbox."),
+          working_dir: z.string().default(config.devboxWorkspacePath).describe("Working directory inside the Docker devbox."),
+          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+          user: z.string().default(config.devboxDefaultUser).describe("Linux user inside the devbox container."),
+        },
+        outputSchema,
+      },
+      "Running shell command in devbox",
+      "Devbox shell command finished",
+    ),
     async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }) => {
       try {
         const result = await execInDevbox({
@@ -333,20 +436,20 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_list_files",
-    {
-      title: "List Docker Devbox Files",
-      description: "Use this when you need a directory listing inside the Docker devbox workspace or another container path.",
-      inputSchema: {
-        path: z.string().default(config.devboxWorkspacePath).describe("Directory path inside the Docker devbox."),
-        recursive: z.boolean().default(false).describe("When true, recurse into subdirectories."),
-        max_depth: z.number().int().min(1).max(20).default(4).describe("Maximum recursive depth when recursive is true."),
+    safeReadOnlyTool(
+      {
+        title: "List Docker Devbox Files",
+        description: "Use this when you need a directory listing inside the Docker devbox workspace or another container path.",
+        inputSchema: {
+          path: z.string().default(config.devboxWorkspacePath).describe("Directory path inside the Docker devbox."),
+          recursive: z.boolean().default(false).describe("When true, recurse into subdirectories."),
+          max_depth: z.number().int().min(1).max(20).default(4).describe("Maximum recursive depth when recursive is true."),
+        },
+        outputSchema,
       },
-      outputSchema,
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: true,
-      },
-    },
+      "Listing Docker devbox files",
+      "Docker devbox files listed",
+    ),
     async ({ path, recursive, max_depth: maxDepth }) => {
       try {
         const result = await listFilesInDevbox({ path, recursive, maxDepth });
@@ -359,19 +462,19 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_read_file",
-    {
-      title: "Read Docker Devbox File",
-      description: "Use this when you need text content from a file inside the Docker devbox.",
-      inputSchema: {
-        path: z.string().min(1).describe("File path inside the Docker devbox."),
-        max_bytes: z.number().int().min(1).max(500000).default(65536).describe("Maximum bytes to return."),
+    safeReadOnlyTool(
+      {
+        title: "Read Docker Devbox File",
+        description: "Use this when you need text content from a file inside the Docker devbox.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path inside the Docker devbox."),
+          max_bytes: z.number().int().min(1).max(500000).default(65536).describe("Maximum bytes to return."),
+        },
+        outputSchema,
       },
-      outputSchema,
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: true,
-      },
-    },
+      "Reading Docker devbox file",
+      "Docker devbox file read",
+    ),
     async ({ path, max_bytes: maxBytes }) => {
       try {
         const result = await readFileInDevbox({ path, maxBytes });
@@ -384,17 +487,21 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_write_file",
-    {
-      title: "Write Docker Devbox File",
-      description: "Use this when you need to create or overwrite a text file inside the Docker devbox workspace.",
-      inputSchema: {
-        path: z.string().min(1).describe("File path inside the Docker devbox."),
-        content: z.string().describe("UTF-8 file contents to write."),
-        append: z.boolean().default(false).describe("Append to the file instead of overwriting it."),
-        create_dirs: z.boolean().default(true).describe("Create parent directories if they do not exist."),
+    safeActionTool(
+      {
+        title: "Write Docker Devbox File",
+        description: "Use this when you need to create or overwrite a text file inside the Docker devbox workspace.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path inside the Docker devbox."),
+          content: z.string().describe("UTF-8 file contents to write."),
+          append: z.boolean().default(false).describe("Append to the file instead of overwriting it."),
+          create_dirs: z.boolean().default(true).describe("Create parent directories if they do not exist."),
+        },
+        outputSchema,
       },
-      outputSchema,
-    },
+      "Writing Docker devbox file",
+      "Docker devbox file written",
+    ),
     async ({ path, content, append, create_dirs: createDirs }) => {
       try {
         const result = await writeFileInDevbox({ path, content, append, createDirs });
@@ -408,22 +515,22 @@ const buildServer = () => {
 
   server.registerTool(
     "devbox_search_files",
-    {
-      title: "Search Docker Devbox Files",
-      description: "Use this when you need ripgrep-style text search inside the Docker devbox workspace.",
-      inputSchema: {
-        pattern: z.string().min(1).describe("Search pattern for ripgrep."),
-        path: z.string().default(config.devboxWorkspacePath).describe("Directory path to search."),
-        glob: z.string().default("*").describe("Optional glob filter."),
-        case_sensitive: z.boolean().default(false).describe("When true, use case-sensitive search."),
-        max_matches: z.number().int().min(1).max(5000).default(200).describe("Maximum number of matches to return."),
+    safeReadOnlyTool(
+      {
+        title: "Search Docker Devbox Files",
+        description: "Use this when you need ripgrep-style text search inside the Docker devbox workspace.",
+        inputSchema: {
+          pattern: z.string().min(1).describe("Search pattern for ripgrep."),
+          path: z.string().default(config.devboxWorkspacePath).describe("Directory path to search."),
+          glob: z.string().default("*").describe("Optional glob filter."),
+          case_sensitive: z.boolean().default(false).describe("When true, use case-sensitive search."),
+          max_matches: z.number().int().min(1).max(5000).default(200).describe("Maximum number of matches to return."),
+        },
+        outputSchema,
       },
-      outputSchema,
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: true,
-      },
-    },
+      "Searching Docker devbox files",
+      "Docker devbox search finished",
+    ),
     async ({ pattern, path, glob, case_sensitive: caseSensitive, max_matches: maxMatches }) => {
       try {
         const result = await searchFilesInDevbox({ pattern, path, glob, caseSensitive, maxMatches });
@@ -436,15 +543,15 @@ const buildServer = () => {
 
   server.registerTool(
     "windows_host_status",
-    {
-      title: "Windows Host Tool Status",
-      description: "Use this when you need to inspect whether Windows host execution is enabled and which native programs are allowed.",
-      outputSchema,
-      annotations: {
-        readOnlyHint: true,
-        openWorldHint: true,
+    safeReadOnlyTool(
+      {
+        title: "Windows Host Tool Status",
+        description: "Use this when you need to inspect whether Windows host execution is enabled and which native programs are allowed.",
+        outputSchema,
       },
-    },
+      "Checking Windows host tool status",
+      "Windows host tool status ready",
+    ),
     async () => {
       try {
         return successResult("Fetched Windows host tool status.", {
@@ -458,17 +565,21 @@ const buildServer = () => {
 
   server.registerTool(
     "windows_host_exec",
-    {
-      title: "Run Windows PowerShell Command",
-      description:
-        "Use this when you explicitly need native Windows host tooling rather than the reproducible Docker devbox, such as winget, host Git, host Docker CLI, or PowerShell automation.",
-      inputSchema: {
-        command: z.string().min(1).describe("PowerShell command to run on the Windows host."),
-        working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory on the Windows host."),
-        timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+    safeActionTool(
+      {
+        title: "Run Windows PowerShell Command",
+        description:
+          "Use this when you explicitly need native Windows host tooling rather than the reproducible Docker devbox, such as winget, host Git, host Docker CLI, or PowerShell automation.",
+        inputSchema: {
+          command: z.string().min(1).describe("PowerShell command to run on the Windows host."),
+          working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory on the Windows host."),
+          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+        },
+        outputSchema,
       },
-      outputSchema,
-    },
+      "Running Windows PowerShell command",
+      "Windows PowerShell command finished",
+    ),
     async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds }) => {
       try {
         const result = await runWindowsPowerShell({
@@ -485,18 +596,22 @@ const buildServer = () => {
 
   server.registerTool(
     "windows_host_run_program",
-    {
-      title: "Run Allowed Windows Host Program",
-      description:
-        "Use this when you need a specific allowed Windows host program such as git, docker, node, python, or winget with structured arguments.",
-      inputSchema: {
-        program: z.string().min(1).describe("Program name or path. It must be allowed by HOST_PROGRAM_ALLOWLIST."),
-        args: z.array(z.string()).default([]).describe("Argument list for the program."),
-        working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory on the Windows host."),
-        timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+    safeActionTool(
+      {
+        title: "Run Allowed Windows Host Program",
+        description:
+          "Use this when you need a specific allowed Windows host program such as git, docker, node, python, or winget with structured arguments.",
+        inputSchema: {
+          program: z.string().min(1).describe("Program name or path. It must be allowed by HOST_PROGRAM_ALLOWLIST."),
+          args: z.array(z.string()).default([]).describe("Argument list for the program."),
+          working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory on the Windows host."),
+          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+        },
+        outputSchema,
       },
-      outputSchema,
-    },
+      "Running allowed Windows program",
+      "Allowed Windows program finished",
+    ),
     async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds }) => {
       try {
         const result = await runAllowedProgram({
