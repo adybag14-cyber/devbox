@@ -157,6 +157,51 @@ export const execInDevbox = async ({
   return runDocker(args, { timeoutMs });
 };
 
+export const execReadOnlyInDevbox = async ({
+  command,
+  workingDir = config.devboxWorkspacePath,
+  timeoutMs,
+  user = config.devboxDefaultUser,
+}) => {
+  await ensureDevboxRunning();
+
+  const args = [
+    "run",
+    "--rm",
+    "-i",
+    "--read-only",
+    "--network",
+    "none",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--tmpfs",
+    "/tmp:rw,noexec,nosuid,size=64m",
+    "--tmpfs",
+    "/run:rw,noexec,nosuid,size=16m",
+    "--tmpfs",
+    "/var/tmp:rw,noexec,nosuid,size=64m",
+  ];
+
+  if (user) {
+    args.push("-u", user);
+  }
+
+  args.push(
+    "-w",
+    workingDir,
+    "-v",
+    `${config.hostWorkspacePath}:${config.devboxWorkspacePath}:ro`,
+    config.devboxImageName,
+    "bash",
+    "-lc",
+    command,
+  );
+
+  return runDocker(args, { timeoutMs });
+};
+
 export const runProgramInDevbox = async ({
   program,
   args = [],

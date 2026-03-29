@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createRemoteJWKSet, jwtVerify } from "jose";
+import { InvalidRequestError, ServerError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -56,6 +57,27 @@ const cloneIdentity = (identity) => {
   return {
     ...identity,
   };
+};
+
+const summarizeAuthorizeRequest = (req) => ({
+  method: req?.method ?? null,
+  url: req?.originalUrl ?? req?.url ?? null,
+  host: firstHeaderValue(req?.headers?.host) || null,
+  hasCfAccessJwtAssertion: Boolean(firstHeaderValue(req?.headers?.["cf-access-jwt-assertion"])),
+  cfAccessEmail: firstHeaderValue(req?.headers?.["cf-access-authenticated-user-email"]) || null,
+  userAgent: firstHeaderValue(req?.headers?.["user-agent"]) || null,
+});
+
+const toOAuthServerError = (error, fallbackMessage) => {
+  if (error instanceof InvalidRequestError || error instanceof ServerError) {
+    return error;
+  }
+
+  if (error instanceof Error && error.message) {
+    return new ServerError(error.message);
+  }
+
+  return new ServerError(fallbackMessage);
 };
 
 class PersistentOAuthState {
@@ -218,7 +240,7 @@ export class DemoOAuthProvider {
 
   async authorize(client, params, res) {
     if (!Array.isArray(client.redirect_uris) || !client.redirect_uris.includes(params.redirectUri)) {
-      throw new Error("Unregistered redirect_uri.");
+      throw new InvalidRequestError("Unregistered redirect_uri.");
     }
 
     const code = randomUUID();
@@ -374,28 +396,38 @@ export class CloudflareAccessOAuthProvider {
   }
 
   async authorize(client, params, res) {
-    if (!Array.isArray(client.redirect_uris) || !client.redirect_uris.includes(params.redirectUri)) {
-      throw new Error("Unregistered redirect_uri.");
+    try {
+      if (!Array.isArray(client.redirect_uris) || !client.redirect_uris.includes(params.redirectUri)) {
+        throw new InvalidRequestError("Unregistered redirect_uri.");
+      }
+
+      const identity = await this.getAuthenticatedIdentityFromRequest(res.req);
+      const code = randomUUID();
+      await this.state.ensureLoaded();
+      this.state.authorizationCodes.set(code, {
+        clientId: client.client_id,
+        params,
+        identity,
+        expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_MS,
+      });
+      await this.state.persist();
+
+      const target = new URL(params.redirectUri);
+      target.searchParams.set("code", code);
+      if (params.state) {
+        target.searchParams.set("state", params.state);
+      }
+
+      res.redirect(target.toString());
+    } catch (error) {
+      console.error("Cloudflare Access OAuth authorize failed.", {
+        request: summarizeAuthorizeRequest(res.req),
+        clientId: client?.client_id ?? null,
+        redirectUri: params?.redirectUri ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw toOAuthServerError(error, "Cloudflare Access authorization failed.");
     }
-
-    const identity = await this.getAuthenticatedIdentityFromRequest(res.req);
-    const code = randomUUID();
-    await this.state.ensureLoaded();
-    this.state.authorizationCodes.set(code, {
-      clientId: client.client_id,
-      params,
-      identity,
-      expiresAt: Date.now() + AUTHORIZATION_CODE_TTL_MS,
-    });
-    await this.state.persist();
-
-    const target = new URL(params.redirectUri);
-    target.searchParams.set("code", code);
-    if (params.state) {
-      target.searchParams.set("state", params.state);
-    }
-
-    res.redirect(target.toString());
   }
 
   async challengeForAuthorizationCode(client, authorizationCode) {
@@ -491,15 +523,20 @@ export class CloudflareAccessOAuthProvider {
   async getAuthenticatedIdentityFromRequest(req) {
     const accessJwt = firstHeaderValue(req?.headers?.["cf-access-jwt-assertion"]);
     if (!accessJwt) {
-      throw new Error(
+      throw new InvalidRequestError(
         "Cloudflare Access authentication is required on /authorize. Protect that path with a Cloudflare Access application.",
       );
     }
 
-    const { payload } = await jwtVerify(accessJwt, this.jwks, {
-      issuer: this.issuer,
-      audience: this.audience,
-    });
+    let payload;
+    try {
+      ({ payload } = await jwtVerify(accessJwt, this.jwks, {
+        issuer: this.issuer,
+        audience: this.audience,
+      }));
+    } catch (error) {
+      throw new ServerError(`Cloudflare Access JWT verification failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
 
     return {
       sub: typeof payload.sub === "string" ? payload.sub : "",
