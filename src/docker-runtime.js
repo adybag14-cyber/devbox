@@ -269,6 +269,28 @@ export const writeFileInDevbox = async ({ path, content, append = false, createD
   });
 };
 
+export const writeLargeFileInDevbox = async ({ path, content, append = false, createDirs = true }) => {
+  const script = [
+    "import os, sys",
+    "path = sys.argv[1]",
+    "append = sys.argv[2] == '1'",
+    "create_dirs = sys.argv[3] == '1'",
+    "parent = os.path.dirname(path)",
+    "if create_dirs and parent:",
+    "    os.makedirs(parent, exist_ok=True)",
+    "mode = 'ab' if append else 'wb'",
+    "with open(path, mode) as f:",
+    "    f.write(sys.stdin.buffer.read())",
+  ].join("\n");
+
+  return runProgramInDevbox({
+    program: "python3",
+    args: ["-c", script, path, append ? "1" : "0", createDirs ? "1" : "0"],
+    input: content,
+    timeoutMs: 120000,
+  });
+};
+
 export const searchFilesInDevbox = async ({
   pattern,
   path = config.devboxWorkspacePath,

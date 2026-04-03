@@ -22,6 +22,7 @@ import {
   syncGithubAuthToDevbox,
   stopDevbox,
   writeFileInDevbox,
+  writeLargeFileInDevbox,
 } from "./docker-runtime.js";
 import {
   HostCommandError,
@@ -509,6 +510,35 @@ const buildServer = () => {
         return fromProcessResult(summary, result);
       } catch (error) {
         return errorResult(error, `Failed to write ${path} in the Docker devbox.`);
+      }
+    },
+  );
+
+
+  server.registerTool(
+    "devbox_write_large_file",
+    safeActionTool(
+      {
+        title: "Write Large Docker Devbox File",
+        description: "Use this when you need to create or overwrite a large text file inside the Docker devbox workspace using stdin-backed transfer instead of a shell-sized command line.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path inside the Docker devbox."),
+          content: z.string().describe("UTF-8 file contents to write."),
+          append: z.boolean().default(false).describe("Append to the file instead of overwriting it."),
+          create_dirs: z.boolean().default(true).describe("Create parent directories if they do not exist."),
+        },
+        outputSchema,
+      },
+      "Writing large Docker devbox file",
+      "Large Docker devbox file written",
+    ),
+    async ({ path, content, append, create_dirs: createDirs }) => {
+      try {
+        const result = await writeLargeFileInDevbox({ path, content, append, createDirs });
+        const summary = append ? `Appended large text payload to ${path} in the Docker devbox.` : `Wrote large text payload to ${path} in the Docker devbox.`;
+        return fromProcessResult(summary, result);
+      } catch (error) {
+        return errorResult(error, `Failed to write large text payload to ${path} in the Docker devbox.`);
       }
     },
   );
