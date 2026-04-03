@@ -16,6 +16,7 @@ import {
   getDevboxVersions,
   listFilesInDevbox,
   readFileInDevbox,
+  readLargeFileInDevbox,
   recreateDevbox,
   restartDevbox,
   searchFilesInDevbox,
@@ -482,6 +483,32 @@ const buildServer = () => {
         return fromProcessResult(`Read ${path} from the Docker devbox.`, result);
       } catch (error) {
         return errorResult(error, `Failed to read ${path} from the Docker devbox.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_read_large_file",
+    safeReadOnlyTool(
+      {
+        title: "Read Large Docker Devbox File Chunk",
+        description: "Use this when you need a specific byte range from a larger file inside the Docker devbox, such as log tails or a later section of a generated source file.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path inside the Docker devbox."),
+          offset_bytes: z.number().int().min(0).default(0).describe("Starting byte offset within the file."),
+          max_bytes: z.number().int().min(1).max(2000000).default(262144).describe("Maximum bytes to return from that offset."),
+        },
+        outputSchema,
+      },
+      "Reading large Docker devbox file chunk",
+      "Large Docker devbox file chunk read",
+    ),
+    async ({ path, offset_bytes: offsetBytes, max_bytes: maxBytes }) => {
+      try {
+        const result = await readLargeFileInDevbox({ path, offsetBytes, maxBytes });
+        return fromProcessResult(`Read ${path} from byte ${offsetBytes} in the Docker devbox.`, result);
+      } catch (error) {
+        return errorResult(error, `Failed to read ${path} from byte ${offsetBytes} in the Docker devbox.`);
       }
     },
   );
