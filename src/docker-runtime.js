@@ -4,6 +4,140 @@ import { SpawnProcessError, spawnProcess } from "./process-utils.js";
 const dockerBin = "docker";
 
 const shEscape = (value) => `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
+const devboxLargeFileReadPython = String.raw`
+import base64
+import hashlib
+import json
+import os
+import stat as statmod
+import sys
+
+file_path = sys.argv[1]
+offset_requested = max(0, int(sys.argv[2]))
+bytes_requested = max(1, int(sys.argv[3]))
+file_stat = os.stat(file_path)
+if not statmod.S_ISREG(file_stat.st_mode):
+    raise SystemExit("Not a regular file.")
+actual_offset = min(offset_requested, file_stat.st_size)
+bytes_to_read = max(0, min(bytes_requested, file_stat.st_size - actual_offset))
+with open(file_path, "rb") as handle:
+    handle.seek(actual_offset)
+    chunk = handle.read(bytes_to_read)
+result = {
+    "path": file_path,
+    "file_size": file_stat.st_size,
+    "offset_bytes_requested": offset_requested,
+    "offset_bytes": actual_offset,
+    "bytes_requested": bytes_requested,
+    "bytes_returned": len(chunk),
+    "next_offset_bytes": actual_offset + len(chunk),
+    "eof": actual_offset + len(chunk) >= file_stat.st_size,
+    "content_sha256": hashlib.sha256(chunk).hexdigest(),
+    "content_base64": base64.b64encode(chunk).decode("ascii"),
+}
+sys.stdout.write(json.dumps(result))
+`;
+const devboxLargeFileWritePython = String.raw`
+import base64
+import binascii
+import hashlib
+import json
+import os
+import re
+import stat as statmod
+import sys
+
+def fail(message):
+    raise SystemExit(message)
+
+file_path = sys.argv[1]
+append = sys.argv[2] == "1"
+create_dirs = sys.argv[3] == "1"
+expected_sha256 = sys.argv[4].strip().lower() if len(sys.argv) > 4 and sys.argv[4] else ""
+
+stdin_base64 = sys.stdin.read()
+normalized = "".join(stdin_base64.split())
+if normalized:
+    try:
+        payload = base64.b64decode(normalized, validate=True)
+    except binascii.Error:
+        fail("Invalid base64 payload.")
+    if base64.b64encode(payload).decode("ascii") != normalized:
+        fail("Invalid base64 payload.")
+else:
+    payload = b""
+
+content_sha256 = hashlib.sha256(payload).hexdigest()
+if expected_sha256:
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+        fail("expected_sha256 must be a 64-character SHA-256 hex string.")
+    if expected_sha256 != content_sha256:
+        fail("Decoded payload SHA-256 did not match expected_sha256.")
+
+target_existed = False
+previous_file_size = 0
+try:
+    initial_stat = os.stat(file_path)
+    if not statmod.S_ISREG(initial_stat.st_mode):
+        fail("Target exists but is not a regular file.")
+    target_existed = True
+    previous_file_size = initial_stat.st_size
+except FileNotFoundError:
+    pass
+
+parent_dir = os.path.dirname(file_path)
+if create_dirs and parent_dir and parent_dir != ".":
+    os.makedirs(parent_dir, exist_ok=True)
+
+with open(file_path, "ab" if append else "wb") as handle:
+    handle.write(payload)
+
+final_stat = os.stat(file_path)
+if not statmod.S_ISREG(final_stat.st_mode):
+    fail("Target is not a regular file after write.")
+
+verified = False
+verification_mode = ""
+file_sha256 = None
+
+if append:
+    verification_mode = "suffix-bytes"
+    if len(payload) == 0:
+        verified = True
+    else:
+        with open(file_path, "rb") as handle:
+            handle.seek(previous_file_size)
+            verified = handle.read(len(payload)) == payload
+else:
+    verification_mode = "whole-file-sha256"
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    file_sha256 = digest.hexdigest()
+    verified = final_stat.st_size == len(payload) and file_sha256 == content_sha256
+
+if not verified:
+    fail("Mirror verification failed after writing the payload.")
+
+result = {
+    "path": file_path,
+    "append": bool(append),
+    "previous_file_size": previous_file_size,
+    "final_file_size": final_stat.st_size,
+    "bytes_written": len(payload),
+    "content_sha256": content_sha256,
+    "verification_mode": verification_mode,
+    "verified": verified,
+    "expected_sha256_verified": True if expected_sha256 else None,
+    "target_existed": target_existed,
+    "file_sha256": file_sha256,
+}
+sys.stdout.write(json.dumps(result))
+`;
 
 export class DockerCommandError extends Error {
   constructor(message, details = {}) {
@@ -272,8 +406,8 @@ export const readFileInDevbox = async ({ path, maxBytes = 65536 }) =>
 
 export const readLargeFileInDevbox = async ({ path, offsetBytes = 0, maxBytes = 262144 }) => {
   const result = await runProgramInDevbox({
-    program: "node",
-    args: ["src/large-file-cli.js", "read", path, String(Math.max(0, offsetBytes)), String(Math.max(1, maxBytes))],
+    program: "python3",
+    args: ["-c", devboxLargeFileReadPython, path, String(Math.max(0, offsetBytes)), String(Math.max(1, maxBytes))],
     timeoutMs: 120000,
   });
 
@@ -299,8 +433,8 @@ export const writeLargeFileInDevbox = async ({
   expectedSha256 = null,
 }) => {
   const result = await runProgramInDevbox({
-    program: "node",
-    args: ["src/large-file-cli.js", "write", path, append ? "1" : "0", createDirs ? "1" : "0", expectedSha256 ?? ""],
+    program: "python3",
+    args: ["-c", devboxLargeFileWritePython, path, append ? "1" : "0", createDirs ? "1" : "0", expectedSha256 ?? ""],
     input: contentBase64,
     timeoutMs: 120000,
   });
