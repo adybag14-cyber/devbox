@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { config } from "./config.js";
 import { SpawnProcessError, spawnProcess } from "./process-utils.js";
@@ -35,10 +35,26 @@ const ensureHostExecEnabled = () => {
 
 const normalizeProgram = (program) => path.win32.basename(String(program)).replace(/\.exe$/i, "").toLowerCase();
 const psSingleQuote = (value) => String(value).replace(/'/g, "''");
+export const MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE = 24000;
 
 export const buildWindowsPowerShellArgs = (command) => {
   const encodedCommand = Buffer.from(String(command), "utf16le").toString("base64");
   return ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand];
+};
+
+export const buildWindowsPowerShellFileArgs = (scriptPath) => [
+  "-NoLogo",
+  "-NoProfile",
+  "-NonInteractive",
+  "-ExecutionPolicy",
+  "Bypass",
+  "-File",
+  scriptPath,
+];
+
+export const shouldUsePowerShellScriptFile = (command) => {
+  const totalChars = buildWindowsPowerShellArgs(command).join(" ").length;
+  return totalChars >= MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE;
 };
 
 const buildPowerShellAdminCheckCommand = () => `
@@ -61,21 +77,27 @@ const readTextFileOrEmpty = async (filePath) => {
   }
 };
 
-export const buildElevatedWindowsPowerShellWrapper = ({ command, workingDir, stdoutPath, stderrPath, exitCodePath }) => {
-  const commandBase64 = Buffer.from(String(command), "utf16le").toString("base64");
+const writeTempPowerShellScript = async ({ tempDir, fileName, command }) => {
+  const scriptPath = path.join(tempDir, fileName);
+  await writeFile(scriptPath, String(command), "utf8");
+  return scriptPath;
+};
+
+const isCommandTooLongError = (error) =>
+  error instanceof SpawnProcessError &&
+  /ENAMETOOLONG/i.test(`${error.message}\n${error.stderr}\n${error.stdout}`);
+
+export const buildElevatedWindowsPowerShellWrapper = ({ scriptPath, workingDir, stdoutPath, stderrPath, exitCodePath }) => {
   return `
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $stdoutPath = '${psSingleQuote(stdoutPath)}'
 $stderrPath = '${psSingleQuote(stderrPath)}'
 $exitCodePath = '${psSingleQuote(exitCodePath)}'
-$commandBase64 = '${commandBase64}'
 Set-Location -LiteralPath '${psSingleQuote(workingDir)}'
-$decodedCommand = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($commandBase64))
-$scriptBlock = [ScriptBlock]::Create($decodedCommand)
 $global:LASTEXITCODE = 0
 try {
-  & $scriptBlock 1> $stdoutPath 2> $stderrPath 3>> $stdoutPath 4>> $stdoutPath 5>> $stdoutPath 6>> $stdoutPath
+  & '${psSingleQuote(scriptPath)}' 1> $stdoutPath 2> $stderrPath 3>> $stdoutPath 4>> $stdoutPath 5>> $stdoutPath 6>> $stdoutPath
   $exitCode = if ($global:LASTEXITCODE -is [int]) { [int]$global:LASTEXITCODE } else { 0 }
 } catch {
   $_ | Out-File -LiteralPath $stderrPath -Encoding utf8 -Append
@@ -89,10 +111,10 @@ exit $exitCode
 `;
 };
 
-export const buildElevatedWindowsPowerShellLauncher = ({ command, workingDir, stdoutPath, stderrPath, exitCodePath, timeoutMs }) => {
+export const buildElevatedWindowsPowerShellLauncher = ({ scriptPath, workingDir, stdoutPath, stderrPath, exitCodePath, timeoutMs }) => {
   const childArgs = buildWindowsPowerShellArgs(
     buildElevatedWindowsPowerShellWrapper({
-      command,
+      scriptPath,
       workingDir,
       stdoutPath,
       stderrPath,
@@ -137,6 +159,71 @@ export const resolveHostProgramExecutable = (program) => {
   return program;
 };
 
+const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, isAdmin }) => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-hostexec-"));
+
+  try {
+    const scriptPath = await writeTempPowerShellScript({
+      tempDir,
+      fileName: "command.ps1",
+      command,
+    });
+
+    if (isAdmin) {
+      return await spawnProcess("powershell.exe", buildWindowsPowerShellFileArgs(scriptPath), {
+        cwd: workingDir,
+        timeoutMs,
+      });
+    }
+
+    const stdoutPath = path.join(tempDir, "stdout.txt");
+    const stderrPath = path.join(tempDir, "stderr.txt");
+    const exitCodePath = path.join(tempDir, "exitcode.txt");
+
+    await spawnProcess(
+      "powershell.exe",
+      buildWindowsPowerShellArgs(
+        buildElevatedWindowsPowerShellLauncher({
+          scriptPath,
+          workingDir,
+          stdoutPath,
+          stderrPath,
+          exitCodePath,
+          timeoutMs: timeoutMs ?? 300000,
+        }),
+      ),
+      {
+        cwd: workingDir,
+        timeoutMs: (timeoutMs ?? 300000) + 15000,
+      },
+    );
+
+    const [stdout, stderr, exitCodeText] = await Promise.all([
+      readTextFileOrEmpty(stdoutPath),
+      readTextFileOrEmpty(stderrPath),
+      readTextFileOrEmpty(exitCodePath),
+    ]);
+    const parsedExitCode = Number.parseInt(String(exitCodeText).trim() || "0", 10);
+    const exitCode = Number.isFinite(parsedExitCode) ? parsedExitCode : 0;
+
+    if (exitCode !== 0) {
+      throw new HostCommandError(stderr.trim() || stdout.trim() || "Windows PowerShell command failed.", {
+        exitCode,
+        stdout,
+        stderr,
+      });
+    }
+
+    return {
+      stdout,
+      stderr,
+      exitCode,
+    };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+};
+
 export const runWindowsPowerShell = async ({ command, workingDir = config.hostDefaultWorkdir, timeoutMs }) => {
   ensureHostExecEnabled();
 
@@ -147,61 +234,25 @@ export const runWindowsPowerShell = async ({ command, workingDir = config.hostDe
     });
 
     const isAdmin = Boolean(JSON.parse(adminCheck.stdout || "{}").isAdmin);
+    if (shouldUsePowerShellScriptFile(command)) {
+      return await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin });
+    }
+
     if (isAdmin) {
-      return await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(command), {
-        cwd: workingDir,
-        timeoutMs,
-      });
-    }
-
-    const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-hostexec-"));
-    const stdoutPath = path.join(tempDir, "stdout.txt");
-    const stderrPath = path.join(tempDir, "stderr.txt");
-    const exitCodePath = path.join(tempDir, "exitcode.txt");
-
-    try {
-      await spawnProcess(
-        "powershell.exe",
-        buildWindowsPowerShellArgs(
-          buildElevatedWindowsPowerShellLauncher({
-            command,
-            workingDir,
-            stdoutPath,
-            stderrPath,
-            exitCodePath,
-            timeoutMs: timeoutMs ?? 300000,
-          }),
-        ),
-        {
+      try {
+        return await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(command), {
           cwd: workingDir,
-          timeoutMs: (timeoutMs ?? 300000) + 15000,
-        },
-      );
-
-      const [stdout, stderr, exitCodeText] = await Promise.all([
-        readTextFileOrEmpty(stdoutPath),
-        readTextFileOrEmpty(stderrPath),
-        readTextFileOrEmpty(exitCodePath),
-      ]);
-      const parsedExitCode = Number.parseInt(String(exitCodeText).trim() || "0", 10);
-      const exitCode = Number.isFinite(parsedExitCode) ? parsedExitCode : 0;
-
-      if (exitCode !== 0) {
-        throw new HostCommandError(stderr.trim() || stdout.trim() || "Windows PowerShell command failed.", {
-          exitCode,
-          stdout,
-          stderr,
+          timeoutMs,
         });
+      } catch (error) {
+        if (isCommandTooLongError(error)) {
+          return await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin });
+        }
+        throw error;
       }
-
-      return {
-        stdout,
-        stderr,
-        exitCode,
-      };
-    } finally {
-      await rm(tempDir, { recursive: true, force: true });
     }
+
+    return await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin });
   } catch (error) {
     throw wrapHostError(error, "Windows PowerShell command failed.");
   }
