@@ -30,6 +30,71 @@ setInterval(() => {
 }, 1000)
 ```
 
+If you are lazy to type continue and press enter here's another console script for you. 
+```
+(function() {
+  function getMainBoxAndButton() {
+    // Find the first visible contenteditable box
+    const box = Array.from(document.querySelectorAll('[contenteditable="true"]'))
+                     .find(el => el.offsetParent !== null); // only visible elements
+
+    // Try to find a send button within the same container
+    let sendBtn = null;
+    if (box) {
+      const container = box.closest('div');
+      if (container) {
+        sendBtn = container.querySelector('button, input[type="submit"]');
+      }
+    }
+
+    return { box, sendBtn };
+  }
+
+  function typeAndSend() {
+    const { box, sendBtn } = getMainBoxAndButton();
+    if (!box) {
+      console.warn('No visible typing box found!');
+      return;
+    }
+
+    // Focus the box
+    box.focus();
+
+    // Move cursor to the end
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    // Insert the exact phrase "continue "
+    document.execCommand('insertText', false, 'continue ');
+
+    // Click send if a button exists
+    if (sendBtn && !sendBtn.disabled) {
+      sendBtn.click();
+    } else {
+      // If no button, try simulating Enter key
+      const enterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true
+      });
+      box.dispatchEvent(enterEvent);
+    }
+  }
+
+  // Run immediately
+  typeAndSend();
+
+  // Repeat every 2 minutes
+  setInterval(typeAndSend, 2 * 60 * 1000);
+})();
+```
+
 
 ## What is included
 
