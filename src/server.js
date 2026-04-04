@@ -33,6 +33,11 @@ import {
   runWindowsPowerShell,
 } from "./host-tools.js";
 import { CloudflareAccessOAuthProvider, DemoOAuthProvider } from "./oauth.js";
+import {
+  normalizeLargeWritePayload,
+  summarizeLargeReadData,
+  summarizeLargeWriteData,
+} from "./large-file-cli.js";
 import { trimText } from "./process-utils.js";
 
 const outputSchema = {
@@ -123,7 +128,7 @@ const successResult = (summary, extra = {}) => {
     content: [
       {
         type: "text",
-        text: textFromResult(summary, extra.data, extra.stdout, extra.stderr),
+        text: extra.text ?? textFromResult(summary, extra.data, extra.stdout, extra.stderr),
       },
     ],
     structuredContent,
@@ -492,11 +497,11 @@ const buildServer = () => {
     safeReadOnlyTool(
       {
         title: "Read Large Docker Devbox File Chunk",
-        description: "Use this when you need a specific byte range from a larger file inside the Docker devbox, such as log tails or a later section of a generated source file.",
+        description: "Use this when you need an exact byte range from a larger file inside the Docker devbox. It returns a base64 chunk plus metadata for safe paging without UTF-8 corruption.",
         inputSchema: {
           path: z.string().min(1).describe("File path inside the Docker devbox."),
           offset_bytes: z.number().int().min(0).default(0).describe("Starting byte offset within the file."),
-          max_bytes: z.number().int().min(1).max(2000000).default(262144).describe("Maximum bytes to return from that offset."),
+          max_bytes: z.number().int().min(1).max(524288).default(262144).describe("Maximum raw bytes to return from that offset."),
         },
         outputSchema,
       },
@@ -505,8 +510,12 @@ const buildServer = () => {
     ),
     async ({ path, offset_bytes: offsetBytes, max_bytes: maxBytes }) => {
       try {
-        const result = await readLargeFileInDevbox({ path, offsetBytes, maxBytes });
-        return fromProcessResult(`Read ${path} from byte ${offsetBytes} in the Docker devbox.`, result);
+        const data = await readLargeFileInDevbox({ path, offsetBytes, maxBytes });
+        const summary = `Read ${path} from byte ${offsetBytes} in the Docker devbox.`;
+        return successResult(summary, {
+          data,
+          text: textFromResult(summary, summarizeLargeReadData(data)),
+        });
       } catch (error) {
         return errorResult(error, `Failed to read ${path} from byte ${offsetBytes} in the Docker devbox.`);
       }
@@ -547,25 +556,39 @@ const buildServer = () => {
     safeActionTool(
       {
         title: "Write Large Docker Devbox File",
-        description: "Use this when you need to create or overwrite a large text file inside the Docker devbox workspace using stdin-backed transfer instead of a shell-sized command line.",
+        description: "Use this when you need to create or overwrite a large file inside the Docker devbox workspace using base64-backed transfer with post-write verification.",
         inputSchema: {
           path: z.string().min(1).describe("File path inside the Docker devbox."),
-          content: z.string().describe("UTF-8 file contents to write."),
+          content: z.string().optional().describe("Optional UTF-8 text payload to write. Prefer content_base64 for exact byte preservation."),
+          content_base64: z.string().optional().describe("Base64-encoded raw bytes to write exactly as provided."),
           append: z.boolean().default(false).describe("Append to the file instead of overwriting it."),
           create_dirs: z.boolean().default(true).describe("Create parent directories if they do not exist."),
+          expected_sha256: z.string().regex(/^[A-Fa-f0-9]{64}$/).optional().describe("Optional expected SHA-256 of the decoded payload for end-to-end verification."),
         },
         outputSchema,
       },
       "Writing large Docker devbox file",
       "Large Docker devbox file written",
     ),
-    async ({ path, content, append, create_dirs: createDirs }) => {
+    async ({ path, content, content_base64: contentBase64, append, create_dirs: createDirs, expected_sha256: expectedSha256 }) => {
       try {
-        const result = await writeLargeFileInDevbox({ path, content, append, createDirs });
-        const summary = append ? `Appended large text payload to ${path} in the Docker devbox.` : `Wrote large text payload to ${path} in the Docker devbox.`;
-        return fromProcessResult(summary, result);
+        const normalizedPayload = normalizeLargeWritePayload({ content, contentBase64 });
+        const data = await writeLargeFileInDevbox({
+          path,
+          contentBase64: normalizedPayload,
+          append,
+          createDirs,
+          expectedSha256,
+        });
+        const summary = append
+          ? `Appended large payload to ${path} in the Docker devbox and verified the exact bytes.`
+          : `Wrote large payload to ${path} in the Docker devbox and verified the exact bytes.`;
+        return successResult(summary, {
+          data,
+          text: textFromResult(summary, summarizeLargeWriteData(data)),
+        });
       } catch (error) {
-        return errorResult(error, `Failed to write large text payload to ${path} in the Docker devbox.`);
+        return errorResult(error, `Failed to write large payload to ${path} in the Docker devbox.`);
       }
     },
   );

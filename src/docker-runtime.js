@@ -35,6 +35,18 @@ const runDocker = async (args, options = {}) => {
   }
 };
 
+const parseStructuredStdout = (result, fallbackMessage) => {
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    throw new DockerCommandError(fallbackMessage, {
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    });
+  }
+};
+
 export const getDevboxInfo = async () => {
   try {
     const result = await runDocker([
@@ -259,24 +271,13 @@ export const readFileInDevbox = async ({ path, maxBytes = 65536 }) =>
   });
 
 export const readLargeFileInDevbox = async ({ path, offsetBytes = 0, maxBytes = 262144 }) => {
-  const script = [
-    "import os, sys",
-    "path = sys.argv[1]",
-    "offset = int(sys.argv[2])",
-    "max_bytes = int(sys.argv[3])",
-    "if not os.path.isfile(path):",
-    "    print('Not a regular file.', file=sys.stderr)",
-    "    raise SystemExit(1)",
-    "with open(path, 'rb') as f:",
-    "    f.seek(max(0, offset))",
-    "    sys.stdout.buffer.write(f.read(max(1, max_bytes)))",
-  ].join("\n");
-
-  return runProgramInDevbox({
-    program: "python3",
-    args: ["-c", script, path, String(Math.max(0, offsetBytes)), String(Math.max(1, maxBytes))],
+  const result = await runProgramInDevbox({
+    program: "node",
+    args: ["src/large-file-cli.js", "read", path, String(Math.max(0, offsetBytes)), String(Math.max(1, maxBytes))],
     timeoutMs: 120000,
   });
+
+  return parseStructuredStdout(result, `Large file read for ${path} returned invalid JSON.`);
 };
 
 export const writeFileInDevbox = async ({ path, content, append = false, createDirs = true }) => {
@@ -290,26 +291,21 @@ export const writeFileInDevbox = async ({ path, content, append = false, createD
   });
 };
 
-export const writeLargeFileInDevbox = async ({ path, content, append = false, createDirs = true }) => {
-  const script = [
-    "import os, sys",
-    "path = sys.argv[1]",
-    "append = sys.argv[2] == '1'",
-    "create_dirs = sys.argv[3] == '1'",
-    "parent = os.path.dirname(path)",
-    "if create_dirs and parent:",
-    "    os.makedirs(parent, exist_ok=True)",
-    "mode = 'ab' if append else 'wb'",
-    "with open(path, mode) as f:",
-    "    f.write(sys.stdin.buffer.read())",
-  ].join("\n");
-
-  return runProgramInDevbox({
-    program: "python3",
-    args: ["-c", script, path, append ? "1" : "0", createDirs ? "1" : "0"],
-    input: content,
+export const writeLargeFileInDevbox = async ({
+  path,
+  contentBase64,
+  append = false,
+  createDirs = true,
+  expectedSha256 = null,
+}) => {
+  const result = await runProgramInDevbox({
+    program: "node",
+    args: ["src/large-file-cli.js", "write", path, append ? "1" : "0", createDirs ? "1" : "0", expectedSha256 ?? ""],
+    input: contentBase64,
     timeoutMs: 120000,
   });
+
+  return parseStructuredStdout(result, `Large file write for ${path} returned invalid JSON.`);
 };
 
 export const searchFilesInDevbox = async ({

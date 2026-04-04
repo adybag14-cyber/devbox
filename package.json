@@ -9,7 +9,8 @@
     "url": "git+https://github.com/adybag14-cyber/devbox.git"
   },
   "scripts": {
-    "start": "node src/server.js"
+    "start": "node src/server.js",
+    "test": "node --test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.28.0",
