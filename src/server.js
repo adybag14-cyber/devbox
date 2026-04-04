@@ -16,12 +16,14 @@ import {
   getDevboxVersions,
   listFilesInDevbox,
   readFileInDevbox,
+  readLargeFileInDevbox,
   recreateDevbox,
   restartDevbox,
   searchFilesInDevbox,
   syncGithubAuthToDevbox,
   stopDevbox,
   writeFileInDevbox,
+  writeLargeFileInDevbox,
 } from "./docker-runtime.js";
 import {
   HostCommandError,
@@ -486,6 +488,32 @@ const buildServer = () => {
   );
 
   server.registerTool(
+    "devbox_read_large_file",
+    safeReadOnlyTool(
+      {
+        title: "Read Large Docker Devbox File Chunk",
+        description: "Use this when you need a specific byte range from a larger file inside the Docker devbox, such as log tails or a later section of a generated source file.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path inside the Docker devbox."),
+          offset_bytes: z.number().int().min(0).default(0).describe("Starting byte offset within the file."),
+          max_bytes: z.number().int().min(1).max(2000000).default(262144).describe("Maximum bytes to return from that offset."),
+        },
+        outputSchema,
+      },
+      "Reading large Docker devbox file chunk",
+      "Large Docker devbox file chunk read",
+    ),
+    async ({ path, offset_bytes: offsetBytes, max_bytes: maxBytes }) => {
+      try {
+        const result = await readLargeFileInDevbox({ path, offsetBytes, maxBytes });
+        return fromProcessResult(`Read ${path} from byte ${offsetBytes} in the Docker devbox.`, result);
+      } catch (error) {
+        return errorResult(error, `Failed to read ${path} from byte ${offsetBytes} in the Docker devbox.`);
+      }
+    },
+  );
+
+  server.registerTool(
     "devbox_write_file",
     safeActionTool(
       {
@@ -509,6 +537,35 @@ const buildServer = () => {
         return fromProcessResult(summary, result);
       } catch (error) {
         return errorResult(error, `Failed to write ${path} in the Docker devbox.`);
+      }
+    },
+  );
+
+
+  server.registerTool(
+    "devbox_write_large_file",
+    safeActionTool(
+      {
+        title: "Write Large Docker Devbox File",
+        description: "Use this when you need to create or overwrite a large text file inside the Docker devbox workspace using stdin-backed transfer instead of a shell-sized command line.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path inside the Docker devbox."),
+          content: z.string().describe("UTF-8 file contents to write."),
+          append: z.boolean().default(false).describe("Append to the file instead of overwriting it."),
+          create_dirs: z.boolean().default(true).describe("Create parent directories if they do not exist."),
+        },
+        outputSchema,
+      },
+      "Writing large Docker devbox file",
+      "Large Docker devbox file written",
+    ),
+    async ({ path, content, append, create_dirs: createDirs }) => {
+      try {
+        const result = await writeLargeFileInDevbox({ path, content, append, createDirs });
+        const summary = append ? `Appended large text payload to ${path} in the Docker devbox.` : `Wrote large text payload to ${path} in the Docker devbox.`;
+        return fromProcessResult(summary, result);
+      } catch (error) {
+        return errorResult(error, `Failed to write large text payload to ${path} in the Docker devbox.`);
       }
     },
   );

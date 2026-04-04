@@ -142,3 +142,7 @@ See [docs/REPRODUCE.md](./docs/REPRODUCE.md) for a full copy-to-another-machine 
 - `windows_host_exec` is high risk because it gives ChatGPT PowerShell access to the Windows host.
 - `windows_host_run_program` is limited by `HOST_PROGRAM_ALLOWLIST`.
 - Do not commit `.env`, `.env.runtime`, `run/`, `workspace/`, or other live runtime state.
+
+
+It also includes `devbox_write_large_file`, a stdin-backed file writer intended for large generated source files and other payloads that are awkward to pass through shell-sized command strings.
+It also includes `devbox_read_large_file`, a chunked reader with byte-offset support for inspecting later sections of large logs and generated files.

@@ -258,6 +258,27 @@ export const readFileInDevbox = async ({ path, maxBytes = 65536 }) =>
     timeoutMs: 30000,
   });
 
+export const readLargeFileInDevbox = async ({ path, offsetBytes = 0, maxBytes = 262144 }) => {
+  const script = [
+    "import os, sys",
+    "path = sys.argv[1]",
+    "offset = int(sys.argv[2])",
+    "max_bytes = int(sys.argv[3])",
+    "if not os.path.isfile(path):",
+    "    print('Not a regular file.', file=sys.stderr)",
+    "    raise SystemExit(1)",
+    "with open(path, 'rb') as f:",
+    "    f.seek(max(0, offset))",
+    "    sys.stdout.buffer.write(f.read(max(1, max_bytes)))",
+  ].join("\n");
+
+  return runProgramInDevbox({
+    program: "python3",
+    args: ["-c", script, path, String(Math.max(0, offsetBytes)), String(Math.max(1, maxBytes))],
+    timeoutMs: 120000,
+  });
+};
+
 export const writeFileInDevbox = async ({ path, content, append = false, createDirs = true }) => {
   const encoded = Buffer.from(content, "utf8").toString("base64");
   const op = append ? ">>" : ">";
@@ -266,6 +287,28 @@ export const writeFileInDevbox = async ({ path, content, append = false, createD
   return execInDevbox({
     command: `${prelude}printf '%s' ${shEscape(encoded)} | base64 -d ${op} ${shEscape(path)}`,
     timeoutMs: 30000,
+  });
+};
+
+export const writeLargeFileInDevbox = async ({ path, content, append = false, createDirs = true }) => {
+  const script = [
+    "import os, sys",
+    "path = sys.argv[1]",
+    "append = sys.argv[2] == '1'",
+    "create_dirs = sys.argv[3] == '1'",
+    "parent = os.path.dirname(path)",
+    "if create_dirs and parent:",
+    "    os.makedirs(parent, exist_ok=True)",
+    "mode = 'ab' if append else 'wb'",
+    "with open(path, mode) as f:",
+    "    f.write(sys.stdin.buffer.read())",
+  ].join("\n");
+
+  return runProgramInDevbox({
+    program: "python3",
+    args: ["-c", script, path, append ? "1" : "0", createDirs ? "1" : "0"],
+    input: content,
+    timeoutMs: 120000,
   });
 };
 
