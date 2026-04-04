@@ -41,6 +41,24 @@ try {
         exit 0
     }
 
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class ChatGptDevboxGuardianTokenProbe {
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr OpenProcess(UInt32 access, bool inheritHandle, UInt32 processId);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool OpenProcessToken(IntPtr processHandle, UInt32 desiredAccess, out IntPtr tokenHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern bool GetTokenInformation(IntPtr tokenHandle, int tokenInfoClass, IntPtr tokenInfo, int tokenInfoLength, out int returnLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern bool CloseHandle(IntPtr handle);
+}
+"@
+
     function Write-GuardianLog {
         param(
             [Parameter(Mandatory = $true)][string]$Message,
@@ -236,6 +254,81 @@ try {
             Select-Object -First 1
     }
 
+    function Get-ProcessElevationInfo {
+        param([Parameter(Mandatory = $true)][uint32]$ProcessId)
+
+        $PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        $TOKEN_QUERY = 0x0008
+        $TokenElevation = 20
+        $TokenIntegrityLevel = 25
+
+        $processHandle = [ChatGptDevboxGuardianTokenProbe]::OpenProcess($PROCESS_QUERY_LIMITED_INFORMATION, $false, $ProcessId)
+        if ($processHandle -eq [IntPtr]::Zero) {
+            return $null
+        }
+
+        try {
+            $tokenHandle = [IntPtr]::Zero
+            if (-not [ChatGptDevboxGuardianTokenProbe]::OpenProcessToken($processHandle, $TOKEN_QUERY, [ref]$tokenHandle)) {
+                return $null
+            }
+
+            try {
+                $returnLength = 0
+                $elevationBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal(4)
+                try {
+                    if (-not [ChatGptDevboxGuardianTokenProbe]::GetTokenInformation($tokenHandle, $TokenElevation, $elevationBuffer, 4, [ref]$returnLength)) {
+                        return $null
+                    }
+
+                    $isElevated = ([Runtime.InteropServices.Marshal]::ReadInt32($elevationBuffer) -ne 0)
+                }
+                finally {
+                    [Runtime.InteropServices.Marshal]::FreeHGlobal($elevationBuffer)
+                }
+
+                $integrityLength = 0
+                [void][ChatGptDevboxGuardianTokenProbe]::GetTokenInformation($tokenHandle, $TokenIntegrityLevel, [IntPtr]::Zero, 0, [ref]$integrityLength)
+                $integrityBuffer = [Runtime.InteropServices.Marshal]::AllocHGlobal($integrityLength)
+                try {
+                    if (-not [ChatGptDevboxGuardianTokenProbe]::GetTokenInformation($tokenHandle, $TokenIntegrityLevel, $integrityBuffer, $integrityLength, [ref]$returnLength)) {
+                        return $null
+                    }
+
+                    $sidPtr = [Runtime.InteropServices.Marshal]::ReadIntPtr($integrityBuffer)
+                    $subAuthorityCount = [Runtime.InteropServices.Marshal]::ReadByte($sidPtr, 1)
+                    $ridOffset = 8 + 4 * ($subAuthorityCount - 1)
+                    $rid = [Runtime.InteropServices.Marshal]::ReadInt32($sidPtr, $ridOffset)
+                    $integrity = if ($rid -ge 0x4000) {
+                        'System'
+                    } elseif ($rid -ge 0x3000) {
+                        'High'
+                    } elseif ($rid -ge 0x2000) {
+                        'Medium'
+                    } else {
+                        'Low'
+                    }
+
+                    return [pscustomobject]@{
+                        IsElevated = $isElevated
+                        Integrity = $integrity
+                    }
+                }
+                finally {
+                    [Runtime.InteropServices.Marshal]::FreeHGlobal($integrityBuffer)
+                }
+            }
+            finally {
+                if ($tokenHandle -ne [IntPtr]::Zero) {
+                    [void][ChatGptDevboxGuardianTokenProbe]::CloseHandle($tokenHandle)
+                }
+            }
+        }
+        finally {
+            [void][ChatGptDevboxGuardianTokenProbe]::CloseHandle($processHandle)
+        }
+    }
+
     function Test-ContainerRunning {
         param([string]$ContainerName)
 
@@ -278,6 +371,8 @@ try {
         $publicHealthy = $null
         $mcpProcess = Get-OwnedMcpProcess
         $mcpProcessHealthy = $false
+        $mcpProcessElevated = $null
+        $mcpProcessIntegrity = $null
 
         if ($desiredState.ShouldRun) {
             if (-not $dockerReady) {
@@ -299,7 +394,17 @@ try {
             if (-not $mcpProcess) {
                 $reasons.Add('MCP server process is missing')
             } else {
-                $mcpProcessHealthy = $true
+                $elevationInfo = Get-ProcessElevationInfo -ProcessId ([uint32]$mcpProcess.ProcessId)
+                if ($elevationInfo) {
+                    $mcpProcessElevated = [bool]$elevationInfo.IsElevated
+                    $mcpProcessIntegrity = [string]$elevationInfo.Integrity
+                }
+
+                if ($mcpProcessElevated -ne $true) {
+                    $reasons.Add('MCP server process is not elevated')
+                } else {
+                    $mcpProcessHealthy = $true
+                }
             }
 
             $localHealthy = Test-HealthUrl -Url ("http://127.0.0.1:{0}/healthz" -f $settings.Port)
@@ -325,6 +430,8 @@ try {
             McpProcessId = if ($mcpProcess) { [int]$mcpProcess.ProcessId } else { $null }
             McpProcessCommandLine = if ($mcpProcess) { [string]$mcpProcess.CommandLine } else { $null }
             McpProcessHealthy = $mcpProcessHealthy
+            McpProcessElevated = $mcpProcessElevated
+            McpProcessIntegrity = $mcpProcessIntegrity
             LocalHealth = $localHealthy
             PublicHealth = $publicHealthy
             IsHealthy = ($desiredState.ShouldRun -eq $false) -or ($reasons.Count -eq 0)

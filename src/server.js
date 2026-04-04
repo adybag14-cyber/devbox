@@ -649,7 +649,7 @@ const buildServer = () => {
       {
         title: "Run Windows PowerShell Command",
         description:
-          "Use this when you explicitly need native Windows host tooling rather than the reproducible Docker devbox, such as winget, host Git, host Docker CLI, or PowerShell automation.",
+          "Use this when you explicitly need native Windows host tooling rather than the reproducible Docker devbox, such as winget, host Git, host Docker CLI, or PowerShell automation. This tool defaults to elevated administrator execution and will prompt for UAC when needed.",
         inputSchema: {
           command: z.string().min(1).describe("PowerShell command to run on the Windows host."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory on the Windows host."),
