@@ -522,9 +522,12 @@ $authMode = if ($OAuth -or $Public) {
     $configuredAuthMode
 }
 
+$effectivePublic = -not [string]::IsNullOrWhiteSpace($publicBaseUrl)
+$effectiveOAuth = -not [string]::IsNullOrWhiteSpace($authMode) -and $authMode -ne "none"
+
 Write-GuardianSettings -RunDir $runDir -Settings @{
-    Public = [bool]$Public
-    OAuth = [bool]$OAuth
+    Public = [bool]$effectivePublic
+    OAuth = [bool]$effectiveOAuth
     Port = $port
     DevboxContainerName = $containerName
     CloudflaredContainerName = $cloudflaredContainerName
