@@ -52,6 +52,8 @@ const defaultDevboxWorkspacePath = runtimeMode === "host" ? hostWorkspacePath : 
 const enableHostExec = parseBoolean(process.env.ENABLE_HOST_EXEC ?? process.env.ENABLE_WINDOWS_HOST_EXEC, true);
 const hostShell = resolveHostShell(process.env, platform);
 const hostProgramAllowlist = parseCsv(process.env.HOST_PROGRAM_ALLOWLIST, defaultHostProgramAllowlist(platform));
+const defaultGatewayBridgeOrigins = "https://chatgpt.com,https://chat.openai.com";
+const gatewayBridgeOrigins = parseCsv(process.env.GATEWAY_BRIDGE_ORIGINS ?? defaultGatewayBridgeOrigins);
 const defaultDevboxUser = runtimeMode === "host" ? process.env.USER?.trim() || process.env.LOGNAME?.trim() || "" : "root";
 
 export const config = {
@@ -69,6 +71,8 @@ export const config = {
   hostWorkspacePath,
   devboxDefaultUser: process.env.DEVBOX_DEFAULT_USER?.trim() || defaultDevboxUser,
   devboxAutoStart: parseBoolean(process.env.DEVBOX_AUTO_START, true),
+  enableGatewayBridge: parseBoolean(process.env.ENABLE_GATEWAY_BRIDGE, true),
+  gatewayBridgeOrigins,
   enableHostExec,
   enableWindowsHostExec: enableHostExec,
   hostDefaultWorkdir: defaultHostWorkdir,
