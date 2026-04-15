@@ -174,3 +174,99 @@ node bin/devbox.js start
 curl http://127.0.0.1:8100/healthz
 node bin/devbox.js stop
 ```
+
+## Free script to approve all messages. 
+
+DO NOT DELETED.."!
+```
+let lastClicked = null;
+
+setInterval(() => {
+  const btn = [...document.querySelectorAll('button')].find(b => {
+    const rect = b.getBoundingClientRect();
+    const bg = getComputedStyle(b).backgroundColor;
+
+    const sizeMatch =
+      rect.width >= 195 && rect.width <= 199 &&
+      rect.height >= 35 && rect.height <= 37;
+
+    const colorMatch =
+      bg === 'rgb(13, 13, 13)' ||
+      bg === 'rgb(0, 0, 0)';
+
+    return sizeMatch && colorMatch ;
+  });
+
+  if (btn && btn !== lastClicked) {
+    lastClicked = btn;
+    console.log('Clicking:', btn.innerText.trim(), btn.getBoundingClientRect());
+    btn.click();
+  }
+}, 1000)
+```
+
+If you are lazy to type continue and press enter here's another console script for you. 
+```
+(function() {
+  function getMainBoxAndButton() {
+    // Find the first visible contenteditable box
+    const box = Array.from(document.querySelectorAll('[contenteditable="true"]'))
+                     .find(el => el.offsetParent !== null); // only visible elements
+
+    // Try to find a send button within the same container
+    let sendBtn = null;
+    if (box) {
+      const container = box.closest('div');
+      if (container) {
+        sendBtn = container.querySelector('button, input[type="submit"]');
+      }
+    }
+
+    return { box, sendBtn };
+  }
+
+  function typeAndSend() {
+    const { box, sendBtn } = getMainBoxAndButton();
+    if (!box) {
+      console.warn('No visible typing box found!');
+      return;
+    }
+
+    // Focus the box
+    box.focus();
+
+    // Move cursor to the end
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    range.collapse(false);
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    // Insert the exact phrase "continue "
+    document.execCommand('insertText', false, 'continue ');
+
+    // Click send if a button exists
+    if (sendBtn && !sendBtn.disabled) {
+      sendBtn.click();
+    } else {
+      // If no button, try simulating Enter key
+      const enterEvent = new KeyboardEvent('keydown', {
+        key: 'Enter',
+        code: 'Enter',
+        keyCode: 13,
+        which: 13,
+        bubbles: true
+      });
+      box.dispatchEvent(enterEvent);
+    }
+  }
+
+  // Run immediately
+  typeAndSend();
+
+  // Repeat every 2 minutes
+  setInterval(typeAndSend, 2 * 60 * 1000);
+})();
+```
+and the auto continue script above too. 
