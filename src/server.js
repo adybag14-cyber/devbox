@@ -1,3 +1,6 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
@@ -814,6 +817,98 @@ const isLocalRequest = (req) => {
   return isLoopbackAddress(forwardedFor);
 };
 
+const normalizeOrigin = (value) => {
+  const rawValue = String(value ?? "").trim();
+  if (!rawValue) {
+    return "";
+  }
+
+  try {
+    return new URL(rawValue).origin;
+  } catch {
+    return "";
+  }
+};
+
+const appendVary = (existingValue, fieldName) => {
+  const fields = String(existingValue ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (!fields.includes(fieldName)) {
+    fields.push(fieldName);
+  }
+
+  return fields.join(", ");
+};
+
+const shouldExposeGatewayBridge = (req) => config.authMode === "none" && config.enableGatewayBridge && isLocalRequest(req);
+
+const getGatewayBridgeOrigin = (req) => {
+  if (!shouldExposeGatewayBridge(req)) {
+    return "";
+  }
+
+  const origin = normalizeOrigin(req.headers.origin);
+  if (!origin) {
+    return "";
+  }
+
+  return config.gatewayBridgeOrigins.includes(origin) ? origin : "";
+};
+
+const resolveLocalBaseUrl = (req) => {
+  if (!isLocalRequest(req)) {
+    return "";
+  }
+
+  const host = String(req.get("host") ?? req.headers.host ?? "").trim();
+  if (!host) {
+    return "";
+  }
+
+  const forwardedProto = String(req.headers["x-forwarded-proto"] ?? "")
+    .split(",")[0]
+    ?.trim();
+  const protocol = forwardedProto || req.protocol || "http";
+  return `${protocol}://${host}`.replace(/\/+$/, "");
+};
+
+const resolveConnectorBaseUrl = (req) => config.publicBaseUrl || resolveLocalBaseUrl(req);
+
+const applyGatewayBridgeHeaders = (req, res) => {
+  const origin = getGatewayBridgeOrigin(req);
+  if (!origin) {
+    return false;
+  }
+
+  const requestHeaders = String(req.headers["access-control-request-headers"] ?? "").trim();
+  const allowHeaders = requestHeaders || "authorization, content-type, last-event-id, mcp-protocol-version, mcp-session-id";
+
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Access-Control-Allow-Methods", "DELETE, GET, HEAD, OPTIONS, POST");
+  res.setHeader("Access-Control-Allow-Headers", allowHeaders);
+  res.setHeader("Access-Control-Expose-Headers", "mcp-session-id");
+  res.setHeader("Access-Control-Max-Age", "600");
+  res.setHeader("Vary", appendVary(res.getHeader("Vary"), "Origin"));
+  res.setHeader("Vary", appendVary(res.getHeader("Vary"), "Access-Control-Request-Method"));
+  res.setHeader("Vary", appendVary(res.getHeader("Vary"), "Access-Control-Request-Headers"));
+  res.setHeader("Vary", appendVary(res.getHeader("Vary"), "Access-Control-Request-Private-Network"));
+
+  if (String(req.headers["access-control-request-private-network"] ?? "").toLowerCase() === "true") {
+    res.setHeader("Access-Control-Allow-Private-Network", "true");
+  }
+
+  return true;
+};
+
+const gatewayBridgeInfoForRequest = (req) => ({
+  enabled: shouldExposeGatewayBridge(req),
+  origins: shouldExposeGatewayBridge(req) ? config.gatewayBridgeOrigins : [],
+  private_network_access: shouldExposeGatewayBridge(req),
+});
+
 const allowedHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
 if (config.publicBaseUrl) {
   allowedHosts.add(new URL(config.publicBaseUrl).hostname);
@@ -824,6 +919,29 @@ const app = createMcpExpressApp({
   allowedHosts: [...allowedHosts],
 });
 app.set("trust proxy", 1);
+app.use((req, res, next) => {
+  const origin = normalizeOrigin(req.headers.origin);
+  const bridgeAllowed = applyGatewayBridgeHeaders(req, res);
+
+  if (req.method === "OPTIONS" && origin) {
+    if (!shouldExposeGatewayBridge(req)) {
+      res.status(405).end();
+      return;
+    }
+
+    if (!bridgeAllowed) {
+      res.status(403).json({
+        error: "Origin is not allowed for the local gateway bridge.",
+      });
+      return;
+    }
+
+    res.status(204).end();
+    return;
+  }
+
+  next();
+});
 
 let authMiddleware = null;
 let oauthInfo = null;
@@ -866,6 +984,8 @@ if (config.authMode === "demo-oauth" || config.authMode === "cloudflare-access")
 }
 
 app.get("/", async (_req, res) => {
+  const connectorBaseUrl = resolveConnectorBaseUrl(_req);
+  const localBaseUrl = resolveLocalBaseUrl(_req);
   const baseResponse = {
     name: runtimeServerName,
     version,
@@ -873,7 +993,9 @@ app.get("/", async (_req, res) => {
     runtime_mode: config.runtimeMode,
     platform: config.platform.id,
     public_base_url: config.publicBaseUrl || null,
-    mcp_url: config.publicBaseUrl ? `${config.publicBaseUrl}/mcp` : null,
+    local_base_url: localBaseUrl || null,
+    mcp_url: connectorBaseUrl ? `${connectorBaseUrl}/mcp` : null,
+    gateway_bridge: gatewayBridgeInfoForRequest(_req),
     oauth: oauthInfo,
     notes:
       config.authMode === "cloudflare-access"
@@ -962,11 +1084,20 @@ const deleteHandlers = config.authMode !== "none" && authMiddleware ? [authMiddl
 app.get("/mcp", ...getHandlers);
 app.delete("/mcp", ...deleteHandlers);
 
-app.listen(config.port, config.host, () => {
-  console.log(`${runtimeServerName} listening on ${config.host}:${config.port}`);
-  console.log(`Runtime mode: ${config.runtimeMode} (${config.platform.displayName})`);
-  console.log(`Auth mode: ${config.authMode}`);
-  if (config.publicBaseUrl) {
-    console.log(`Public MCP URL: ${config.publicBaseUrl}/mcp`);
-  }
-});
+export { app };
+
+export const startServer = () =>
+  app.listen(config.port, config.host, () => {
+    console.log(`${runtimeServerName} listening on ${config.host}:${config.port}`);
+    console.log(`Runtime mode: ${config.runtimeMode} (${config.platform.displayName})`);
+    console.log(`Auth mode: ${config.authMode}`);
+    if (config.publicBaseUrl) {
+      console.log(`Public MCP URL: ${config.publicBaseUrl}/mcp`);
+    }
+  });
+
+const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMainModule) {
+  startServer();
+}

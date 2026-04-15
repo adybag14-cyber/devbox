@@ -81,6 +81,8 @@ Important `.env` values:
 - `HOST_SHELL`
 - `HOST_PROGRAM_ALLOWLIST`
 - `PUBLIC_BASE_URL` when using OAuth modes
+- `ENABLE_GATEWAY_BRIDGE=true|false` to allow ChatGPT Web / browser clients to call the local open server from `https://chatgpt.com`
+- `GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com`
 
 ## Termux quick start
 
@@ -149,6 +151,28 @@ Typical local values:
 - `Name`: `Devbox MCP`
 - `MCP Server URL`: `http://127.0.0.1:8100/mcp` locally, or your public base URL when exposed
 - `Authentication`: `none`, `demo-oauth`, or `cloudflare-access`
+- `gateway_bridge.enabled`: `true` for local open-server requests when browser bridging is enabled
+
+## Local ChatGPT Web bridge
+
+When `MCP_AUTH_MODE=none`, local loopback requests automatically expose a browser bridge for ChatGPT Web origins.
+That bridge:
+
+- returns `mcp_url` for local requests even when `PUBLIC_BASE_URL` is blank
+- answers CORS preflights for configured `GATEWAY_BRIDGE_ORIGINS`
+- allows secure-page browser clients to call the local open MCP server on loopback
+
+Default allowed origins:
+
+- `https://chatgpt.com`
+- `https://chat.openai.com`
+
+You can disable or customize it with:
+
+```bash
+ENABLE_GATEWAY_BRIDGE=false
+GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com
+```
 
 ## Public URL / OAuth
 
