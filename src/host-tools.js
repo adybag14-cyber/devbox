@@ -3,6 +3,7 @@ import path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { config } from "./config.js";
+import { detectPlatform, resolveHostShell } from "./platform.js";
 import { SpawnProcessError, spawnProcess } from "./process-utils.js";
 
 export class HostCommandError extends Error {
@@ -27,13 +28,21 @@ const wrapHostError = (error, fallbackMessage) => {
   return new HostCommandError(error instanceof Error ? error.message : fallbackMessage);
 };
 
+const platform = detectPlatform(process.env);
+const hostShell = resolveHostShell(process.env, platform);
+
 const ensureHostExecEnabled = () => {
-  if (!config.enableWindowsHostExec) {
-    throw new HostCommandError("Windows host command execution is disabled in the current configuration.");
+  if (!config.enableHostExec) {
+    throw new HostCommandError(`${platform.displayName} host command execution is disabled in the current configuration.`);
   }
 };
 
-const normalizeProgram = (program) => path.win32.basename(String(program)).replace(/\.exe$/i, "").toLowerCase();
+const normalizeProgram = (program) =>
+  String(program)
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/\.exe$/i, "")
+    .toLowerCase() || "";
 const psSingleQuote = (value) => String(value).replace(/'/g, "''");
 export const MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE = 24000;
 
@@ -143,11 +152,14 @@ exit $process.ExitCode
 };
 
 export const getHostToolStatus = () => ({
-  enabled: config.enableWindowsHostExec,
+  enabled: config.enableHostExec,
+  platform: config.platform.id,
+  platformDisplayName: config.platform.displayName,
+  shell: hostShell,
   defaultWorkdir: config.hostDefaultWorkdir,
   allowlist: config.hostProgramAllowlist,
   resolvedNodeExe: config.nodeExe,
-  windowsHostExecDefaultsToAdmin: true,
+  windowsHostExecDefaultsToAdmin: platform.isWindows,
 });
 
 export const resolveHostProgramExecutable = (program) => {
@@ -258,11 +270,29 @@ export const runWindowsPowerShell = async ({ command, workingDir = config.hostDe
   }
 };
 
+export const runHostShellCommand = async ({ command, workingDir = config.hostDefaultWorkdir, timeoutMs }) => {
+  ensureHostExecEnabled();
+
+  if (platform.isWindows) {
+    return runWindowsPowerShell({ command, workingDir, timeoutMs });
+  }
+
+  try {
+    return await spawnProcess(hostShell, ["-lc", command], {
+      cwd: workingDir,
+      timeoutMs,
+    });
+  } catch (error) {
+    throw wrapHostError(error, `${platform.displayName} host shell command failed.`);
+  }
+};
+
 export const runAllowedProgram = async ({
   program,
   args = [],
   workingDir = config.hostDefaultWorkdir,
   timeoutMs,
+  input,
 }) => {
   ensureHostExecEnabled();
 
@@ -277,6 +307,7 @@ export const runAllowedProgram = async ({
     return await spawnProcess(resolveHostProgramExecutable(program), args, {
       cwd: workingDir,
       timeoutMs,
+      input,
     });
   } catch (error) {
     throw wrapHostError(error, `Host program "${program}" failed.`);

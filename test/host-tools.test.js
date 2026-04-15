@@ -3,24 +3,21 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
 
 import { spawnProcess } from "../src/process-utils.js";
 
-process.env.MCP_AUTH_MODE = "none";
-process.env.PUBLIC_BASE_URL = "";
+const hasPowerShell = process.platform === "win32";
 
-const {
-  MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE,
-  buildWindowsPowerShellArgs,
-  buildWindowsPowerShellFileArgs,
-  buildElevatedWindowsPowerShellWrapper,
-  buildElevatedWindowsPowerShellLauncher,
-  shouldUsePowerShellScriptFile,
-  resolveHostProgramExecutable,
-  getHostToolStatus,
-} = await import("../src/host-tools.js");
+const importFreshHostTools = async () => {
+  process.env.MCP_AUTH_MODE = "none";
+  process.env.PUBLIC_BASE_URL = "";
+  const href = pathToFileURL(path.join(process.cwd(), "src/host-tools.js")).href;
+  return import(`${href}?t=${Date.now()}-${Math.random()}`);
+};
 
-test("buildWindowsPowerShellArgs encodes the original script exactly", () => {
+test("buildWindowsPowerShellArgs encodes the original script exactly", async () => {
+  const { buildWindowsPowerShellArgs } = await importFreshHostTools();
   const command = "$value = 'A \"quoted\" value with ''single'' quotes'; Write-Output $value";
   const args = buildWindowsPowerShellArgs(command);
 
@@ -31,7 +28,8 @@ test("buildWindowsPowerShellArgs encodes the original script exactly", () => {
   assert.equal(Buffer.from(args[6], "base64").toString("utf16le"), command);
 });
 
-test("encoded PowerShell execution preserves nested quotes end to end", async () => {
+test("encoded PowerShell execution preserves nested quotes end to end", { skip: !hasPowerShell }, async () => {
+  const { buildWindowsPowerShellArgs } = await importFreshHostTools();
   const command = "$value = 'A \"quoted\" value with ''single'' quotes'; Write-Output $value";
   const result = await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(command), {
     cwd: process.cwd(),
@@ -41,7 +39,8 @@ test("encoded PowerShell execution preserves nested quotes end to end", async ()
   assert.equal(result.stdout.trim(), "A \"quoted\" value with 'single' quotes");
 });
 
-test("shouldUsePowerShellScriptFile switches to file-backed execution for large commands", () => {
+test("shouldUsePowerShellScriptFile switches to file-backed execution for large commands", async () => {
+  const { MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE, buildWindowsPowerShellArgs, shouldUsePowerShellScriptFile } = await importFreshHostTools();
   const smallCommand = "Write-Output 'ok'";
   const largeCommand = `Write-Output '${"x".repeat(90000)}'`;
 
@@ -50,7 +49,8 @@ test("shouldUsePowerShellScriptFile switches to file-backed execution for large 
   assert.ok(buildWindowsPowerShellArgs(largeCommand).join(" ").length >= MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE);
 });
 
-test("file-backed PowerShell execution handles very large one-shot payloads", async () => {
+test("file-backed PowerShell execution handles very large one-shot payloads", { skip: !hasPowerShell }, async () => {
+  const { buildWindowsPowerShellFileArgs } = await importFreshHostTools();
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
   const scriptPath = path.join(tempDir, "large-command.ps1");
   const payload = "x".repeat(90000);
@@ -69,13 +69,15 @@ test("file-backed PowerShell execution handles very large one-shot payloads", as
   }
 });
 
-test("resolveHostProgramExecutable maps node to the real node.exe path", () => {
+test("resolveHostProgramExecutable maps node to the real node path", async () => {
+  const { getHostToolStatus, resolveHostProgramExecutable } = await importFreshHostTools();
   assert.equal(resolveHostProgramExecutable("node"), process.execPath);
   assert.equal(resolveHostProgramExecutable("node.exe"), process.execPath);
   assert.match(getHostToolStatus().resolvedNodeExe, /node(\.exe)?$/i);
 });
 
-test("buildElevatedWindowsPowerShellWrapper preserves working directory and output paths", () => {
+test("buildElevatedWindowsPowerShellWrapper preserves working directory and output paths", async () => {
+  const { buildElevatedWindowsPowerShellWrapper } = await importFreshHostTools();
   const wrapper = buildElevatedWindowsPowerShellWrapper({
     scriptPath: "C:\\Temp\\command.ps1",
     workingDir: "C:\\Temp\\quoted path",
@@ -91,7 +93,8 @@ test("buildElevatedWindowsPowerShellWrapper preserves working directory and outp
   assert.equal(wrapper.includes("& 'C:\\Temp\\command.ps1'"), true);
 });
 
-test("buildElevatedWindowsPowerShellLauncher uses RunAs elevation", () => {
+test("buildElevatedWindowsPowerShellLauncher uses RunAs elevation", async () => {
+  const { buildElevatedWindowsPowerShellLauncher } = await importFreshHostTools();
   const launcher = buildElevatedWindowsPowerShellLauncher({
     scriptPath: "C:\\Temp\\command.ps1",
     workingDir: "C:\\Temp",
@@ -104,4 +107,16 @@ test("buildElevatedWindowsPowerShellLauncher uses RunAs elevation", () => {
   assert.match(launcher, /Start-Process -FilePath 'powershell\.exe' -Verb RunAs/);
   assert.match(launcher, /WaitForExit\(15000\)/);
   assert.match(launcher, /Stop-Process -Id \$process\.Id -Force/);
+});
+
+test("runHostShellCommand executes a posix shell command on non-Windows hosts", { skip: hasPowerShell }, async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "devbox-host-shell-"));
+  process.env.HOST_DEFAULT_WORKDIR = tempDir;
+  process.env.HOST_SHELL = "/bin/sh";
+  process.env.ENABLE_HOST_EXEC = "true";
+
+  const { runHostShellCommand } = await importFreshHostTools();
+  const result = await runHostShellCommand({ command: "printf 'host-shell-ok'", workingDir: tempDir, timeoutMs: 5000 });
+
+  assert.equal(result.stdout, "host-shell-ok");
 });

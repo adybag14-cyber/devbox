@@ -1,213 +1,176 @@
-# Docker ChatGPT Devbox MCP
+# Devbox MCP
 
-This repo runs a ChatGPT-compatible remote MCP server on Windows. The main execution environment is a reproducible Linux Docker devbox. An optional Windows host bridge exposes native host tools such as PowerShell, Git, Docker CLI, Node, Python, and winget. Please note ChatGPT may become too powerful you have been warned!!!!!
-## DO you need auto-approval and openai is annoying you with every approve box command what if you could allow pasting in the dev console and then never have to think about it again???
+This repo runs a ChatGPT-compatible remote MCP server with two runtime modes:
 
-```
-let lastClicked = null;
+- Docker mode: the original Windows + Docker Desktop workflow.
+- Host mode: direct host execution for Termux, Linux, and macOS without Docker.
 
-setInterval(() => {
-  const btn = [...document.querySelectorAll('button')].find(b => {
-    const rect = b.getBoundingClientRect();
-    const bg = getComputedStyle(b).backgroundColor;
-
-    const sizeMatch =
-      rect.width >= 195 && rect.width <= 199 &&
-      rect.height >= 35 && rect.height <= 37;
-
-    const colorMatch =
-      bg === 'rgb(13, 13, 13)' ||
-      bg === 'rgb(0, 0, 0)';
-
-    return sizeMatch && colorMatch ;
-  });
-
-  if (btn && btn !== lastClicked) {
-    lastClicked = btn;
-    console.log('Clicking:', btn.innerText.trim(), btn.getBoundingClientRect());
-    btn.click();
-  }
-}, 1000)
-```
-
-If you are lazy to type continue and press enter here's another console script for you. 
-```
-(function() {
-  function getMainBoxAndButton() {
-    // Find the first visible contenteditable box
-    const box = Array.from(document.querySelectorAll('[contenteditable="true"]'))
-                     .find(el => el.offsetParent !== null); // only visible elements
-
-    // Try to find a send button within the same container
-    let sendBtn = null;
-    if (box) {
-      const container = box.closest('div');
-      if (container) {
-        sendBtn = container.querySelector('button, input[type="submit"]');
-      }
-    }
-
-    return { box, sendBtn };
-  }
-
-  function typeAndSend() {
-    const { box, sendBtn } = getMainBoxAndButton();
-    if (!box) {
-      console.warn('No visible typing box found!');
-      return;
-    }
-
-    // Focus the box
-    box.focus();
-
-    // Move cursor to the end
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(box);
-    range.collapse(false);
-    sel.removeAllRanges();
-    sel.addRange(range);
-
-    // Insert the exact phrase "continue "
-    document.execCommand('insertText', false, 'continue ');
-
-    // Click send if a button exists
-    if (sendBtn && !sendBtn.disabled) {
-      sendBtn.click();
-    } else {
-      // If no button, try simulating Enter key
-      const enterEvent = new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true
-      });
-      box.dispatchEvent(enterEvent);
-    }
-  }
-
-  // Run immediately
-  typeAndSend();
-
-  // Repeat every 2 minutes
-  setInterval(typeAndSend, 2 * 60 * 1000);
-})();
-```
-
+Host mode is the default on Termux/Linux/macOS. Docker mode remains the default on Windows.
 
 ## What is included
 
 - `src/server.js`: MCP server exposed over Streamable HTTP
-- `runtime.Dockerfile`: reproducible Linux devbox image
-- `workspace/`: host workspace mounted into the devbox at `/workspace`
-- `scripts/Start-ChatGptDevboxMcp.ps1`: builds the runtime, starts the devbox, starts the MCP server, and can publish a public HTTPS URL
-- `scripts/Stop-ChatGptDevboxMcp.ps1`: stops the MCP server and optional tunnel/devbox runtime
-- `scripts/Get-ChatGptSetup.ps1`: prints the values to paste into the ChatGPT custom app form
-- `scripts/Get-CloudflareAccessSetup.ps1`: prints the Cloudflare Access settings needed to protect `/authorize*`
+- `src/runtime.js`: runtime selector for Docker vs host mode
+- `src/docker-runtime.js`: original Docker-backed devbox runtime
+- `src/host-runtime.js`: host-backed runtime for Termux/Linux/macOS
+- `src/host-tools.js`: host shell + allowed-program execution helpers
+- `src/launcher.js`: local service launcher helpers
+- `bin/devbox.js`: installable `devbox` command
+- `runtime.Dockerfile`: reproducible Linux devbox image for Docker mode
+- `scripts/Start-ChatGptDevboxMcp.ps1`: Windows/Docker startup flow
+- `scripts/Stop-ChatGptDevboxMcp.ps1`: Windows/Docker shutdown flow
+
+## Runtime modes
+
+### Host mode
+
+Use host mode when Docker is unavailable or unnecessary.
+
+Supported today:
+- Termux on Android
+- Linux
+- macOS
+
+Behavior:
+- shell/file operations run directly on the host
+- `devbox_exec_readonly` is best-effort in host mode; it is not container-sandboxed
+- host tools are exposed through `host_*` MCP tools
+- legacy `windows_host_*` tool names remain as compatibility aliases
+
+### Docker mode
+
+Use Docker mode when you want the original reproducible container workflow.
+
+Behavior:
+- devbox shell/file tools run inside the Docker runtime container
+- read-only shell commands still use disposable read-only containers
+- host tools remain explicit and separate from the devbox runtime
 
 ## Requirements
+
+### Termux / Linux / macOS host mode
+
+- Node.js
+- npm
+- Git
+- optional but useful: `gh`, `python3`, `ripgrep`, `curl`
+
+### Windows Docker mode
 
 - Windows
 - Docker Desktop
 - Node.js
 - PowerShell
 - Git
-- Optional:
-  - GitHub CLI for repo auth sync into the devbox
-  - Cloudflare Tunnel for a stable public hostname
-  - Cloudflare Access if you want real browser auth on `/authorize*`
+- optional: GitHub CLI, Cloudflare Tunnel, Cloudflare Access
 
 ## Clone and bootstrap
+
+```bash
+git clone https://github.com/adybag14-cyber/devbox.git
+cd devbox
+cp .env.example .env
+npm install
+```
+
+Important `.env` values:
+
+- `DEVBOX_RUNTIME_MODE=auto|host|docker`
+- `HOST_WORKSPACE_PATH`
+- `HOST_DEFAULT_WORKDIR`
+- `HOST_SHELL`
+- `HOST_PROGRAM_ALLOWLIST`
+- `PUBLIC_BASE_URL` when using OAuth modes
+
+## Termux quick start
+
+Full notes: [docs/TERMUX.md](./docs/TERMUX.md)
+
+```bash
+pkg install nodejs git ripgrep python curl
+cd ~/devbox
+cp .env.example .env
+npm install
+npm link
+devbox
+```
+
+That starts the MCP service in the background and prints the local URL plus log path.
+
+Useful commands:
+
+```bash
+devbox status
+devbox restart
+devbox stop
+devbox run
+```
+
+`devbox run` keeps the server in the foreground. Plain `devbox` behaves like `devbox start`.
+
+## Linux / macOS host-mode quick start
+
+Full notes: [docs/HOST_COMPATIBILITY.md](./docs/HOST_COMPATIBILITY.md)
+
+```bash
+cd /path/to/devbox
+cp .env.example .env
+npm install
+npm link
+DEVBOX_RUNTIME_MODE=host devbox
+```
+
+If you want the old container workflow on Linux/macOS, set:
+
+```bash
+DEVBOX_RUNTIME_MODE=docker
+```
+
+## Windows Docker-mode quick start
 
 ```powershell
 git clone https://github.com/adybag14-cyber/devbox.git
 cd .\devbox
 Copy-Item .env.example .env
-```
-
-You can leave these `.env` values blank and the repo will derive them automatically:
-
-- `HOST_WORKSPACE_PATH`: defaults to `<repo>\workspace`
-- `HOST_DEFAULT_WORKDIR`: defaults to your Windows home directory
-- `NODE_EXE`: defaults to the current `node.exe`
-- `OAUTH_STATE_FILE_PATH`: defaults to `<repo>\run\oauth-state.json`
-
-## Start locally
-
-```powershell
-cd .\devbox
+npm install
 .\scripts\Start-ChatGptDevboxMcp.ps1
 ```
 
-## Start with a public URL
-
-```powershell
-cd .\devbox
-.\scripts\Start-ChatGptDevboxMcp.ps1 -Public -OAuth
-```
-
-If `.env` contains both `CLOUDFLARED_PUBLIC_HOSTNAME` and `CLOUDFLARED_TUNNEL_TOKEN`, `-Public` uses the named Cloudflare tunnel and keeps the MCP URL stable on your domain.
-
-If you want the stack to stay available across logon and recover from basic runtime failures, install the guardian with `.\scripts\Install-ChatGptDevboxGuardian.ps1` for local mode or `.\scripts\Install-ChatGptDevboxGuardian.ps1 -Public -OAuth` for the public OAuth path. Setup and status commands are in [docs/GUARDIAN.md](./docs/GUARDIAN.md).
-
 ## ChatGPT connector values
 
-After startup:
+After the service is up, inspect:
 
-```powershell
-.\scripts\Get-ChatGptSetup.ps1
+```bash
+curl http://127.0.0.1:8100/
 ```
 
-Typical output:
+Typical local values:
 
-- `Name`: `Docker Devbox`
-- `Description`: `Reproducible Docker devbox shell plus optional Windows host tools`
-- `MCP Server URL`: `https://<your-host>/mcp`
-- `Authentication`: `OAuth`
+- `Name`: `Devbox MCP`
+- `MCP Server URL`: `http://127.0.0.1:8100/mcp` locally, or your public base URL when exposed
+- `Authentication`: `none`, `demo-oauth`, or `cloudflare-access`
 
-## Cloudflare Access mode
+## Public URL / OAuth
 
-If you want the ChatGPT OAuth flow to require a real login:
+If you expose the service publicly, set:
 
-1. Create a Cloudflare Access self-hosted application that protects `https://<your-host>/authorize*`.
-2. Restrict the Access policy to your identity.
-3. Set these values in `.env`:
-   - `MCP_AUTH_MODE=cloudflare-access`
-   - `CLOUDFLARE_ACCESS_TEAM_DOMAIN=https://<your-team>.cloudflareaccess.com`
-   - `CLOUDFLARE_ACCESS_AUD=<Access application AUD>`
-   - `CLOUDFLARE_ACCESS_JWKS_URL=https://<your-team>.cloudflareaccess.com/cdn-cgi/access/certs`
-4. Restart with:
+- `PUBLIC_BASE_URL`
+- `MCP_AUTH_MODE=demo-oauth` or `MCP_AUTH_MODE=cloudflare-access`
 
-```powershell
-.\scripts\Start-ChatGptDevboxMcp.ps1 -Public -OAuth
-```
-
-Use this helper to print the Access-side target:
-
-```powershell
-.\scripts\Get-CloudflareAccessSetup.ps1
-```
-
-## Stop
-
-```powershell
-cd .\devbox
-.\scripts\Stop-ChatGptDevboxMcp.ps1 -Tunnel
-```
-
-Use `-All` to also stop the devbox container.
-
-## Reproducing on another device
-
-See [docs/REPRODUCE.md](./docs/REPRODUCE.md) for a full copy-to-another-machine checklist.
+Cloudflare Access details are still documented by the existing helper scripts and Windows docs.
 
 ## Security notes
 
-- `windows_host_exec` is high risk because it gives ChatGPT PowerShell access to the Windows host.
-- `windows_host_run_program` is limited by `HOST_PROGRAM_ALLOWLIST`.
-- Do not commit `.env`, `.env.runtime`, `run/`, `workspace/`, or other live runtime state.
+- `host_exec` is high risk because it provides direct host shell access.
+- `host_run_program` is limited by `HOST_PROGRAM_ALLOWLIST`.
+- `windows_host_*` tools remain for compatibility, but on non-Windows hosts they route to the generic host implementation.
+- Do not commit `.env`, `run/`, `workspace/`, or other live runtime state.
 
+## Validation
 
-It also includes `devbox_write_large_file`, a base64-backed large file writer that verifies the exact bytes written so agents can mirror payloads without corruption.
-It also includes `devbox_read_large_file`, a base64 chunk reader with real byte offsets, chunk metadata, and paging support for later sections of large logs and generated files.
+```bash
+npm test
+node bin/devbox.js start
+curl http://127.0.0.1:8100/healthz
+node bin/devbox.js stop
+```
