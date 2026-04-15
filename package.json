@@ -3,13 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "ChatGPT-facing MCP server for a reproducible Docker devbox plus optional Windows host tooling.",
+  "description": "ChatGPT-facing MCP server for Docker or host-mode devbox execution, including Termux/Linux/macOS host tooling.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/adybag14-cyber/devbox.git"
   },
+  "bin": {
+    "devbox": "./bin/devbox.js"
+  },
   "scripts": {
     "start": "node src/server.js",
+    "devbox": "node ./bin/devbox.js",
     "test": "node --test"
   },
   "dependencies": {
