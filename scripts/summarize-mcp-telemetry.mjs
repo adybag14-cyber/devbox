@@ -67,6 +67,26 @@ const truncateString = (value, maxLength = 240) =>
 const eventTimestampMs = (event) =>
   toEpochMs(event.finished_at) ?? toEpochMs(event.started_at) ?? toEpochMs(event.timestamp) ?? null;
 
+const INFRASTRUCTURE_FAILURE_PATTERN =
+  /timed?\s*out|timeout|docker desktop|unable to start|cannot connect|connection refused|connection reset|broken pipe|econn|enoent|eacces|eperm|spawn e|no such object|no such container|invalid json|healthz|upstream 502/i;
+
+const classifyToolFailure = (event) => {
+  if (event.type === "tool_throw") {
+    return "runtime_error";
+  }
+
+  if (Number.isInteger(event.exit_code)) {
+    return "command_failure";
+  }
+
+  const text = `${event.summary ?? ""} ${event.error ?? ""}`;
+  if (INFRASTRUCTURE_FAILURE_PATTERN.test(text)) {
+    return "runtime_error";
+  }
+
+  return "runtime_error";
+};
+
 const summarizeToolEvents = (events, slowMs) => {
   const finishEvents = events.filter((event) => event.type === "tool_finish" || event.type === "tool_throw");
   const perTool = new Map();
@@ -82,6 +102,8 @@ const summarizeToolEvents = (events, slowMs) => {
         calls: 0,
         success: 0,
         error: 0,
+        command_failure: 0,
+        runtime_error: 0,
         throws: 0,
         max_duration_ms: 0,
         avg_duration_ms: 0,
@@ -97,12 +119,19 @@ const summarizeToolEvents = (events, slowMs) => {
 
     if (event.type === "tool_throw") {
       entry.throws += 1;
+      entry.runtime_error += 1;
       entry.last_error = truncateString(event.error ?? "tool_throw");
     } else if (event.ok) {
       entry.success += 1;
       entry.last_summary = truncateString(event.summary ?? null);
     } else {
       entry.error += 1;
+      const failureKind = classifyToolFailure(event);
+      if (failureKind === "command_failure") {
+        entry.command_failure += 1;
+      } else {
+        entry.runtime_error += 1;
+      }
       entry.last_error = truncateString(event.summary ?? "tool error");
     }
 
@@ -124,6 +153,7 @@ const summarizeToolEvents = (events, slowMs) => {
         ok: event.type === "tool_finish" ? Boolean(event.ok) : false,
         summary: truncateString(event.summary ?? null),
         error: truncateString(event.error ?? null),
+        failure_kind: event.type === "tool_finish" && !event.ok ? classifyToolFailure(event) : event.type === "tool_throw" ? "runtime_error" : null,
         context: event.context ?? null,
       });
     }
@@ -137,6 +167,8 @@ const summarizeToolEvents = (events, slowMs) => {
       calls: entry.calls,
       success: entry.success,
       error: entry.error,
+      command_failure: entry.command_failure,
+      runtime_error: entry.runtime_error,
       throws: entry.throws,
       max_duration_ms: entry.max_duration_ms,
       avg_duration_ms: entry.durations.length
@@ -151,6 +183,8 @@ const summarizeToolEvents = (events, slowMs) => {
     total_events: finishEvents.length,
     total_success: perToolSummary.reduce((sum, entry) => sum + entry.success, 0),
     total_errors: perToolSummary.reduce((sum, entry) => sum + entry.error + entry.throws, 0),
+    total_command_failures: perToolSummary.reduce((sum, entry) => sum + entry.command_failure, 0),
+    total_runtime_errors: perToolSummary.reduce((sum, entry) => sum + entry.runtime_error, 0),
     per_tool: perToolSummary,
     timeout_suspects: timeoutSuspects,
     slow_events: slowEvents.sort((left, right) => right.duration_ms - left.duration_ms),

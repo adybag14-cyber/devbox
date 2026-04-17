@@ -450,6 +450,8 @@ const timeoutSuspects = [
   ...telemetry.http.error_responses.filter((entry) => /408|504/.test(String(entry.status_code))),
 ];
 const slowCalls = results.filter((entry) => entry.duration_ms >= slowMs);
+const toolRuntimeErrors = telemetry.tools.total_runtime_errors ?? telemetry.tools.total_errors;
+const toolCommandFailures = telemetry.tools.total_command_failures ?? 0;
 
 const report = {
   generated_at: new Date().toISOString(),
@@ -483,7 +485,9 @@ process.stdout.write(
       timeout_suspect_count: timeoutSuspects.length,
       slow_call_count: slowCalls.length,
       guardian: telemetry.guardian,
-      tool_errors: telemetry.tools.total_errors,
+      tool_runtime_errors: toolRuntimeErrors,
+      tool_command_failures: toolCommandFailures,
+      tool_observed_failures: telemetry.tools.total_errors,
       http_error_count: telemetry.http.error_responses.length,
     },
     null,
@@ -491,6 +495,6 @@ process.stdout.write(
   )}\n`,
 );
 
-if (failures.length > 0 || timeoutSuspects.length > 0 || telemetry.tools.total_errors > 0 || telemetry.http.error_responses.length > 0) {
+if (failures.length > 0 || timeoutSuspects.length > 0 || toolRuntimeErrors > 0 || telemetry.http.error_responses.length > 0) {
   process.exitCode = 1;
 }
