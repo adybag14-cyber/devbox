@@ -45,6 +45,8 @@ const defaultHostWorkspacePath = path.join(projectRoot, "workspace");
 const defaultOauthStateFilePath = path.join(projectRoot, "run", "oauth-state.json");
 const defaultHostWorkdir = os.homedir() || projectRoot;
 const defaultNodeExe = process.execPath || "node";
+const defaultDevboxContainerName = process.env.DEVBOX_CONTAINER_NAME?.trim() || "chatgpt-devbox-runtime";
+const defaultDevboxTmpVolumeName = process.env.DEVBOX_TMP_VOLUME_NAME?.trim() || `${defaultDevboxContainerName}-tmp`;
 
 export const config = {
   host: process.env.HOST?.trim() || "0.0.0.0",
@@ -52,11 +54,13 @@ export const config = {
   authMode: process.env.MCP_AUTH_MODE?.trim() || "demo-oauth",
   publicBaseUrl,
   maxTextOutputChars: parseInteger(process.env.MAX_TEXT_OUTPUT_CHARS, 20000),
-  devboxContainerName: process.env.DEVBOX_CONTAINER_NAME?.trim() || "chatgpt-devbox-runtime",
+  devboxContainerName: defaultDevboxContainerName,
   devboxImageName: process.env.DEVBOX_IMAGE_NAME?.trim() || "chatgpt-devbox-runtime:local",
   devboxWorkspacePath: process.env.DEVBOX_WORKSPACE_PATH?.trim() || "/workspace",
   hostWorkspacePath: process.env.HOST_WORKSPACE_PATH?.trim() || defaultHostWorkspacePath,
   devboxDefaultUser: process.env.DEVBOX_DEFAULT_USER?.trim() || "root",
+  devboxTmpVolumeName: defaultDevboxTmpVolumeName,
+  devboxRetiredContainerGraceMs: parseInteger(process.env.DEVBOX_RETIRED_CONTAINER_GRACE_MS, 300000),
   devboxAutoStart: parseBoolean(process.env.DEVBOX_AUTO_START, true),
   enableWindowsHostExec: parseBoolean(process.env.ENABLE_WINDOWS_HOST_EXEC, true),
   hostDefaultWorkdir: process.env.HOST_DEFAULT_WORKDIR?.trim() || defaultHostWorkdir,

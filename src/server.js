@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -50,6 +50,7 @@ import { trimText } from "./process-utils.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runDir = path.join(projectRoot, "run");
+const guardianDesiredStatePath = path.join(runDir, "guardian.desired-state.json");
 const toolUsageLogPath = path.join(runDir, "tool-usage.jsonl");
 const httpUsageLogPath = path.join(runDir, "http-usage.jsonl");
 
@@ -127,9 +128,63 @@ const summarizeToolArguments = (args) => {
   return Object.fromEntries(filteredEntries.map(([key, value]) => [key, summarizeArgumentValue(key, value)]));
 };
 
+const summarizeToolContext = (args) => {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return null;
+  }
+
+  const context = {};
+  const authInfo = args.authInfo;
+  const requestInfo = args.requestInfo;
+
+  if (typeof authInfo?.clientId === "string" && authInfo.clientId.trim()) {
+    context.client_id = authInfo.clientId;
+  }
+
+  if ((typeof args.requestId === "number" || typeof args.requestId === "string") && String(args.requestId).trim()) {
+    context.request_id = args.requestId;
+  }
+
+  if (typeof args.sessionId === "string" && args.sessionId.trim()) {
+    context.session_id = args.sessionId;
+  }
+
+  const userAgent = requestInfo?.headers?.["user-agent"];
+  if (typeof userAgent === "string" && userAgent.trim()) {
+    context.user_agent = userAgent;
+  }
+
+  return Object.keys(context).length > 0 ? context : null;
+};
+
 const appendJsonlEvent = async (logPath, event) => {
   await mkdir(path.dirname(logPath), { recursive: true });
   await appendFile(logPath, `${JSON.stringify(event)}\n`, "utf8");
+};
+
+const writeJsonStateFile = async (filePath, value) => {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const tempFilePath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(tempFilePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+
+  try {
+    await rename(tempFilePath, filePath);
+  } catch (error) {
+    if (error?.code !== "EEXIST" && error?.code !== "EPERM") {
+      throw error;
+    }
+
+    await rm(filePath, { force: true });
+    await rename(tempFilePath, filePath);
+  }
+};
+
+const setGuardianDesiredState = async (shouldRun, source) => {
+  await writeJsonStateFile(guardianDesiredStatePath, {
+    ShouldRun: Boolean(shouldRun),
+    UpdatedAtUtc: new Date().toISOString(),
+    Source: source,
+  });
 };
 
 const logToolEvent = async (event) => {
@@ -144,6 +199,7 @@ const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
   const startedAt = new Date().toISOString();
   const started = Date.now();
   const argumentSummary = summarizeToolArguments(args);
+  const context = summarizeToolContext(args);
 
   await logToolEvent({
     type: "tool_start",
@@ -151,6 +207,7 @@ const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
     tool: toolName,
     started_at: startedAt,
     arguments: argumentSummary,
+    context,
   });
 
   try {
@@ -170,6 +227,7 @@ const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
       exit_code: structured.exitCode ?? null,
       truncated: Boolean(structured.truncated),
       arguments: argumentSummary,
+      context,
     });
 
     return result;
@@ -183,6 +241,7 @@ const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
       duration_ms: Date.now() - started,
       error: error instanceof Error ? error.message : String(error),
       arguments: argumentSummary,
+      context,
     });
     throw error;
   }
@@ -449,6 +508,7 @@ const buildServer = () => {
     ),
     async () => {
       try {
+        await setGuardianDesiredState(true, "src/server.js:devbox_start");
         const info = await ensureDevboxRunning();
         return successResult(`Docker devbox ${info.name} is running.`, { data: info });
       } catch (error) {
@@ -470,6 +530,7 @@ const buildServer = () => {
     ),
     async () => {
       try {
+        await setGuardianDesiredState(false, "src/server.js:devbox_stop");
         const info = await stopDevbox();
         return successResult(`Docker devbox ${info.name} is stopped.`, { data: info });
       } catch (error) {
@@ -491,6 +552,7 @@ const buildServer = () => {
     ),
     async () => {
       try {
+        await setGuardianDesiredState(true, "src/server.js:devbox_restart");
         const info = await restartDevbox();
         return successResult(`Docker devbox ${info.name} has been restarted.`, { data: info });
       } catch (error) {
@@ -512,6 +574,7 @@ const buildServer = () => {
     ),
     async () => {
       try {
+        await setGuardianDesiredState(true, "src/server.js:devbox_recreate");
         const info = await recreateDevbox();
         return successResult(`Docker devbox ${info.name} has been recreated.`, { data: info });
       } catch (error) {

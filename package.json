@@ -10,7 +10,9 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "soak:live": "node scripts/run-live-mcp-soak.mjs",
+    "usage:summary": "node scripts/summarize-mcp-telemetry.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.28.0",
