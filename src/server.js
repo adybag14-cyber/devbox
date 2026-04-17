@@ -66,6 +66,19 @@ const outputSchema = {
 const MAX_USAGE_PREVIEW_CHARS = 240;
 const SENSITIVE_ARGUMENT_KEY = /(token|secret|password|authorization|cookie|content_base64|expected_sha256)/i;
 const LARGE_TEXT_ARGUMENT_KEY = /^(command|content)$/i;
+const INTERNAL_TOOL_ARGUMENT_KEYS = new Set([
+  "signal",
+  "sessionId",
+  "_meta",
+  "authInfo",
+  "requestId",
+  "requestInfo",
+  "taskId",
+  "taskStore",
+  "taskRequestedTtl",
+  "closeSSEStream",
+  "closeStandaloneSSEStream",
+]);
 
 const summarizeArgumentValue = (key, value) => {
   if (value === null || value === undefined) {
@@ -110,7 +123,8 @@ const summarizeToolArguments = (args) => {
     return args ?? null;
   }
 
-  return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, summarizeArgumentValue(key, value)]));
+  const filteredEntries = Object.entries(args).filter(([key]) => !INTERNAL_TOOL_ARGUMENT_KEYS.has(key));
+  return Object.fromEntries(filteredEntries.map(([key, value]) => [key, summarizeArgumentValue(key, value)]));
 };
 
 const appendJsonlEvent = async (logPath, event) => {

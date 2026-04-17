@@ -79,11 +79,17 @@ function Write-JsonFile {
     $json = $Value | ConvertTo-Json -Depth 8
     $encoding = [System.Text.UTF8Encoding]::new($false)
     $tempPath = Join-Path $directory ("{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+    $backupPath = $null
 
     try {
         [System.IO.File]::WriteAllText($tempPath, $json, $encoding)
         if (Test-Path $Path) {
-            [System.IO.File]::Replace($tempPath, $Path, $null, $true)
+            $backupPath = Join-Path $directory ("{0}.{1}.bak" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+            [System.IO.File]::Replace($tempPath, $Path, $backupPath, $true)
+            if (Test-Path $backupPath) {
+                Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+            }
+            $backupPath = $null
         } else {
             Move-Item -LiteralPath $tempPath -Destination $Path -Force
         }
@@ -91,6 +97,9 @@ function Write-JsonFile {
     } finally {
         if ($tempPath -and (Test-Path $tempPath)) {
             Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($backupPath -and (Test-Path $backupPath)) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
         }
     }
 }
