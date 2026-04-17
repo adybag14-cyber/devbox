@@ -14,9 +14,10 @@ $guardianDir = Join-Path $runDir 'guardian'
 $envFile = Join-Path $projectRoot '.env'
 $runtimeEnvFile = Join-Path $projectRoot '.env.runtime'
 $ensureScript = Join-Path $PSScriptRoot 'Ensure-ChatGptDevboxGuardian.ps1'
+$hiddenLauncher = Join-Path $PSScriptRoot 'Run-Ensure-ChatGptDevboxGuardian.vbs'
 $settingsPath = Join-Path $runDir 'guardian.settings.json'
 $desiredStatePath = Join-Path $runDir 'guardian.desired-state.json'
-$powerShellExe = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+$wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
 $userId = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
 $logonTaskName = "$TaskPrefix-Logon"
 $keepAliveTaskName = "$TaskPrefix-KeepAlive"
@@ -25,6 +26,10 @@ foreach ($path in @($runDir, $guardianDir)) {
     if (-not (Test-Path $path)) {
         New-Item -ItemType Directory -Path $path | Out-Null
     }
+}
+
+if (-not (Test-Path $hiddenLauncher)) {
+    throw "Hidden launcher not found: $hiddenLauncher"
 }
 
 function Get-EnvValue {
@@ -66,7 +71,28 @@ function Write-JsonFile {
         [object]$Value
     )
 
-    $Value | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
+    $directory = Split-Path -Parent $Path
+    if ($directory -and -not (Test-Path $directory)) {
+        New-Item -ItemType Directory -Path $directory | Out-Null
+    }
+
+    $json = $Value | ConvertTo-Json -Depth 8
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    $tempPath = Join-Path $directory ("{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+
+    try {
+        [System.IO.File]::WriteAllText($tempPath, $json, $encoding)
+        if (Test-Path $Path) {
+            [System.IO.File]::Replace($tempPath, $Path, $null, $true)
+        } else {
+            Move-Item -LiteralPath $tempPath -Destination $Path -Force
+        }
+        $tempPath = $null
+    } finally {
+        if ($tempPath -and (Test-Path $tempPath)) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Remove-TaskIfPresent {
@@ -169,7 +195,9 @@ foreach ($taskName in @($logonTaskName, $keepAliveTaskName)) {
     Remove-TaskIfPresent -TaskName $taskName
 }
 
-$action = New-ScheduledTaskAction -Execute $powerShellExe -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ensureScript`""
+$hiddenArgs = @('//B', '//NoLogo', ('"{0}"' -f $hiddenLauncher)) -join ' '
+
+$action = New-ScheduledTaskAction -Execute $wscriptExe -Argument $hiddenArgs
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
 $settingsSet = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -180,14 +208,14 @@ $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -
 
 Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $trigger -Settings $settingsSet -Principal $principal -Force | Out-Null
 
-$taskCommand = ('"{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{1}"' -f $powerShellExe, $ensureScript)
+$taskCommand = ('"{0}" {1}' -f $wscriptExe, $hiddenArgs)
 $startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')
 $createMinuteTask = & schtasks.exe /Create /TN $keepAliveTaskName /SC MINUTE /MO 1 /ST $startTime /TR $taskCommand /RL HIGHEST /F
 if ($LASTEXITCODE -ne 0) {
     throw ($createMinuteTask | Out-String)
 }
 
-& $powerShellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
 Start-Sleep -Seconds 5
 
 $taskInfo = @(

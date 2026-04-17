@@ -7,7 +7,7 @@ $envFile = Join-Path $root ".env"
 $portLine = Select-String -Path $envFile -Pattern '^PORT=(.*)$' | Select-Object -First 1
 $port = if ($portLine) { $portLine.Matches[0].Groups[1].Value.Trim() } else { "8100" }
 $response = Invoke-RestMethod -Uri "http://127.0.0.1:$port/" -TimeoutSec 5
-$mcpServerUrl = if ($response.mcp_url) { $response.mcp_url } else { "http://127.0.0.1:$port/mcp" }
+$mcpServerUrl = if ($response.mcp_url) { $response.mcp_url } else { "http://127.0.0.1:$port" }
 $authenticationLabel = if ($response.auth_mode -eq 'none') { 'No Authentication' } else { 'OAuth' }
 
 Write-Host "Name: Docker Devbox"

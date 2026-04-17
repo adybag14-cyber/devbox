@@ -34,7 +34,7 @@ function Exit-ChatGptDevboxLifecycleMutex {
 }
 
 function Test-DockerEngine {
-    cmd /c "docker version --format ""{{.Server.Version}}"" >NUL 2>NUL"
+    & docker version --format '{{.Server.Version}}' *> $null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -175,7 +175,23 @@ function Write-JsonStateFile {
         Ensure-Directory -Path $directory
     }
 
-    $Value | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
+    $json = $Value | ConvertTo-Json -Depth 8
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    $tempPath = Join-Path $directory ("{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+
+    try {
+        [System.IO.File]::WriteAllText($tempPath, $json, $encoding)
+        if (Test-Path $Path) {
+            [System.IO.File]::Replace($tempPath, $Path, $null, $true)
+        } else {
+            Move-Item -LiteralPath $tempPath -Destination $Path -Force
+        }
+        $tempPath = $null
+    } finally {
+        if ($tempPath -and (Test-Path $tempPath)) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Write-GuardianDesiredState {
@@ -582,9 +598,10 @@ if ($Public) {
     Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl
 }
 
-Write-Host "Local MCP URL: $localUrl/mcp"
+Write-Host "Local MCP URL: $localUrl"
 if ($Public) {
-    Write-Host "Public MCP URL: $publicBaseUrl/mcp"
+    Write-Host "Public MCP URL: $publicBaseUrl"
+    Write-Host "Legacy MCP URL: $publicBaseUrl/mcp"
 }
 Write-Host "Authentication mode: $(if ($authMode -eq 'none') { 'No Authentication' } else { 'OAuth' })"
 } finally {

@@ -40,6 +40,8 @@ setInterval(() => {
 - `scripts/Stop-ChatGptDevboxMcp.ps1`: stops the MCP server and optional tunnel/devbox runtime
 - `scripts/Get-ChatGptSetup.ps1`: prints the values to paste into the ChatGPT custom app form
 - `scripts/Get-CloudflareAccessSetup.ps1`: prints the Cloudflare Access settings needed to protect `/authorize*`
+- `run/tool-usage.jsonl`: per-tool MCP invocation telemetry with timing and summarized arguments
+- `run/http-usage.jsonl`: HTTP request telemetry for root, legacy `/mcp`, health, and stream probes
 
 ## Requirements
 
@@ -132,6 +134,15 @@ cd .\devbox
 ```
 
 Use `-All` to also stop the devbox container.
+
+## Runtime telemetry
+
+When the MCP server is running, it appends local monitoring data under `run/`:
+
+- `run/tool-usage.jsonl`: one JSON object per tool start/finish/throw event
+- `run/http-usage.jsonl`: one JSON object per HTTP request handled by the MCP server
+
+These logs are intended for diagnosing repeated agent patterns, long-running tool calls, and connector-side failures without relying on screenshots.
 
 ## Reproducing on another device
 

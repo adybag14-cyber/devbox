@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ProjectRoot = 'C:\Users\adyba\docker-chatgpt-devbox',
-    [int]$HeartbeatMaxAgeSeconds = 20
+    [int]$HeartbeatMaxAgeSeconds = 180
 )
 
 Set-StrictMode -Version Latest
@@ -13,6 +13,7 @@ $guardianDir = Join-Path $ProjectRoot 'run\guardian'
 $guardianPidPath = Join-Path $guardianDir 'guardian.pid'
 $heartbeatPath = Join-Path $guardianDir 'heartbeat.json'
 $ensureLogPath = Join-Path $guardianDir 'ensure.log'
+$hiddenLauncher = Join-Path $PSScriptRoot 'Run-ChatGptDevboxGuardian.vbs'
 
 if (-not (Test-Path $guardianDir)) {
     New-Item -ItemType Directory -Path $guardianDir | Out-Null
@@ -87,19 +88,16 @@ if (-not (Test-Path $guardianScript)) {
     exit 1
 }
 
-$arguments = @(
-    '-NoProfile'
-    '-NonInteractive'
-    '-ExecutionPolicy'
-    'Bypass'
-    '-WindowStyle'
-    'Hidden'
-    '-File'
-    $guardianScript
-)
+if (-not (Test-Path $hiddenLauncher)) {
+    Write-EnsureLog -Level 'ERROR' -Message ("hidden launcher missing: {0}" -f $hiddenLauncher)
+    exit 1
+}
+
+$wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
+$arguments = @('//B', '//NoLogo', $hiddenLauncher)
 
 Write-EnsureLog -Message 'guardian not running; starting detached guardian process'
-Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+Start-Process -FilePath $wscriptExe -ArgumentList $arguments -WindowStyle Hidden | Out-Null
 Start-Sleep -Seconds 4
 
 $started = Get-LiveGuardianProcess

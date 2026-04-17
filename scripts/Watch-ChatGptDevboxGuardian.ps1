@@ -75,7 +75,40 @@ public static class ChatGptDevboxGuardianTokenProbe {
             [Parameter(Mandatory = $true)]$Value
         )
 
-        $Value | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
+        $directory = Split-Path -Parent $Path
+        if ($directory -and -not (Test-Path $directory)) {
+            New-Item -ItemType Directory -Path $directory | Out-Null
+        }
+
+        $json = $Value | ConvertTo-Json -Depth 8
+        $encoding = [System.Text.UTF8Encoding]::new($false)
+        $tempPath = Join-Path $directory ("{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+
+        try {
+            [System.IO.File]::WriteAllText($tempPath, $json, $encoding)
+            for ($attempt = 0; $attempt -lt 5; $attempt++) {
+                try {
+                    if (Test-Path $Path) {
+                        [System.IO.File]::Replace($tempPath, $Path, $null, $true)
+                    } else {
+                        Move-Item -LiteralPath $tempPath -Destination $Path -Force
+                    }
+                    $tempPath = $null
+                    return
+                }
+                catch [System.IO.IOException] {
+                    if ($attempt -ge 4) {
+                        throw
+                    }
+                    Start-Sleep -Milliseconds 200
+                }
+            }
+        }
+        finally {
+            if ($tempPath -and (Test-Path $tempPath)) {
+                Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 
     function Read-JsonFile {
@@ -112,7 +145,7 @@ public static class ChatGptDevboxGuardianTokenProbe {
     }
 
     function Test-DockerEngine {
-        cmd /c "docker version --format ""{{.Server.Version}}"" >NUL 2>NUL"
+        & docker version --format '{{.Server.Version}}' *> $null
         return ($LASTEXITCODE -eq 0)
     }
 
@@ -435,6 +468,12 @@ public static class ChatGptDevboxGuardianTokenProbe {
             LocalHealth = $localHealthy
             PublicHealth = $publicHealthy
             IsHealthy = ($desiredState.ShouldRun -eq $false) -or ($reasons.Count -eq 0)
+            NeedsRepair = ($desiredState.ShouldRun -eq $true) -and (
+                (-not $devboxRunning) -or
+                ($mcpProcessHealthy -ne $true) -or
+                ($localHealthy -ne $true) -or
+                ($settings.Public -and $cloudflaredRunning -eq $false)
+            )
             Reasons = @($reasons)
         }
     }
@@ -478,6 +517,17 @@ public static class ChatGptDevboxGuardianTokenProbe {
         for ($i = 0; $i -lt 30; $i++) {
             Start-Sleep -Seconds 3
             $probeState = Get-StackState
+            Write-JsonFile -Path $heartbeatPath -Value @{
+                ObservedAtUtc = [DateTime]::UtcNow.ToString('o')
+                GuardianPid = $PID
+                DesiredShouldRun = [bool]$probeState.DesiredState.ShouldRun
+                IsHealthy = [bool]$probeState.IsHealthy
+                McpProcessId = $probeState.McpProcessId
+                Reasons = @($probeState.Reasons)
+                RepairInProgress = $true
+                RepairReason = $reasonText
+            }
+            Write-JsonFile -Path $statePath -Value $probeState
             if ($probeState.IsHealthy) {
                 $recovered = $true
                 break
@@ -510,7 +560,7 @@ public static class ChatGptDevboxGuardianTokenProbe {
 
         if ($recovered) {
             Write-GuardianLog -Level 'REPAIR' -Message 'repair completed successfully'
-            if ($stdoutText.Trim()) {
+            if (-not [string]::IsNullOrWhiteSpace($stdoutText)) {
                 Write-GuardianLog -Level 'REPAIR' -Message ($stdoutText.Trim())
             }
             return $true
@@ -521,10 +571,10 @@ public static class ChatGptDevboxGuardianTokenProbe {
         } else {
             Write-GuardianLog -Level 'ERROR' -Message ("repair failed with exit code {0}" -f $exitCode)
         }
-        if ($stdoutText.Trim()) {
+        if (-not [string]::IsNullOrWhiteSpace($stdoutText)) {
             Write-GuardianLog -Level 'ERROR' -Message ($stdoutText.Trim())
         }
-        if ($stderrText.Trim()) {
+        if (-not [string]::IsNullOrWhiteSpace($stderrText)) {
             Write-GuardianLog -Level 'ERROR' -Message ($stderrText.Trim())
         }
 
@@ -569,6 +619,11 @@ public static class ChatGptDevboxGuardianTokenProbe {
         if ($reasonText -ne $lastReasonText) {
             Write-GuardianLog -Level 'WARN' -Message ("unhealthy: {0}" -f $reasonText)
             $lastReasonText = $reasonText
+        }
+
+        if (-not $state.NeedsRepair) {
+            Start-Sleep -Seconds $PollSeconds
+            continue
         }
 
         if ($unhealthyCount -lt $FailureThreshold) {

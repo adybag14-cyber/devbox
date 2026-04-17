@@ -1,3 +1,8 @@
+import { appendFile, mkdir } from "node:fs/promises";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
@@ -29,8 +34,11 @@ import {
   HostCommandError,
   getHostGithubAuthContext,
   getHostToolStatus,
+  inspectWindowsFile,
+  readLargeFileOnHost,
   runAllowedProgram,
   runWindowsPowerShell,
+  writeLargeFileOnHost,
 } from "./host-tools.js";
 import { CloudflareAccessOAuthProvider, DemoOAuthProvider } from "./oauth.js";
 import {
@@ -40,6 +48,11 @@ import {
 } from "./large-file-cli.js";
 import { trimText } from "./process-utils.js";
 
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const runDir = path.join(projectRoot, "run");
+const toolUsageLogPath = path.join(runDir, "tool-usage.jsonl");
+const httpUsageLogPath = path.join(runDir, "http-usage.jsonl");
+
 const outputSchema = {
   ok: z.boolean(),
   summary: z.string(),
@@ -48,6 +61,117 @@ const outputSchema = {
   stderr: z.string().optional(),
   exitCode: z.number().nullable().optional(),
   truncated: z.boolean().optional(),
+};
+
+const MAX_USAGE_PREVIEW_CHARS = 240;
+const SENSITIVE_ARGUMENT_KEY = /(token|secret|password|authorization|cookie|content_base64|expected_sha256)/i;
+const LARGE_TEXT_ARGUMENT_KEY = /^(command|content)$/i;
+
+const summarizeArgumentValue = (key, value) => {
+  if (value === null || value === undefined) {
+    return value ?? null;
+  }
+
+  if (typeof value === "string") {
+    if (SENSITIVE_ARGUMENT_KEY.test(key)) {
+      return {
+        type: "string",
+        length: value.length,
+        redacted: true,
+      };
+    }
+
+    const preview = value.length > MAX_USAGE_PREVIEW_CHARS ? `${value.slice(0, MAX_USAGE_PREVIEW_CHARS)}...` : value;
+    return {
+      type: "string",
+      length: value.length,
+      preview: LARGE_TEXT_ARGUMENT_KEY.test(key) ? preview : value.length > MAX_USAGE_PREVIEW_CHARS ? preview : value,
+    };
+  }
+
+  if (Array.isArray(value)) {
+    return {
+      type: "array",
+      length: value.length,
+      sample: value.slice(0, 8).map((entry) => summarizeArgumentValue(`${key}[]`, entry)),
+    };
+  }
+
+  if (typeof value === "object") {
+    const entries = Object.entries(value).slice(0, 12);
+    return Object.fromEntries(entries.map(([nestedKey, nestedValue]) => [nestedKey, summarizeArgumentValue(nestedKey, nestedValue)]));
+  }
+
+  return value;
+};
+
+const summarizeToolArguments = (args) => {
+  if (!args || typeof args !== "object" || Array.isArray(args)) {
+    return args ?? null;
+  }
+
+  return Object.fromEntries(Object.entries(args).map(([key, value]) => [key, summarizeArgumentValue(key, value)]));
+};
+
+const appendJsonlEvent = async (logPath, event) => {
+  await mkdir(path.dirname(logPath), { recursive: true });
+  await appendFile(logPath, `${JSON.stringify(event)}\n`, "utf8");
+};
+
+const logToolEvent = async (event) => {
+  try {
+    await appendJsonlEvent(toolUsageLogPath, event);
+  } catch {
+  }
+};
+
+const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
+  const invocationId = randomUUID();
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+  const argumentSummary = summarizeToolArguments(args);
+
+  await logToolEvent({
+    type: "tool_start",
+    invocation_id: invocationId,
+    tool: toolName,
+    started_at: startedAt,
+    arguments: argumentSummary,
+  });
+
+  try {
+    const result = await handler(args);
+    const structured = result?.structuredContent ?? {};
+
+    await logToolEvent({
+      type: "tool_finish",
+      invocation_id: invocationId,
+      tool: toolName,
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+      duration_ms: Date.now() - started,
+      ok: structured.ok ?? !result?.isError,
+      is_error: Boolean(result?.isError),
+      summary: structured.summary ?? null,
+      exit_code: structured.exitCode ?? null,
+      truncated: Boolean(structured.truncated),
+      arguments: argumentSummary,
+    });
+
+    return result;
+  } catch (error) {
+    await logToolEvent({
+      type: "tool_throw",
+      invocation_id: invocationId,
+      tool: toolName,
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+      duration_ms: Date.now() - started,
+      error: error instanceof Error ? error.message : String(error),
+      arguments: argumentSummary,
+    });
+    throw error;
+  }
 };
 
 const withToolHints = (
@@ -140,17 +264,19 @@ const errorResult = (error, fallbackSummary = "The command failed.") => {
     const stdout = trimText(error.stdout, config.maxTextOutputChars);
     const stderr = trimText(error.stderr, config.maxTextOutputChars);
     const summary = error.message || fallbackSummary;
+    const data = error.data;
 
     return {
       content: [
         {
           type: "text",
-          text: textFromResult(summary, undefined, stdout.text, stderr.text),
+          text: textFromResult(summary, data, stdout.text, stderr.text),
         },
       ],
       structuredContent: {
         ok: false,
         summary,
+        data,
         stdout: stdout.text,
         stderr: stderr.text,
         exitCode: error.exitCode,
@@ -160,16 +286,18 @@ const errorResult = (error, fallbackSummary = "The command failed.") => {
     };
   }
 
+  const data = error?.data;
   return {
     content: [
       {
         type: "text",
-        text: error instanceof Error ? error.message : fallbackSummary,
+        text: textFromResult(error instanceof Error ? error.message : fallbackSummary, data),
       },
     ],
     structuredContent: {
       ok: false,
       summary: error instanceof Error ? error.message : fallbackSummary,
+      data,
       exitCode: null,
       truncated: false,
     },
@@ -203,6 +331,9 @@ const buildServer = () => {
       },
     },
   );
+
+  const rawRegisterTool = server.registerTool.bind(server);
+  server.registerTool = (name, descriptor, handler) => rawRegisterTool(name, descriptor, instrumentToolHandler(name, handler));
 
   server.registerTool(
     "devbox_github_auth_status",
@@ -385,7 +516,7 @@ const buildServer = () => {
         inputSchema: {
           command: z.string().min(1).describe("Read-only shell command to run inside the Docker devbox."),
           working_dir: z.string().default(config.devboxWorkspacePath).describe("Working directory inside the Docker devbox."),
-          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+          timeout_seconds: z.number().int().min(1).max(7200).default(900).describe("Command timeout in seconds."),
           user: z.string().default(config.devboxDefaultUser).describe("Linux user inside the disposable read-only container."),
         },
         outputSchema,
@@ -418,7 +549,7 @@ const buildServer = () => {
         inputSchema: {
           command: z.string().min(1).describe("Shell command to run inside the Docker devbox."),
           working_dir: z.string().default(config.devboxWorkspacePath).describe("Working directory inside the Docker devbox."),
-          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+          timeout_seconds: z.number().int().min(1).max(7200).default(900).describe("Command timeout in seconds."),
           user: z.string().default(config.devboxDefaultUser).describe("Linux user inside the devbox container."),
         },
         outputSchema,
@@ -644,6 +775,118 @@ const buildServer = () => {
   );
 
   server.registerTool(
+    "windows_host_inspect_file",
+    safeReadOnlyTool(
+      {
+        title: "Inspect Windows Host File Integrity",
+        description:
+          "Use this when a Windows host command references a file that may be corrupted, mojibake-encoded, syntactically broken, or otherwise suspect on disk. It inspects exact bytes and PowerShell parser status where relevant.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path on the Windows host."),
+          working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory used to resolve relative Windows host paths."),
+          max_bytes: z.number().int().min(1).max(524288).default(262144).describe("Maximum bytes to sample from the start of the file."),
+        },
+        outputSchema,
+      },
+      "Inspecting Windows host file",
+      "Windows host file inspected",
+    ),
+    async ({ path, working_dir: workingDir, max_bytes: maxBytes }) => {
+      try {
+        const data = await inspectWindowsFile({ path, workingDir, maxBytes });
+        return successResult(`Inspected ${path} on the Windows host.`, { data });
+      } catch (error) {
+        return errorResult(error, `Failed to inspect ${path} on the Windows host.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "windows_host_read_large_file",
+    safeReadOnlyTool(
+      {
+        title: "Read Large Windows Host File Chunk",
+        description:
+          "Use this when you need an exact byte range from a Windows host file so you can diagnose or repair corruption without lossy UTF-8 conversion.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path on the Windows host."),
+          working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory used to resolve relative Windows host paths."),
+          offset_bytes: z.number().int().min(0).default(0).describe("Starting byte offset within the file."),
+          max_bytes: z.number().int().min(1).max(524288).default(262144).describe("Maximum raw bytes to return from that offset."),
+        },
+        outputSchema,
+      },
+      "Reading large Windows host file chunk",
+      "Large Windows host file chunk read",
+    ),
+    async ({ path, working_dir: workingDir, offset_bytes: offsetBytes, max_bytes: maxBytes }) => {
+      try {
+        const data = await readLargeFileOnHost({ path, workingDir, offsetBytes, maxBytes });
+        const summary = `Read ${path} from byte ${offsetBytes} on the Windows host.`;
+        return successResult(summary, {
+          data,
+          text: textFromResult(summary, summarizeLargeReadData(data)),
+        });
+      } catch (error) {
+        return errorResult(error, `Failed to read ${path} from byte ${offsetBytes} on the Windows host.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "windows_host_write_large_file",
+    safeActionTool(
+      {
+        title: "Write Large Windows Host File",
+        description:
+          "Use this when you need to create or overwrite a Windows host file using exact bytes, especially to repair corruption while preserving the intended payload end to end.",
+        inputSchema: {
+          path: z.string().min(1).describe("File path on the Windows host."),
+          working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory used to resolve relative Windows host paths."),
+          content: z.string().optional().describe("Optional UTF-8 text payload to write. Prefer content_base64 for exact byte preservation."),
+          content_base64: z.string().optional().describe("Base64-encoded raw bytes to write exactly as provided."),
+          append: z.boolean().default(false).describe("Append to the file instead of overwriting it."),
+          create_dirs: z.boolean().default(true).describe("Create parent directories if they do not exist."),
+          expected_sha256: z.string().regex(/^[A-Fa-f0-9]{64}$/).optional().describe("Optional expected SHA-256 of the decoded payload for end-to-end verification."),
+        },
+        outputSchema,
+      },
+      "Writing large Windows host file",
+      "Large Windows host file written",
+    ),
+    async ({
+      path,
+      working_dir: workingDir,
+      content,
+      content_base64: contentBase64,
+      append,
+      create_dirs: createDirs,
+      expected_sha256: expectedSha256,
+    }) => {
+      try {
+        const normalizedPayload = normalizeLargeWritePayload({ content, contentBase64 });
+        const data = await writeLargeFileOnHost({
+          path,
+          workingDir,
+          contentBase64: normalizedPayload,
+          append,
+          createDirs,
+          expectedSha256,
+        });
+        const summary = append
+          ? `Appended large payload to ${path} on the Windows host and verified the exact bytes.`
+          : `Wrote large payload to ${path} on the Windows host and verified the exact bytes.`;
+        return successResult(summary, {
+          data,
+          text: textFromResult(summary, summarizeLargeWriteData(data)),
+        });
+      } catch (error) {
+        return errorResult(error, `Failed to write large payload to ${path} on the Windows host.`);
+      }
+    },
+  );
+
+  server.registerTool(
     "windows_host_exec",
     safeActionTool(
       {
@@ -653,7 +896,7 @@ const buildServer = () => {
         inputSchema: {
           command: z.string().min(1).describe("PowerShell command to run on the Windows host."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory on the Windows host."),
-          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+          timeout_seconds: z.number().int().min(1).max(7200).default(900).describe("Command timeout in seconds."),
         },
         outputSchema,
       },
@@ -685,7 +928,7 @@ const buildServer = () => {
           program: z.string().min(1).describe("Program name or path. It must be allowed by HOST_PROGRAM_ALLOWLIST."),
           args: z.array(z.string()).default([]).describe("Argument list for the program."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory on the Windows host."),
-          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+          timeout_seconds: z.number().int().min(1).max(7200).default(900).describe("Command timeout in seconds."),
         },
         outputSchema,
       },
@@ -738,9 +981,36 @@ const app = createMcpExpressApp({
   allowedHosts: [...allowedHosts],
 });
 app.set("trust proxy", 1);
+app.use((req, res, next) => {
+  const requestId = randomUUID();
+  const startedAt = new Date().toISOString();
+  const started = Date.now();
+
+  res.on("finish", () => {
+    void appendJsonlEvent(httpUsageLogPath, {
+      type: "http_request",
+      request_id: requestId,
+      started_at: startedAt,
+      finished_at: new Date().toISOString(),
+      duration_ms: Date.now() - started,
+      method: req.method,
+      path: req.path,
+      status_code: res.statusCode,
+      accept: String(req.headers.accept ?? ""),
+      user_agent: String(req.headers["user-agent"] ?? ""),
+      forwarded_for: String(req.headers["x-forwarded-for"] ?? "").split(",")[0]?.trim() || null,
+    }).catch(() => {});
+  });
+
+  next();
+});
 
 let authMiddleware = null;
+let legacyAuthMiddleware = null;
 let oauthInfo = null;
+let legacyProtectedResourceMetadata = null;
+
+const acceptsEventStream = (req) => String(req.headers.accept ?? "").includes("text/event-stream");
 
 if (config.authMode === "demo-oauth" || config.authMode === "cloudflare-access") {
   const provider =
@@ -755,13 +1025,14 @@ if (config.authMode === "demo-oauth" || config.authMode === "cloudflare-access")
           stateFilePath: config.oauthStateFilePath,
         });
   const issuerUrl = new URL(config.publicBaseUrl);
-  const mcpServerUrl = new URL("/mcp", config.publicBaseUrl);
+  const rootMcpServerUrl = new URL("/", config.publicBaseUrl);
+  const legacyMcpServerUrl = new URL("/mcp", config.publicBaseUrl);
 
   app.use(
     mcpAuthRouter({
       provider,
       issuerUrl,
-      resourceServerUrl: mcpServerUrl,
+      resourceServerUrl: rootMcpServerUrl,
       scopesSupported: ["mcp:tools"],
       resourceName: "Docker ChatGPT Devbox MCP",
     }),
@@ -770,22 +1041,42 @@ if (config.authMode === "demo-oauth" || config.authMode === "cloudflare-access")
   authMiddleware = requireBearerAuth({
     verifier: provider,
     requiredScopes: [],
-    resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpServerUrl),
+    resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(rootMcpServerUrl),
+  });
+
+  legacyAuthMiddleware = requireBearerAuth({
+    verifier: provider,
+    requiredScopes: [],
+    resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(legacyMcpServerUrl),
   });
 
   oauthInfo = {
     issuer: issuerUrl.toString(),
-    resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpServerUrl),
+    resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(rootMcpServerUrl),
+    legacyResourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(legacyMcpServerUrl),
+  };
+
+  legacyProtectedResourceMetadata = {
+    resource: legacyMcpServerUrl.toString(),
+    authorization_servers: [issuerUrl.toString()],
+    scopes_supported: ["mcp:tools"],
+    resource_name: "Docker ChatGPT Devbox MCP",
   };
 }
 
 app.get("/", async (_req, res) => {
+  if (acceptsEventStream(_req)) {
+    handleMcpSseProbe(_req, res);
+    return;
+  }
+
   const baseResponse = {
     name: "Docker ChatGPT Devbox MCP",
     version,
     auth_mode: config.authMode,
     public_base_url: config.publicBaseUrl || null,
-    mcp_url: config.publicBaseUrl ? `${config.publicBaseUrl}/mcp` : null,
+    mcp_url: config.publicBaseUrl || null,
+    legacy_mcp_url: config.publicBaseUrl ? `${config.publicBaseUrl}/mcp` : null,
     oauth: oauthInfo,
     notes:
       config.authMode === "cloudflare-access"
@@ -823,7 +1114,13 @@ app.get("/healthz", (_req, res) => {
   res.type("text/plain").send("ok");
 });
 
-const handleMcpPost = async (req, res) => {
+if (legacyProtectedResourceMetadata) {
+  app.get("/.well-known/oauth-protected-resource/mcp", (_req, res) => {
+    res.json(legacyProtectedResourceMetadata);
+  });
+}
+
+const handleMcpRequest = async (req, res) => {
   const server = buildServer();
 
   try {
@@ -852,29 +1149,61 @@ const handleMcpPost = async (req, res) => {
   }
 };
 
-const postHandlers = config.authMode !== "none" && authMiddleware ? [authMiddleware, handleMcpPost] : [handleMcpPost];
-app.post("/mcp", ...postHandlers);
+const rootProtectedMcpHandlers = config.authMode !== "none" && authMiddleware ? [authMiddleware, handleMcpRequest] : [handleMcpRequest];
+const legacyProtectedMcpHandlers =
+  config.authMode !== "none" && legacyAuthMiddleware ? [legacyAuthMiddleware, handleMcpRequest] : [handleMcpRequest];
 
-const methodNotAllowed = (_req, res) => {
-  res.status(405).json({
-    jsonrpc: "2.0",
-    error: {
-      code: -32000,
-      message: "Method not allowed.",
-    },
-    id: null,
+const handleMcpSseProbe = (req, res) => {
+  const acceptHeader = String(req.headers.accept ?? "");
+  if (!acceptHeader.includes("text/event-stream")) {
+    res.status(406).json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message: "Not Acceptable: Client must accept text/event-stream",
+      },
+      id: null,
+    });
+    return;
+  }
+
+  res.status(200);
+  res.set({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+
+  if (typeof res.flushHeaders === "function") {
+    res.flushHeaders();
+  }
+
+  // Emit an immediate SSE comment so proxy layers flush the stream headers.
+  res.write(": mcp-sse-probe\n\n");
+
+  const closeTimer = setTimeout(() => {
+    if (!res.writableEnded) {
+      res.end();
+    }
+  }, 1000);
+
+  req.on("close", () => {
+    clearTimeout(closeTimer);
   });
 };
 
-const getHandlers = config.authMode !== "none" && authMiddleware ? [authMiddleware, methodNotAllowed] : [methodNotAllowed];
-const deleteHandlers = config.authMode !== "none" && authMiddleware ? [authMiddleware, methodNotAllowed] : [methodNotAllowed];
-app.get("/mcp", ...getHandlers);
-app.delete("/mcp", ...deleteHandlers);
+app.post("/", ...rootProtectedMcpHandlers);
+app.delete("/", ...rootProtectedMcpHandlers);
+app.post("/mcp", ...legacyProtectedMcpHandlers);
+app.get("/mcp", handleMcpSseProbe);
+app.delete("/mcp", ...legacyProtectedMcpHandlers);
 
 app.listen(config.port, config.host, () => {
   console.log(`Docker ChatGPT Devbox MCP listening on ${config.host}:${config.port}`);
   console.log(`Auth mode: ${config.authMode}`);
   if (config.publicBaseUrl) {
-    console.log(`Public MCP URL: ${config.publicBaseUrl}/mcp`);
+    console.log(`Public MCP URL: ${config.publicBaseUrl}`);
+    console.log(`Legacy MCP URL: ${config.publicBaseUrl}/mcp`);
   }
 });

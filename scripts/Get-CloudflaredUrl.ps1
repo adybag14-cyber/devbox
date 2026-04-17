@@ -9,9 +9,9 @@ $configuredPublicValue = if ($publicBaseUrlMatch) { $publicBaseUrlMatch.Matches[
 
 if ($configuredPublicValue) {
     if ($configuredPublicValue -match '^https?://') {
-        Write-Host "$($configuredPublicValue.TrimEnd('/'))/mcp"
+        Write-Host "$($configuredPublicValue.TrimEnd('/'))"
     } else {
-        Write-Host "https://$($configuredPublicValue.TrimEnd('/'))/mcp"
+        Write-Host "https://$($configuredPublicValue.TrimEnd('/'))"
     }
     exit 0
 }
@@ -25,4 +25,4 @@ if (-not $urlMatch.Success) {
     throw "Could not find a trycloudflare URL in $containerName logs."
 }
 
-Write-Host "$($urlMatch.Value.TrimEnd('/'))/mcp"
+Write-Host "$($urlMatch.Value.TrimEnd('/'))"

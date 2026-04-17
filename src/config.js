@@ -17,7 +17,9 @@ const parseBoolean = (value, fallback = false) => {
 };
 
 const parseCsv = (value, fallback = []) =>
-  String(value ?? "")
+  (value === undefined || value === null || String(value).trim() === "" ? fallback : String(value)
+  )
+    .toString()
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean)

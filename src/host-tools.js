@@ -1,8 +1,9 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 
 import { config } from "./config.js";
+import { hashFileSha256, readLargeFileChunk, writeLargeFileMirror } from "./large-file-cli.js";
 import { SpawnProcessError, spawnProcess } from "./process-utils.js";
 
 export class HostCommandError extends Error {
@@ -12,6 +13,7 @@ export class HostCommandError extends Error {
     this.exitCode = details.exitCode ?? null;
     this.stdout = details.stdout ?? "";
     this.stderr = details.stderr ?? "";
+    this.data = details.data;
   }
 }
 
@@ -21,13 +23,20 @@ const wrapHostError = (error, fallbackMessage) => {
       exitCode: error.exitCode,
       stdout: error.stdout,
       stderr: error.stderr,
+      data: error.data,
     });
   }
 
-  return new HostCommandError(error instanceof Error ? error.message : fallbackMessage);
+  if (error instanceof HostCommandError) {
+    return error;
+  }
+
+  return new HostCommandError(error instanceof Error ? error.message : fallbackMessage, {
+    data: error?.data,
+  });
 };
 
-const ensureHostExecEnabled = () => {
+export const assertHostExecEnabled = () => {
   if (!config.enableWindowsHostExec) {
     throw new HostCommandError("Windows host command execution is disabled in the current configuration.");
   }
@@ -36,6 +45,10 @@ const ensureHostExecEnabled = () => {
 const normalizeProgram = (program) => path.win32.basename(String(program)).replace(/\.exe$/i, "").toLowerCase();
 const psSingleQuote = (value) => String(value).replace(/'/g, "''");
 export const MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE = 24000;
+const MAX_HOST_DIAGNOSTIC_BYTES = 262144;
+const MAX_HOST_DIAGNOSTIC_HASH_BYTES = 8 * 1024 * 1024;
+const POWERSHELL_FILE_EXTENSIONS = new Set([".ps1", ".psm1", ".psd1"]);
+const MOJIBAKE_MARKERS = ["â€”", "â€“", "â€œ", "â€�", "â€˜", "â€™", "â€¦", "â€¢", "ðŸ", "Ã", "Â"];
 
 export const buildWindowsPowerShellArgs = (command) => {
   const encodedCommand = Buffer.from(String(command), "utf16le").toString("base64");
@@ -76,6 +89,361 @@ const readTextFileOrEmpty = async (filePath) => {
     throw error;
   }
 };
+
+const countOccurrences = (value, needle) => {
+  if (!value || !needle) {
+    return 0;
+  }
+
+  let count = 0;
+  let offset = 0;
+  while (true) {
+    const index = value.indexOf(needle, offset);
+    if (index === -1) {
+      return count;
+    }
+    count += 1;
+    offset = index + needle.length;
+  }
+};
+
+const detectBom = (buffer) => {
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return "utf8";
+  }
+
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return "utf16le";
+  }
+
+  if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return "utf16be";
+  }
+
+  return null;
+};
+
+const detectLineEndings = (value) => {
+  const crlfCount = (value.match(/\r\n/g) ?? []).length;
+  const loneLfCount = (value.match(/(?<!\r)\n/g) ?? []).length;
+  const loneCrCount = (value.match(/\r(?!\n)/g) ?? []).length;
+
+  if (crlfCount > 0 && loneLfCount === 0 && loneCrCount === 0) {
+    return "crlf";
+  }
+
+  if (loneLfCount > 0 && crlfCount === 0 && loneCrCount === 0) {
+    return "lf";
+  }
+
+  if (loneCrCount > 0 && crlfCount === 0 && loneLfCount === 0) {
+    return "cr";
+  }
+
+  if (crlfCount === 0 && loneLfCount === 0 && loneCrCount === 0) {
+    return "none";
+  }
+
+  return "mixed";
+};
+
+const sanitizePreview = (value, maxChars = 400) => String(value).slice(0, maxChars);
+
+const resolveHostPathCandidate = (candidate, workingDir) => {
+  const raw = String(candidate ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+
+  if (/^[A-Za-z]+:\/\//.test(raw) || /^\$[A-Za-z_][A-Za-z0-9_:]*/.test(raw)) {
+    return "";
+  }
+
+  if (raw.startsWith("~")) {
+    return path.win32.resolve(os.homedir(), raw.slice(1));
+  }
+
+  return path.win32.isAbsolute(raw) ? path.win32.normalize(raw) : path.win32.resolve(workingDir, raw);
+};
+
+const resolveRequiredHostFilePath = (filePath, workingDir) => {
+  const resolvedPath = resolveHostPathCandidate(filePath, workingDir);
+  if (!resolvedPath) {
+    throw new HostCommandError(`Could not resolve a Windows host path from "${filePath}".`);
+  }
+
+  return resolvedPath;
+};
+
+export const extractLikelyHostPathsFromText = ({ text, workingDir = config.hostDefaultWorkdir, limit = 6 }) => {
+  const candidates = [];
+  const seen = new Set();
+  const source = String(text ?? "");
+  const patterns = [
+    /"([^"\r\n]+)"/g,
+    /'([^'\r\n]+)'/g,
+    /(?:^|[\s(])((?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[^"'`\s|;&]+[\\/])[^"'`\s|;&]+)/g,
+  ];
+
+  const pushCandidate = (rawValue) => {
+    const resolved = resolveHostPathCandidate(rawValue, workingDir);
+    if (!resolved || seen.has(resolved)) {
+      return;
+    }
+
+    const extension = path.win32.extname(resolved).toLowerCase();
+    const looksPathLike = /[\\/]/.test(rawValue) || /^[A-Za-z]:/.test(rawValue);
+    if (!looksPathLike || !extension) {
+      return;
+    }
+
+    seen.add(resolved);
+    candidates.push({
+      raw: rawValue,
+      resolved,
+    });
+  };
+
+  for (const pattern of patterns) {
+    for (const match of source.matchAll(pattern)) {
+      const value = match[1] ?? match[0]?.trim();
+      pushCandidate(value);
+      if (candidates.length >= limit) {
+        return candidates;
+      }
+    }
+  }
+
+  return candidates;
+};
+
+const inspectPowerShellSyntax = async ({ filePath, workingDir }) => {
+  const command = `
+$ErrorActionPreference = 'Stop'
+$path = (Resolve-Path -LiteralPath '${psSingleQuote(filePath)}').Path
+$tokens = $null
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
+$result = @{
+  parse_ok = (@($errors).Count -eq 0)
+  error_count = @($errors).Count
+  errors = @(
+    @($errors) | Select-Object -First 8 | ForEach-Object {
+      @{
+        message = $_.Message
+        line = $_.Extent.StartLineNumber
+        column = $_.Extent.StartColumnNumber
+        text = $_.Extent.Text
+      }
+    }
+  )
+}
+[Console]::Out.Write(($result | ConvertTo-Json -Compress -Depth 6))
+`;
+
+  try {
+    const result = await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(command), {
+      cwd: workingDir,
+      timeoutMs: 15000,
+    });
+    return JSON.parse(result.stdout || "{}");
+  } catch (error) {
+    return {
+      parse_ok: false,
+      error_count: 1,
+      errors: [
+        {
+          message: error instanceof Error ? error.message : "Failed to inspect PowerShell syntax.",
+          line: null,
+          column: null,
+          text: null,
+        },
+      ],
+    };
+  }
+};
+
+export const inspectWindowsFile = async ({
+  path: filePath,
+  workingDir = config.hostDefaultWorkdir,
+  maxBytes = MAX_HOST_DIAGNOSTIC_BYTES,
+}) => {
+  assertHostExecEnabled();
+
+  const resolvedPath = resolveRequiredHostFilePath(filePath, workingDir);
+
+  const extension = path.win32.extname(resolvedPath).toLowerCase();
+  const fileInfo = {
+    requested_path: filePath,
+    resolved_path: resolvedPath,
+    extension,
+    exists: false,
+    is_file: false,
+    likely_corrupted_on_disk: false,
+    syntax_invalid: false,
+    observations: [],
+    repair_hints: [],
+  };
+
+  let fileStat;
+  try {
+    fileStat = await stat(resolvedPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      fileInfo.observations.push("The path does not exist on disk.");
+      fileInfo.repair_hints.push("Verify the path or recreate the file before retrying the command.");
+      return fileInfo;
+    }
+
+    throw error;
+  }
+
+  fileInfo.exists = true;
+  fileInfo.is_file = fileStat.isFile();
+  fileInfo.size_bytes = fileStat.size;
+  fileInfo.last_modified_utc = fileStat.mtime.toISOString();
+
+  if (!fileStat.isFile()) {
+    fileInfo.observations.push("The path exists but is not a regular file.");
+    return fileInfo;
+  }
+
+  const chunk = await readLargeFileChunk({
+    path: resolvedPath,
+    offsetBytes: 0,
+    maxBytes: Math.max(1, maxBytes),
+  });
+  const headBytes = Buffer.from(chunk.content_base64, "base64");
+  const bom = detectBom(headBytes);
+  const nullByteCount = headBytes.reduce((count, byte) => count + (byte === 0 ? 1 : 0), 0);
+
+  let strictUtf8Ok = true;
+  let decodedText = "";
+  try {
+    decodedText = new TextDecoder("utf-8", { fatal: true }).decode(headBytes);
+  } catch {
+    strictUtf8Ok = false;
+    decodedText = headBytes.toString("utf8");
+  }
+
+  const replacementCharacterCount = countOccurrences(decodedText, "\uFFFD");
+  const mojibakeMatches = MOJIBAKE_MARKERS.filter((marker) => decodedText.includes(marker));
+  const mojibakeCount = mojibakeMatches.reduce((count, marker) => count + countOccurrences(decodedText, marker), 0);
+
+  fileInfo.sampled_bytes = headBytes.length;
+  fileInfo.sha256 = fileStat.size <= MAX_HOST_DIAGNOSTIC_HASH_BYTES ? await hashFileSha256(resolvedPath) : null;
+  fileInfo.bom = bom;
+  fileInfo.utf8_valid = strictUtf8Ok;
+  fileInfo.null_byte_count = nullByteCount;
+  fileInfo.replacement_character_count = replacementCharacterCount;
+  fileInfo.suspicious_mojibake_count = mojibakeCount;
+  fileInfo.suspicious_mojibake_markers = mojibakeMatches;
+  fileInfo.line_endings = detectLineEndings(decodedText);
+  fileInfo.preview = sanitizePreview(decodedText);
+
+  if (bom) {
+    fileInfo.observations.push(`The file starts with a ${bom.toUpperCase()} BOM.`);
+  }
+
+  if (!strictUtf8Ok) {
+    fileInfo.observations.push("The sampled bytes are not valid UTF-8.");
+  }
+
+  if (nullByteCount > 0) {
+    fileInfo.observations.push(`The sampled bytes contain ${nullByteCount} NUL byte(s), which is unusual for a text source file.`);
+  }
+
+  if (mojibakeCount > 0) {
+    fileInfo.observations.push(`The sampled text contains ${mojibakeCount} suspicious mojibake marker(s): ${mojibakeMatches.join(", ")}.`);
+  }
+
+  if (POWERSHELL_FILE_EXTENSIONS.has(extension)) {
+    const syntax = await inspectPowerShellSyntax({ filePath: resolvedPath, workingDir });
+    fileInfo.powershell_syntax = syntax;
+    fileInfo.syntax_invalid = syntax.parse_ok === false;
+    if (syntax.parse_ok === false) {
+      fileInfo.observations.push(`PowerShell reported ${syntax.error_count} parse error(s) for this file.`);
+    }
+  }
+
+  fileInfo.likely_corrupted_on_disk =
+    !strictUtf8Ok || nullByteCount > 0 || mojibakeCount > 0 || replacementCharacterCount > 0;
+
+  if (fileInfo.likely_corrupted_on_disk) {
+    fileInfo.repair_hints.push("Read the exact bytes with windows_host_read_large_file before editing so you do not lose evidence of the corruption.");
+    fileInfo.repair_hints.push("Rewrite the file from a clean UTF-8 or exact-byte payload with windows_host_write_large_file, then rerun the original host command.");
+  } else if (fileInfo.syntax_invalid) {
+    fileInfo.repair_hints.push("The file appears to be syntactically invalid but not obviously byte-corrupted; inspect the script text and fix the source logic.");
+  }
+
+  return fileInfo;
+};
+
+const maybeCollectHostCommandDiagnostics = async ({ commandText, workingDir, stdout, stderr }) => {
+  const candidatePaths = extractLikelyHostPathsFromText({
+    text: `${commandText ?? ""}\n${stdout ?? ""}\n${stderr ?? ""}`,
+    workingDir,
+  });
+  if (candidatePaths.length === 0) {
+    return null;
+  }
+
+  const inspectedPaths = [];
+  for (const candidate of candidatePaths) {
+    try {
+      inspectedPaths.push(await inspectWindowsFile({ path: candidate.raw, workingDir }));
+    } catch (error) {
+      inspectedPaths.push({
+        requested_path: candidate.raw,
+        resolved_path: candidate.resolved,
+        exists: null,
+        inspection_error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const suspectedFileIntegrityIssue = inspectedPaths.some((entry) => entry?.likely_corrupted_on_disk);
+  const syntaxInvalidPath = inspectedPaths.some((entry) => entry?.syntax_invalid);
+  const hints = [];
+
+  if (suspectedFileIntegrityIssue) {
+    hints.push("At least one referenced host file looks byte-corrupted or mojibake-encoded on disk.");
+    hints.push("Use windows_host_read_large_file to capture exact bytes, then repair with windows_host_write_large_file from a clean payload.");
+  } else if (syntaxInvalidPath) {
+    hints.push("At least one referenced host script is syntactically invalid on disk.");
+    hints.push("Use windows_host_inspect_file to review the parse errors, then repair the script before rerunning the command.");
+  }
+
+  return {
+    bridge_diagnostics: {
+      suspected_file_integrity_issue: suspectedFileIntegrityIssue,
+      syntax_invalid_path: syntaxInvalidPath,
+      inspected_paths: inspectedPaths,
+      hints,
+    },
+  };
+};
+
+const mergeDiagnosticData = (existingData, diagnosticData) => {
+  if (!diagnosticData) {
+    return existingData;
+  }
+
+  if (existingData && typeof existingData === "object" && !Array.isArray(existingData)) {
+    return {
+      ...existingData,
+      ...diagnosticData,
+    };
+  }
+
+  return diagnosticData;
+};
+
+const buildHostCommandTextForDiagnostics = (program, args = []) =>
+  [program, ...args].map((value) => {
+    const text = String(value ?? "");
+    return /[\s"'`]/.test(text) ? `"${text}"` : text;
+  }).join("\n");
 
 const writeTempPowerShellScript = async ({ tempDir, fileName, command }) => {
   const scriptPath = path.join(tempDir, fileName);
@@ -159,6 +527,40 @@ export const resolveHostProgramExecutable = (program) => {
   return program;
 };
 
+export const readLargeFileOnHost = async ({
+  path: filePath,
+  offsetBytes = 0,
+  maxBytes = 262144,
+  workingDir = config.hostDefaultWorkdir,
+}) => {
+  assertHostExecEnabled();
+
+  return readLargeFileChunk({
+    path: resolveRequiredHostFilePath(filePath, workingDir),
+    offsetBytes,
+    maxBytes,
+  });
+};
+
+export const writeLargeFileOnHost = async ({
+  path: filePath,
+  contentBase64,
+  append = false,
+  createDirs = true,
+  expectedSha256 = null,
+  workingDir = config.hostDefaultWorkdir,
+}) => {
+  assertHostExecEnabled();
+
+  return writeLargeFileMirror({
+    path: resolveRequiredHostFilePath(filePath, workingDir),
+    contentBase64,
+    append,
+    createDirs,
+    expectedSha256,
+  });
+};
+
 const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, isAdmin }) => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-hostexec-"));
 
@@ -225,7 +627,7 @@ const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, is
 };
 
 export const runWindowsPowerShell = async ({ command, workingDir = config.hostDefaultWorkdir, timeoutMs }) => {
-  ensureHostExecEnabled();
+  assertHostExecEnabled();
 
   try {
     const adminCheck = await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(buildPowerShellAdminCheckCommand()), {
@@ -254,7 +656,15 @@ export const runWindowsPowerShell = async ({ command, workingDir = config.hostDe
 
     return await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin });
   } catch (error) {
-    throw wrapHostError(error, "Windows PowerShell command failed.");
+    const wrappedError = wrapHostError(error, "Windows PowerShell command failed.");
+    const diagnosticData = await maybeCollectHostCommandDiagnostics({
+      commandText: command,
+      workingDir,
+      stdout: wrappedError.stdout,
+      stderr: wrappedError.stderr,
+    });
+    wrappedError.data = mergeDiagnosticData(wrappedError.data, diagnosticData);
+    throw wrappedError;
   }
 };
 
@@ -264,7 +674,7 @@ export const runAllowedProgram = async ({
   workingDir = config.hostDefaultWorkdir,
   timeoutMs,
 }) => {
-  ensureHostExecEnabled();
+  assertHostExecEnabled();
 
   const normalizedProgram = normalizeProgram(program);
   if (!config.hostProgramAllowlist.includes(normalizedProgram)) {
@@ -279,7 +689,15 @@ export const runAllowedProgram = async ({
       timeoutMs,
     });
   } catch (error) {
-    throw wrapHostError(error, `Host program "${program}" failed.`);
+    const wrappedError = wrapHostError(error, `Host program "${program}" failed.`);
+    const diagnosticData = await maybeCollectHostCommandDiagnostics({
+      commandText: buildHostCommandTextForDiagnostics(program, args),
+      workingDir,
+      stdout: wrappedError.stdout,
+      stderr: wrappedError.stderr,
+    });
+    wrappedError.data = mergeDiagnosticData(wrappedError.data, diagnosticData);
+    throw wrappedError;
   }
 };
 
@@ -295,7 +713,7 @@ const tryAllowedProgram = async (options) => {
 };
 
 export const getHostGithubAuthContext = async () => {
-  ensureHostExecEnabled();
+  assertHostExecEnabled();
 
   const statusResult = await runAllowedProgram({
     program: "gh",
