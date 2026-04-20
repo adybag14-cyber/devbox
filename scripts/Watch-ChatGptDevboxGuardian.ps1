@@ -25,6 +25,7 @@ $statePath = Join-Path $guardianDir 'state.json'
 $guardianLogPath = Join-Path $guardianDir 'guardian.log'
 $lastRepairPath = Join-Path $guardianDir 'last-repair.json'
 $mutexName = 'Global\ChatGptDevboxGuardian'
+$script:dockerExe = $null
 
 foreach ($path in @($runDir, $guardianDir, $repairDir)) {
     if (-not (Test-Path $path)) {
@@ -153,9 +154,108 @@ public static class ChatGptDevboxGuardianTokenProbe {
         return $match.Matches[0].Groups[1].Value.Trim()
     }
 
+    function Resolve-DockerExecutable {
+        param([switch]$AllowMissing)
+
+        if ($script:dockerExe -and (Test-Path $script:dockerExe)) {
+            return $script:dockerExe
+        }
+
+        $candidates = New-Object System.Collections.Generic.List[string]
+        foreach ($candidate in @(
+                $(if ($env:DOCKER_EXE) { $env:DOCKER_EXE } else { $null }),
+                $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 'Docker\Docker\resources\bin\docker.exe' } else { $null }),
+                $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles 'Docker\Docker\resources\bin\docker.exe' } else { $null }),
+                'C:\Program Files\Docker\Docker\resources\bin\docker.exe'
+            )) {
+            if (-not [string]::IsNullOrWhiteSpace($candidate) -and -not $candidates.Contains($candidate)) {
+                $candidates.Add($candidate)
+            }
+        }
+
+        foreach ($filePath in @($runtimeEnvFile, $envFile)) {
+            $configuredPath = Get-EnvValue -FilePath $filePath -Name 'DOCKER_EXE'
+            if (-not [string]::IsNullOrWhiteSpace($configuredPath) -and -not $candidates.Contains($configuredPath)) {
+                $candidates.Add($configuredPath)
+            }
+        }
+
+        $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
+        if ($dockerCommand -and -not [string]::IsNullOrWhiteSpace($dockerCommand.Source) -and -not $candidates.Contains($dockerCommand.Source)) {
+            $candidates.Add([string]$dockerCommand.Source)
+        }
+
+        foreach ($candidate in $candidates) {
+            if (Test-Path $candidate) {
+                $script:dockerExe = $candidate
+                return $script:dockerExe
+            }
+        }
+
+        if ($AllowMissing) {
+            return $null
+        }
+
+        throw 'Docker CLI was not found. Install Docker Desktop or set DOCKER_EXE in .env to docker.exe.'
+    }
+
+    function Invoke-Docker {
+        param(
+            [Parameter(Mandatory = $true)][string[]]$Arguments,
+            [switch]$IgnoreExitCode,
+            [switch]$AllowMissing
+        )
+
+        $dockerExe = Resolve-DockerExecutable -AllowMissing:$AllowMissing
+        if (-not $dockerExe) {
+            return [pscustomobject]@{
+                ExitCode = 127
+                Output = @()
+                Text = ''
+            }
+        }
+
+        $stdoutPath = Join-Path $env:TEMP ("chatgpt-devbox-docker-{0}.stdout.log" -f [System.Guid]::NewGuid().ToString('N'))
+        $stderrPath = Join-Path $env:TEMP ("chatgpt-devbox-docker-{0}.stderr.log" -f [System.Guid]::NewGuid().ToString('N'))
+
+        try {
+            $process = Start-Process -FilePath $dockerExe `
+                -ArgumentList $Arguments `
+                -Wait `
+                -PassThru `
+                -WindowStyle Hidden `
+                -RedirectStandardOutput $stdoutPath `
+                -RedirectStandardError $stderrPath
+
+            $stdoutText = if (Test-Path $stdoutPath) { [string](Get-Content -Path $stdoutPath -Raw) } else { '' }
+            $stderrText = if (Test-Path $stderrPath) { [string](Get-Content -Path $stderrPath -Raw) } else { '' }
+            $exitCode = [int]$process.ExitCode
+            $text = (($stdoutText, $stderrText) -join '').Trim()
+        }
+        finally {
+            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        }
+
+        if (-not $IgnoreExitCode -and $exitCode -ne 0) {
+            $trimmedText = $text.Trim()
+            if ($trimmedText) {
+                throw "docker $($Arguments -join ' ') failed with exit code $exitCode. Output:`n$trimmedText"
+            }
+
+            throw "docker $($Arguments -join ' ') failed with exit code $exitCode."
+        }
+
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            Output = $text
+            Text = $text
+        }
+    }
+
     function Test-DockerEngine {
-        & docker version --format '{{.Server.Version}}' *> $null
-        return ($LASTEXITCODE -eq 0)
+        $result = Invoke-Docker -Arguments @('version', '--format', '{{.Server.Version}}') -IgnoreExitCode -AllowMissing
+        return ($result.ExitCode -eq 0)
     }
 
     function Get-PrimaryEnvFile {
@@ -274,6 +374,19 @@ public static class ChatGptDevboxGuardianTokenProbe {
         }
     }
 
+    function Test-IsOwnedServerCommandLine {
+        param([string]$CommandLine)
+
+        if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+            return $false
+        }
+
+        return (
+            ([string]$CommandLine -match 'src[\\/]server\.js\b') -and
+            ([string]$CommandLine -match '--env-file(?:=|\s+)[^"\s]*\.env\.runtime\b')
+        )
+    }
+
     function Get-OwnedMcpProcess {
         $ownedProcess = $null
         if (Test-Path $pidFile) {
@@ -281,7 +394,7 @@ public static class ChatGptDevboxGuardianTokenProbe {
             if ($pidText -match '^\d+$') {
                 $processIdValue = [int]$pidText
                 $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $processIdValue) -ErrorAction SilentlyContinue
-                if ($candidate -and ([string]$candidate.CommandLine) -match 'src[\\/]server\.js') {
+                if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
                     $ownedProcess = $candidate
                 }
             }
@@ -292,7 +405,8 @@ public static class ChatGptDevboxGuardianTokenProbe {
         }
 
         return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-            Where-Object { ([string]$_.CommandLine) -match 'src[\\/]server\.js' -and ([string]$_.CommandLine) -match 'docker-chatgpt-devbox' } |
+            Where-Object { Test-IsOwnedServerCommandLine -CommandLine ([string]$_.CommandLine) } |
+            Sort-Object CreationDate -Descending |
             Select-Object -First 1
     }
 
@@ -378,12 +492,12 @@ public static class ChatGptDevboxGuardianTokenProbe {
             return $false
         }
 
-        $result = cmd /d /c "docker inspect --type container $ContainerName --format ""{{.State.Running}}"" 2>NUL"
-        if ($LASTEXITCODE -ne 0) {
+        $result = Invoke-Docker -Arguments @('inspect', '--type', 'container', $ContainerName, '--format', '{{.State.Running}}') -IgnoreExitCode -AllowMissing
+        if ($result.ExitCode -ne 0) {
             return $false
         }
 
-        return ($result.Trim() -eq 'true')
+        return ($result.Text.Trim() -eq 'true')
     }
 
     function Test-HealthUrl {

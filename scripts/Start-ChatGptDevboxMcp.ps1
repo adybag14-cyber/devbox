@@ -5,12 +5,95 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:dockerExe = $null
+$script:dockerConfiguredPath = $null
+
+function Resolve-DockerExecutable {
+    param([string]$ConfiguredPath)
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @(
+            $ConfiguredPath,
+            $env:DOCKER_EXE,
+            $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 "Docker\\Docker\\resources\\bin\\docker.exe" } else { $null }),
+            $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles "Docker\\Docker\\resources\\bin\\docker.exe" } else { $null }),
+            "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and -not $candidates.Contains($candidate)) {
+            $candidates.Add($candidate)
+        }
+    }
+
+    $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
+    if ($dockerCommand -and -not [string]::IsNullOrWhiteSpace($dockerCommand.Source) -and -not $candidates.Contains($dockerCommand.Source)) {
+        $candidates.Add([string]$dockerCommand.Source)
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    throw "Docker CLI was not found. Install Docker Desktop or set DOCKER_EXE in .env to docker.exe."
+}
+
+function Get-DockerExecutable {
+    if (-not $script:dockerExe) {
+        $script:dockerExe = Resolve-DockerExecutable -ConfiguredPath $script:dockerConfiguredPath
+    }
+
+    return $script:dockerExe
+}
+
+function Invoke-Docker {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [switch]$IgnoreExitCode
+    )
+
+    $dockerExe = Get-DockerExecutable
+    $stdoutPath = Join-Path $env:TEMP ("chatgpt-devbox-docker-{0}.stdout.log" -f [System.Guid]::NewGuid().ToString('N'))
+    $stderrPath = Join-Path $env:TEMP ("chatgpt-devbox-docker-{0}.stderr.log" -f [System.Guid]::NewGuid().ToString('N'))
+
+    try {
+        $process = Start-Process -FilePath $dockerExe `
+            -ArgumentList $Arguments `
+            -Wait `
+            -PassThru `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath
+
+        $stdoutText = if (Test-Path $stdoutPath) { [string](Get-Content -Path $stdoutPath -Raw) } else { '' }
+        $stderrText = if (Test-Path $stderrPath) { [string](Get-Content -Path $stderrPath -Raw) } else { '' }
+        $exitCode = [int]$process.ExitCode
+        $text = (($stdoutText, $stderrText) -join '').Trim()
+    } finally {
+        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+
+    if (-not $IgnoreExitCode -and $exitCode -ne 0) {
+        $trimmedText = $text.Trim()
+        if ($trimmedText) {
+            throw "docker $($Arguments -join ' ') failed with exit code $exitCode. Output:`n$trimmedText"
+        }
+
+        throw "docker $($Arguments -join ' ') failed with exit code $exitCode."
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = $text
+        Text = $text
+    }
+}
 
 function Get-DockerLogsText {
     param([string]$ContainerName)
 
-    $output = cmd /d /c "docker logs $ContainerName 2>&1"
-    return ($output | Out-String)
+    return (Invoke-Docker -Arguments @('logs', $ContainerName) -IgnoreExitCode).Text
 }
 
 function Enter-ChatGptDevboxLifecycleMutex {
@@ -34,8 +117,8 @@ function Exit-ChatGptDevboxLifecycleMutex {
 }
 
 function Test-DockerEngine {
-    & docker version --format '{{.Server.Version}}' *> $null
-    return ($LASTEXITCODE -eq 0)
+    $result = Invoke-Docker -Arguments @('version', '--format', '{{.Server.Version}}') -IgnoreExitCode
+    return ($result.ExitCode -eq 0)
 }
 
 function Start-DockerDesktopIfNeeded {
@@ -120,33 +203,51 @@ function Get-CommandLineForPid {
     return $proc.CommandLine
 }
 
+function Test-IsOwnedServerCommandLine {
+    param([string]$CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+
+    return (
+        ([string]$CommandLine -match 'src[\\/]server\.js\b') -and
+        ([string]$CommandLine -match '--env-file(?:=|\s+)[^"\s]*\.env\.runtime\b')
+    )
+}
+
+function Find-OwnedServerProcess {
+    param([string]$PidFile)
+
+    if (Test-Path $PidFile) {
+        $pidText = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($pidText -match '^\d+$') {
+            $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
+            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+                return $candidate
+            }
+        }
+    }
+
+    return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { Test-IsOwnedServerCommandLine -CommandLine ([string]$_.CommandLine) } |
+        Sort-Object CreationDate -Descending |
+        Select-Object -First 1
+}
+
 function Stop-ExistingServerIfOwned {
     param(
         [string]$PidFile,
         [string]$ProjectRoot
     )
 
-    if (-not (Test-Path $PidFile)) {
-        return
-    }
-
-    $pidText = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
-    if (-not $pidText) {
+    $ownedProcess = Find-OwnedServerProcess -PidFile $PidFile
+    if (-not $ownedProcess) {
         Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
         return
     }
 
-    $ownedPid = [int]$pidText
-    $commandLine = Get-CommandLineForPid -ProcessId $ownedPid
-    if (-not $commandLine) {
-        Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
-        return
-    }
-
-    if ($commandLine -notlike "*src/server.js*" -and $commandLine -notlike "*src\\server.js*") {
-        throw "Refusing to stop PID $ownedPid because it does not look like the docker-chatgpt-devbox server."
-    }
-
+    $ownedPid = [int]$ownedProcess.ProcessId
     Stop-Process -Id $ownedPid -Force
     Start-Sleep -Seconds 1
     if (Get-Process -Id $ownedPid -ErrorAction SilentlyContinue) {
@@ -270,25 +371,25 @@ function Test-DockerObjectExists {
         [string]$Name
     )
 
-    cmd /d /c "docker inspect --type $Type $Name >NUL 2>NUL"
-    return ($LASTEXITCODE -eq 0)
+    $result = Invoke-Docker -Arguments @('inspect', '--type', $Type, $Name) -IgnoreExitCode
+    return ($result.ExitCode -eq 0)
 }
 
 function Remove-DockerContainerIfPresent {
     param([string]$ContainerName)
 
-    cmd /d /c "docker rm -f $ContainerName >NUL 2>NUL"
+    [void](Invoke-Docker -Arguments @('rm', '-f', $ContainerName) -IgnoreExitCode)
 }
 
 function Get-DockerContainerRunningState {
     param([string]$ContainerName)
 
-    $result = cmd /d /c "docker inspect --type container $ContainerName --format ""{{.State.Running}}"" 2>NUL"
-    if ($LASTEXITCODE -ne 0) {
+    $result = Invoke-Docker -Arguments @('inspect', '--type', 'container', $ContainerName, '--format', '{{.State.Running}}') -IgnoreExitCode
+    if ($result.ExitCode -ne 0) {
         return $null
     }
 
-    return $result.Trim()
+    return $result.Text.Trim()
 }
 
 function Ensure-RuntimeImage {
@@ -298,16 +399,13 @@ function Ensure-RuntimeImage {
         [switch]$ForceRebuild
     )
 
-    docker image inspect $ImageName *> $null
-    $exists = ($LASTEXITCODE -eq 0)
+    $inspectResult = Invoke-Docker -Arguments @('image', 'inspect', $ImageName) -IgnoreExitCode
+    $exists = ($inspectResult.ExitCode -eq 0)
     if ($exists -and -not $ForceRebuild) {
         return
     }
 
-    docker build -f (Join-Path $Root "runtime.Dockerfile") -t $ImageName $Root
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to build runtime image $ImageName."
-    }
+    [void](Invoke-Docker -Arguments @('build', '-f', (Join-Path $Root "runtime.Dockerfile"), '-t', $ImageName, $Root))
 }
 
 function Ensure-DevboxContainer {
@@ -326,19 +424,13 @@ function Ensure-DevboxContainer {
     }
 
     if (-not $exists) {
-        docker run -d --name $ContainerName --init -w $DevboxWorkspace -v "${HostWorkspace}:${DevboxWorkspace}" $ImageName sleep infinity
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create devbox container $ContainerName."
-        }
+        [void](Invoke-Docker -Arguments @('run', '-d', '--name', $ContainerName, '--init', '-w', $DevboxWorkspace, '-v', "${HostWorkspace}:${DevboxWorkspace}", $ImageName, 'sleep', 'infinity'))
         return
     }
 
     $running = Get-DockerContainerRunningState -ContainerName $ContainerName
     if ($running.Trim() -ne "true") {
-        docker start $ContainerName *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to start devbox container $ContainerName."
-        }
+        [void](Invoke-Docker -Arguments @('start', $ContainerName))
     }
 }
 
@@ -352,10 +444,7 @@ function Start-CloudflaredQuickTunnel {
         Remove-DockerContainerIfPresent -ContainerName $ContainerName
     }
 
-    docker run -d --name $ContainerName cloudflare/cloudflared:latest tunnel --no-autoupdate --url "http://host.docker.internal:$Port" | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to start Cloudflare quick tunnel."
-    }
+    [void](Invoke-Docker -Arguments @('run', '-d', '--name', $ContainerName, 'cloudflare/cloudflared:latest', 'tunnel', '--no-autoupdate', '--url', "http://host.docker.internal:$Port"))
 
     for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Seconds 2
@@ -434,10 +523,7 @@ function Start-CloudflaredNamedTunnel {
         Remove-DockerContainerIfPresent -ContainerName $ContainerName
     }
 
-    docker run -d --name $ContainerName cloudflare/cloudflared:latest tunnel --no-autoupdate run --token $TunnelToken --url "http://host.docker.internal:$Port" | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to start the named Cloudflare tunnel."
-    }
+    [void](Invoke-Docker -Arguments @('run', '-d', '--name', $ContainerName, 'cloudflare/cloudflared:latest', 'tunnel', '--no-autoupdate', 'run', '--token', $TunnelToken, '--url', "http://host.docker.internal:$Port"))
 
     for ($i = 0; $i -lt 15; $i++) {
         Start-Sleep -Seconds 2
@@ -497,6 +583,8 @@ Ensure-Directory -Path $runDir
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $true -Source "Start-ChatGptDevboxMcp.ps1"
 
 $nodeExe = Resolve-NodeExecutable -ConfiguredPath (Get-EnvValue -FilePath $envFile -Name "NODE_EXE")
+$script:dockerConfiguredPath = Get-EnvValue -FilePath $envFile -Name "DOCKER_EXE"
+[void](Get-DockerExecutable)
 
 $portValue = Get-EnvValue -FilePath $envFile -Name "PORT"
 $port = if ([string]::IsNullOrWhiteSpace($portValue)) { 8100 } else { [int]$portValue }
@@ -579,8 +667,6 @@ $process = Start-Process -FilePath $nodeExe `
     -PassThru `
     -WindowStyle Hidden
 
-Set-Content -Path $pidFile -Value $process.Id
-
 $localUrl = "http://127.0.0.1:$port"
 for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 2
@@ -602,6 +688,14 @@ try {
     $stderr = if (Test-Path $stderrLog) { Get-Content $stderrLog -Raw } else { "" }
     throw "The MCP server failed to become healthy. stderr:`n$stderr"
 }
+
+$process.Refresh()
+if ($process.HasExited) {
+    $stderr = if (Test-Path $stderrLog) { Get-Content $stderrLog -Raw } else { "" }
+    throw "The MCP server process exited before health validation completed. stderr:`n$stderr"
+}
+
+Set-Content -Path $pidFile -Value $process.Id
 
 if ($Public) {
     Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl
