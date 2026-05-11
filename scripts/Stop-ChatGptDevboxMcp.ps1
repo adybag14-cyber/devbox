@@ -108,15 +108,17 @@ function Invoke-Docker {
             [void]$process.WaitForExit(2000)
         }
 
-        try {
-            $stdoutText = [string]$stdoutTask.GetAwaiter().GetResult()
-        } catch {
-            $stdoutText = ''
-        }
-        try {
-            $stderrText = [string]$stderrTask.GetAwaiter().GetResult()
-        } catch {
-            $stderrText = ''
+        if (-not $timedOut) {
+            try {
+                $stdoutText = [string]$stdoutTask.GetAwaiter().GetResult()
+            } catch {
+                $stdoutText = ''
+            }
+            try {
+                $stderrText = [string]$stderrTask.GetAwaiter().GetResult()
+            } catch {
+                $stderrText = ''
+            }
         }
 
         $exitCode = if ($timedOut) { 124 } else { [int]$process.ExitCode }
