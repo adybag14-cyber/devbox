@@ -157,3 +157,4 @@ See [docs/REPRODUCE.md](./docs/REPRODUCE.md) for a full copy-to-another-machine 
 
 It also includes `devbox_write_large_file`, a base64-backed large file writer that verifies the exact bytes written so agents can mirror payloads without corruption.
 It also includes `devbox_read_large_file`, a base64 chunk reader with real byte offsets, chunk metadata, and paging support for later sections of large logs and generated files.
+The MCP body/output transfer settings accept numeric limits or `unlimited`. `MAX_MCP_TRANSFER_CHARS=unlimited` removes MCP tool schema byte caps, `MAX_TEXT_OUTPUT_CHARS=unlimited` disables command-output truncation, and `MCP_JSON_BODY_LIMIT=unlimited` raises the Express JSON request body cap to Node's maximum safe integer byte count.

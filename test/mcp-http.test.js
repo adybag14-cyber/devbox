@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -256,6 +257,118 @@ test("windows_host_run_program returns bridge diagnostics for corrupted host fil
       `Expected the MCP response to include diagnostics for ${scriptPath}.\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}\nresponse:\n${JSON.stringify(result, null, 2)}`,
     );
     assert.equal(inspectedPath.likely_corrupted_on_disk, true);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("MCP accepts and returns 4 million character host-file payloads", async (t) => {
+  const { port, stdout, stderr } = await startServer(t);
+  const client = await connectClient(t, port);
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-mcp-http-test-"));
+  const filePath = path.join(tempDir, "four-million.txt");
+  const payload = "a".repeat(4_000_000);
+  const payloadSha256 = createHash("sha256").update(payload).digest("hex");
+
+  try {
+    const writeResult = await client.callTool({
+      name: "windows_host_write_large_file",
+      arguments: {
+        path: filePath,
+        working_dir: tempDir,
+        content: payload,
+        create_dirs: true,
+        expected_sha256: payloadSha256,
+      },
+    });
+
+    assert.equal(
+      writeResult.structuredContent?.ok,
+      true,
+      `Expected 4M write through MCP to succeed.\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}\nresponse:\n${JSON.stringify(writeResult, null, 2)}`,
+    );
+    assert.equal(writeResult.structuredContent?.data?.bytes_written, payload.length);
+    assert.equal(writeResult.structuredContent?.data?.content_sha256, payloadSha256);
+
+    const readResult = await client.callTool({
+      name: "windows_host_read_large_file",
+      arguments: {
+        path: filePath,
+        working_dir: tempDir,
+        offset_bytes: 0,
+        max_bytes: payload.length,
+      },
+    });
+
+    assert.equal(
+      readResult.structuredContent?.ok,
+      true,
+      `Expected 4M read through MCP to succeed.\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}\nresponse summary:\n${readResult.structuredContent?.summary}`,
+    );
+    assert.equal(readResult.structuredContent?.data?.bytes_returned, payload.length);
+    assert.equal(readResult.structuredContent?.data?.content_sha256, payloadSha256);
+    assert.equal(typeof readResult.structuredContent?.data?.content_base64, "string");
+    assert.ok(readResult.structuredContent.data.content_base64.length >= payload.length);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("parallel same-path host writes are serialized by the MCP boundary", async (t) => {
+  const { port, stdout, stderr } = await startServer(t);
+  const client = await connectClient(t, port);
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-mcp-http-test-"));
+  const filePath = path.join(tempDir, "parallel-append.txt");
+  const payloadA = "A".repeat(200_000);
+  const payloadB = "B".repeat(200_000);
+
+  try {
+    const [first, second] = await Promise.all([
+      client.callTool({
+        name: "windows_host_write_large_file",
+        arguments: {
+          path: filePath,
+          working_dir: tempDir,
+          content: payloadA,
+          append: true,
+          create_dirs: true,
+        },
+      }),
+      client.callTool({
+        name: "windows_host_write_large_file",
+        arguments: {
+          path: filePath,
+          working_dir: tempDir,
+          content: payloadB,
+          append: true,
+          create_dirs: true,
+        },
+      }),
+    ]);
+
+    assert.equal(first.structuredContent?.ok, true, `First parallel write failed.\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}`);
+    assert.equal(second.structuredContent?.ok, true, `Second parallel write failed.\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}`);
+
+    const readResult = await client.callTool({
+      name: "windows_host_read_large_file",
+      arguments: {
+        path: filePath,
+        working_dir: tempDir,
+        offset_bytes: 0,
+        max_bytes: payloadA.length + payloadB.length,
+      },
+    });
+
+    const actualSha256 = readResult.structuredContent?.data?.content_sha256;
+    const expectedForwardSha256 = createHash("sha256").update(`${payloadA}${payloadB}`).digest("hex");
+    const expectedReverseSha256 = createHash("sha256").update(`${payloadB}${payloadA}`).digest("hex");
+
+    assert.equal(readResult.structuredContent?.ok, true);
+    assert.equal(readResult.structuredContent?.data?.bytes_returned, payloadA.length + payloadB.length);
+    assert.ok(
+      actualSha256 === expectedForwardSha256 || actualSha256 === expectedReverseSha256,
+      `Parallel writes produced unexpected bytes. SHA-256=${actualSha256}`,
+    );
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -24,6 +24,7 @@ $heartbeatPath = Join-Path $guardianDir 'heartbeat.json'
 $statePath = Join-Path $guardianDir 'state.json'
 $guardianLogPath = Join-Path $guardianDir 'guardian.log'
 $lastRepairPath = Join-Path $guardianDir 'last-repair.json'
+$hostCloudflaredPidPath = Join-Path $runDir 'host-cloudflared.pid'
 $mutexName = 'Global\ChatGptDevboxGuardian'
 $script:dockerExe = $null
 
@@ -203,7 +204,8 @@ public static class ChatGptDevboxGuardianTokenProbe {
         param(
             [Parameter(Mandatory = $true)][string[]]$Arguments,
             [switch]$IgnoreExitCode,
-            [switch]$AllowMissing
+            [switch]$AllowMissing,
+            [int]$TimeoutSeconds = 60
         )
 
         $dockerExe = Resolve-DockerExecutable -AllowMissing:$AllowMissing
@@ -215,35 +217,76 @@ public static class ChatGptDevboxGuardianTokenProbe {
             }
         }
 
-        $stdoutPath = Join-Path $env:TEMP ("chatgpt-devbox-docker-{0}.stdout.log" -f [System.Guid]::NewGuid().ToString('N'))
-        $stderrPath = Join-Path $env:TEMP ("chatgpt-devbox-docker-{0}.stderr.log" -f [System.Guid]::NewGuid().ToString('N'))
+        $process = $null
+        $stdoutText = ''
+        $stderrText = ''
+        $timedOut = $false
 
         try {
-            $process = Start-Process -FilePath $dockerExe `
-                -ArgumentList $Arguments `
-                -Wait `
-                -PassThru `
-                -WindowStyle Hidden `
-                -RedirectStandardOutput $stdoutPath `
-                -RedirectStandardError $stderrPath
+            $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+            $startInfo.FileName = $dockerExe
+            $startInfo.UseShellExecute = $false
+            $startInfo.CreateNoWindow = $true
+            $startInfo.RedirectStandardOutput = $true
+            $startInfo.RedirectStandardError = $true
+            Add-ProcessArguments -StartInfo $startInfo -Arguments $Arguments
 
-            $stdoutText = if (Test-Path $stdoutPath) { [string](Get-Content -Path $stdoutPath -Raw) } else { '' }
-            $stderrText = if (Test-Path $stderrPath) { [string](Get-Content -Path $stderrPath -Raw) } else { '' }
-            $exitCode = [int]$process.ExitCode
+            $process = [System.Diagnostics.Process]::new()
+            $process.StartInfo = $startInfo
+            [void]$process.Start()
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+
+            $timeoutMs = [Math]::Max(1, $TimeoutSeconds) * 1000
+            $timedOut = -not $process.WaitForExit($timeoutMs)
+            if ($timedOut) {
+                try {
+                    $process.Kill()
+                } catch {
+                }
+                [void]$process.WaitForExit(2000)
+            }
+
+            try {
+                $stdoutText = [string]$stdoutTask.GetAwaiter().GetResult()
+            } catch {
+                $stdoutText = ''
+            }
+            try {
+                $stderrText = [string]$stderrTask.GetAwaiter().GetResult()
+            } catch {
+                $stderrText = ''
+            }
+
+            $exitCode = if ($timedOut) { 124 } else { [int]$process.ExitCode }
             $text = (($stdoutText, $stderrText) -join '').Trim()
         }
         finally {
-            Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+            if ($process) {
+                $process.Dispose()
+            }
+        }
+
+        $displayArguments = Format-DockerArgumentsForLog -Arguments $Arguments
+        if ($timedOut) {
+            if (-not $IgnoreExitCode) {
+                throw "docker $displayArguments timed out after $TimeoutSeconds seconds. Output:`n$text"
+            }
+
+            return [pscustomobject]@{
+                ExitCode = $exitCode
+                Output = $text
+                Text = $text
+            }
         }
 
         if (-not $IgnoreExitCode -and $exitCode -ne 0) {
             $trimmedText = $text.Trim()
             if ($trimmedText) {
-                throw "docker $($Arguments -join ' ') failed with exit code $exitCode. Output:`n$trimmedText"
+                throw "docker $displayArguments failed with exit code $exitCode. Output:`n$trimmedText"
             }
 
-            throw "docker $($Arguments -join ' ') failed with exit code $exitCode."
+            throw "docker $displayArguments failed with exit code $exitCode."
         }
 
         return [pscustomobject]@{
@@ -254,8 +297,51 @@ public static class ChatGptDevboxGuardianTokenProbe {
     }
 
     function Test-DockerEngine {
-        $result = Invoke-Docker -Arguments @('version', '--format', '{{.Server.Version}}') -IgnoreExitCode -AllowMissing
+        $result = Invoke-Docker -Arguments @('version', '--format', '{{.Server.Version}}') -IgnoreExitCode -AllowMissing -TimeoutSeconds 45
         return ($result.ExitCode -eq 0)
+    }
+
+    function Format-DockerArgumentsForLog {
+        param([string[]]$Arguments)
+
+        $redacted = New-Object System.Collections.Generic.List[string]
+        for ($i = 0; $i -lt $Arguments.Count; $i++) {
+            if ($i -gt 0 -and $Arguments[$i - 1] -eq '--token') {
+                $redacted.Add('<redacted>')
+                continue
+            }
+
+            $redacted.Add($Arguments[$i])
+        }
+
+        return ($redacted -join ' ')
+    }
+
+    function ConvertTo-WindowsProcessArgument {
+        param([string]$Argument)
+
+        $value = [string]$Argument
+        if ($value.Length -gt 0 -and $value -notmatch '[\s"]') {
+            return $value
+        }
+
+        return '"' + ($value.Replace('\', '\\').Replace('"', '\"')) + '"'
+    }
+
+    function Add-ProcessArguments {
+        param(
+            [Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$StartInfo,
+            [Parameter(Mandatory = $true)][string[]]$Arguments
+        )
+
+        if ($StartInfo | Get-Member -Name ArgumentList -MemberType Property) {
+            foreach ($argument in $Arguments) {
+                [void]$StartInfo.ArgumentList.Add($argument)
+            }
+            return
+        }
+
+        $StartInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-WindowsProcessArgument -Argument $_ }) -join ' ')
     }
 
     function Get-PrimaryEnvFile {
@@ -410,6 +496,37 @@ public static class ChatGptDevboxGuardianTokenProbe {
             Select-Object -First 1
     }
 
+    function Test-IsOwnedHostCloudflaredCommandLine {
+        param([string]$CommandLine)
+
+        if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+            return $false
+        }
+
+        return (
+            ([string]$CommandLine -match 'cloudflared(?:\.exe)?') -and
+            ([string]$CommandLine -match 'host-cloudflared\.tunnel-token\.txt')
+        )
+    }
+
+    function Get-HostCloudflaredProcess {
+        if (-not (Test-Path $hostCloudflaredPidPath)) {
+            return $null
+        }
+
+        $pidText = Get-Content -Path $hostCloudflaredPidPath -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pidText -notmatch '^\d+$') {
+            return $null
+        }
+
+        $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
+        if ($candidate -and (Test-IsOwnedHostCloudflaredCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+            return $candidate
+        }
+
+        return $null
+    }
+
     function Get-ProcessElevationInfo {
         param([Parameter(Mandatory = $true)][uint32]$ProcessId)
 
@@ -523,6 +640,9 @@ public static class ChatGptDevboxGuardianTokenProbe {
         $dockerReady = Test-DockerEngine
         $devboxRunning = $false
         $cloudflaredRunning = $null
+        $hostCloudflaredProcess = Get-HostCloudflaredProcess
+        $hostCloudflaredRunning = [bool]$hostCloudflaredProcess
+        $effectiveCloudflaredRunning = $false
         $localHealthy = $false
         $publicHealthy = $null
         $mcpProcess = Get-OwnedMcpProcess
@@ -541,8 +661,9 @@ public static class ChatGptDevboxGuardianTokenProbe {
 
                 if ($settings.Public) {
                     $cloudflaredRunning = Test-ContainerRunning -ContainerName $settings.CloudflaredContainerName
-                    if (-not $cloudflaredRunning) {
-                        $reasons.Add("cloudflared container $($settings.CloudflaredContainerName) is not running")
+                    $effectiveCloudflaredRunning = (($cloudflaredRunning -eq $true) -or $hostCloudflaredRunning)
+                    if (-not $effectiveCloudflaredRunning) {
+                        $reasons.Add("cloudflared tunnel is not running")
                     }
                 }
             }
@@ -582,7 +703,9 @@ public static class ChatGptDevboxGuardianTokenProbe {
             Settings = $settings
             DockerReady = $dockerReady
             DevboxRunning = $devboxRunning
-            CloudflaredRunning = $cloudflaredRunning
+            CloudflaredRunning = $effectiveCloudflaredRunning
+            CloudflaredContainerRunning = $cloudflaredRunning
+            HostCloudflaredProcessId = if ($hostCloudflaredProcess) { [int]$hostCloudflaredProcess.ProcessId } else { $null }
             McpProcessId = if ($mcpProcess) { [int]$mcpProcess.ProcessId } else { $null }
             McpProcessCommandLine = if ($mcpProcess) { [string]$mcpProcess.CommandLine } else { $null }
             McpProcessHealthy = $mcpProcessHealthy
@@ -595,7 +718,7 @@ public static class ChatGptDevboxGuardianTokenProbe {
                 (-not $devboxRunning) -or
                 ($mcpProcessHealthy -ne $true) -or
                 ($localHealthy -ne $true) -or
-                ($settings.Public -and $cloudflaredRunning -eq $false)
+                ($settings.Public -and ($effectiveCloudflaredRunning -ne $true))
             )
             Reasons = @($reasons)
         }
@@ -662,6 +785,17 @@ public static class ChatGptDevboxGuardianTokenProbe {
         }
 
         if (-not $launcher.HasExited) {
+            if ($recovered) {
+                if (-not $launcher.WaitForExit(10000)) {
+                    Write-GuardianLog -Level 'WARN' -Message ("repair launcher pid={0} stayed alive after health recovered; stopping it" -f $launcher.Id)
+                    Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                }
+            } else {
+                Write-GuardianLog -Level 'WARN' -Message ("repair launcher pid={0} did not restore health before timeout; stopping it" -f $launcher.Id)
+                Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 500
+            }
             $launcher.Refresh()
         }
 
@@ -691,6 +825,8 @@ public static class ChatGptDevboxGuardianTokenProbe {
 
         if ($null -eq $exitCode) {
             Write-GuardianLog -Level 'ERROR' -Message 'repair did not restore health before timeout'
+        } elseif ($exitCode -eq 0) {
+            Write-GuardianLog -Level 'ERROR' -Message 'repair process exited successfully but health was not restored'
         } else {
             Write-GuardianLog -Level 'ERROR' -Message ("repair failed with exit code {0}" -f $exitCode)
         }

@@ -43,32 +43,100 @@ function Get-DockerExecutable {
     return $script:dockerExe
 }
 
+function ConvertTo-WindowsProcessArgument {
+    param([string]$Argument)
+
+    $value = [string]$Argument
+    if ($value.Length -gt 0 -and $value -notmatch '[\s"]') {
+        return $value
+    }
+
+    return '"' + ($value.Replace('\', '\\').Replace('"', '\"')) + '"'
+}
+
+function Add-ProcessArguments {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    if ($StartInfo | Get-Member -Name ArgumentList -MemberType Property) {
+        foreach ($argument in $Arguments) {
+            [void]$StartInfo.ArgumentList.Add($argument)
+        }
+        return
+    }
+
+    $StartInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-WindowsProcessArgument -Argument $_ }) -join ' ')
+}
+
 function Invoke-Docker {
     param(
         [Parameter(Mandatory = $true)][string[]]$Arguments,
-        [switch]$IgnoreExitCode
+        [switch]$IgnoreExitCode,
+        [int]$TimeoutSeconds = 60
     )
 
     $dockerExe = Get-DockerExecutable
-    $stdoutPath = Join-Path $env:TEMP ("chatgpt-devbox-docker-{0}.stdout.log" -f [System.Guid]::NewGuid().ToString('N'))
-    $stderrPath = Join-Path $env:TEMP ("chatgpt-devbox-docker-{0}.stderr.log" -f [System.Guid]::NewGuid().ToString('N'))
+    $process = $null
+    $stdoutText = ''
+    $stderrText = ''
+    $timedOut = $false
 
     try {
-        $process = Start-Process -FilePath $dockerExe `
-            -ArgumentList $Arguments `
-            -Wait `
-            -PassThru `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $stdoutPath `
-            -RedirectStandardError $stderrPath
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $dockerExe
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        Add-ProcessArguments -StartInfo $startInfo -Arguments $Arguments
 
-        $stdoutText = if (Test-Path $stdoutPath) { [string](Get-Content -Path $stdoutPath -Raw) } else { '' }
-        $stderrText = if (Test-Path $stderrPath) { [string](Get-Content -Path $stderrPath -Raw) } else { '' }
-        $exitCode = [int]$process.ExitCode
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        $timeoutMs = [Math]::Max(1, $TimeoutSeconds) * 1000
+        $timedOut = -not $process.WaitForExit($timeoutMs)
+        if ($timedOut) {
+            try {
+                $process.Kill()
+            } catch {
+            }
+            [void]$process.WaitForExit(2000)
+        }
+
+        try {
+            $stdoutText = [string]$stdoutTask.GetAwaiter().GetResult()
+        } catch {
+            $stdoutText = ''
+        }
+        try {
+            $stderrText = [string]$stderrTask.GetAwaiter().GetResult()
+        } catch {
+            $stderrText = ''
+        }
+
+        $exitCode = if ($timedOut) { 124 } else { [int]$process.ExitCode }
         $text = (($stdoutText, $stderrText) -join '').Trim()
     } finally {
-        Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+        if ($process) {
+            $process.Dispose()
+        }
+    }
+
+    if ($timedOut) {
+        if (-not $IgnoreExitCode) {
+            throw "docker $($Arguments -join ' ') timed out after $TimeoutSeconds seconds. Output:`n$text"
+        }
+
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            Output = $text
+            Text = $text
+        }
     }
 
     if (-not $IgnoreExitCode -and $exitCode -ne 0) {
@@ -123,6 +191,43 @@ function Test-IsOwnedServerCommandLine {
         ([string]$CommandLine -match 'src[\\/]server\.js\b') -and
         ([string]$CommandLine -match '--env-file(?:=|\s+)[^"\s]*\.env\.runtime\b')
     )
+}
+
+function Test-IsOwnedHostCloudflaredCommandLine {
+    param([string]$CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+
+    return (
+        ([string]$CommandLine -match 'cloudflared(?:\.exe)?') -and
+        ([string]$CommandLine -match 'host-cloudflared\.tunnel-token\.txt')
+    )
+}
+
+function Stop-ExistingHostCloudflared {
+    param([string]$PidFile)
+
+    if (-not (Test-Path $PidFile)) {
+        return
+    }
+
+    $pidText = Get-Content -Path $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pidText -match '^\d+$') {
+        $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
+        if ($candidate -and (Test-IsOwnedHostCloudflaredCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+            Stop-Process -Id ([int]$candidate.ProcessId) -Force -ErrorAction SilentlyContinue
+            for ($i = 0; $i -lt 20; $i++) {
+                Start-Sleep -Milliseconds 250
+                if (-not (Get-Process -Id ([int]$candidate.ProcessId) -ErrorAction SilentlyContinue)) {
+                    break
+                }
+            }
+        }
+    }
+
+    Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
 }
 
 function Find-OwnedServerProcess {
@@ -222,6 +327,8 @@ if (Test-Path $pidFile) {
 }
 
 if ((Test-Path $envFile) -and ($Tunnel -or $All)) {
+    Stop-ExistingHostCloudflared -PidFile (Join-Path $runDir 'host-cloudflared.pid')
+
     $cloudflaredContainerName = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_CONTAINER_NAME"
     $inspectResult = Invoke-Docker -Arguments @('inspect', '--type', 'container', $cloudflaredContainerName) -IgnoreExitCode
     if ($inspectResult.ExitCode -eq 0) {

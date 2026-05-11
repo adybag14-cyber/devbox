@@ -3,9 +3,10 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
+import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { hostHeaderValidation, localhostHostValidation } from "@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
 import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middleware/bearerAuth.js";
 import * as z from "zod/v4";
@@ -80,6 +81,18 @@ const INTERNAL_TOOL_ARGUMENT_KEYS = new Set([
   "closeSSEStream",
   "closeStandaloneSSEStream",
 ]);
+
+const limitedPositiveInteger = (description, defaultValue, maxValue) => {
+  let schema = z.number().int().min(1);
+  if (Number.isFinite(maxValue)) {
+    schema = schema.max(Math.max(1, maxValue));
+  }
+
+  return schema.default(defaultValue).describe(description);
+};
+
+const transferByteCountSchema = (description, defaultValue) =>
+  limitedPositiveInteger(description, defaultValue, config.maxMcpTransferChars);
 
 const summarizeArgumentValue = (key, value) => {
   if (value === null || value === undefined) {
@@ -683,7 +696,7 @@ const buildServer = () => {
         description: "Use this when you need text content from a file inside the Docker devbox.",
         inputSchema: {
           path: z.string().min(1).describe("File path inside the Docker devbox."),
-          max_bytes: z.number().int().min(1).max(500000).default(65536).describe("Maximum bytes to return."),
+          max_bytes: transferByteCountSchema("Maximum bytes to return.", 65536),
         },
         outputSchema,
       },
@@ -709,7 +722,7 @@ const buildServer = () => {
         inputSchema: {
           path: z.string().min(1).describe("File path inside the Docker devbox."),
           offset_bytes: z.number().int().min(0).default(0).describe("Starting byte offset within the file."),
-          max_bytes: z.number().int().min(1).max(524288).default(262144).describe("Maximum raw bytes to return from that offset."),
+          max_bytes: transferByteCountSchema("Maximum raw bytes to return from that offset.", 262144),
         },
         outputSchema,
       },
@@ -861,7 +874,7 @@ const buildServer = () => {
         inputSchema: {
           path: z.string().min(1).describe("File path on the Windows host."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory used to resolve relative Windows host paths."),
-          max_bytes: z.number().int().min(1).max(524288).default(262144).describe("Maximum bytes to sample from the start of the file."),
+          max_bytes: transferByteCountSchema("Maximum bytes to sample from the start of the file.", 262144),
         },
         outputSchema,
       },
@@ -889,7 +902,7 @@ const buildServer = () => {
           path: z.string().min(1).describe("File path on the Windows host."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe("Working directory used to resolve relative Windows host paths."),
           offset_bytes: z.number().int().min(0).default(0).describe("Starting byte offset within the file."),
-          max_bytes: z.number().int().min(1).max(524288).default(262144).describe("Maximum raw bytes to return from that offset."),
+          max_bytes: transferByteCountSchema("Maximum raw bytes to return from that offset.", 262144),
         },
         outputSchema,
       },
@@ -1053,9 +1066,28 @@ if (config.publicBaseUrl) {
   allowedHosts.add(new URL(config.publicBaseUrl).hostname);
 }
 
-const app = createMcpExpressApp({
+const createBoundedMcpExpressApp = ({ host, allowedHosts, jsonBodyLimit }) => {
+  const app = express();
+  app.use(express.json({ limit: jsonBodyLimit }));
+
+  if (allowedHosts) {
+    app.use(hostHeaderValidation(allowedHosts));
+  } else if (["127.0.0.1", "localhost", "::1"].includes(host)) {
+    app.use(localhostHostValidation());
+  } else if (host === "0.0.0.0" || host === "::") {
+    console.warn(
+      `Warning: Server is binding to ${host} without DNS rebinding protection. ` +
+        "Consider using allowedHosts or authentication to protect your server.",
+    );
+  }
+
+  return app;
+};
+
+const app = createBoundedMcpExpressApp({
   host: config.host,
   allowedHosts: [...allowedHosts],
+  jsonBodyLimit: config.mcpJsonBodyLimit,
 });
 app.set("trust proxy", 1);
 app.use((req, res, next) => {

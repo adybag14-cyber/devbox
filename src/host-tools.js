@@ -3,6 +3,7 @@ import path from "node:path";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 
 import { config } from "./config.js";
+import { KeyedReadWriteLock } from "./async-locks.js";
 import { hashFileSha256, readLargeFileChunk, writeLargeFileMirror } from "./large-file-cli.js";
 import { SpawnProcessError, spawnProcess } from "./process-utils.js";
 
@@ -49,6 +50,7 @@ const MAX_HOST_DIAGNOSTIC_BYTES = 262144;
 const MAX_HOST_DIAGNOSTIC_HASH_BYTES = 8 * 1024 * 1024;
 const POWERSHELL_FILE_EXTENSIONS = new Set([".ps1", ".psm1", ".psd1"]);
 const MOJIBAKE_MARKERS = ["â€”", "â€“", "â€œ", "â€�", "â€˜", "â€™", "â€¦", "â€¢", "ðŸ", "Ã", "Â"];
+const hostFileLocks = new KeyedReadWriteLock();
 
 export const buildWindowsPowerShellArgs = (command) => {
   const encodedCommand = Buffer.from(String(command), "utf16le").toString("base64");
@@ -534,12 +536,15 @@ export const readLargeFileOnHost = async ({
   workingDir = config.hostDefaultWorkdir,
 }) => {
   assertHostExecEnabled();
+  const resolvedPath = resolveRequiredHostFilePath(filePath, workingDir);
 
-  return readLargeFileChunk({
-    path: resolveRequiredHostFilePath(filePath, workingDir),
-    offsetBytes,
-    maxBytes,
-  });
+  return hostFileLocks.runRead(resolvedPath, () =>
+    readLargeFileChunk({
+      path: resolvedPath,
+      offsetBytes,
+      maxBytes,
+    }),
+  );
 };
 
 export const writeLargeFileOnHost = async ({
@@ -551,14 +556,17 @@ export const writeLargeFileOnHost = async ({
   workingDir = config.hostDefaultWorkdir,
 }) => {
   assertHostExecEnabled();
+  const resolvedPath = resolveRequiredHostFilePath(filePath, workingDir);
 
-  return writeLargeFileMirror({
-    path: resolveRequiredHostFilePath(filePath, workingDir),
-    contentBase64,
-    append,
-    createDirs,
-    expectedSha256,
-  });
+  return hostFileLocks.runWrite(resolvedPath, () =>
+    writeLargeFileMirror({
+      path: resolvedPath,
+      contentBase64,
+      append,
+      createDirs,
+      expectedSha256,
+    }),
+  );
 };
 
 const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, isAdmin }) => {

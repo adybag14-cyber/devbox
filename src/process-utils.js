@@ -106,6 +106,10 @@ export const trimText = (text, maxChars) => {
     return { text: "", truncated: false };
   }
 
+  if (maxChars === null || maxChars === undefined || !Number.isFinite(maxChars)) {
+    return { text, truncated: false };
+  }
+
   if (text.length <= maxChars) {
     return { text, truncated: false };
   }

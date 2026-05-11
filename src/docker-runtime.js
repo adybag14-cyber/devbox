@@ -2,15 +2,22 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
+import { AsyncReadWriteLock, KeyedReadWriteLock } from "./async-locks.js";
 import { config } from "./config.js";
 import { SpawnProcessError, spawnProcess } from "./process-utils.js";
 
 const dockerBin = "docker";
-let lifecycleTail = Promise.resolve();
 let staleCleanupTail = Promise.resolve();
+const devboxLifecycleGate = new AsyncReadWriteLock();
+const devboxFileLocks = new KeyedReadWriteLock();
 
 const shEscape = (value) => `'${String(value).replace(/'/g, `'\"'\"'`)}'`;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const normalizeDevboxFileKey = (filePath) => {
+  const rawPath = String(filePath ?? "");
+  const absolutePath = path.posix.isAbsolute(rawPath) ? rawPath : path.posix.join(config.devboxWorkspacePath, rawPath);
+  return path.posix.normalize(absolutePath);
+};
 const devboxLargeFileReadPython = String.raw`
 import base64
 import hashlib
@@ -170,7 +177,10 @@ const wrapDockerError = (error, fallbackMessage) => {
 
 const runDocker = async (args, options = {}) => {
   try {
-    return await spawnProcess(dockerBin, args, options);
+    return await spawnProcess(dockerBin, args, {
+      ...options,
+      timeoutMs: options.timeoutMs ?? config.dockerCommandTimeoutMs,
+    });
   } catch (error) {
     throw wrapDockerError(error, `Docker command failed: ${args.join(" ")}`);
   }
@@ -179,22 +189,24 @@ const runDocker = async (args, options = {}) => {
 const isMissingContainerError = (error) =>
   error instanceof DockerCommandError && /No such object|No such container/i.test(`${error.stderr}\n${error.stdout}\n${error.message}`);
 
-const waitForLifecycleIdle = async () => {
-  await lifecycleTail.catch(() => {});
-};
+const withDevboxOperation = async (callback, { ensureRunning = true } = {}) => {
+  while (true) {
+    const release = await devboxLifecycleGate.acquireRead();
 
-const withLifecycleLock = async (callback) => {
-  const previous = lifecycleTail.catch(() => {});
-  let release;
-  lifecycleTail = new Promise((resolve) => {
-    release = resolve;
-  });
+    try {
+      if (!ensureRunning) {
+        return await callback();
+      }
 
-  await previous;
-  try {
-    return await callback();
-  } finally {
-    release();
+      const info = await getDevboxInfoNow();
+      if (info.running) {
+        return await callback();
+      }
+    } finally {
+      release();
+    }
+
+    await devboxLifecycleGate.runWrite(async () => ensureDevboxRunningNow());
   }
 };
 
@@ -245,13 +257,7 @@ const getDevboxInfoNow = async () => {
   }
 };
 
-export const getDevboxInfo = async ({ waitForIdle = true } = {}) => {
-  if (waitForIdle) {
-    await waitForLifecycleIdle();
-  }
-
-  return getDevboxInfoNow();
-};
+export const getDevboxInfo = async () => withDevboxOperation(() => getDevboxInfoNow(), { ensureRunning: false });
 
 const queueStaleContainerCleanup = (containerName, delayMs = config.devboxRetiredContainerGraceMs) => {
   staleCleanupTail = staleCleanupTail
@@ -339,16 +345,10 @@ const ensureDevboxRunningNow = async () => {
   return getDevboxInfoNow();
 };
 
-export const ensureDevboxRunning = async ({ waitForIdle = true } = {}) => {
-  if (waitForIdle) {
-    await waitForLifecycleIdle();
-  }
-
-  return ensureDevboxRunningNow();
-};
+export const ensureDevboxRunning = async () => devboxLifecycleGate.runWrite(async () => ensureDevboxRunningNow());
 
 export const stopDevbox = async () =>
-  withLifecycleLock(async () => {
+  devboxLifecycleGate.runWrite(async () => {
     const info = await getDevboxInfoNow();
     if (!info.exists) {
       return info;
@@ -362,7 +362,7 @@ export const stopDevbox = async () =>
   });
 
 export const restartDevbox = async () =>
-  withLifecycleLock(async () => {
+  devboxLifecycleGate.runWrite(async () => {
     const info = await getDevboxInfoNow();
     if (!info.exists) {
       return createDevboxContainerNow();
@@ -373,7 +373,7 @@ export const restartDevbox = async () =>
   });
 
 export const recreateDevbox = async () =>
-  withLifecycleLock(async () => {
+  devboxLifecycleGate.runWrite(async () => {
     const info = await getDevboxInfoNow();
     let retiredContainerName = null;
     const needsTmpMigration = info.exists && !hasManagedTmpVolume(info);
@@ -420,63 +420,33 @@ export const execInDevbox = async ({
   workingDir = config.devboxWorkspacePath,
   timeoutMs,
   user = config.devboxDefaultUser,
-}) => {
-  await waitForLifecycleIdle();
-  await ensureDevboxRunningNow();
-
-  const args = ["exec", "-i"];
-  if (user) {
-    args.push("-u", user);
-  }
-  args.push("-w", workingDir, config.devboxContainerName, "bash", "-lc", command);
-  return runDocker(args, { timeoutMs });
-};
+}) =>
+  withDevboxOperation(() => {
+    const args = ["exec"];
+    if (user) {
+      args.push("-u", user);
+    }
+    args.push("-w", workingDir, config.devboxContainerName, "bash", "-lc", command);
+    return runDocker(args, { timeoutMs });
+  });
 
 export const execReadOnlyInDevbox = async ({
   command,
   workingDir = config.devboxWorkspacePath,
   timeoutMs,
   user = config.devboxDefaultUser,
-}) => {
-  await waitForLifecycleIdle();
-  await ensureDevboxRunningNow();
+}) =>
+  withDevboxOperation(() => {
+    // Avoid disposable docker run for readonly probes; on this host those clients can strand while exec stays healthy.
+    const args = ["exec"];
+    if (user) {
+      args.push("-u", user);
+    }
 
-  const args = [
-    "run",
-    "--rm",
-    "-i",
-    "--read-only",
-    "--network",
-    "none",
-    "--cap-drop",
-    "ALL",
-    "--security-opt",
-    "no-new-privileges",
-    "--tmpfs",
-    "/tmp:rw,noexec,nosuid,size=64m",
-    "--tmpfs",
-    "/run:rw,noexec,nosuid,size=16m",
-    "--tmpfs",
-    "/var/tmp:rw,noexec,nosuid,size=64m",
-  ];
+    args.push("-w", workingDir, config.devboxContainerName, "bash", "-lc", command);
 
-  if (user) {
-    args.push("-u", user);
-  }
-
-  args.push(
-    "-w",
-    workingDir,
-    "-v",
-    `${config.hostWorkspacePath}:${config.devboxWorkspacePath}:ro`,
-    config.devboxImageName,
-    "bash",
-    "-lc",
-    command,
-  );
-
-  return runDocker(args, { timeoutMs });
-};
+    return runDocker(args, { timeoutMs });
+  });
 
 export const runProgramInDevbox = async ({
   program,
@@ -485,25 +455,26 @@ export const runProgramInDevbox = async ({
   timeoutMs,
   user = config.devboxDefaultUser,
   input,
-}) => {
-  await waitForLifecycleIdle();
-  await ensureDevboxRunningNow();
+}) =>
+  withDevboxOperation(() => {
+    const dockerArgs = ["exec"];
+    if (input !== undefined) {
+      dockerArgs.push("-i");
+    }
+    if (user) {
+      dockerArgs.push("-u", user);
+    }
 
-  const dockerArgs = ["exec", "-i"];
-  if (user) {
-    dockerArgs.push("-u", user);
-  }
-
-  dockerArgs.push("-w", workingDir, config.devboxContainerName, program, ...args);
-  return runDocker(dockerArgs, { timeoutMs, input });
-};
+    dockerArgs.push("-w", workingDir, config.devboxContainerName, program, ...args);
+    return runDocker(dockerArgs, { timeoutMs, input });
+  });
 
 export const getDevboxVersions = async () => {
   const result = await execInDevbox({
     command: [
-      "printf 'gh='; gh --version | head -n 1",
+      "printf 'gh='; if command -v gh >/dev/null 2>&1; then printf 'installed\\n'; else printf 'missing\\n'; fi",
       "printf 'node='; node --version",
-      "printf 'npm='; npm --version",
+      "printf 'npm='; if command -v npm >/dev/null 2>&1; then printf 'installed\\n'; else printf 'missing\\n'; fi",
       "printf 'python='; python3 --version",
       "printf 'git='; git --version",
       "printf 'rg='; rg --version | head -n 1",
@@ -530,30 +501,35 @@ export const listFilesInDevbox = async ({
 };
 
 export const readFileInDevbox = async ({ path, maxBytes = 65536 }) =>
-  execInDevbox({
-    command: `if [ ! -f ${shEscape(path)} ]; then echo 'Not a regular file.' >&2; exit 1; fi; head -c ${Math.max(1, maxBytes)} -- ${shEscape(path)}`,
-    timeoutMs: 30000,
-  });
+  devboxFileLocks.runRead(normalizeDevboxFileKey(path), () =>
+    execInDevbox({
+      command: `if [ ! -f ${shEscape(path)} ]; then echo 'Not a regular file.' >&2; exit 1; fi; head -c ${Math.max(1, maxBytes)} -- ${shEscape(path)}`,
+      timeoutMs: 30000,
+    }),
+  );
 
-export const readLargeFileInDevbox = async ({ path, offsetBytes = 0, maxBytes = 262144 }) => {
-  const result = await runProgramInDevbox({
-    program: "python3",
-    args: ["-c", devboxLargeFileReadPython, path, String(Math.max(0, offsetBytes)), String(Math.max(1, maxBytes))],
-    timeoutMs: 120000,
-  });
+export const readLargeFileInDevbox = async ({ path, offsetBytes = 0, maxBytes = 262144 }) =>
+  devboxFileLocks.runRead(normalizeDevboxFileKey(path), async () => {
+    const result = await runProgramInDevbox({
+      program: "python3",
+      args: ["-c", devboxLargeFileReadPython, path, String(Math.max(0, offsetBytes)), String(Math.max(1, maxBytes))],
+      timeoutMs: 120000,
+    });
 
-  return parseStructuredStdout(result, `Large file read for ${path} returned invalid JSON.`);
-};
+    return parseStructuredStdout(result, `Large file read for ${path} returned invalid JSON.`);
+  });
 
 export const writeFileInDevbox = async ({ path, content, append = false, createDirs = true }) => {
   const encoded = Buffer.from(content, "utf8").toString("base64");
   const op = append ? ">>" : ">";
   const prelude = createDirs ? `mkdir -p -- "$(dirname -- ${shEscape(path)})" && ` : "";
 
-  return execInDevbox({
-    command: `${prelude}printf '%s' ${shEscape(encoded)} | base64 -d ${op} ${shEscape(path)}`,
-    timeoutMs: 30000,
-  });
+  return devboxFileLocks.runWrite(normalizeDevboxFileKey(path), () =>
+    execInDevbox({
+      command: `${prelude}printf '%s' ${shEscape(encoded)} | base64 -d ${op} ${shEscape(path)}`,
+      timeoutMs: 30000,
+    }),
+  );
 };
 
 export const writeLargeFileInDevbox = async ({
@@ -562,16 +538,17 @@ export const writeLargeFileInDevbox = async ({
   append = false,
   createDirs = true,
   expectedSha256 = null,
-}) => {
-  const result = await runProgramInDevbox({
-    program: "python3",
-    args: ["-c", devboxLargeFileWritePython, path, append ? "1" : "0", createDirs ? "1" : "0", expectedSha256 ?? ""],
-    input: contentBase64,
-    timeoutMs: 120000,
-  });
+}) =>
+  devboxFileLocks.runWrite(normalizeDevboxFileKey(path), async () => {
+    const result = await runProgramInDevbox({
+      program: "python3",
+      args: ["-c", devboxLargeFileWritePython, path, append ? "1" : "0", createDirs ? "1" : "0", expectedSha256 ?? ""],
+      input: contentBase64,
+      timeoutMs: 120000,
+    });
 
-  return parseStructuredStdout(result, `Large file write for ${path} returned invalid JSON.`);
-};
+    return parseStructuredStdout(result, `Large file write for ${path} returned invalid JSON.`);
+  });
 
 export const searchFilesInDevbox = async ({
   pattern,
