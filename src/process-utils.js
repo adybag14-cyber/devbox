@@ -12,6 +12,31 @@ export class SpawnProcessError extends Error {
   }
 }
 
+const killProcessTree = (child) => {
+  if (!child.pid) {
+    return;
+  }
+
+  if (process.platform === "win32") {
+    const killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    killer.on("error", () => {});
+    killer.unref();
+    return;
+  }
+
+  child.kill("SIGTERM");
+  const forceKillTimer = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+    }
+  }, 1000);
+  forceKillTimer.unref();
+};
+
 export const spawnProcess = (file, args, options = {}) =>
   new Promise((resolve, reject) => {
     let stdout = "";
@@ -29,7 +54,7 @@ export const spawnProcess = (file, args, options = {}) =>
     if (options.timeoutMs) {
       timer = setTimeout(() => {
         timedOut = true;
-        child.kill();
+        killProcessTree(child);
       }, options.timeoutMs);
     }
 

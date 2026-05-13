@@ -78,6 +78,7 @@ const payload = "a".repeat(4_000_000);
 const payloadSha256 = createHash("sha256").update(payload).digest("hex");
 const reportPath = path.join(runDir, "soak", `live-4m-${runId}.json`);
 const latestReportPath = path.join(runDir, "soak", "live-4m-latest.json");
+const mcpRequestOptions = { timeout: 300_000 };
 
 await mkdir(artifactDir, { recursive: true });
 
@@ -101,52 +102,68 @@ let devboxReadonlyResult;
 try {
   await client.connect(transport);
 
-  writeResult = await client.callTool({
-    name: "windows_host_write_large_file",
-    arguments: {
-      path: filePath,
-      working_dir: artifactDir,
-      content: payload,
-      create_dirs: true,
-      expected_sha256: payloadSha256,
+  writeResult = await client.callTool(
+    {
+      name: "windows_host_write_large_file",
+      arguments: {
+        path: filePath,
+        working_dir: artifactDir,
+        content: payload,
+        create_dirs: true,
+        expected_sha256: payloadSha256,
+      },
     },
-  });
+    undefined,
+    mcpRequestOptions,
+  );
 
   assert(writeResult.structuredContent?.ok === true, writeResult.structuredContent?.summary ?? "4M write failed");
   assert(writeResult.structuredContent?.data?.bytes_written === payload.length, "4M write reported an unexpected byte count");
   assert(writeResult.structuredContent?.data?.content_sha256 === payloadSha256, "4M write reported an unexpected SHA-256");
 
-  readResult = await client.callTool({
-    name: "windows_host_read_large_file",
-    arguments: {
-      path: filePath,
-      working_dir: artifactDir,
-      offset_bytes: 0,
-      max_bytes: payload.length,
+  readResult = await client.callTool(
+    {
+      name: "windows_host_read_large_file",
+      arguments: {
+        path: filePath,
+        working_dir: artifactDir,
+        offset_bytes: 0,
+        max_bytes: payload.length,
+      },
     },
-  });
+    undefined,
+    mcpRequestOptions,
+  );
 
   assert(readResult.structuredContent?.ok === true, readResult.structuredContent?.summary ?? "4M read failed");
   assert(readResult.structuredContent?.data?.bytes_returned === payload.length, "4M read reported an unexpected byte count");
   assert(readResult.structuredContent?.data?.content_sha256 === payloadSha256, "4M read reported an unexpected SHA-256");
   assert(typeof readResult.structuredContent?.data?.content_base64 === "string", "4M read did not return base64 content");
 
-  devboxStatusResult = await client.callTool({
-    name: "devbox_status",
-    arguments: {},
-  });
+  devboxStatusResult = await client.callTool(
+    {
+      name: "devbox_status",
+      arguments: {},
+    },
+    undefined,
+    mcpRequestOptions,
+  );
   assert(devboxStatusResult.structuredContent?.ok === true, devboxStatusResult.structuredContent?.summary ?? "devbox_status failed");
   assert(devboxStatusResult.structuredContent?.data?.running === true, "devbox_status did not report a running devbox");
 
-  devboxReadonlyResult = await client.callTool({
-    name: "devbox_exec_readonly",
-    arguments: {
-      command: "printf live-devbox-ready",
-      working_dir: "/workspace",
-      timeout_seconds: 30,
-      user: "root",
+  devboxReadonlyResult = await client.callTool(
+    {
+      name: "devbox_exec_readonly",
+      arguments: {
+        command: "printf live-devbox-ready",
+        working_dir: "/workspace",
+        timeout_seconds: 30,
+        user: "root",
+      },
     },
-  });
+    undefined,
+    mcpRequestOptions,
+  );
   assert(
     devboxReadonlyResult.structuredContent?.ok === true,
     devboxReadonlyResult.structuredContent?.summary ?? "devbox_exec_readonly failed",
