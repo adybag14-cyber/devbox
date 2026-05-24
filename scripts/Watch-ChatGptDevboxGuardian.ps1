@@ -1,9 +1,12 @@
 [CmdletBinding()]
 param(
     [string]$ProjectRoot = 'C:\Users\adyba\docker-chatgpt-devbox',
-    [int]$PollSeconds = 5,
-    [int]$RepairCooldownSeconds = 30,
-    [int]$FailureThreshold = 2
+    [int]$PollSeconds = 10,
+    [int]$RepairCooldownSeconds = 120,
+    [int]$DockerRepairCooldownSeconds = 900,
+    [int]$FailureThreshold = 3,
+    [int]$DockerProbeTimeoutSeconds = 5,
+    [int]$DockerProbeCooldownSeconds = 60
 )
 
 Set-StrictMode -Version Latest
@@ -27,6 +30,8 @@ $lastRepairPath = Join-Path $guardianDir 'last-repair.json'
 $hostCloudflaredPidPath = Join-Path $runDir 'host-cloudflared.pid'
 $mutexName = 'Global\ChatGptDevboxGuardian'
 $script:dockerExe = $null
+$script:lastDockerProbeAt = [DateTime]::MinValue
+$script:lastDockerReady = $false
 
 foreach ($path in @($runDir, $guardianDir, $repairDir)) {
     if (-not (Test-Path $path)) {
@@ -299,8 +304,15 @@ public static class ChatGptDevboxGuardianTokenProbe {
     }
 
     function Test-DockerEngine {
-        $result = Invoke-Docker -Arguments @('version', '--format', '{{.Server.Version}}') -IgnoreExitCode -AllowMissing -TimeoutSeconds 45
-        return ($result.ExitCode -eq 0)
+        $now = [DateTime]::UtcNow
+        if (($now - $script:lastDockerProbeAt).TotalSeconds -lt $DockerProbeCooldownSeconds) {
+            return $script:lastDockerReady
+        }
+
+        $script:lastDockerProbeAt = $now
+        $result = Invoke-Docker -Arguments @('version', '--format', '{{.Server.Version}}') -IgnoreExitCode -AllowMissing -TimeoutSeconds $DockerProbeTimeoutSeconds
+        $script:lastDockerReady = ($result.ExitCode -eq 0)
+        return $script:lastDockerReady
     }
 
     function Format-DockerArgumentsForLog {
@@ -644,7 +656,7 @@ public static class ChatGptDevboxGuardianTokenProbe {
         $cloudflaredRunning = $null
         $hostCloudflaredProcess = Get-HostCloudflaredProcess
         $hostCloudflaredRunning = [bool]$hostCloudflaredProcess
-        $effectiveCloudflaredRunning = $false
+        $effectiveCloudflaredRunning = $hostCloudflaredRunning
         $localHealthy = $false
         $publicHealthy = $null
         $mcpProcess = Get-OwnedMcpProcess
@@ -717,13 +729,24 @@ public static class ChatGptDevboxGuardianTokenProbe {
             PublicHealth = $publicHealthy
             IsHealthy = ($desiredState.ShouldRun -eq $false) -or ($reasons.Count -eq 0)
             NeedsRepair = ($desiredState.ShouldRun -eq $true) -and (
-                (-not $devboxRunning) -or
                 ($mcpProcessHealthy -ne $true) -or
                 ($localHealthy -ne $true) -or
-                ($settings.Public -and ($effectiveCloudflaredRunning -ne $true))
+                ($settings.Public -and ($effectiveCloudflaredRunning -ne $true)) -or
+                ($dockerReady -and (-not $devboxRunning))
             )
             Reasons = @($reasons)
         }
+    }
+
+    function Get-RepairCooldownForState {
+        param([Parameter(Mandatory = $true)]$State)
+
+        $reasons = @($State.Reasons)
+        if ($reasons.Count -eq 1 -and $reasons[0] -eq 'docker engine not ready') {
+            return [Math]::Max($RepairCooldownSeconds, $DockerRepairCooldownSeconds)
+        }
+
+        return $RepairCooldownSeconds
     }
 
     function Invoke-GuardianRepair {
@@ -844,6 +867,14 @@ public static class ChatGptDevboxGuardianTokenProbe {
 
     Set-Content -Path $guardianPidPath -Value $PID -Encoding ASCII
     Write-GuardianLog -Message ("guardian boot pid={0}" -f $PID)
+    Write-JsonFile -Path $heartbeatPath -Value @{
+        ObservedAtUtc = [DateTime]::UtcNow.ToString('o')
+        GuardianPid = $PID
+        DesiredShouldRun = $null
+        IsHealthy = $null
+        McpProcessId = $null
+        Reasons = @('starting')
+    }
 
     $lastRepairAt = [DateTime]::MinValue
     $unhealthyCount = 0
@@ -893,7 +924,8 @@ public static class ChatGptDevboxGuardianTokenProbe {
         }
 
         $secondsSinceRepair = ([DateTime]::UtcNow - $lastRepairAt).TotalSeconds
-        if ($secondsSinceRepair -lt $RepairCooldownSeconds) {
+        $effectiveRepairCooldownSeconds = Get-RepairCooldownForState -State $state
+        if ($secondsSinceRepair -lt $effectiveRepairCooldownSeconds) {
             Start-Sleep -Seconds $PollSeconds
             continue
         }

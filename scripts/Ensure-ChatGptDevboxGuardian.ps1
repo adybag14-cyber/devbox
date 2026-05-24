@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ProjectRoot = 'C:\Users\adyba\docker-chatgpt-devbox',
-    [int]$HeartbeatMaxAgeSeconds = 180
+    [int]$HeartbeatMaxAgeSeconds = 600
 )
 
 Set-StrictMode -Version Latest

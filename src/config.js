@@ -86,6 +86,8 @@ export const config = {
   maxTextOutputChars: parseCharacterLimit(process.env.MAX_TEXT_OUTPUT_CHARS, 4000000),
   maxMcpTransferChars: parseCharacterLimit(process.env.MAX_MCP_TRANSFER_CHARS, 4000000),
   mcpJsonBodyLimit: parseJsonBodyLimit(process.env.MCP_JSON_BODY_LIMIT, "16mb"),
+  mcpUsageLogMaxBytes: parseInteger(process.env.MCP_USAGE_LOG_MAX_BYTES, 16 * 1024 * 1024),
+  mcpUsageLogRotations: parseInteger(process.env.MCP_USAGE_LOG_ROTATIONS, 3),
   dockerCommandTimeoutMs: parseInteger(process.env.DOCKER_COMMAND_TIMEOUT_MS, 120000),
   devboxContainerName: defaultDevboxContainerName,
   devboxImageName: process.env.DEVBOX_IMAGE_NAME?.trim() || "chatgpt-devbox-runtime:local",

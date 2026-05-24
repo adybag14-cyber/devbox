@@ -220,8 +220,8 @@ function Test-DockerEngine {
 }
 
 function Start-DockerDesktopIfNeeded {
-    if (Test-DockerEngine -TimeoutSeconds 45) {
-        return
+    if (Test-DockerEngine -TimeoutSeconds 5) {
+        return $true
     }
 
     $dockerDesktop = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
@@ -234,12 +234,13 @@ function Start-DockerDesktopIfNeeded {
     $deadline = [DateTime]::UtcNow.AddSeconds(120)
     while ([DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Seconds 2
-        if (Test-DockerEngine -TimeoutSeconds 20) {
-            return
+        if (Test-DockerEngine -TimeoutSeconds 5) {
+            return $true
         }
     }
 
-    throw "Docker engine did not become ready within 120 seconds."
+    Write-Warning "Docker engine did not become ready within 120 seconds; starting MCP in degraded mode."
+    return $false
 }
 
 function Get-EnvValue {
@@ -719,7 +720,8 @@ function Start-CloudflaredNamedTunnel {
         [string]$TunnelToken,
         [string]$PublicHostname,
         [int]$Port,
-        [string]$RunDir
+        [string]$RunDir,
+        [bool]$DockerReady = $true
     )
 
     if (-not $TunnelToken) {
@@ -741,7 +743,7 @@ function Start-CloudflaredNamedTunnel {
     Stop-ExistingHostCloudflared -PidFile $pidFile
     [System.IO.File]::WriteAllText($tokenFile, $TunnelToken, [System.Text.UTF8Encoding]::new($false))
     [System.IO.File]::WriteAllText($configFile, "url: http://127.0.0.1:$Port`nloglevel: info`n", [System.Text.UTF8Encoding]::new($false))
-    if (Test-DockerObjectExists -Type container -Name $ContainerName) {
+    if ($DockerReady -and (Test-DockerObjectExists -Type container -Name $ContainerName)) {
         Remove-DockerContainerIfPresent -ContainerName $ContainerName
     }
 
@@ -773,7 +775,8 @@ function Start-CloudflaredPublicTunnel {
         [string]$ContainerName,
         [string]$TunnelToken,
         [string]$PublicHostname,
-        [int]$Port
+        [int]$Port,
+        [bool]$DockerReady = $true
     )
 
     $hasToken = -not [string]::IsNullOrWhiteSpace($TunnelToken)
@@ -784,7 +787,11 @@ function Start-CloudflaredPublicTunnel {
             throw "CLOUDFLARED_TUNNEL_TOKEN and CLOUDFLARED_PUBLIC_HOSTNAME must both be set to use the named Cloudflare tunnel."
         }
 
-        return Start-CloudflaredNamedTunnel -ContainerName $ContainerName -TunnelToken $TunnelToken -PublicHostname $PublicHostname -Port $Port -RunDir $runDir
+        return Start-CloudflaredNamedTunnel -ContainerName $ContainerName -TunnelToken $TunnelToken -PublicHostname $PublicHostname -Port $Port -RunDir $runDir -DockerReady $DockerReady
+    }
+
+    if (-not $DockerReady) {
+        throw "Docker is required for Cloudflare quick tunnels. Configure CLOUDFLARED_TUNNEL_TOKEN and CLOUDFLARED_PUBLIC_HOSTNAME to use the host tunnel path."
     }
 
     return Start-CloudflaredQuickTunnel -ContainerName $ContainerName -Port $Port
@@ -803,8 +810,6 @@ $stderrLog = Join-Path $runDir "mcp.stderr.log"
 if (-not (Test-Path $envFile)) {
     & (Join-Path $PSScriptRoot "Initialize-ChatGptDevboxMcp.ps1")
 }
-
-Start-DockerDesktopIfNeeded
 
 Ensure-Directory -Path $runDir
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $true -Source "Start-ChatGptDevboxMcp.ps1"
@@ -843,13 +848,18 @@ if (-not $configuredPublicBaseUrl) {
     $configuredPublicBaseUrl = Normalize-PublicBaseUrl -Value $cloudflaredPublicHostname
 }
 
+$dockerReady = Start-DockerDesktopIfNeeded
 Ensure-Directory -Path $hostWorkspace
-Ensure-RuntimeImage -Root $root -ImageName $imageName -ForceRebuild:$RebuildRuntime
-Ensure-DevboxContainer -ContainerName $containerName -ImageName $imageName -HostWorkspace $hostWorkspace -DevboxWorkspace $devboxWorkspace -Recreate:$RebuildRuntime
+if ($dockerReady) {
+    Ensure-RuntimeImage -Root $root -ImageName $imageName -ForceRebuild:$RebuildRuntime
+    Ensure-DevboxContainer -ContainerName $containerName -ImageName $imageName -HostWorkspace $hostWorkspace -DevboxWorkspace $devboxWorkspace -Recreate:$RebuildRuntime
+} else {
+    Write-Warning "Skipping Docker image/container checks because Docker is not ready."
+}
 
 $publicBaseUrl = $configuredPublicBaseUrl
 if ($Public) {
-    $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port
+    $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port -DockerReady $dockerReady
 }
 
 if (-not $configuredAuthMode) {

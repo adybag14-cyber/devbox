@@ -1,4 +1,4 @@
-import { appendFile, mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -54,6 +54,7 @@ const runDir = path.join(projectRoot, "run");
 const guardianDesiredStatePath = path.join(runDir, "guardian.desired-state.json");
 const toolUsageLogPath = path.join(runDir, "tool-usage.jsonl");
 const httpUsageLogPath = path.join(runDir, "http-usage.jsonl");
+const logRotationChains = new Map();
 
 const outputSchema = {
   ok: z.boolean(),
@@ -170,9 +171,60 @@ const summarizeToolContext = (args) => {
   return Object.keys(context).length > 0 ? context : null;
 };
 
+const rotateUsageLogIfNeeded = async (logPath) => {
+  const maxBytes = config.mcpUsageLogMaxBytes;
+  const rotations = Math.max(0, config.mcpUsageLogRotations);
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0 || rotations <= 0) {
+    return;
+  }
+
+  let currentStat;
+  try {
+    currentStat = await stat(logPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  if (currentStat.size < maxBytes) {
+    return;
+  }
+
+  await rm(`${logPath}.${rotations}`, { force: true });
+  for (let index = rotations - 1; index >= 1; index -= 1) {
+    await rename(`${logPath}.${index}`, `${logPath}.${index + 1}`).catch((error) => {
+      if (error?.code !== "ENOENT") {
+        throw error;
+      }
+    });
+  }
+  await rename(logPath, `${logPath}.1`).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
+};
+
 const appendJsonlEvent = async (logPath, event) => {
   await mkdir(path.dirname(logPath), { recursive: true });
-  await appendFile(logPath, `${JSON.stringify(event)}\n`, "utf8");
+  const previous = logRotationChains.get(logPath) ?? Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(async () => {
+      await rotateUsageLogIfNeeded(logPath);
+      await appendFile(logPath, `${JSON.stringify(event)}\n`, "utf8");
+    });
+
+  logRotationChains.set(logPath, next);
+  try {
+    await next;
+  } finally {
+    if (logRotationChains.get(logPath) === next) {
+      logRotationChains.delete(logPath);
+    }
+  }
 };
 
 const writeJsonStateFile = async (filePath, value) => {

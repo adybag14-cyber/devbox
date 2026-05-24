@@ -42,6 +42,50 @@ export const spawnProcess = (file, args, options = {}) =>
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let settled = false;
+    let timer = null;
+    let timeoutRejectTimer = null;
+
+    const buildTimeoutError = (code = null) =>
+      new SpawnProcessError(`Command timed out after ${options.timeoutMs} ms.`, {
+        exitCode: code,
+        stdout,
+        stderr,
+        file,
+        args,
+      });
+
+    const cleanupTimers = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+
+      if (timeoutRejectTimer) {
+        clearTimeout(timeoutRejectTimer);
+        timeoutRejectTimer = null;
+      }
+    };
+
+    const settleResolve = (value) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanupTimers();
+      resolve(value);
+    };
+
+    const settleReject = (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanupTimers();
+      reject(error);
+    };
 
     const child = spawn(file, args, {
       cwd: options.cwd,
@@ -50,12 +94,16 @@ export const spawnProcess = (file, args, options = {}) =>
       windowsHide: true,
     });
 
-    let timer = null;
     if (options.timeoutMs) {
       timer = setTimeout(() => {
         timedOut = true;
         killProcessTree(child);
+        timeoutRejectTimer = setTimeout(() => {
+          settleReject(buildTimeoutError(null));
+        }, options.timeoutRejectGraceMs ?? 3000);
+        timeoutRejectTimer.unref?.();
       }, options.timeoutMs);
+      timer.unref?.();
     }
 
     child.stdout.on("data", (chunk) => {
@@ -67,11 +115,7 @@ export const spawnProcess = (file, args, options = {}) =>
     });
 
     child.on("error", (error) => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-
-      reject(
+      settleReject(
         new SpawnProcessError(error.message, {
           stdout,
           stderr,
@@ -82,25 +126,13 @@ export const spawnProcess = (file, args, options = {}) =>
     });
 
     child.on("close", (code) => {
-      if (timer) {
-        clearTimeout(timer);
-      }
-
       if (timedOut) {
-        reject(
-          new SpawnProcessError(`Command timed out after ${options.timeoutMs} ms.`, {
-            exitCode: code,
-            stdout,
-            stderr,
-            file,
-            args,
-          }),
-        );
+        settleReject(buildTimeoutError(code));
         return;
       }
 
       if (code !== 0) {
-        reject(
+        settleReject(
           new SpawnProcessError(stderr.trim() || stdout.trim() || `${file} exited with code ${code}.`, {
             exitCode: code,
             stdout,
@@ -112,7 +144,7 @@ export const spawnProcess = (file, args, options = {}) =>
         return;
       }
 
-      resolve({
+      settleResolve({
         stdout,
         stderr,
         exitCode: code,
