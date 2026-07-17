@@ -61,3 +61,23 @@ DEVBOX_RUNTIME_MODE=docker
 ## Current limitation
 
 Host mode does not sandbox read-only shell execution. `devbox_exec_readonly` is best-effort and intended for cooperative agents, not hard isolation.
+
+## Environment loading
+
+The CLI and `npm start` automatically load `<repo>/.env` before runtime selection and host-path resolution. Existing process environment variables take precedence over values in `.env`.
+
+Node.js 18 or newer is required by the MCP SDK and Express dependencies.
+
+## Linux validation
+
+Run the complete suite and a host-mode smoke test:
+
+```bash
+npm ci
+npm test
+DEVBOX_RUNTIME_MODE=host node bin/devbox.js start
+curl --fail http://127.0.0.1:8100/healthz
+node bin/devbox.js stop
+```
+
+Host-runtime commands now use shell-specific argument conventions for PowerShell, `cmd.exe`, and POSIX shells, so an explicit `HOST_SHELL` override is handled correctly.

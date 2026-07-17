@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildHostShellArgs,
   detectPlatform,
   defaultHostProgramAllowlist,
   resolveRuntimeMode,
@@ -37,4 +38,21 @@ test("resolveHostShell prefers SHELL on posix and PowerShell on Windows", () => 
   assert.equal(resolveHostShell({ SHELL: "/bin/bash" }, detectPlatform({}, "linux")), "/bin/bash");
   assert.equal(resolveHostShell({}, detectPlatform({}, "linux")), "/bin/sh");
   assert.equal(resolveHostShell({}, detectPlatform({}, "win32")), "powershell.exe");
+});
+
+test("Termux detection is a Linux subtype, never Windows", () => {
+  const platform = detectPlatform({ TERMUX_VERSION: "0.119" }, "linux");
+  assert.equal(platform.id, "termux");
+  assert.equal(platform.isTermux, true);
+  assert.equal(platform.isLinux, true);
+  assert.equal(platform.isWindows, false);
+});
+
+test("buildHostShellArgs supports PowerShell, cmd, and POSIX shells", () => {
+  assert.deepEqual(
+    buildHostShellArgs("powershell.exe", "Write-Output ok", detectPlatform({}, "win32")).slice(-2),
+    ["-Command", "Write-Output ok"],
+  );
+  assert.deepEqual(buildHostShellArgs("cmd.exe", "echo ok", detectPlatform({}, "win32")), ["/d", "/s", "/c", "echo ok"]);
+  assert.deepEqual(buildHostShellArgs("/bin/bash", "printf ok", detectPlatform({}, "linux")), ["-lc", "printf ok"]);
 });

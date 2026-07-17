@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { mkdir, lstat, readdir, readFile, writeFile } from "node:fs/promises";
 
 import { readLargeFileChunk, writeLargeFileMirror } from "./large-file-cli.js";
-import { detectPlatform, resolveHostShell } from "./platform.js";
+import { buildHostShellArgs, detectPlatform, resolveHostShell } from "./platform.js";
 import { SpawnProcessError, spawnProcess } from "./process-utils.js";
 
 export class HostRuntimeCommandError extends Error {
@@ -56,7 +56,7 @@ const isBinaryBuffer = (buffer) => buffer.includes(0);
 
 const createMatcher = (pattern, caseSensitive) => {
   try {
-    return new RegExp(pattern, caseSensitive ? "g" : "gi");
+    return new RegExp(pattern, caseSensitive ? "" : "i");
   } catch {
     const needle = caseSensitive ? String(pattern) : String(pattern).toLowerCase();
     return {
@@ -67,11 +67,6 @@ const createMatcher = (pattern, caseSensitive) => {
     };
   }
 };
-
-const shellArgsForCommand = ({ command, platform }) =>
-  platform.isWindows
-    ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command]
-    : ["-lc", command];
 
 const entryType = (stats) => {
   if (stats.isDirectory()) {
@@ -168,7 +163,7 @@ export const execInHostRuntime = async ({ command, workingDir, timeoutMs }) => {
   const cwd = workingDir || runtimeConfig.hostDefaultWorkdir;
 
   try {
-    return await spawnProcess(runtimeConfig.hostShell, shellArgsForCommand({ command, platform: runtimeConfig.platform }), {
+    return await spawnProcess(runtimeConfig.hostShell, buildHostShellArgs(runtimeConfig.hostShell, command, runtimeConfig.platform), {
       cwd,
       timeoutMs,
     });

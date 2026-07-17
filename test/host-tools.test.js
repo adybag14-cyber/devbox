@@ -70,6 +70,7 @@ test("file-backed PowerShell execution handles very large one-shot payloads", { 
 });
 
 test("resolveHostProgramExecutable maps node to the real node path", async () => {
+  delete process.env.NODE_EXE;
   const { getHostToolStatus, resolveHostProgramExecutable } = await importFreshHostTools();
   assert.equal(resolveHostProgramExecutable("node"), process.execPath);
   assert.equal(resolveHostProgramExecutable("node.exe"), process.execPath);

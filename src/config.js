@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { loadEnvFile } from "./env.js";
 import { defaultHostProgramAllowlist, detectPlatform, resolveHostShell, resolveRuntimeMode } from "./platform.js";
 
 const parseInteger = (value, fallback) => {
@@ -38,9 +39,10 @@ const normalizeUrl = (value) => {
   return `https://${rawValue.replace(/\/+$/, "")}`;
 };
 
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+await loadEnvFile(path.join(projectRoot, ".env"));
 const rawPublicBaseUrl = process.env.PUBLIC_BASE_URL?.trim();
 const publicBaseUrl = rawPublicBaseUrl ? rawPublicBaseUrl.replace(/\/+$/, "") : "";
-const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const platform = detectPlatform(process.env);
 const runtimeMode = resolveRuntimeMode({ requestedMode: process.env.DEVBOX_RUNTIME_MODE, platform });
 const defaultHostWorkspacePath = path.join(projectRoot, "workspace");
