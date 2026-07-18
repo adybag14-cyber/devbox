@@ -10,7 +10,16 @@ use std::thread;
 use std::time::Duration;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/adybag14-cyber/devbox.git";
+const CANONICAL_TERMUX_REPO: &str = "https://github.com/adybag14-cyber/termux-app";
 const MINIMUM_NODE_MAJOR: u32 = 18;
+const TERMUX_PACKAGES: &[&str] = &[
+    "nodejs",
+    "git",
+    "python",
+    "ripgrep",
+    "curl",
+    "ca-certificates",
+];
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug)]
@@ -70,6 +79,7 @@ struct Options {
     bind_host: Option<String>,
     port: Option<u16>,
     workspace: Option<PathBuf>,
+    install_system_packages: bool,
     install_dependencies: bool,
     link_command: bool,
     start_server: bool,
@@ -85,6 +95,7 @@ impl Default for Options {
             bind_host: None,
             port: None,
             workspace: None,
+            install_system_packages: true,
             install_dependencies: true,
             link_command: true,
             start_server: true,
@@ -103,6 +114,7 @@ DEFAULT BEHAVIOUR:
     - Uses the current directory when it is already a Devbox checkout.
     - Otherwise clones Devbox into ./devbox.
     - Creates .env without overwriting an existing file.
+    - On Termux, installs required Android packages with `pkg`.
     - Installs npm dependencies, links the `devbox` command, and starts it.
 
 OPTIONS:
@@ -112,6 +124,7 @@ OPTIONS:
     --host <ADDRESS>       Set HOST in .env
     --port <PORT>          Set PORT in .env
     --workspace <PATH>     Set host workspace and default work directory
+    --skip-system-packages Do not install Termux packages with pkg
     --skip-install         Do not run npm install
     --no-link              Do not run npm link
     --no-start             Do not start the MCP service
@@ -157,6 +170,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> SetupResult<Option
             "--workspace" => {
                 options.workspace = Some(PathBuf::from(next_value(&mut arguments, "--workspace")?))
             }
+            "--skip-system-packages" => options.install_system_packages = false,
             "--skip-install" => options.install_dependencies = false,
             "--no-link" => options.link_command = false,
             "--no-start" => options.start_server = false,
@@ -313,6 +327,38 @@ fn parse_node_major(version: &str) -> Option<u32> {
         .next()?
         .parse::<u32>()
         .ok()
+}
+
+fn is_termux_values(termux_version: Option<&str>, prefix: Option<&str>) -> bool {
+    termux_version.is_some_and(|value| !value.trim().is_empty())
+        || prefix.is_some_and(|value| value.contains("com.termux/files/usr"))
+}
+
+fn is_termux_environment() -> bool {
+    let termux_version = env::var("TERMUX_VERSION").ok();
+    let prefix = env::var("PREFIX").ok();
+    is_termux_values(termux_version.as_deref(), prefix.as_deref())
+}
+
+fn termux_package_arguments() -> Vec<&'static str> {
+    let mut arguments = vec!["install", "-y"];
+    arguments.extend_from_slice(TERMUX_PACKAGES);
+    arguments
+}
+
+fn install_termux_prerequisites(options: &Options) -> SetupResult<()> {
+    if !is_termux_environment() || !options.install_system_packages {
+        return Ok(());
+    }
+
+    println!("Termux on Android detected.");
+    println!("Canonical Termux app: {CANONICAL_TERMUX_REPO}");
+    let arguments = termux_package_arguments();
+    run_command("pkg", &arguments, None, options.dry_run).map_err(|error| {
+        Box::new(SetupError(format!(
+            "failed to install Termux packages with pkg: {error}. Use --skip-system-packages only when Node.js 18+, npm, and Git are already installed"
+        ))) as Box<dyn Error>
+    })
 }
 
 fn verify_toolchain() -> SetupResult<()> {
@@ -496,11 +542,17 @@ fn prepare_files(repo: &Path, options: &Options) -> SetupResult<PreparedConfig> 
         content.remove(0);
     }
 
+    let termux = is_termux_environment();
     if env_created || options.runtime.is_some() {
+        let default_runtime = if termux {
+            RuntimeMode::Host
+        } else {
+            RuntimeMode::Auto
+        };
         content = set_env_value(
             &content,
             "DEVBOX_RUNTIME_MODE",
-            options.runtime.unwrap_or(RuntimeMode::Auto).as_str(),
+            options.runtime.unwrap_or(default_runtime).as_str(),
         );
     }
     if let Some(host) = &options.bind_host {
@@ -521,10 +573,20 @@ fn prepare_files(repo: &Path, options: &Options) -> SetupResult<PreparedConfig> 
             }
         })
         .unwrap_or_else(|| repo.join("workspace"));
-    if options.workspace.is_some() {
+    if options.workspace.is_some() || (termux && env_created) {
         let workspace_value = workspace.to_string_lossy();
         content = set_env_value(&content, "HOST_WORKSPACE_PATH", &workspace_value);
         content = set_env_value(&content, "HOST_DEFAULT_WORKDIR", &workspace_value);
+    }
+    if termux && env_created {
+        let shell = env::var("PREFIX")
+            .ok()
+            .map(|prefix| PathBuf::from(prefix).join("bin/bash"))
+            .filter(|path| path.is_file())
+            .or_else(|| env::var("SHELL").ok().map(PathBuf::from));
+        if let Some(shell) = shell {
+            content = set_env_value(&content, "HOST_SHELL", &shell.to_string_lossy());
+        }
     }
 
     if options.dry_run {
@@ -634,6 +696,7 @@ fn wait_for_health(host: &str, port: u16) -> bool {
 
 fn setup(options: Options) -> SetupResult<()> {
     println!("Devbox MCP setup {VERSION}");
+    install_termux_prerequisites(&options)?;
     verify_toolchain()?;
     let repo = clone_or_locate_repo(&options)?;
     if options.dry_run && !is_devbox_repo(&repo) {
@@ -686,6 +749,10 @@ fn setup(options: Options) -> SetupResult<()> {
     println!();
     println!("Setup complete.");
     println!("Repository: {}", repo.display());
+    if is_termux_environment() {
+        println!("Platform: Termux on Android");
+        println!("Canonical Termux app: {CANONICAL_TERMUX_REPO}");
+    }
     println!(
         "Runtime: {} (resolved: {})",
         prepared.runtime.as_str(),
@@ -732,6 +799,26 @@ mod tests {
     }
 
     #[test]
+    fn detects_termux_from_version_or_prefix() {
+        assert!(is_termux_values(Some("0.118"), None));
+        assert!(is_termux_values(
+            None,
+            Some("/data/data/com.termux/files/usr")
+        ));
+        assert!(!is_termux_values(None, Some("/usr")));
+        assert!(!is_termux_values(Some(""), None));
+    }
+
+    #[test]
+    fn termux_packages_include_required_runtime_tools() {
+        let arguments = termux_package_arguments();
+        assert_eq!(&arguments[..2], &["install", "-y"]);
+        for package in ["nodejs", "git", "python", "ripgrep", "curl"] {
+            assert!(arguments.contains(&package));
+        }
+    }
+
+    #[test]
     fn updates_existing_environment_values_without_losing_comments() {
         let source = "# keep this\nPORT=8100\nHOST=0.0.0.0\n";
         let updated = set_env_value(source, "PORT", "9000");
@@ -774,12 +861,14 @@ mod tests {
             "host".to_string(),
             "--port".to_string(),
             "9000".to_string(),
+            "--skip-system-packages".to_string(),
             "--no-start".to_string(),
         ])
         .unwrap();
         assert_eq!(options.repo, Some(PathBuf::from("sample")));
         assert_eq!(options.runtime, Some(RuntimeMode::Host));
         assert_eq!(options.port, Some(9000));
+        assert!(!options.install_system_packages);
         assert!(!options.start_server);
     }
 

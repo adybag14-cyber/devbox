@@ -19,6 +19,10 @@ Prebuilt binaries are produced by the **Build bootstrap binaries** GitHub Action
 - Linux x86-64
 - macOS x86-64
 - macOS Apple Silicon
+- Android/Termux arm64-v8a
+- Android/Termux armeabi-v7a
+- Android/Termux x86-64
+- Android/Termux x86
 
 Download the artifact for your operating system from the latest successful workflow run, extract it, and run it.
 
@@ -61,11 +65,33 @@ Useful installer options:
 --workspace /path/to/workspace
 --no-start
 --no-link
+--skip-system-packages
 --skip-install
 --dry-run
 ```
 
 The installer does not replace an existing `.env` with `.env.example`; it preserves existing lines and updates only explicitly selected keys.
+
+
+### Android and Termux
+
+Install the signed canonical Termux app from:
+
+- <https://github.com/adybag14-cyber/termux-app>
+- <https://github.com/adybag14-cyber/termux-app/releases>
+
+Then run inside Termux:
+
+```bash
+pkg install -y curl ca-certificates
+curl --fail --location --output install-devbox.sh \
+  https://raw.githubusercontent.com/adybag14-cyber/devbox/main/scripts/install-termux.sh
+sh install-devbox.sh
+```
+
+The installer chooses the correct Android ABI, SHA-256 verifies and installs the matching release binary, provisions the required Termux packages, configures host mode, starts Devbox, and checks its health endpoint.
+
+Full Android instructions: [docs/TERMUX.md](./docs/TERMUX.md)
 
 ## Build the Rust installer yourself
 
@@ -109,6 +135,7 @@ The Rust bootstrap binary still needs the runtime prerequisites used by Devbox i
 
 ### Host mode
 
+- Android API 21+ through the canonical Termux app
 - Termux, Linux, or macOS
 - optional but useful: `gh`, `python3`, `ripgrep`, and `curl`
 
@@ -154,7 +181,9 @@ Behavior:
 - generic host tools are exposed through `host_*`
 - legacy `windows_host_*` names remain compatibility aliases
 
-Termux instructions: [docs/TERMUX.md](./docs/TERMUX.md)
+Termux and Android instructions: [docs/TERMUX.md](./docs/TERMUX.md)
+
+Canonical Termux app: <https://github.com/adybag14-cyber/termux-app>
 
 Linux/macOS details: [docs/HOST_COMPATIBILITY.md](./docs/HOST_COMPATIBILITY.md)
 

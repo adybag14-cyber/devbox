@@ -3,20 +3,21 @@ name: Build bootstrap binaries
 on:
   push:
     branches: [main]
-    paths:
-      - "bootstrap/**"
-      - ".github/workflows/bootstrap-binaries.yml"
+    tags:
+      - "bootstrap-v*"
   pull_request:
     paths:
       - "bootstrap/**"
+      - "scripts/install-termux.sh"
+      - "docs/TERMUX.md"
       - ".github/workflows/bootstrap-binaries.yml"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  build:
+  desktop:
     name: ${{ matrix.artifact }}
     strategy:
       fail-fast: false
@@ -25,20 +26,24 @@ jobs:
           - os: ubuntu-latest
             artifact: devbox-setup-linux-x86_64
             binary: bootstrap/target/release/devbox-setup
+            output: devbox-setup-linux-x86_64
           - os: windows-latest
             artifact: devbox-setup-windows-x86_64
             binary: bootstrap/target/release/devbox-setup.exe
+            output: devbox-setup-windows-x86_64.exe
           - os: macos-15-intel
             artifact: devbox-setup-macos-x86_64
             binary: bootstrap/target/release/devbox-setup
+            output: devbox-setup-macos-x86_64
           - os: macos-15
             artifact: devbox-setup-macos-aarch64
             binary: bootstrap/target/release/devbox-setup
+            output: devbox-setup-macos-aarch64
 
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Select stable Rust
         run: rustup default stable
       - name: Format check
@@ -47,9 +52,84 @@ jobs:
         run: cargo test --manifest-path bootstrap/Cargo.toml
       - name: Build release binary
         run: cargo build --release --manifest-path bootstrap/Cargo.toml
+      - name: Prepare named binary
+        shell: bash
+        run: cp "${{ matrix.binary }}" "${{ matrix.output }}"
       - name: Upload binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.binary }}
+          path: ${{ matrix.output }}
           if-no-files-found: error
+
+  android:
+    name: Android and Termux binaries
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Select stable Rust
+        run: rustup default stable
+      - name: Install Android Rust targets
+        run: >-
+          rustup target add
+          aarch64-linux-android
+          armv7-linux-androideabi
+          x86_64-linux-android
+          i686-linux-android
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+      - name: Format check
+        run: cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
+      - name: Test host logic
+        run: cargo test --manifest-path bootstrap/Cargo.toml
+      - name: Build Android API 21 binaries
+        working-directory: bootstrap
+        run: |
+          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
+            cargo ndk --platform 21 -t "$abi" build --release
+          done
+      - name: Prepare Android artifacts
+        run: |
+          mkdir -p release-assets
+          cp bootstrap/target/aarch64-linux-android/release/devbox-setup release-assets/devbox-setup-android-arm64-v8a
+          cp bootstrap/target/armv7-linux-androideabi/release/devbox-setup release-assets/devbox-setup-android-armeabi-v7a
+          cp bootstrap/target/x86_64-linux-android/release/devbox-setup release-assets/devbox-setup-android-x86_64
+          cp bootstrap/target/i686-linux-android/release/devbox-setup release-assets/devbox-setup-android-x86
+          file release-assets/*
+      - name: Upload Android binaries
+        uses: actions/upload-artifact@v7
+        with:
+          name: devbox-setup-android
+          path: release-assets/*
+          if-no-files-found: error
+
+  release:
+    name: Publish bootstrap release
+    if: startsWith(github.ref, 'refs/tags/bootstrap-v')
+    needs: [desktop, android]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all binaries
+        uses: actions/download-artifact@v8
+        with:
+          pattern: devbox-setup-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd release-assets
+          sha256sum devbox-setup-* > SHA256SUMS
+          cat SHA256SUMS
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Devbox bootstrap ${{ github.ref_name }}
+          generate_release_notes: true
+          make_latest: true
+          body: |
+            Cross-platform Devbox setup binaries, including Android API 21+ builds for Termux.
+
+            Canonical Termux app: https://github.com/adybag14-cyber/termux-app
+          files: release-assets/*
