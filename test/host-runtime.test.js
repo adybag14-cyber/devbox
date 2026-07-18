@@ -35,6 +35,7 @@ test("host runtime can run shell commands and perform file operations", async ()
   process.env.HOST_WORKSPACE_PATH = workspaceDir;
   process.env.DEVBOX_WORKSPACE_PATH = workspaceDir;
   process.env.HOST_DEFAULT_WORKDIR = workspaceDir;
+  delete process.env.HOST_SHELL;
 
   const {
     execInHostRuntime,
@@ -44,16 +45,17 @@ test("host runtime can run shell commands and perform file operations", async ()
     writeFileInHostRuntime,
   } = await importFresh("src/host-runtime.js");
 
-  await writeFile(path.join(workspaceDir, "notes.txt"), "alpha\nbeta\n", "utf8");
-  const execResult = await execInHostRuntime({ command: "printf 'termux-ok'", workingDir: workspaceDir, timeoutMs: 5000 });
+  await writeFile(path.join(workspaceDir, "notes.txt"), "alpha\nbeta\nbeta\n", "utf8");
+  const command = process.platform === "win32" ? "[Console]::Out.Write('host-runtime-ok')" : "printf 'host-runtime-ok'";
+  const execResult = await execInHostRuntime({ command, workingDir: workspaceDir, timeoutMs: 5000 });
   const listResult = await listFilesInHostRuntime({ path: workspaceDir, recursive: true, maxDepth: 2 });
   const readResult = await readFileInHostRuntime({ path: path.join(workspaceDir, "notes.txt"), maxBytes: 64 });
   const searchResult = await searchFilesInHostRuntime({ pattern: "beta", path: workspaceDir, maxMatches: 10 });
   await writeFileInHostRuntime({ path: path.join(workspaceDir, "written.txt"), content: "hello host runtime" });
 
-  assert.equal(execResult.stdout, "termux-ok");
+  assert.equal(execResult.stdout, "host-runtime-ok");
   assert.match(listResult.stdout, /notes\.txt/);
-  assert.equal(readResult.stdout, "alpha\nbeta\n");
-  assert.match(searchResult.stdout, /notes\.txt/);
+  assert.equal(readResult.stdout, "alpha\nbeta\nbeta\n");
+  assert.equal(searchResult.stdout.match(/notes\.txt/g)?.length, 2);
   assert.equal(await readFile(path.join(workspaceDir, "written.txt"), "utf8"), "hello host runtime");
 });

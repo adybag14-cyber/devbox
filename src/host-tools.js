@@ -151,6 +151,8 @@ exit $process.ExitCode
 `;
 };
 
+const resolvedNodeExecutable = () => path.normalize(config.nodeExe || process.execPath || "node");
+
 export const getHostToolStatus = () => ({
   enabled: config.enableHostExec,
   platform: config.platform.id,
@@ -158,14 +160,14 @@ export const getHostToolStatus = () => ({
   shell: hostShell,
   defaultWorkdir: config.hostDefaultWorkdir,
   allowlist: config.hostProgramAllowlist,
-  resolvedNodeExe: config.nodeExe,
+  resolvedNodeExe: resolvedNodeExecutable(),
   windowsHostExecDefaultsToAdmin: platform.isWindows,
 });
 
 export const resolveHostProgramExecutable = (program) => {
   const normalizedProgram = normalizeProgram(program);
   if (normalizedProgram === "node") {
-    return config.nodeExe;
+    return resolvedNodeExecutable();
   }
 
   return program;
