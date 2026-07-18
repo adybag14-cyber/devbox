@@ -234,6 +234,22 @@ devbox run
 
 Plain `devbox` behaves like `devbox start`. `devbox run` keeps the server in the foreground.
 
+## Guardian v2 reliability supervisor
+
+Guardian v2 monitors the MCP process, local and public health endpoints, the selected runtime, and the optional tunnel without making host mode depend on Docker. Windows uses the existing scheduled-task watchdog, Linux can use a systemd user service, and Termux can use Termux:Boot; all three run the same foreground supervisor.
+
+```powershell
+# Windows host mode: Docker is not probed or required
+.\scripts\Install-ChatGptDevboxGuardian.ps1 -Runtime host -Public -OAuth
+```
+
+```bash
+# Linux systemd user service or Termux:Boot
+./scripts/install-guardian.sh auto
+```
+
+Docker mode includes stale-container start/replace repair plus exponential backoff and a persistent circuit breaker after repeated Docker Desktop failures. See [docs/GUARDIAN.md](./docs/GUARDIAN.md) for readiness fields, status commands, and service-manager setup.
+
 ## ChatGPT connector values
 
 After startup, inspect the root endpoint:

@@ -2,6 +2,8 @@
 param(
     [switch]$Public,
     [switch]$OAuth,
+    [ValidateSet('auto', 'host', 'docker')]
+    [string]$Runtime = 'auto',
     [string]$TaskPrefix = 'ChatGptDevboxGuardian'
 )
 
@@ -99,6 +101,7 @@ $devboxContainerName = 'chatgpt-devbox-runtime'
 $cloudflaredContainerName = 'chatgpt-devbox-cloudflared'
 $publicBaseUrl = ''
 $authMode = 'none'
+$inferredRuntimeMode = 'auto'
 
 if ($primaryEnvFile) {
     $portValue = Get-EnvValue -FilePath $primaryEnvFile -Name 'PORT'
@@ -114,6 +117,11 @@ if ($primaryEnvFile) {
     $authMode = Get-EnvValue -FilePath $primaryEnvFile -Name 'MCP_AUTH_MODE'
     if (-not $authMode) {
         $authMode = Get-EnvValue -FilePath $envFile -Name 'MCP_AUTH_MODE'
+    }
+
+    $runtimeValue = (Get-EnvValue -FilePath $primaryEnvFile -Name 'DEVBOX_RUNTIME_MODE').ToLowerInvariant()
+    if ($runtimeValue -in @('auto', 'host', 'docker')) {
+        $inferredRuntimeMode = $runtimeValue
     }
 
     $devboxValue = Get-EnvValue -FilePath $envFile -Name 'DEVBOX_CONTAINER_NAME'
@@ -146,6 +154,42 @@ $oauthEnabled = if ($PSBoundParameters.ContainsKey('OAuth')) {
     $inferredOAuth
 }
 
+$existingRuntimeMode = if ($existingSettings -and $existingSettings.PSObject.Properties['RuntimeMode']) {
+    ([string]$existingSettings.RuntimeMode).ToLowerInvariant()
+} else { '' }
+$existingSelectedRuntime = if ($existingSettings -and $existingSettings.PSObject.Properties['SelectedRuntime']) {
+    ([string]$existingSettings.SelectedRuntime).ToLowerInvariant()
+} else { '' }
+
+$runtimeMode = if ($PSBoundParameters.ContainsKey('Runtime')) {
+    $Runtime.ToLowerInvariant()
+} elseif ($existingRuntimeMode -in @('auto', 'host', 'docker')) {
+    $existingRuntimeMode
+} else {
+    $inferredRuntimeMode
+}
+
+$selectedRuntime = if ($runtimeMode -in @('host', 'docker')) {
+    $runtimeMode
+} elseif ($existingSelectedRuntime -in @('host', 'docker')) {
+    $existingSelectedRuntime
+} else {
+    $legacyPid = Join-Path $runDir 'mcp.pid'
+    $legacyHealthy = $false
+    if (Test-Path $legacyPid) {
+        $legacyPidText = Get-Content $legacyPid -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($legacyPidText -match '^\d+$' -and (Get-Process -Id ([int]$legacyPidText) -ErrorAction SilentlyContinue)) {
+            try {
+                $legacyHealth = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/healthz" -f $inferredPort) -UseBasicParsing -TimeoutSec 5
+                $legacyHealthy = ($legacyHealth.Content -match 'ok')
+            } catch {
+                $legacyHealthy = $false
+            }
+        }
+    }
+    if ($legacyHealthy) { 'host' } else { 'docker' }
+}
+
 $settings = @{
     Public = $publicEnabled
     OAuth = $oauthEnabled
@@ -154,6 +198,8 @@ $settings = @{
     CloudflaredContainerName = if ($existingSettings -and $existingSettings.CloudflaredContainerName) { [string]$existingSettings.CloudflaredContainerName } else { $cloudflaredContainerName }
     PublicBaseUrl = if ($existingSettings -and $existingSettings.PublicBaseUrl) { [string]$existingSettings.PublicBaseUrl } else { [string]$publicBaseUrl }
     AuthMode = if ($existingSettings -and $existingSettings.AuthMode) { [string]$existingSettings.AuthMode } else { [string]$authMode }
+    RuntimeMode = $runtimeMode
+    SelectedRuntime = $selectedRuntime
     UpdatedAtUtc = [DateTime]::UtcNow.ToString('o')
     Source = 'Install-ChatGptDevboxGuardian.ps1'
 }
@@ -169,7 +215,7 @@ foreach ($taskName in @($logonTaskName, $keepAliveTaskName)) {
     Remove-TaskIfPresent -TaskName $taskName
 }
 
-$action = New-ScheduledTaskAction -Execute $powerShellExe -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ensureScript`""
+$action = New-ScheduledTaskAction -Execute $powerShellExe -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ensureScript`" -ProjectRoot `"$projectRoot`""
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
 $settingsSet = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -180,14 +226,14 @@ $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -
 
 Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $trigger -Settings $settingsSet -Principal $principal -Force | Out-Null
 
-$taskCommand = ('"{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{1}"' -f $powerShellExe, $ensureScript)
+$taskCommand = ('"{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{1}" -ProjectRoot "{2}"' -f $powerShellExe, $ensureScript, $projectRoot)
 $startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')
 $createMinuteTask = & schtasks.exe /Create /TN $keepAliveTaskName /SC MINUTE /MO 1 /ST $startTime /TR $taskCommand /RL HIGHEST /F
 if ($LASTEXITCODE -ne 0) {
     throw ($createMinuteTask | Out-String)
 }
 
-& $powerShellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
+& $powerShellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript -ProjectRoot $projectRoot | Out-Null
 Start-Sleep -Seconds 5
 
 $taskInfo = @(

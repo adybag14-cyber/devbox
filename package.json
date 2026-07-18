@@ -14,6 +14,8 @@
   "scripts": {
     "start": "node src/server.js",
     "devbox": "node ./bin/devbox.js",
+    "guardian": "node ./scripts/devbox-guardian.mjs",
+    "guardian:check": "node ./scripts/devbox-guardian.mjs --once --no-repair",
     "test": "node --test"
   },
   "dependencies": {

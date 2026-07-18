@@ -1,11 +1,16 @@
 [CmdletBinding()]
 param(
-    [string]$ProjectRoot = 'C:\Users\adyba\docker-chatgpt-devbox',
+    [string]$ProjectRoot = '',
     [string]$TaskPrefix = 'ChatGptDevboxGuardian'
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    $ProjectRoot = Split-Path -Parent $PSScriptRoot
+}
+$ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 
 $runDir = Join-Path $ProjectRoot 'run'
 $guardianDir = Join-Path $runDir 'guardian'
@@ -17,6 +22,7 @@ $ensureLogPath = Join-Path $guardianDir 'ensure.log'
 $settingsPath = Join-Path $runDir 'guardian.settings.json'
 $desiredStatePath = Join-Path $runDir 'guardian.desired-state.json'
 $repairDir = Join-Path $guardianDir 'repairs'
+$repairPolicyPath = Join-Path $guardianDir 'repair-policy.json'
 $logonTaskName = "$TaskPrefix-Logon"
 $keepAliveTaskName = "$TaskPrefix-KeepAlive"
 
@@ -76,9 +82,25 @@ if (Test-Path $heartbeatPath) {
 Write-Host ''
 Write-Host 'State'
 if (Test-Path $statePath) {
-    Get-Content -Path $statePath
+    $state = Get-Content -Path $statePath -Raw | ConvertFrom-Json
+    if ($state.PSObject.Properties['Readiness']) {
+        Write-Host ("Overall: {0}" -f $state.Readiness.Overall)
+        foreach ($summary in @($state.Readiness.Summary)) {
+            Write-Host ("- {0}" -f $summary)
+        }
+        Write-Host ("Runtime: requested={0}, selected={1}, DockerProbePerformed={2}" -f $state.RuntimeMode, $state.SelectedRuntime, $state.DockerProbePerformed)
+    }
+    $state | ConvertTo-Json -Depth 10
 } else {
     Write-Host 'No state file present.'
+}
+
+Write-Host ''
+Write-Host 'Repair policy'
+if (Test-Path $repairPolicyPath) {
+    Get-Content -Path $repairPolicyPath
+} else {
+    Write-Host 'No persistent repair policy present.'
 }
 
 Write-Host ''

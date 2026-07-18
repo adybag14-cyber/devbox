@@ -1,11 +1,16 @@
 [CmdletBinding()]
 param(
-    [string]$ProjectRoot = 'C:\Users\adyba\docker-chatgpt-devbox',
+    [string]$ProjectRoot = '',
     [int]$HeartbeatMaxAgeSeconds = 20
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+    $ProjectRoot = Split-Path -Parent $PSScriptRoot
+}
+$ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 
 $powerShellExe = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
 $guardianScript = Join-Path $ProjectRoot 'scripts\Watch-ChatGptDevboxGuardian.ps1'
@@ -46,6 +51,19 @@ function Get-LiveGuardianProcess {
         }
     }
 
+    if (Test-Path $heartbeatPath) {
+        try {
+            $heartbeat = Get-Content -Path $heartbeatPath -Raw | ConvertFrom-Json
+            if ($heartbeat.PSObject.Properties['SupervisorPid'] -and ([string]$heartbeat.SupervisorPid) -match '^\d+$') {
+                $supervisor = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$heartbeat.SupervisorPid) -ErrorAction SilentlyContinue
+                if ($supervisor -and ([string]$supervisor.CommandLine) -match 'devbox-guardian\.mjs') {
+                    return $supervisor
+                }
+            }
+        } catch {
+        }
+    }
+
     $escapedScriptPath = [regex]::Escape($guardianScript)
     return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { ([string]$_.CommandLine) -match $escapedScriptPath } |
@@ -60,6 +78,9 @@ function Test-GuardianHeartbeatFresh {
     try {
         $heartbeat = Get-Content -Path $heartbeatPath -Raw | ConvertFrom-Json
         if (-not $heartbeat.ObservedAtUtc) {
+            return $false
+        }
+        if (-not $heartbeat.PSObject.Properties['GuardianVersion'] -or [int]$heartbeat.GuardianVersion -lt 2) {
             return $false
         }
 
@@ -78,8 +99,25 @@ if ($existing -and (Test-GuardianHeartbeatFresh)) {
 
 if ($existing) {
     Write-EnsureLog -Level 'WARN' -Message ("guardian heartbeat is stale; restarting pid={0}" -f $existing.ProcessId)
+    $supervisorPid = $null
+    try {
+        $heartbeat = Get-Content -Path $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ($heartbeat.PSObject.Properties['SupervisorPid'] -and ([string]$heartbeat.SupervisorPid) -match '^\d+$') {
+            $supervisorPid = [int]$heartbeat.SupervisorPid
+        }
+    } catch {
+        $supervisorPid = $null
+    }
     Stop-Process -Id ([int]$existing.ProcessId) -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
+    if ($supervisorPid) {
+        $supervisor = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $supervisorPid) -ErrorAction SilentlyContinue
+        if ($supervisor -and ([string]$supervisor.CommandLine) -match 'devbox-guardian\.mjs' -and ([string]$supervisor.CommandLine) -notmatch 'codex\.js|@openai/codex') {
+            Write-EnsureLog -Level 'WARN' -Message ("stopping stale guardian supervisor pid={0}" -f $supervisorPid)
+            Stop-Process -Id $supervisorPid -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+        }
+    }
 }
 
 if (-not (Test-Path $guardianScript)) {

@@ -14,6 +14,7 @@ export const getLauncherPaths = (root = projectRoot) => {
     runDir,
     pidFile: path.join(runDir, "devbox.pid"),
     logFile: path.join(runDir, "devbox.log"),
+    guardianDesiredStateFile: path.join(runDir, "guardian.desired-state.json"),
   };
 };
 
@@ -64,6 +65,14 @@ const ensureRunDir = async (runDir) => {
   await mkdir(runDir, { recursive: true });
 };
 
+const writeGuardianDesiredState = async (paths, shouldRun, source) => {
+  await writeFile(paths.guardianDesiredStateFile, `${JSON.stringify({
+    ShouldRun: shouldRun,
+    UpdatedAtUtc: new Date().toISOString(),
+    Source: source,
+  }, null, 2)}\n`, "utf8");
+};
+
 export const getServerStatus = async (root = projectRoot) => {
   const paths = getLauncherPaths(root);
   await ensureRunDir(paths.runDir);
@@ -84,13 +93,14 @@ export const getServerStatus = async (root = projectRoot) => {
 };
 
 export const startServerProcess = async (root = projectRoot) => {
+  const paths = getLauncherPaths(root);
+  await ensureRunDir(paths.runDir);
+  await writeGuardianDesiredState(paths, true, "devbox start");
   const status = await getServerStatus(root);
   if (status.running) {
     return { ...status, started: false };
   }
 
-  const paths = getLauncherPaths(root);
-  await ensureRunDir(paths.runDir);
   const logHandle = await open(paths.logFile, "a");
   const child = spawn(process.execPath, [path.join(root, "src/server.js")], {
     cwd: root,
@@ -114,7 +124,9 @@ export const stopServerProcess = async (root = projectRoot) => {
   const pid = await readPidFile(paths.pidFile);
   if (!isProcessAlive(pid)) {
     await rm(paths.pidFile, { force: true });
-    return { ...(await getServerStatus(root)), stopped: false };
+    const status = await getServerStatus(root);
+    await writeGuardianDesiredState(paths, false, "devbox stop");
+    return { ...status, stopped: false };
   }
 
   process.kill(pid, "SIGTERM");
@@ -131,13 +143,18 @@ export const stopServerProcess = async (root = projectRoot) => {
   }
 
   await rm(paths.pidFile, { force: true });
-  return { ...(await getServerStatus(root)), stopped: true };
+  const status = await getServerStatus(root);
+  await writeGuardianDesiredState(paths, false, "devbox stop");
+  return { ...status, stopped: true };
 };
 
 export const runLauncher = async (argv = process.argv.slice(2), root = projectRoot) => {
   const parsed = parseLauncherArgs(argv);
 
   if (parsed.command === "run") {
+    const paths = getLauncherPaths(root);
+    await ensureRunDir(paths.runDir);
+    await writeGuardianDesiredState(paths, true, "devbox run");
     await import("./server.js");
     return { command: "run", url: buildServerUrl() };
   }

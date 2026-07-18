@@ -93,12 +93,20 @@ $root = Split-Path -Parent $PSScriptRoot
 $envFile = Join-Path $root ".env"
 $runDir = Join-Path $root "run"
 $pidFile = Join-Path $runDir "mcp.pid"
+$settingsPath = Join-Path $runDir 'guardian.settings.json'
+$settings = if (Test-Path $settingsPath) { Get-Content $settingsPath -Raw | ConvertFrom-Json } else { $null }
+$selectedRuntime = if ($settings -and $settings.PSObject.Properties['SelectedRuntime'] -and ([string]$settings.SelectedRuntime).ToLowerInvariant() -in @('host', 'docker')) {
+    ([string]$settings.SelectedRuntime).ToLowerInvariant()
+} else {
+    $configuredRuntime = if (Test-Path $envFile) { (Get-EnvValue -FilePath $envFile -Name 'DEVBOX_RUNTIME_MODE').ToLowerInvariant() } else { '' }
+    if ($configuredRuntime -eq 'host') { 'host' } else { 'docker' }
+}
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $false -Source "Stop-ChatGptDevboxMcp.ps1"
 
 if (Test-Path $pidFile) {
     $ownedPid = [int](Get-Content $pidFile | Select-Object -First 1)
     $commandLine = Get-CommandLineForPid -ProcessId $ownedPid
-    if ($commandLine -and $commandLine -like "*docker-chatgpt-devbox*" -and $commandLine -like "*src\\server.js*") {
+    if ($commandLine -and $commandLine -match 'src[\\/]server\.js\b' -and $commandLine -match '--env-file(?:=|\s+)[^"\s]*\.env\.runtime\b') {
         Stop-Process -Id $ownedPid -Force
         Start-Sleep -Seconds 1
     }
@@ -107,15 +115,30 @@ if (Test-Path $pidFile) {
 }
 
 if ((Test-Path $envFile) -and ($Tunnel -or $All)) {
-    $cloudflaredContainerName = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_CONTAINER_NAME"
-    docker inspect --type container $cloudflaredContainerName *> $null
-    if ($LASTEXITCODE -eq 0) {
-        docker rm -f $cloudflaredContainerName *> $null
+    $hostTunnelPidFile = Join-Path $runDir 'host-cloudflared.pid'
+    if (Test-Path $hostTunnelPidFile) {
+        $tunnelPidText = Get-Content $hostTunnelPidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($tunnelPidText -match '^\d+$') {
+            $tunnelProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$tunnelPidText) -ErrorAction SilentlyContinue
+            if ($tunnelProcess -and ([string]$tunnelProcess.CommandLine) -match 'cloudflared(?:\.exe)?.*host-cloudflared\.tunnel-token\.txt') {
+                Stop-Process -Id ([int]$tunnelProcess.ProcessId) -Force
+            }
+        }
+        Remove-Item $hostTunnelPidFile -Force -ErrorAction SilentlyContinue
+    }
+    if ($selectedRuntime -eq 'docker') {
+        $cloudflaredContainerName = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_CONTAINER_NAME"
+        if (-not $cloudflaredContainerName) { $cloudflaredContainerName = 'chatgpt-devbox-cloudflared' }
+        docker inspect --type container $cloudflaredContainerName *> $null
+        if ($LASTEXITCODE -eq 0) {
+            docker rm -f $cloudflaredContainerName *> $null
+        }
     }
 }
 
-if ((Test-Path $envFile) -and $All) {
+if ((Test-Path $envFile) -and $All -and $selectedRuntime -eq 'docker') {
     $containerName = Get-EnvValue -FilePath $envFile -Name "DEVBOX_CONTAINER_NAME"
+    if (-not $containerName) { $containerName = 'chatgpt-devbox-runtime' }
     docker inspect --type container $containerName *> $null
     if ($LASTEXITCODE -eq 0) {
         docker stop $containerName *> $null
