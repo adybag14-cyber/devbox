@@ -2,6 +2,8 @@
 param(
     [switch]$Public,
     [switch]$OAuth,
+    [ValidateSet('auto', 'host', 'docker')]
+    [string]$Runtime = 'auto',
     [string]$TaskPrefix = 'ChatGptDevboxGuardian'
 )
 
@@ -14,9 +16,10 @@ $guardianDir = Join-Path $runDir 'guardian'
 $envFile = Join-Path $projectRoot '.env'
 $runtimeEnvFile = Join-Path $projectRoot '.env.runtime'
 $ensureScript = Join-Path $PSScriptRoot 'Ensure-ChatGptDevboxGuardian.ps1'
+$hiddenLauncher = Join-Path $PSScriptRoot 'Run-Ensure-ChatGptDevboxGuardian.vbs'
 $settingsPath = Join-Path $runDir 'guardian.settings.json'
 $desiredStatePath = Join-Path $runDir 'guardian.desired-state.json'
-$powerShellExe = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+$wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
 $userId = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
 $logonTaskName = "$TaskPrefix-Logon"
 $keepAliveTaskName = "$TaskPrefix-KeepAlive"
@@ -25,6 +28,10 @@ foreach ($path in @($runDir, $guardianDir)) {
     if (-not (Test-Path $path)) {
         New-Item -ItemType Directory -Path $path | Out-Null
     }
+}
+
+if (-not (Test-Path $hiddenLauncher)) {
+    throw "Hidden launcher not found: $hiddenLauncher"
 }
 
 function Get-EnvValue {
@@ -66,7 +73,37 @@ function Write-JsonFile {
         [object]$Value
     )
 
-    $Value | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
+    $directory = Split-Path -Parent $Path
+    if ($directory -and -not (Test-Path $directory)) {
+        New-Item -ItemType Directory -Path $directory | Out-Null
+    }
+
+    $json = $Value | ConvertTo-Json -Depth 8
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    $tempPath = Join-Path $directory ("{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+    $backupPath = $null
+
+    try {
+        [System.IO.File]::WriteAllText($tempPath, $json, $encoding)
+        if (Test-Path $Path) {
+            $backupPath = Join-Path $directory ("{0}.{1}.bak" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+            [System.IO.File]::Replace($tempPath, $Path, $backupPath, $true)
+            if (Test-Path $backupPath) {
+                Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+            }
+            $backupPath = $null
+        } else {
+            Move-Item -LiteralPath $tempPath -Destination $Path -Force
+        }
+        $tempPath = $null
+    } finally {
+        if ($tempPath -and (Test-Path $tempPath)) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($backupPath -and (Test-Path $backupPath)) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Remove-TaskIfPresent {
@@ -99,6 +136,7 @@ $devboxContainerName = 'chatgpt-devbox-runtime'
 $cloudflaredContainerName = 'chatgpt-devbox-cloudflared'
 $publicBaseUrl = ''
 $authMode = 'none'
+$inferredRuntimeMode = 'auto'
 
 if ($primaryEnvFile) {
     $portValue = Get-EnvValue -FilePath $primaryEnvFile -Name 'PORT'
@@ -114,6 +152,11 @@ if ($primaryEnvFile) {
     $authMode = Get-EnvValue -FilePath $primaryEnvFile -Name 'MCP_AUTH_MODE'
     if (-not $authMode) {
         $authMode = Get-EnvValue -FilePath $envFile -Name 'MCP_AUTH_MODE'
+    }
+
+    $runtimeValue = (Get-EnvValue -FilePath $primaryEnvFile -Name 'DEVBOX_RUNTIME_MODE').ToLowerInvariant()
+    if ($runtimeValue -in @('auto', 'host', 'docker')) {
+        $inferredRuntimeMode = $runtimeValue
     }
 
     $devboxValue = Get-EnvValue -FilePath $envFile -Name 'DEVBOX_CONTAINER_NAME'
@@ -146,6 +189,42 @@ $oauthEnabled = if ($PSBoundParameters.ContainsKey('OAuth')) {
     $inferredOAuth
 }
 
+$existingRuntimeMode = if ($existingSettings -and $existingSettings.PSObject.Properties['RuntimeMode']) {
+    ([string]$existingSettings.RuntimeMode).ToLowerInvariant()
+} else { '' }
+$existingSelectedRuntime = if ($existingSettings -and $existingSettings.PSObject.Properties['SelectedRuntime']) {
+    ([string]$existingSettings.SelectedRuntime).ToLowerInvariant()
+} else { '' }
+
+$runtimeMode = if ($PSBoundParameters.ContainsKey('Runtime')) {
+    $Runtime.ToLowerInvariant()
+} elseif ($existingRuntimeMode -in @('auto', 'host', 'docker')) {
+    $existingRuntimeMode
+} else {
+    $inferredRuntimeMode
+}
+
+$selectedRuntime = if ($runtimeMode -in @('host', 'docker')) {
+    $runtimeMode
+} elseif ($existingSelectedRuntime -in @('host', 'docker')) {
+    $existingSelectedRuntime
+} else {
+    $legacyPid = Join-Path $runDir 'mcp.pid'
+    $legacyHealthy = $false
+    if (Test-Path $legacyPid) {
+        $legacyPidText = Get-Content $legacyPid -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($legacyPidText -match '^\d+$' -and (Get-Process -Id ([int]$legacyPidText) -ErrorAction SilentlyContinue)) {
+            try {
+                $legacyHealth = Invoke-WebRequest -Uri ("http://127.0.0.1:{0}/healthz" -f $inferredPort) -UseBasicParsing -TimeoutSec 5
+                $legacyHealthy = ($legacyHealth.Content -match 'ok')
+            } catch {
+                $legacyHealthy = $false
+            }
+        }
+    }
+    if ($legacyHealthy) { 'host' } else { 'docker' }
+}
+
 $settings = @{
     Public = $publicEnabled
     OAuth = $oauthEnabled
@@ -154,6 +233,8 @@ $settings = @{
     CloudflaredContainerName = if ($existingSettings -and $existingSettings.CloudflaredContainerName) { [string]$existingSettings.CloudflaredContainerName } else { $cloudflaredContainerName }
     PublicBaseUrl = if ($existingSettings -and $existingSettings.PublicBaseUrl) { [string]$existingSettings.PublicBaseUrl } else { [string]$publicBaseUrl }
     AuthMode = if ($existingSettings -and $existingSettings.AuthMode) { [string]$existingSettings.AuthMode } else { [string]$authMode }
+    RuntimeMode = $runtimeMode
+    SelectedRuntime = $selectedRuntime
     UpdatedAtUtc = [DateTime]::UtcNow.ToString('o')
     Source = 'Install-ChatGptDevboxGuardian.ps1'
 }
@@ -169,7 +250,9 @@ foreach ($taskName in @($logonTaskName, $keepAliveTaskName)) {
     Remove-TaskIfPresent -TaskName $taskName
 }
 
-$action = New-ScheduledTaskAction -Execute $powerShellExe -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ensureScript`""
+$hiddenArgs = @('//B', '//NoLogo', ('"{0}"' -f $hiddenLauncher)) -join ' '
+
+$action = New-ScheduledTaskAction -Execute $wscriptExe -Argument $hiddenArgs
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
 $settingsSet = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
@@ -180,14 +263,14 @@ $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -
 
 Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $trigger -Settings $settingsSet -Principal $principal -Force | Out-Null
 
-$taskCommand = ('"{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "{1}"' -f $powerShellExe, $ensureScript)
+$taskCommand = ('"{0}" {1}' -f $wscriptExe, $hiddenArgs)
 $startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')
 $createMinuteTask = & schtasks.exe /Create /TN $keepAliveTaskName /SC MINUTE /MO 1 /ST $startTime /TR $taskCommand /RL HIGHEST /F
 if ($LASTEXITCODE -ne 0) {
     throw ($createMinuteTask | Out-String)
 }
 
-& $powerShellExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
+& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
 Start-Sleep -Seconds 5
 
 $taskInfo = @(

@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
+import os from "node:os";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 
-import { buildServerUrl, getLauncherPaths, parseLauncherArgs } from "../src/launcher.js";
+import { buildServerUrl, getLauncherPaths, getServerStatus, parseLauncherArgs, stopServerProcess } from "../src/launcher.js";
 
 test("parseLauncherArgs defaults to background start and supports explicit commands", () => {
   assert.deepEqual(parseLauncherArgs([]), { command: "start", background: true });
@@ -17,10 +19,27 @@ test("getLauncherPaths stores pid and log files under run/", () => {
   assert.equal(paths.runDir, path.join("/tmp/devbox-project", "run"));
   assert.equal(paths.pidFile, path.join("/tmp/devbox-project", "run", "devbox.pid"));
   assert.equal(paths.logFile, path.join("/tmp/devbox-project", "run", "devbox.log"));
+  assert.equal(paths.guardianDesiredStateFile, path.join("/tmp/devbox-project", "run", "guardian.desired-state.json"));
 });
 
 test("buildServerUrl normalizes wildcard hosts to loopback", () => {
   assert.equal(buildServerUrl({ host: "0.0.0.0", port: 8100 }), "http://127.0.0.1:8100");
   assert.equal(buildServerUrl({ host: "::", port: 8100 }), "http://127.0.0.1:8100");
   assert.equal(buildServerUrl({ host: "localhost", port: 8100 }), "http://localhost:8100");
+});
+
+test("status is read-only while stop records intentional-stop state", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-launcher-"));
+  try {
+    const paths = getLauncherPaths(root);
+    await getServerStatus(root);
+    await assert.rejects(readFile(paths.guardianDesiredStateFile, "utf8"), { code: "ENOENT" });
+
+    await stopServerProcess(root);
+    const desired = JSON.parse(await readFile(paths.guardianDesiredStateFile, "utf8"));
+    assert.equal(desired.ShouldRun, false);
+    assert.equal(desired.Source, "devbox stop");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

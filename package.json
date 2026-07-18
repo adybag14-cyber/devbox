@@ -14,7 +14,13 @@
   "scripts": {
     "start": "node src/server.js",
     "devbox": "node ./bin/devbox.js",
-    "test": "node --test"
+    "guardian": "node ./scripts/devbox-guardian.mjs",
+    "guardian:check": "node ./scripts/devbox-guardian.mjs --once --no-repair",
+    "test": "npm run test:unit && npm run test:mcp",
+    "test:unit": "node --test test/async-locks.test.js test/env.test.js test/guardian-container-repair.test.js test/guardian-core.test.js test/host-runtime.test.js test/host-tools.test.js test/large-file-cli.test.js test/launcher.test.js test/platform.test.js test/process-utils.test.js",
+    "test:mcp": "node --test test/mcp-http.test.js",
+    "soak:live": "node scripts/run-live-mcp-soak.mjs",
+    "usage:summary": "node scripts/summarize-mcp-telemetry.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.28.0",

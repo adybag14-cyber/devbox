@@ -15,6 +15,21 @@ const importFreshHostTools = async () => {
   const href = pathToFileURL(path.join(process.cwd(), "src/host-tools.js")).href;
   return import(`${href}?t=${Date.now()}-${Math.random()}`);
 };
+const {
+  HostCommandError,
+  MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE,
+  buildWindowsPowerShellArgs,
+  buildWindowsPowerShellFileArgs,
+  buildElevatedWindowsPowerShellWrapper,
+  buildElevatedWindowsPowerShellLauncher,
+  inspectWindowsFile,
+  readLargeFileOnHost,
+  shouldUsePowerShellScriptFile,
+  resolveHostProgramExecutable,
+  getHostToolStatus,
+  runAllowedProgram,
+  writeLargeFileOnHost,
+} = await importFreshHostTools();
 
 test("buildWindowsPowerShellArgs encodes the original script exactly", async () => {
   const { buildWindowsPowerShellArgs } = await importFreshHostTools();
@@ -120,4 +135,92 @@ test("runHostShellCommand executes a posix shell command on non-Windows hosts", 
   const result = await runHostShellCommand({ command: "printf 'host-shell-ok'", workingDir: tempDir, timeoutMs: 5000 });
 
   assert.equal(result.stdout, "host-shell-ok");
+});
+
+test("inspectWindowsFile flags mojibake-corrupted PowerShell scripts and reports repair hints", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
+  const scriptPath = path.join(tempDir, "corrupt.ps1");
+  const corruptedScript = `Write-Host 'ok'\n${"\u00e2\u20ac\u201d"}\nif ($true {\n`;
+
+  try {
+    await writeFile(scriptPath, corruptedScript, "utf8");
+    const inspection = await inspectWindowsFile({
+      path: scriptPath,
+      workingDir: tempDir,
+    });
+
+    assert.equal(inspection.exists, true);
+    assert.equal(inspection.is_file, true);
+    assert.equal(inspection.extension, ".ps1");
+    assert.equal(inspection.likely_corrupted_on_disk, true);
+    assert.ok(inspection.suspicious_mojibake_count > 0);
+    assert.equal(inspection.syntax_invalid, true);
+    assert.equal(inspection.powershell_syntax?.parse_ok, false);
+    assert.match(inspection.repair_hints.join("\n"), /windows_host_read_large_file/);
+    assert.match(inspection.repair_hints.join("\n"), /windows_host_write_large_file/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("runAllowedProgram attaches bridge diagnostics for corrupted script failures", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
+  const scriptPath = path.join(tempDir, "corrupt.ps1");
+  const corruptedScript = `Write-Host 'ok'\n${"\u00e2\u20ac\u201d"}\nif ($true {\n`;
+
+  try {
+    await writeFile(scriptPath, corruptedScript, "utf8");
+
+    await assert.rejects(
+      () =>
+        runAllowedProgram({
+          program: "powershell.exe",
+          args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath],
+          workingDir: tempDir,
+          timeoutMs: 15000,
+        }),
+      (error) => {
+        assert.ok(error instanceof HostCommandError);
+        assert.ok(error.data?.bridge_diagnostics);
+        assert.equal(error.data.bridge_diagnostics.suspected_file_integrity_issue, true);
+        assert.ok(Array.isArray(error.data.bridge_diagnostics.inspected_paths));
+
+        const inspectedPath = error.data.bridge_diagnostics.inspected_paths.find(
+          (entry) => entry.resolved_path === scriptPath,
+        );
+        assert.ok(inspectedPath);
+        assert.equal(inspectedPath.likely_corrupted_on_disk, true);
+        assert.match(error.data.bridge_diagnostics.hints.join("\n"), /windows_host_write_large_file/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("host large-file helpers preserve exact bytes for repair workflows", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
+  const targetPath = path.join(tempDir, "exact-bytes.bin");
+  const payload = Buffer.from([0x00, 0x41, 0xff, 0x42, 0x80, 0x43, 0x0d, 0x0a]);
+
+  try {
+    const writeResult = await writeLargeFileOnHost({
+      path: targetPath,
+      workingDir: tempDir,
+      contentBase64: payload.toString("base64"),
+    });
+    const readResult = await readLargeFileOnHost({
+      path: targetPath,
+      workingDir: tempDir,
+      offsetBytes: 0,
+      maxBytes: payload.length,
+    });
+
+    assert.equal(writeResult.bytes_written, payload.length);
+    assert.equal(readResult.bytes_returned, payload.length);
+    assert.equal(readResult.content_base64, payload.toString("base64"));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
 });

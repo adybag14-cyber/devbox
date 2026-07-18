@@ -1,16 +1,197 @@
 param(
     [switch]$Public,
     [switch]$OAuth,
-    [switch]$RebuildRuntime
+    [switch]$RebuildRuntime,
+    [ValidateSet('auto', 'host', 'docker')]
+    [string]$Runtime = 'auto'
 )
 
 $ErrorActionPreference = "Stop"
+$script:dockerExe = $null
+$script:dockerConfiguredPath = $null
+
+function Resolve-DockerExecutable {
+    param([string]$ConfiguredPath)
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @(
+            $ConfiguredPath,
+            $env:DOCKER_EXE,
+            $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 "Docker\\Docker\\resources\\bin\\docker.exe" } else { $null }),
+            $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles "Docker\\Docker\\resources\\bin\\docker.exe" } else { $null }),
+            "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and -not $candidates.Contains($candidate)) {
+            $candidates.Add($candidate)
+        }
+    }
+
+    $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
+    if ($dockerCommand -and -not [string]::IsNullOrWhiteSpace($dockerCommand.Source) -and -not $candidates.Contains($dockerCommand.Source)) {
+        $candidates.Add([string]$dockerCommand.Source)
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    throw "Docker CLI was not found. Install Docker Desktop or set DOCKER_EXE in .env to docker.exe."
+}
+
+function Get-DockerExecutable {
+    if (-not $script:dockerExe) {
+        $script:dockerExe = Resolve-DockerExecutable -ConfiguredPath $script:dockerConfiguredPath
+    }
+
+    return $script:dockerExe
+}
+
+function Format-DockerArgumentsForLog {
+    param([string[]]$Arguments)
+
+    $redacted = New-Object System.Collections.Generic.List[string]
+    for ($i = 0; $i -lt $Arguments.Count; $i++) {
+        if ($i -gt 0 -and $Arguments[$i - 1] -eq '--token') {
+            $redacted.Add('<redacted>')
+            continue
+        }
+
+        $redacted.Add($Arguments[$i])
+    }
+
+    return ($redacted -join ' ')
+}
+
+function ConvertTo-WindowsProcessArgument {
+    param([string]$Argument)
+
+    $value = [string]$Argument
+    if ($value.Length -gt 0 -and $value -notmatch '[\s"]') {
+        return $value
+    }
+
+    return '"' + ($value.Replace('\', '\\').Replace('"', '\"')) + '"'
+}
+
+function Add-ProcessArguments {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    if ($StartInfo | Get-Member -Name ArgumentList -MemberType Property) {
+        foreach ($argument in $Arguments) {
+            [void]$StartInfo.ArgumentList.Add($argument)
+        }
+        return
+    }
+
+    $StartInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-WindowsProcessArgument -Argument $_ }) -join ' ')
+}
+
+function Invoke-Docker {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [switch]$IgnoreExitCode,
+        [int]$TimeoutSeconds = 120
+    )
+
+    $dockerExe = Get-DockerExecutable
+    $process = $null
+    $stdoutText = ''
+    $stderrText = ''
+    $timedOut = $false
+
+    try {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $dockerExe
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        Add-ProcessArguments -StartInfo $startInfo -Arguments $Arguments
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        $timeoutMs = [Math]::Max(1, $TimeoutSeconds) * 1000
+        $timedOut = -not $process.WaitForExit($timeoutMs)
+        if ($timedOut) {
+            try {
+                $process.Kill()
+            } catch {
+            }
+            [void]$process.WaitForExit(2000)
+        }
+
+        if (-not $timedOut) {
+            try {
+                $stdoutText = [string]$stdoutTask.GetAwaiter().GetResult()
+            } catch {
+                $stdoutText = ''
+            }
+            try {
+                $stderrText = [string]$stderrTask.GetAwaiter().GetResult()
+            } catch {
+                $stderrText = ''
+            }
+        }
+
+        $exitCode = if ($timedOut) { 124 } else { [int]$process.ExitCode }
+        $text = (($stdoutText, $stderrText) -join '').Trim()
+
+        if ($timedOut -and $Arguments.Count -gt 1 -and $Arguments[0] -eq 'run' -and $Arguments -contains '-d' -and $text -match '(?m)^[0-9a-f]{12,64}$') {
+            $timedOut = $false
+            $exitCode = 0
+        }
+        if ($timedOut -and $Arguments.Count -gt 1 -and $Arguments[0] -eq 'start' -and $text.Trim()) {
+            $timedOut = $false
+            $exitCode = 0
+        }
+    } finally {
+        if ($process) {
+            $process.Dispose()
+        }
+    }
+
+    $displayArguments = Format-DockerArgumentsForLog -Arguments $Arguments
+    if ($timedOut) {
+        if (-not $IgnoreExitCode) {
+            throw "docker $displayArguments timed out after $TimeoutSeconds seconds. Output:`n$text"
+        }
+
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            Output = $text
+            Text = $text
+        }
+    }
+
+    if (-not $IgnoreExitCode -and $exitCode -ne 0) {
+        $trimmedText = $text.Trim()
+        if ($trimmedText) {
+            throw "docker $displayArguments failed with exit code $exitCode. Output:`n$trimmedText"
+        }
+
+        throw "docker $displayArguments failed with exit code $exitCode."
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = $text
+        Text = $text
+    }
+}
 
 function Get-DockerLogsText {
     param([string]$ContainerName)
 
-    $output = cmd /d /c "docker logs $ContainerName 2>&1"
-    return ($output | Out-String)
+    return (Invoke-Docker -Arguments @('logs', $ContainerName) -IgnoreExitCode).Text
 }
 
 function Enter-ChatGptDevboxLifecycleMutex {
@@ -34,13 +215,15 @@ function Exit-ChatGptDevboxLifecycleMutex {
 }
 
 function Test-DockerEngine {
-    cmd /c "docker version --format ""{{.Server.Version}}"" >NUL 2>NUL"
-    return ($LASTEXITCODE -eq 0)
+    param([int]$TimeoutSeconds = 45)
+
+    $result = Invoke-Docker -Arguments @('version', '--format', '{{.Server.Version}}') -IgnoreExitCode -TimeoutSeconds $TimeoutSeconds
+    return ($result.ExitCode -eq 0)
 }
 
 function Start-DockerDesktopIfNeeded {
-    if (Test-DockerEngine) {
-        return
+    if (Test-DockerEngine -TimeoutSeconds 5) {
+        return $true
     }
 
     $dockerDesktop = "C:\Program Files\Docker\Docker\Docker Desktop.exe"
@@ -49,15 +232,17 @@ function Start-DockerDesktopIfNeeded {
     }
 
     Write-Host "Docker engine is not ready. Starting Docker Desktop..."
-    Start-Process -FilePath $dockerDesktop | Out-Null
-    for ($i = 0; $i -lt 60; $i++) {
+    Start-Process -FilePath $dockerDesktop -WindowStyle Hidden | Out-Null
+    $deadline = [DateTime]::UtcNow.AddSeconds(120)
+    while ([DateTime]::UtcNow -lt $deadline) {
         Start-Sleep -Seconds 2
-        if (Test-DockerEngine) {
-            return
+        if (Test-DockerEngine -TimeoutSeconds 5) {
+            return $true
         }
     }
 
-    throw "Docker engine did not become ready within 120 seconds."
+    Write-Warning "Docker engine did not become ready within 120 seconds; starting MCP in degraded mode."
+    return $false
 }
 
 function Get-EnvValue {
@@ -120,37 +305,66 @@ function Get-CommandLineForPid {
     return $proc.CommandLine
 }
 
+function Test-IsOwnedServerCommandLine {
+    param([string]$CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+
+    return (
+        ([string]$CommandLine -match 'src[\\/]server\.js\b') -and
+        ([string]$CommandLine -match '--env-file(?:=|\s+)[^"\s]*\.env\.runtime\b')
+    )
+}
+
+function Find-OwnedServerProcess {
+    param([string]$PidFile)
+
+    if (Test-Path $PidFile) {
+        $pidText = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+        if ($pidText -match '^\d+$') {
+            $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
+            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+                return $candidate
+            }
+        }
+    }
+
+    return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { Test-IsOwnedServerCommandLine -CommandLine ([string]$_.CommandLine) } |
+        Sort-Object CreationDate -Descending |
+        Select-Object -First 1
+}
+
 function Stop-ExistingServerIfOwned {
     param(
         [string]$PidFile,
         [string]$ProjectRoot
     )
 
-    if (-not (Test-Path $PidFile)) {
-        return
-    }
-
-    $pidText = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
-    if (-not $pidText) {
+    $ownedProcess = Find-OwnedServerProcess -PidFile $PidFile
+    if (-not $ownedProcess) {
         Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
         return
     }
 
-    $ownedPid = [int]$pidText
-    $commandLine = Get-CommandLineForPid -ProcessId $ownedPid
-    if (-not $commandLine) {
-        Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
-        return
+    $ownedPid = [int]$ownedProcess.ProcessId
+    Stop-Process -Id $ownedPid -Force -ErrorAction SilentlyContinue
+    for ($i = 0; $i -lt 20; $i++) {
+        Start-Sleep -Milliseconds 500
+        $remaining = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction SilentlyContinue
+        if (-not $remaining) {
+            break
+        }
+        if (-not (Test-IsOwnedServerCommandLine -CommandLine ([string]$remaining.CommandLine))) {
+            break
+        }
     }
 
-    if ($commandLine -notlike "*src/server.js*" -and $commandLine -notlike "*src\\server.js*") {
-        throw "Refusing to stop PID $ownedPid because it does not look like the docker-chatgpt-devbox server."
-    }
-
-    Stop-Process -Id $ownedPid -Force
-    Start-Sleep -Seconds 1
-    if (Get-Process -Id $ownedPid -ErrorAction SilentlyContinue) {
-        throw "Failed to stop PID $ownedPid."
+    $stillOwned = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction SilentlyContinue
+    if ($stillOwned -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$stillOwned.CommandLine))) {
+        throw "Failed to stop owned MCP server PID $ownedPid. CommandLine: $($stillOwned.CommandLine)"
     }
 
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
@@ -175,7 +389,32 @@ function Write-JsonStateFile {
         Ensure-Directory -Path $directory
     }
 
-    $Value | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
+    $json = $Value | ConvertTo-Json -Depth 8
+    $encoding = [System.Text.UTF8Encoding]::new($false)
+    $tempPath = Join-Path $directory ("{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+    $backupPath = $null
+
+    try {
+        [System.IO.File]::WriteAllText($tempPath, $json, $encoding)
+        if (Test-Path $Path) {
+            $backupPath = Join-Path $directory ("{0}.{1}.bak" -f [System.IO.Path]::GetFileName($Path), [System.Guid]::NewGuid().ToString('N'))
+            [System.IO.File]::Replace($tempPath, $Path, $backupPath, $true)
+            if (Test-Path $backupPath) {
+                Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+            }
+            $backupPath = $null
+        } else {
+            Move-Item -LiteralPath $tempPath -Destination $Path -Force
+        }
+        $tempPath = $null
+    } finally {
+        if ($tempPath -and (Test-Path $tempPath)) {
+            Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+        }
+        if ($backupPath -and (Test-Path $backupPath)) {
+            Remove-Item -LiteralPath $backupPath -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Write-GuardianDesiredState {
@@ -245,25 +484,148 @@ function Test-DockerObjectExists {
         [string]$Name
     )
 
-    cmd /d /c "docker inspect --type $Type $Name >NUL 2>NUL"
-    return ($LASTEXITCODE -eq 0)
+    $result = Invoke-Docker -Arguments @('inspect', '--type', $Type, $Name) -IgnoreExitCode
+    if ($result.ExitCode -eq 0) {
+        return $true
+    }
+    $text = [string]$result.Text
+    if ($text -match 'No such (object|container|image)') {
+        return $false
+    }
+    throw "docker inspect failed; refusing to create a conflicting object named $Name. Output:`n$text"
 }
 
 function Remove-DockerContainerIfPresent {
     param([string]$ContainerName)
 
-    cmd /d /c "docker rm -f $ContainerName >NUL 2>NUL"
+    [void](Invoke-Docker -Arguments @('rm', '-f', $ContainerName) -IgnoreExitCode)
+}
+
+function Resolve-CloudflaredExecutable {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @(
+            $env:CLOUDFLARED_EXE,
+            $(if ($env:ProgramFiles) { Join-Path ${env:ProgramFiles(x86)} 'cloudflared\cloudflared.exe' } else { $null }),
+            'C:\Program Files (x86)\cloudflared\cloudflared.exe'
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and -not $candidates.Contains($candidate)) {
+            $candidates.Add($candidate)
+        }
+    }
+
+    $cloudflaredCommand = Get-Command cloudflared -ErrorAction SilentlyContinue
+    if ($cloudflaredCommand -and -not [string]::IsNullOrWhiteSpace($cloudflaredCommand.Source) -and -not $candidates.Contains($cloudflaredCommand.Source)) {
+        $candidates.Add([string]$cloudflaredCommand.Source)
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    throw "cloudflared.exe was not found. Install cloudflared or set CLOUDFLARED_EXE."
+}
+
+function Test-IsOwnedHostCloudflaredCommandLine {
+    param([string]$CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+
+    return (
+        ([string]$CommandLine -match 'cloudflared(?:\.exe)?') -and
+        ([string]$CommandLine -match 'host-cloudflared\.tunnel-token\.txt')
+    )
+}
+
+function Stop-ExistingHostCloudflared {
+    param([string]$PidFile)
+
+    if (-not (Test-Path $PidFile)) {
+        return
+    }
+
+    $pidText = Get-Content -Path $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pidText -match '^\d+$') {
+        $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
+        if ($candidate -and (Test-IsOwnedHostCloudflaredCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+            Stop-Process -Id ([int]$candidate.ProcessId) -Force -ErrorAction SilentlyContinue
+            for ($i = 0; $i -lt 20; $i++) {
+                Start-Sleep -Milliseconds 250
+                if (-not (Get-Process -Id ([int]$candidate.ProcessId) -ErrorAction SilentlyContinue)) {
+                    break
+                }
+            }
+        }
+    }
+
+    Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
 }
 
 function Get-DockerContainerRunningState {
     param([string]$ContainerName)
 
-    $result = cmd /d /c "docker inspect --type container $ContainerName --format ""{{.State.Running}}"" 2>NUL"
-    if ($LASTEXITCODE -ne 0) {
+    $result = Invoke-Docker -Arguments @('inspect', '--type', 'container', $ContainerName, '--format', '{{.State.Running}}') -IgnoreExitCode
+    if ($result.ExitCode -eq 0) {
+        return $result.Text.Trim()
+    }
+    $text = [string]$result.Text
+    if ($text -match 'No such (object|container)') {
         return $null
     }
+    throw "docker inspect failed for $ContainerName. Output:`n$text"
+}
 
-    return $result.Trim()
+function New-DevboxContainer {
+    param(
+        [string]$ContainerName,
+        [string]$ImageName,
+        [string]$HostWorkspace,
+        [string]$DevboxWorkspace
+    )
+
+    $result = Invoke-Docker -Arguments @('run', '-d', '--name', $ContainerName, '--init', '-w', $DevboxWorkspace, '-v', "${HostWorkspace}:${DevboxWorkspace}", $ImageName, 'sleep', 'infinity') -IgnoreExitCode
+    if ($result.ExitCode -eq 0) {
+        Ensure-DockerContainerStarted -ContainerName $ContainerName
+        return
+    }
+
+    $text = [string]$result.Text
+    if ($text -match 'Conflict.*container name') {
+        $running = Get-DockerContainerRunningState -ContainerName $ContainerName
+        if ($null -ne $running) {
+            $started = Invoke-Docker -Arguments @('start', $ContainerName) -IgnoreExitCode -TimeoutSeconds 30
+            if ($started.ExitCode -eq 0) {
+                return
+            }
+        }
+    }
+    throw "Failed to create devbox container $ContainerName. Output:`n$text"
+}
+
+function Ensure-DockerContainerStarted {
+    param([string]$ContainerName)
+
+    for ($i = 0; $i -lt 3; $i++) {
+        $running = Get-DockerContainerRunningState -ContainerName $ContainerName
+        if ($running -eq "true") {
+            return
+        }
+
+        if ($null -eq $running) {
+            throw "Docker container $ContainerName does not exist after creation."
+        }
+
+        [void](Invoke-Docker -Arguments @('start', $ContainerName) -IgnoreExitCode -TimeoutSeconds 30)
+        Start-Sleep -Seconds 2
+    }
+
+    $finalRunning = Get-DockerContainerRunningState -ContainerName $ContainerName
+    if ($finalRunning -ne "true") {
+        throw "Docker container $ContainerName was created but did not reach running state."
+    }
 }
 
 function Ensure-RuntimeImage {
@@ -273,16 +635,13 @@ function Ensure-RuntimeImage {
         [switch]$ForceRebuild
     )
 
-    docker image inspect $ImageName *> $null
-    $exists = ($LASTEXITCODE -eq 0)
+    $inspectResult = Invoke-Docker -Arguments @('image', 'inspect', $ImageName) -IgnoreExitCode
+    $exists = ($inspectResult.ExitCode -eq 0)
     if ($exists -and -not $ForceRebuild) {
         return
     }
 
-    docker build -f (Join-Path $Root "runtime.Dockerfile") -t $ImageName $Root
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to build runtime image $ImageName."
-    }
+    [void](Invoke-Docker -Arguments @('build', '-f', (Join-Path $Root "runtime.Dockerfile"), '-t', $ImageName, $Root))
 }
 
 function Ensure-DevboxContainer {
@@ -301,18 +660,18 @@ function Ensure-DevboxContainer {
     }
 
     if (-not $exists) {
-        docker run -d --name $ContainerName --init -w $DevboxWorkspace -v "${HostWorkspace}:${DevboxWorkspace}" $ImageName sleep infinity
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to create devbox container $ContainerName."
-        }
+        New-DevboxContainer -ContainerName $ContainerName -ImageName $ImageName -HostWorkspace $HostWorkspace -DevboxWorkspace $DevboxWorkspace
         return
     }
 
     $running = Get-DockerContainerRunningState -ContainerName $ContainerName
     if ($running.Trim() -ne "true") {
-        docker start $ContainerName *> $null
-        if ($LASTEXITCODE -ne 0) {
-            throw "Failed to start devbox container $ContainerName."
+        $started = Invoke-Docker -Arguments @('start', $ContainerName) -IgnoreExitCode -TimeoutSeconds 30
+        if ($started.ExitCode -ne 0) {
+            Remove-DockerContainerIfPresent -ContainerName $ContainerName
+            New-DevboxContainer -ContainerName $ContainerName -ImageName $ImageName -HostWorkspace $HostWorkspace -DevboxWorkspace $DevboxWorkspace
+        } else {
+            Ensure-DockerContainerStarted -ContainerName $ContainerName
         }
     }
 }
@@ -327,12 +686,10 @@ function Start-CloudflaredQuickTunnel {
         Remove-DockerContainerIfPresent -ContainerName $ContainerName
     }
 
-    docker run -d --name $ContainerName cloudflare/cloudflared:latest tunnel --no-autoupdate --url "http://host.docker.internal:$Port" | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to start Cloudflare quick tunnel."
-    }
+    [void](Invoke-Docker -Arguments @('run', '-d', '--name', $ContainerName, 'cloudflare/cloudflared:latest', 'tunnel', '--no-autoupdate', '--url', "http://host.docker.internal:$Port"))
+    Ensure-DockerContainerStarted -ContainerName $ContainerName
 
-    for ($i = 0; $i -lt 30; $i++) {
+    for ($i = 0; $i -lt 120; $i++) {
         Start-Sleep -Seconds 2
         $logs = Get-DockerLogsText -ContainerName $ContainerName
         $match = [regex]::Match($logs, 'https://[a-z0-9-]+\.trycloudflare\.com')
@@ -364,15 +721,23 @@ function Normalize-PublicBaseUrl {
 function Wait-ForHealthyPublicEndpoint {
     param(
         [string]$ContainerName,
-        [string]$PublicBaseUrl
+        [string]$PublicBaseUrl,
+        [string]$HostCloudflaredPidFile = ''
     )
 
     $healthUrl = "$($PublicBaseUrl.TrimEnd('/'))/healthz"
     for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Seconds 2
-        $running = Get-DockerContainerRunningState -ContainerName $ContainerName
-        if ($null -eq $running -or $running -ne "true") {
-            break
+        if ($HostCloudflaredPidFile) {
+            $hostPid = if (Test-Path $HostCloudflaredPidFile) { Get-Content $HostCloudflaredPidFile -ErrorAction SilentlyContinue | Select-Object -First 1 } else { '' }
+            if ($hostPid -notmatch '^\d+$' -or -not (Get-Process -Id ([int]$hostPid) -ErrorAction SilentlyContinue)) {
+                break
+            }
+        } else {
+            $running = Get-DockerContainerRunningState -ContainerName $ContainerName
+            if ($null -eq $running -or $running -ne "true") {
+                break
+            }
         }
 
         try {
@@ -384,7 +749,12 @@ function Wait-ForHealthyPublicEndpoint {
         }
     }
 
-    $logs = Get-DockerLogsText -ContainerName $ContainerName
+    $logs = if ($HostCloudflaredPidFile) {
+        $hostLog = Join-Path (Split-Path -Parent $HostCloudflaredPidFile) 'host-cloudflared.stderr.log'
+        if (Test-Path $hostLog) { Get-Content $hostLog -Tail 120 | Out-String } else { 'host cloudflared log not found' }
+    } else {
+        Get-DockerLogsText -ContainerName $ContainerName
+    }
     throw "The Cloudflare tunnel did not expose a healthy public endpoint at $healthUrl. Logs:`n$logs"
 }
 
@@ -393,7 +763,9 @@ function Start-CloudflaredNamedTunnel {
         [string]$ContainerName,
         [string]$TunnelToken,
         [string]$PublicHostname,
-        [int]$Port
+        [int]$Port,
+        [string]$RunDir,
+        [bool]$DockerReady = $true
     )
 
     if (-not $TunnelToken) {
@@ -405,29 +777,41 @@ function Start-CloudflaredNamedTunnel {
         throw "CLOUDFLARED_PUBLIC_HOSTNAME is required for the named Cloudflare tunnel."
     }
 
-    if (Test-DockerObjectExists -Type container -Name $ContainerName) {
+    $cloudflaredExe = Resolve-CloudflaredExecutable
+    $pidFile = Join-Path $RunDir 'host-cloudflared.pid'
+    $tokenFile = Join-Path $RunDir 'host-cloudflared.tunnel-token.txt'
+    $configFile = Join-Path $RunDir 'host-cloudflared-config.yml'
+    $stdoutLog = Join-Path $RunDir 'host-cloudflared.stdout.log'
+    $stderrLog = Join-Path $RunDir 'host-cloudflared.stderr.log'
+
+    Stop-ExistingHostCloudflared -PidFile $pidFile
+    [System.IO.File]::WriteAllText($tokenFile, $TunnelToken, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($configFile, "url: http://127.0.0.1:$Port`nloglevel: info`n", [System.Text.UTF8Encoding]::new($false))
+    if ($DockerReady -and (Test-DockerObjectExists -Type container -Name $ContainerName)) {
         Remove-DockerContainerIfPresent -ContainerName $ContainerName
     }
 
-    docker run -d --name $ContainerName cloudflare/cloudflared:latest tunnel --no-autoupdate run --token $TunnelToken --url "http://host.docker.internal:$Port" | Out-Null
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to start the named Cloudflare tunnel."
+    if (Test-Path $stdoutLog) { Remove-Item $stdoutLog -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $stderrLog) { Remove-Item $stderrLog -Force -ErrorAction SilentlyContinue }
+
+    $process = Start-Process -FilePath $cloudflaredExe `
+        -ArgumentList @('tunnel', '--config', $configFile, '--no-autoupdate', '--loglevel', 'info', 'run', '--token-file', $tokenFile) `
+        -WorkingDirectory $RunDir `
+        -RedirectStandardOutput $stdoutLog `
+        -RedirectStandardError $stderrLog `
+        -PassThru `
+        -WindowStyle Hidden
+
+    Set-Content -Path $pidFile -Value $process.Id -Encoding ASCII
+
+    Start-Sleep -Seconds 5
+    $process.Refresh()
+    if ($process.HasExited) {
+        $stderr = if (Test-Path $stderrLog) { Get-Content $stderrLog -Raw } else { '' }
+        throw "The named Cloudflare tunnel process exited early with code $($process.ExitCode). Logs:`n$stderr"
     }
 
-    for ($i = 0; $i -lt 15; $i++) {
-        Start-Sleep -Seconds 2
-        $running = Get-DockerContainerRunningState -ContainerName $ContainerName
-        if ($null -eq $running) {
-            break
-        }
-
-        if ($running -eq "true") {
-            return $publicBaseUrl
-        }
-    }
-
-    $logs = Get-DockerLogsText -ContainerName $ContainerName
-    throw "The named Cloudflare tunnel did not stay healthy. Logs:`n$logs"
+    return $publicBaseUrl
 }
 
 function Start-CloudflaredPublicTunnel {
@@ -435,7 +819,11 @@ function Start-CloudflaredPublicTunnel {
         [string]$ContainerName,
         [string]$TunnelToken,
         [string]$PublicHostname,
-        [int]$Port
+        [int]$Port,
+        [ValidateSet('host', 'docker')]
+        [string]$SelectedRuntime,
+        [string]$RunDir,
+        [bool]$DockerReady = $false
     )
 
     $hasToken = -not [string]::IsNullOrWhiteSpace($TunnelToken)
@@ -446,9 +834,15 @@ function Start-CloudflaredPublicTunnel {
             throw "CLOUDFLARED_TUNNEL_TOKEN and CLOUDFLARED_PUBLIC_HOSTNAME must both be set to use the named Cloudflare tunnel."
         }
 
-        return Start-CloudflaredNamedTunnel -ContainerName $ContainerName -TunnelToken $TunnelToken -PublicHostname $PublicHostname -Port $Port
+        return Start-CloudflaredNamedTunnel -ContainerName $ContainerName -TunnelToken $TunnelToken -PublicHostname $PublicHostname -Port $Port -RunDir $RunDir -DockerReady:$DockerReady
     }
 
+    if ($SelectedRuntime -eq 'host') {
+        throw 'Docker is required for Cloudflare quick tunnels. Configure a named tunnel for host mode.'
+    }
+    if (-not $DockerReady) {
+        throw 'Docker is not ready for the configured Cloudflare quick tunnel.'
+    }
     return Start-CloudflaredQuickTunnel -ContainerName $ContainerName -Port $Port
 }
 
@@ -466,12 +860,23 @@ if (-not (Test-Path $envFile)) {
     & (Join-Path $PSScriptRoot "Initialize-ChatGptDevboxMcp.ps1")
 }
 
-Start-DockerDesktopIfNeeded
-
 Ensure-Directory -Path $runDir
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $true -Source "Start-ChatGptDevboxMcp.ps1"
 
 $nodeExe = Resolve-NodeExecutable -ConfiguredPath (Get-EnvValue -FilePath $envFile -Name "NODE_EXE")
+$envRuntime = (Get-EnvValue -FilePath $envFile -Name 'DEVBOX_RUNTIME_MODE').ToLowerInvariant()
+$runtimeMode = if ($PSBoundParameters.ContainsKey('Runtime')) {
+    $Runtime.ToLowerInvariant()
+} elseif ($envRuntime -in @('auto', 'host', 'docker')) {
+    $envRuntime
+} else {
+    'auto'
+}
+$selectedRuntime = if ($runtimeMode -eq 'auto') { 'docker' } else { $runtimeMode }
+$script:dockerConfiguredPath = Get-EnvValue -FilePath $envFile -Name "DOCKER_EXE"
+if ($selectedRuntime -eq 'docker') {
+    [void](Get-DockerExecutable)
+}
 
 $portValue = Get-EnvValue -FilePath $envFile -Name "PORT"
 $port = if ([string]::IsNullOrWhiteSpace($portValue)) { 8100 } else { [int]$portValue }
@@ -503,13 +908,21 @@ if (-not $configuredPublicBaseUrl) {
     $configuredPublicBaseUrl = Normalize-PublicBaseUrl -Value $cloudflaredPublicHostname
 }
 
+$dockerReady = $false
 Ensure-Directory -Path $hostWorkspace
-Ensure-RuntimeImage -Root $root -ImageName $imageName -ForceRebuild:$RebuildRuntime
-Ensure-DevboxContainer -ContainerName $containerName -ImageName $imageName -HostWorkspace $hostWorkspace -DevboxWorkspace $devboxWorkspace -Recreate:$RebuildRuntime
+if ($selectedRuntime -eq 'docker') {
+    $dockerReady = Start-DockerDesktopIfNeeded
+    if ($dockerReady) {
+        Ensure-RuntimeImage -Root $root -ImageName $imageName -ForceRebuild:$RebuildRuntime
+        Ensure-DevboxContainer -ContainerName $containerName -ImageName $imageName -HostWorkspace $hostWorkspace -DevboxWorkspace $devboxWorkspace -Recreate:$RebuildRuntime
+    } else {
+        Write-Warning "Skipping Docker image/container checks because Docker is not ready."
+    }
+}
 
 $publicBaseUrl = $configuredPublicBaseUrl
 if ($Public) {
-    $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port
+    $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port -SelectedRuntime $selectedRuntime -RunDir $runDir -DockerReady:$dockerReady
 }
 
 if (-not $configuredAuthMode) {
@@ -533,11 +946,23 @@ Write-GuardianSettings -RunDir $runDir -Settings @{
     CloudflaredContainerName = $cloudflaredContainerName
     PublicBaseUrl = $publicBaseUrl
     AuthMode = $authMode
+    RuntimeMode = $runtimeMode
+    SelectedRuntime = $selectedRuntime
 }
 
 $overrides = @{
     "MCP_AUTH_MODE" = $authMode
     "PUBLIC_BASE_URL" = $publicBaseUrl
+    "DEVBOX_RUNTIME_MODE" = $selectedRuntime
+}
+if ($selectedRuntime -eq 'host') {
+    # Migrate the legacy Docker default so host tools do not try to use /workspace
+    # as a Windows path. The source .env remains untouched.
+    $overrides['DEVBOX_WORKSPACE_PATH'] = $hostWorkspace
+    $configuredDevboxUser = Get-EnvValue -FilePath $envFile -Name 'DEVBOX_DEFAULT_USER'
+    if (-not $configuredDevboxUser -or $configuredDevboxUser -eq 'root') {
+        $overrides['DEVBOX_DEFAULT_USER'] = $env:USERNAME
+    }
 }
 
 Write-RuntimeEnvFile -SourceEnvFile $envFile -RuntimeEnvFile $runtimeEnvFile -Overrides $overrides
@@ -553,8 +978,6 @@ $process = Start-Process -FilePath $nodeExe `
     -RedirectStandardError $stderrLog `
     -PassThru `
     -WindowStyle Hidden
-
-Set-Content -Path $pidFile -Value $process.Id
 
 $localUrl = "http://127.0.0.1:$port"
 for ($i = 0; $i -lt 30; $i++) {
@@ -578,15 +1001,26 @@ try {
     throw "The MCP server failed to become healthy. stderr:`n$stderr"
 }
 
-if ($Public) {
-    Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl
+$process.Refresh()
+if ($process.HasExited) {
+    $stderr = if (Test-Path $stderrLog) { Get-Content $stderrLog -Raw } else { "" }
+    throw "The MCP server process exited before health validation completed. stderr:`n$stderr"
 }
 
-Write-Host "Local MCP URL: $localUrl/mcp"
+Set-Content -Path $pidFile -Value $process.Id
+
 if ($Public) {
-    Write-Host "Public MCP URL: $publicBaseUrl/mcp"
+    $hostTunnelPidFile = if ($selectedRuntime -eq 'host') { Join-Path $runDir 'host-cloudflared.pid' } else { '' }
+    Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl -HostCloudflaredPidFile $hostTunnelPidFile
+}
+
+Write-Host "Local MCP URL: $localUrl"
+if ($Public) {
+    Write-Host "Public MCP URL: $publicBaseUrl"
+    Write-Host "Legacy MCP URL: $publicBaseUrl/mcp"
 }
 Write-Host "Authentication mode: $(if ($authMode -eq 'none') { 'No Authentication' } else { 'OAuth' })"
+Write-Host "Selected runtime: $selectedRuntime (requested: $runtimeMode)"
 } finally {
     Exit-ChatGptDevboxLifecycleMutex
 }

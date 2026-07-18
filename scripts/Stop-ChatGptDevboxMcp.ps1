@@ -4,6 +4,158 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$script:dockerExe = $null
+$script:dockerConfiguredPath = $null
+
+function Resolve-DockerExecutable {
+    $candidates = New-Object System.Collections.Generic.List[string]
+    foreach ($candidate in @(
+            $script:dockerConfiguredPath,
+            $env:DOCKER_EXE,
+            $(if ($env:ProgramW6432) { Join-Path $env:ProgramW6432 "Docker\\Docker\\resources\\bin\\docker.exe" } else { $null }),
+            $(if ($env:ProgramFiles) { Join-Path $env:ProgramFiles "Docker\\Docker\\resources\\bin\\docker.exe" } else { $null }),
+            "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and -not $candidates.Contains($candidate)) {
+            $candidates.Add($candidate)
+        }
+    }
+
+    $dockerCommand = Get-Command docker -ErrorAction SilentlyContinue
+    if ($dockerCommand -and -not [string]::IsNullOrWhiteSpace($dockerCommand.Source) -and -not $candidates.Contains($dockerCommand.Source)) {
+        $candidates.Add([string]$dockerCommand.Source)
+    }
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return $candidate
+        }
+    }
+
+    throw "Docker CLI was not found. Install Docker Desktop or set DOCKER_EXE in .env to docker.exe."
+}
+
+function Get-DockerExecutable {
+    if (-not $script:dockerExe) {
+        $script:dockerExe = Resolve-DockerExecutable
+    }
+
+    return $script:dockerExe
+}
+
+function ConvertTo-WindowsProcessArgument {
+    param([string]$Argument)
+
+    $value = [string]$Argument
+    if ($value.Length -gt 0 -and $value -notmatch '[\s"]') {
+        return $value
+    }
+
+    return '"' + ($value.Replace('\', '\\').Replace('"', '\"')) + '"'
+}
+
+function Add-ProcessArguments {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    if ($StartInfo | Get-Member -Name ArgumentList -MemberType Property) {
+        foreach ($argument in $Arguments) {
+            [void]$StartInfo.ArgumentList.Add($argument)
+        }
+        return
+    }
+
+    $StartInfo.Arguments = (($Arguments | ForEach-Object { ConvertTo-WindowsProcessArgument -Argument $_ }) -join ' ')
+}
+
+function Invoke-Docker {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [switch]$IgnoreExitCode,
+        [int]$TimeoutSeconds = 60
+    )
+
+    $dockerExe = Get-DockerExecutable
+    $process = $null
+    $stdoutText = ''
+    $stderrText = ''
+    $timedOut = $false
+
+    try {
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $dockerExe
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        Add-ProcessArguments -StartInfo $startInfo -Arguments $Arguments
+
+        $process = [System.Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        [void]$process.Start()
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        $timeoutMs = [Math]::Max(1, $TimeoutSeconds) * 1000
+        $timedOut = -not $process.WaitForExit($timeoutMs)
+        if ($timedOut) {
+            try {
+                $process.Kill()
+            } catch {
+            }
+            [void]$process.WaitForExit(2000)
+        }
+
+        if (-not $timedOut) {
+            try {
+                $stdoutText = [string]$stdoutTask.GetAwaiter().GetResult()
+            } catch {
+                $stdoutText = ''
+            }
+            try {
+                $stderrText = [string]$stderrTask.GetAwaiter().GetResult()
+            } catch {
+                $stderrText = ''
+            }
+        }
+
+        $exitCode = if ($timedOut) { 124 } else { [int]$process.ExitCode }
+        $text = (($stdoutText, $stderrText) -join '').Trim()
+    } finally {
+        if ($process) {
+            $process.Dispose()
+        }
+    }
+
+    if ($timedOut) {
+        if (-not $IgnoreExitCode) {
+            throw "docker $($Arguments -join ' ') timed out after $TimeoutSeconds seconds. Output:`n$text"
+        }
+
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            Output = $text
+            Text = $text
+        }
+    }
+
+    if (-not $IgnoreExitCode -and $exitCode -ne 0) {
+        $trimmedText = $text.Trim()
+        if ($trimmedText) {
+            throw "docker $($Arguments -join ' ') failed with exit code $exitCode. Output:`n$trimmedText"
+        }
+
+        throw "docker $($Arguments -join ' ') failed with exit code $exitCode."
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = $text
+        Text = $text
+    }
+}
 
 function Get-EnvValue {
     param(
@@ -28,6 +180,75 @@ function Get-CommandLineForPid {
     }
 
     return $proc.CommandLine
+}
+
+function Test-IsOwnedServerCommandLine {
+    param([string]$CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+
+    return (
+        ([string]$CommandLine -match 'src[\\/]server\.js\b') -and
+        ([string]$CommandLine -match '--env-file(?:=|\s+)[^"\s]*\.env\.runtime\b')
+    )
+}
+
+function Test-IsOwnedHostCloudflaredCommandLine {
+    param([string]$CommandLine)
+
+    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
+        return $false
+    }
+
+    return (
+        ([string]$CommandLine -match 'cloudflared(?:\.exe)?') -and
+        ([string]$CommandLine -match 'host-cloudflared\.tunnel-token\.txt')
+    )
+}
+
+function Stop-ExistingHostCloudflared {
+    param([string]$PidFile)
+
+    if (-not (Test-Path $PidFile)) {
+        return
+    }
+
+    $pidText = Get-Content -Path $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($pidText -match '^\d+$') {
+        $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
+        if ($candidate -and (Test-IsOwnedHostCloudflaredCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+            Stop-Process -Id ([int]$candidate.ProcessId) -Force -ErrorAction SilentlyContinue
+            for ($i = 0; $i -lt 20; $i++) {
+                Start-Sleep -Milliseconds 250
+                if (-not (Get-Process -Id ([int]$candidate.ProcessId) -ErrorAction SilentlyContinue)) {
+                    break
+                }
+            }
+        }
+    }
+
+    Remove-Item -LiteralPath $PidFile -Force -ErrorAction SilentlyContinue
+}
+
+function Find-OwnedServerProcess {
+    param([string]$PidFile)
+
+    if (Test-Path $PidFile) {
+        $pidText = Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($pidText -match '^\d+$') {
+            $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
+            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+                return $candidate
+            }
+        }
+    }
+
+    return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+        Where-Object { Test-IsOwnedServerCommandLine -CommandLine ([string]$_.CommandLine) } |
+        Sort-Object CreationDate -Descending |
+        Select-Object -First 1
 }
 
 function Enter-ChatGptDevboxLifecycleMutex {
@@ -93,12 +314,21 @@ $root = Split-Path -Parent $PSScriptRoot
 $envFile = Join-Path $root ".env"
 $runDir = Join-Path $root "run"
 $pidFile = Join-Path $runDir "mcp.pid"
+$settingsPath = Join-Path $runDir 'guardian.settings.json'
+$settings = if (Test-Path $settingsPath) { Get-Content $settingsPath -Raw | ConvertFrom-Json } else { $null }
+$selectedRuntime = if ($settings -and $settings.PSObject.Properties['SelectedRuntime'] -and ([string]$settings.SelectedRuntime).ToLowerInvariant() -in @('host', 'docker')) {
+    ([string]$settings.SelectedRuntime).ToLowerInvariant()
+} else {
+    $configuredRuntime = if (Test-Path $envFile) { (Get-EnvValue -FilePath $envFile -Name 'DEVBOX_RUNTIME_MODE').ToLowerInvariant() } else { '' }
+    if ($configuredRuntime -eq 'host') { 'host' } else { 'docker' }
+}
+$script:dockerConfiguredPath = Get-EnvValue -FilePath $envFile -Name "DOCKER_EXE"
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $false -Source "Stop-ChatGptDevboxMcp.ps1"
 
 if (Test-Path $pidFile) {
-    $ownedPid = [int](Get-Content $pidFile | Select-Object -First 1)
-    $commandLine = Get-CommandLineForPid -ProcessId $ownedPid
-    if ($commandLine -and $commandLine -like "*docker-chatgpt-devbox*" -and $commandLine -like "*src\\server.js*") {
+    $ownedProcess = Find-OwnedServerProcess -PidFile $pidFile
+    if ($ownedProcess) {
+        $ownedPid = [int]$ownedProcess.ProcessId
         Stop-Process -Id $ownedPid -Force
         Start-Sleep -Seconds 1
     }
@@ -107,18 +337,23 @@ if (Test-Path $pidFile) {
 }
 
 if ((Test-Path $envFile) -and ($Tunnel -or $All)) {
-    $cloudflaredContainerName = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_CONTAINER_NAME"
-    docker inspect --type container $cloudflaredContainerName *> $null
-    if ($LASTEXITCODE -eq 0) {
-        docker rm -f $cloudflaredContainerName *> $null
+    Stop-ExistingHostCloudflared -PidFile (Join-Path $runDir 'host-cloudflared.pid')
+    if ($selectedRuntime -eq 'docker') {
+        $cloudflaredContainerName = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_CONTAINER_NAME"
+        if (-not $cloudflaredContainerName) { $cloudflaredContainerName = 'chatgpt-devbox-cloudflared' }
+        $inspectResult = Invoke-Docker -Arguments @('inspect', '--type', 'container', $cloudflaredContainerName) -IgnoreExitCode
+        if ($inspectResult.ExitCode -eq 0) {
+            [void](Invoke-Docker -Arguments @('rm', '-f', $cloudflaredContainerName) -IgnoreExitCode)
+        }
     }
 }
 
-if ((Test-Path $envFile) -and $All) {
+if ((Test-Path $envFile) -and $All -and $selectedRuntime -eq 'docker') {
     $containerName = Get-EnvValue -FilePath $envFile -Name "DEVBOX_CONTAINER_NAME"
-    docker inspect --type container $containerName *> $null
-    if ($LASTEXITCODE -eq 0) {
-        docker stop $containerName *> $null
+    if (-not $containerName) { $containerName = 'chatgpt-devbox-runtime' }
+    $inspectResult = Invoke-Docker -Arguments @('inspect', '--type', 'container', $containerName) -IgnoreExitCode
+    if ($inspectResult.ExitCode -eq 0) {
+        [void](Invoke-Docker -Arguments @('stop', $containerName) -IgnoreExitCode)
     }
 }
 } finally {

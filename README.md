@@ -220,6 +220,8 @@ Important `.env` values:
 - `PUBLIC_BASE_URL` for public OAuth deployments
 - `ENABLE_GATEWAY_BRIDGE=true|false`
 - `GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com`
+- `MAX_MCP_TRANSFER_CHARS`, `MAX_TEXT_OUTPUT_CHARS`, and `MCP_JSON_BODY_LIMIT` accept numeric limits or `unlimited`
+- `DOCKER_COMMAND_TIMEOUT_MS` controls bounded Docker subprocess execution
 
 Do not commit `.env`, `run/`, `workspace/`, or live credentials.
 
@@ -233,6 +235,24 @@ devbox run
 ```
 
 Plain `devbox` behaves like `devbox start`. `devbox run` keeps the server in the foreground.
+
+Runtime telemetry is appended to `run/tool-usage.jsonl` and `run/http-usage.jsonl`. Summarize it with `npm run usage:summary`, or run the live reliability probe with `npm run soak:live`.
+
+## Guardian v2 reliability supervisor
+
+Guardian v2 monitors the MCP process, local and public health endpoints, the selected runtime, and the optional tunnel without making host mode depend on Docker. Windows uses the existing scheduled-task watchdog, Linux can use a systemd user service, and Termux can use Termux:Boot; all three run the same foreground supervisor.
+
+```powershell
+# Windows host mode: Docker is not probed or required
+.\scripts\Install-ChatGptDevboxGuardian.ps1 -Runtime host -Public -OAuth
+```
+
+```bash
+# Linux systemd user service or Termux:Boot
+./scripts/install-guardian.sh auto
+```
+
+Docker mode includes stale-container start/replace repair plus exponential backoff and a persistent circuit breaker after repeated Docker Desktop failures. See [docs/GUARDIAN.md](./docs/GUARDIAN.md) for readiness fields, status commands, and service-manager setup.
 
 ## ChatGPT connector values
 

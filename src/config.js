@@ -10,6 +10,36 @@ const parseInteger = (value, fallback) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const isUnlimitedLimitValue = (value) => {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["0", "-1", "none", "off", "disabled", "unlimited", "infinite", "infinity"].includes(normalized);
+};
+
+const parseCharacterLimit = (value, fallback) => {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  if (isUnlimitedLimitValue(value)) {
+    return null;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const parseJsonBodyLimit = (value, fallback) => {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback;
+  }
+
+  if (isUnlimitedLimitValue(value)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+
+  return String(value).trim();
+};
+
 const parseBoolean = (value, fallback = false) => {
   if (value === undefined || value === null || value === "") {
     return fallback;
@@ -20,7 +50,9 @@ const parseBoolean = (value, fallback = false) => {
 };
 
 const parseCsv = (value, fallback = []) =>
-  String(value ?? "")
+  (value === undefined || value === null || String(value).trim() === "" ? fallback : String(value)
+  )
+    .toString()
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean)
@@ -57,6 +89,8 @@ const hostProgramAllowlist = parseCsv(process.env.HOST_PROGRAM_ALLOWLIST, defaul
 const defaultGatewayBridgeOrigins = "https://chatgpt.com,https://chat.openai.com";
 const gatewayBridgeOrigins = parseCsv(process.env.GATEWAY_BRIDGE_ORIGINS ?? defaultGatewayBridgeOrigins);
 const defaultDevboxUser = runtimeMode === "host" ? process.env.USER?.trim() || process.env.LOGNAME?.trim() || "" : "root";
+const defaultDevboxContainerName = process.env.DEVBOX_CONTAINER_NAME?.trim() || "chatgpt-devbox-runtime";
+const defaultDevboxTmpVolumeName = process.env.DEVBOX_TMP_VOLUME_NAME?.trim() || `${defaultDevboxContainerName}-tmp`;
 
 export const config = {
   platform,
@@ -66,12 +100,19 @@ export const config = {
   port: parseInteger(process.env.PORT, 8100),
   authMode: process.env.MCP_AUTH_MODE?.trim() || "none",
   publicBaseUrl,
-  maxTextOutputChars: parseInteger(process.env.MAX_TEXT_OUTPUT_CHARS, 20000),
-  devboxContainerName: process.env.DEVBOX_CONTAINER_NAME?.trim() || "chatgpt-devbox-runtime",
+  maxTextOutputChars: parseCharacterLimit(process.env.MAX_TEXT_OUTPUT_CHARS, 4000000),
+  maxMcpTransferChars: parseCharacterLimit(process.env.MAX_MCP_TRANSFER_CHARS, 4000000),
+  mcpJsonBodyLimit: parseJsonBodyLimit(process.env.MCP_JSON_BODY_LIMIT, "16mb"),
+  mcpUsageLogMaxBytes: parseInteger(process.env.MCP_USAGE_LOG_MAX_BYTES, 16 * 1024 * 1024),
+  mcpUsageLogRotations: parseInteger(process.env.MCP_USAGE_LOG_ROTATIONS, 3),
+  dockerCommandTimeoutMs: parseInteger(process.env.DOCKER_COMMAND_TIMEOUT_MS, 120000),
+  devboxContainerName: defaultDevboxContainerName,
   devboxImageName: process.env.DEVBOX_IMAGE_NAME?.trim() || "chatgpt-devbox-runtime:local",
   devboxWorkspacePath: process.env.DEVBOX_WORKSPACE_PATH?.trim() || defaultDevboxWorkspacePath,
   hostWorkspacePath,
   devboxDefaultUser: process.env.DEVBOX_DEFAULT_USER?.trim() || defaultDevboxUser,
+  devboxTmpVolumeName: defaultDevboxTmpVolumeName,
+  devboxRetiredContainerGraceMs: parseInteger(process.env.DEVBOX_RETIRED_CONTAINER_GRACE_MS, 300000),
   devboxAutoStart: parseBoolean(process.env.DEVBOX_AUTO_START, true),
   enableGatewayBridge: parseBoolean(process.env.ENABLE_GATEWAY_BRIDGE, true),
   gatewayBridgeOrigins,
