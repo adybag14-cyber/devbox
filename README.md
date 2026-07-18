@@ -220,6 +220,8 @@ Important `.env` values:
 - `PUBLIC_BASE_URL` for public OAuth deployments
 - `ENABLE_GATEWAY_BRIDGE=true|false`
 - `GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com`
+- `MAX_MCP_TRANSFER_CHARS`, `MAX_TEXT_OUTPUT_CHARS`, and `MCP_JSON_BODY_LIMIT` accept numeric limits or `unlimited`
+- `DOCKER_COMMAND_TIMEOUT_MS` controls bounded Docker subprocess execution
 
 Do not commit `.env`, `run/`, `workspace/`, or live credentials.
 
@@ -233,6 +235,8 @@ devbox run
 ```
 
 Plain `devbox` behaves like `devbox start`. `devbox run` keeps the server in the foreground.
+
+Runtime telemetry is appended to `run/tool-usage.jsonl` and `run/http-usage.jsonl`. Summarize it with `npm run usage:summary`, or run the live reliability probe with `npm run soak:live`.
 
 ## Guardian v2 reliability supervisor
 

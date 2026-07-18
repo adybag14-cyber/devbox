@@ -16,7 +16,9 @@
     "devbox": "node ./bin/devbox.js",
     "guardian": "node ./scripts/devbox-guardian.mjs",
     "guardian:check": "node ./scripts/devbox-guardian.mjs --once --no-repair",
-    "test": "node --test"
+    "test": "node --test",
+    "soak:live": "node scripts/run-live-mcp-soak.mjs",
+    "usage:summary": "node scripts/summarize-mcp-telemetry.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.28.0",
