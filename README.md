@@ -1,105 +1,200 @@
 # Devbox MCP
 
-This repo runs a ChatGPT-compatible remote MCP server with two runtime modes:
+Devbox MCP exposes a ChatGPT-compatible MCP server for controlled file, shell, Git, Docker, and host-tool operations.
 
-- Docker mode: the original Windows + Docker Desktop workflow.
-- Host mode: direct host execution for Termux, Linux, and macOS without Docker.
+It supports two runtime modes:
 
-Host mode is the default on Termux/Linux/macOS. Docker mode remains the default on Windows.
+- **Docker mode**: the original reproducible Windows + Docker Desktop workflow.
+- **Host mode**: direct execution on Termux, Linux, and macOS without Docker.
+
+`auto` selects Docker on Windows and host mode on Termux/Linux/macOS.
+
+## Fastest setup: Rust bootstrap binary
+
+The cross-platform `devbox-setup` program can clone the repository or configure an existing checkout. It verifies Node.js, creates the local configuration and working directories, installs dependencies, links the `devbox` command when permissions allow, starts the MCP service, and checks its health endpoint.
+
+Prebuilt binaries are produced by the **Build bootstrap binaries** GitHub Actions workflow for:
+
+- Windows x86-64
+- Linux x86-64
+- macOS x86-64
+- macOS Apple Silicon
+
+Download the artifact for your operating system from the latest successful workflow run, extract it, and run it.
+
+### Configure an existing checkout
+
+Windows PowerShell:
+
+```powershell
+.\devbox-setup.exe --repo .
+```
+
+Linux:
+
+```bash
+chmod +x ./devbox-setup
+./devbox-setup --repo .
+```
+
+macOS Apple Silicon:
+
+```bash
+chmod +x ./devbox-setup
+./devbox-setup --repo .
+```
+
+### Clone and configure from an empty directory
+
+Run the binary without `--repo`. It clones the official repository into `./devbox` and completes setup:
+
+```bash
+devbox-setup
+```
+
+Useful installer options:
+
+```text
+--runtime auto|host|docker
+--host 127.0.0.1
+--port 8100
+--workspace /path/to/workspace
+--no-start
+--no-link
+--skip-install
+--dry-run
+```
+
+The installer does not replace an existing `.env` with `.env.example`; it preserves existing lines and updates only explicitly selected keys.
+
+## Build the Rust installer yourself
+
+Rust 1.74 or newer is sufficient:
+
+```bash
+cargo test --manifest-path bootstrap/Cargo.toml
+cargo build --release --manifest-path bootstrap/Cargo.toml
+```
+
+The resulting executable is:
+
+- Windows: `bootstrap/target/release/devbox-setup.exe`
+- Linux/macOS: `bootstrap/target/release/devbox-setup`
+
+Full installer documentation: [bootstrap/README.md](./bootstrap/README.md)
 
 ## What is included
 
-- `src/server.js`: MCP server exposed over Streamable HTTP
-- `src/runtime.js`: runtime selector for Docker vs host mode
-- `src/docker-runtime.js`: original Docker-backed devbox runtime
-- `src/host-runtime.js`: host-backed runtime for Termux/Linux/macOS
-- `src/host-tools.js`: host shell + allowed-program execution helpers
-- `src/launcher.js`: local service launcher helpers
+- `bootstrap/`: cross-platform Rust setup binary and tests
 - `bin/devbox.js`: installable `devbox` command
-- `runtime.Dockerfile`: reproducible Linux devbox image for Docker mode
+- `src/server.js`: MCP server exposed over Streamable HTTP
+- `src/runtime.js`: runtime selector for Docker versus host mode
+- `src/docker-runtime.js`: Docker-backed runtime
+- `src/host-runtime.js`: host-backed runtime for Termux/Linux/macOS
+- `src/host-tools.js`: host shell and allowed-program execution helpers
+- `src/launcher.js`: background service launcher
+- `runtime.Dockerfile`: reproducible Linux runtime image for Docker mode
 - `scripts/Start-ChatGptDevboxMcp.ps1`: Windows/Docker startup flow
 - `scripts/Stop-ChatGptDevboxMcp.ps1`: Windows/Docker shutdown flow
 
-## Runtime modes
+## Requirements
+
+The Rust bootstrap binary still needs the runtime prerequisites used by Devbox itself.
+
+### All modes
+
+- Node.js 18 or newer
+- npm
+- Git when the installer needs to clone the repository
 
 ### Host mode
 
-Use host mode when Docker is unavailable or unnecessary.
-
-Supported today:
-- Termux on Android
-- Linux
-- macOS
-
-Behavior:
-- shell/file operations run directly on the host
-- `devbox_exec_readonly` is best-effort in host mode; it is not container-sandboxed
-- host tools are exposed through `host_*` MCP tools
-- legacy `windows_host_*` tool names remain as compatibility aliases
+- Termux, Linux, or macOS
+- optional but useful: `gh`, `python3`, `ripgrep`, and `curl`
 
 ### Docker mode
 
-Use Docker mode when you want the original reproducible container workflow.
+- Docker Desktop or a compatible Docker engine
+- Windows PowerShell for the supplied Windows automation scripts
+- optional: GitHub CLI, Cloudflare Tunnel, and Cloudflare Access
 
-Behavior:
-- devbox shell/file tools run inside the Docker runtime container
-- read-only shell commands still use disposable read-only containers
-- host tools remain explicit and separate from the devbox runtime
-
-## Requirements
-
-### Termux / Linux / macOS host mode
-
-- Node.js
-- npm
-- Git
-- optional but useful: `gh`, `python3`, `ripgrep`, `curl`
-
-### Windows Docker mode
-
-- Windows
-- Docker Desktop
-- Node.js
-- PowerShell
-- Git
-- optional: GitHub CLI, Cloudflare Tunnel, Cloudflare Access
-
-## Clone and bootstrap
+## Manual installation
 
 ```bash
 git clone https://github.com/adybag14-cyber/devbox.git
 cd devbox
 cp .env.example .env
 npm install
+npm link
+node bin/devbox.js start
 ```
+
+On Windows PowerShell, copy the environment file with:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+The repository automatically loads `<repo>/.env`. Existing process environment variables take priority.
+
+## Runtime modes
+
+### Host mode
+
+Host mode is the default on Termux, Linux, and macOS.
+
+```bash
+DEVBOX_RUNTIME_MODE=host devbox
+```
+
+Behavior:
+
+- file and shell operations run directly on the host
+- `devbox_exec_readonly` is best-effort and is not container-sandboxed
+- generic host tools are exposed through `host_*`
+- legacy `windows_host_*` names remain compatibility aliases
+
+Termux instructions: [docs/TERMUX.md](./docs/TERMUX.md)
+
+Linux/macOS details: [docs/HOST_COMPATIBILITY.md](./docs/HOST_COMPATIBILITY.md)
+
+### Docker mode
+
+Docker mode is the default on Windows and can be selected elsewhere:
+
+```bash
+DEVBOX_RUNTIME_MODE=docker devbox
+```
+
+Behavior:
+
+- Devbox shell and file tools run in the Docker runtime container
+- read-only shell commands use disposable read-only containers
+- host tools remain explicit and separate from the container runtime
+
+Windows users can also use:
+
+```powershell
+.\scripts\Start-ChatGptDevboxMcp.ps1
+```
+
+## Configuration
 
 Important `.env` values:
 
 - `DEVBOX_RUNTIME_MODE=auto|host|docker`
+- `HOST` and `PORT`
 - `HOST_WORKSPACE_PATH`
 - `HOST_DEFAULT_WORKDIR`
 - `HOST_SHELL`
 - `HOST_PROGRAM_ALLOWLIST`
-- `PUBLIC_BASE_URL` when using OAuth modes
-- `ENABLE_GATEWAY_BRIDGE=true|false` to allow ChatGPT Web / browser clients to call the local open server from `https://chatgpt.com`
+- `PUBLIC_BASE_URL` for public OAuth deployments
+- `ENABLE_GATEWAY_BRIDGE=true|false`
 - `GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com`
 
-## Termux quick start
+Do not commit `.env`, `run/`, `workspace/`, or live credentials.
 
-Full notes: [docs/TERMUX.md](./docs/TERMUX.md)
-
-```bash
-pkg install nodejs git ripgrep python curl
-cd ~/devbox
-cp .env.example .env
-npm install
-npm link
-devbox
-```
-
-That starts the MCP service in the background and prints the local URL plus log path.
-
-Useful commands:
+## Service commands
 
 ```bash
 devbox status
@@ -108,94 +203,51 @@ devbox stop
 devbox run
 ```
 
-`devbox run` keeps the server in the foreground. Plain `devbox` behaves like `devbox start`.
-
-## Linux / macOS host-mode quick start
-
-Full notes: [docs/HOST_COMPATIBILITY.md](./docs/HOST_COMPATIBILITY.md)
-
-```bash
-cd /path/to/devbox
-cp .env.example .env
-npm install
-npm link
-DEVBOX_RUNTIME_MODE=host devbox
-```
-
-If you want the old container workflow on Linux/macOS, set:
-
-```bash
-DEVBOX_RUNTIME_MODE=docker
-```
-
-## Windows Docker-mode quick start
-
-```powershell
-git clone https://github.com/adybag14-cyber/devbox.git
-cd .\devbox
-Copy-Item .env.example .env
-npm install
-.\scripts\Start-ChatGptDevboxMcp.ps1
-```
+Plain `devbox` behaves like `devbox start`. `devbox run` keeps the server in the foreground.
 
 ## ChatGPT connector values
 
-After the service is up, inspect:
+After startup, inspect the root endpoint:
 
 ```bash
 curl http://127.0.0.1:8100/
 ```
 
-Typical local values:
+Typical local connector settings:
 
-- `Name`: `Devbox MCP`
-- `MCP Server URL`: `http://127.0.0.1:8100/mcp` locally, or your public base URL when exposed
-- `Authentication`: `none`, `demo-oauth`, or `cloudflare-access`
-- `gateway_bridge.enabled`: `true` for local open-server requests when browser bridging is enabled
+- **Name**: `Devbox MCP`
+- **MCP Server URL**: `http://127.0.0.1:8100/mcp`
+- **Authentication**: `none`, `demo-oauth`, or `cloudflare-access`
 
-## Local ChatGPT Web bridge
-
-When `MCP_AUTH_MODE=none`, local loopback requests automatically expose a browser bridge for ChatGPT Web origins.
-That bridge:
-
-- returns `mcp_url` for local requests even when `PUBLIC_BASE_URL` is blank
-- answers CORS preflights for configured `GATEWAY_BRIDGE_ORIGINS`
-- allows secure-page browser clients to call the local open MCP server on loopback
-
-Default allowed origins:
-
-- `https://chatgpt.com`
-- `https://chat.openai.com`
-
-You can disable or customize it with:
-
-```bash
-ENABLE_GATEWAY_BRIDGE=false
-GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com
-```
-
-## Public URL / OAuth
-
-If you expose the service publicly, set:
-
-- `PUBLIC_BASE_URL`
-- `MCP_AUTH_MODE=demo-oauth` or `MCP_AUTH_MODE=cloudflare-access`
-
-Cloudflare Access details are still documented by the existing helper scripts and Windows docs.
+When `MCP_AUTH_MODE=none`, local loopback requests can expose the browser bridge for configured ChatGPT origins. Disable it with `ENABLE_GATEWAY_BRIDGE=false` when it is not needed.
 
 ## Security notes
 
-- `host_exec` is high risk because it provides direct host shell access.
-- `host_run_program` is limited by `HOST_PROGRAM_ALLOWLIST`.
-- `windows_host_*` tools remain for compatibility, but on non-Windows hosts they route to the generic host implementation.
-- Do not commit `.env`, `run/`, `workspace/`, or other live runtime state.
+- `host_exec` provides direct host shell access and should be enabled only in a trusted environment.
+- `host_run_program` is constrained by `HOST_PROGRAM_ALLOWLIST`.
+- Host-mode read-only execution is cooperative rather than a hard sandbox.
+- Public deployments should use an appropriate OAuth mode and a properly configured public URL.
 
 ## Validation
 
+JavaScript service tests:
+
 ```bash
 npm test
+```
+
+Rust bootstrap tests:
+
+```bash
+cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
+cargo test --manifest-path bootstrap/Cargo.toml
+```
+
+Service smoke test:
+
+```bash
 node bin/devbox.js start
-curl http://127.0.0.1:8100/healthz
+curl --fail http://127.0.0.1:8100/healthz
 node bin/devbox.js stop
 ```
 

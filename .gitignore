@@ -4,3 +4,4 @@ workspace/
 .env
 .env.runtime
 npm-debug.log*
+bootstrap/target/

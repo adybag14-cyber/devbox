@@ -1,0 +1,55 @@
+name: Build bootstrap binaries
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bootstrap/**"
+      - ".github/workflows/bootstrap-binaries.yml"
+  pull_request:
+    paths:
+      - "bootstrap/**"
+      - ".github/workflows/bootstrap-binaries.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.artifact }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: devbox-setup-linux-x86_64
+            binary: bootstrap/target/release/devbox-setup
+          - os: windows-latest
+            artifact: devbox-setup-windows-x86_64
+            binary: bootstrap/target/release/devbox-setup.exe
+          - os: macos-15-intel
+            artifact: devbox-setup-macos-x86_64
+            binary: bootstrap/target/release/devbox-setup
+          - os: macos-15
+            artifact: devbox-setup-macos-aarch64
+            binary: bootstrap/target/release/devbox-setup
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - name: Select stable Rust
+        run: rustup default stable
+      - name: Format check
+        run: cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
+      - name: Test
+        run: cargo test --manifest-path bootstrap/Cargo.toml
+      - name: Build release binary
+        run: cargo build --release --manifest-path bootstrap/Cargo.toml
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
