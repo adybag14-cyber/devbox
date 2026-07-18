@@ -1,0 +1,18 @@
+[package]
+name = "devbox-setup"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Cross-platform bootstrap installer for Devbox MCP"
+repository = "https://github.com/adybag14-cyber/devbox"
+publish = false
+
+[[bin]]
+name = "devbox-setup"
+path = "src/main.rs"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
