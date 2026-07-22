@@ -6,6 +6,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import { spawnProcess } from "../src/process-utils.js";
+import { isJpegBuffer } from "../src/windows-screen-capture.js";
 
 const hasPowerShell = process.platform === "win32";
 
@@ -31,6 +32,12 @@ const {
   runAllowedProgram,
   writeLargeFileOnHost,
 } = await importFreshHostTools();
+
+test("isJpegBuffer accepts complete JPEG bytes and rejects truncated data", () => {
+  assert.equal(isJpegBuffer(Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02, 0xff, 0xd9])), true);
+  assert.equal(isJpegBuffer(Buffer.from([0xff, 0xd8, 0xff, 0x01, 0x02])), false);
+  assert.equal(isJpegBuffer(Buffer.from("not-a-jpeg")), false);
+});
 
 test("buildWindowsPowerShellArgs suppresses progress streams before the original script", async () => {
   const { buildWindowsPowerShellArgs } = await importFreshHostTools();

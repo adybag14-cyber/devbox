@@ -137,6 +137,93 @@ const connectClient = async (t, port) => {
   return client;
 };
 
+const assertJpegToolResult = (result) => {
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent?.ok, true);
+  assert.equal(result.structuredContent?.data?.mime_type, "image/jpeg");
+  assert.match(result.structuredContent?.data?.sha256 ?? "", /^[a-f0-9]{64}$/);
+  assert.ok(result.structuredContent?.data?.width > 0);
+  assert.ok(result.structuredContent?.data?.height > 0);
+
+  const image = result.content?.find((entry) => entry.type === "image");
+  assert.ok(image, "Expected an MCP image content block.");
+  assert.equal(image.mimeType, "image/jpeg");
+  const bytes = Buffer.from(image.data, "base64");
+  assert.equal(bytes.length, result.structuredContent.data.bytes);
+  assert.deepEqual([...bytes.subarray(0, 3)], [0xff, 0xd8, 0xff]);
+  assert.deepEqual([...bytes.subarray(bytes.length - 2)], [0xff, 0xd9]);
+  assert.equal(createHash("sha256").update(bytes).digest("hex"), result.structuredContent.data.sha256);
+};
+
+const startVisibleTestWindow = async (t) => {
+  const script = `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$form = [System.Windows.Forms.Form]::new()
+$form.Text = 'Devbox PID Capture Test'
+$form.StartPosition = 'Manual'
+$form.Location = [System.Drawing.Point]::new(80, 80)
+$form.Size = [System.Drawing.Size]::new(640, 360)
+$label = [System.Windows.Forms.Label]::new()
+$label.Text = 'DEVBOX PID JPEG CAPTURE'
+$label.AutoSize = $true
+$label.Font = [System.Drawing.Font]::new('Arial', 20)
+$label.Location = [System.Drawing.Point]::new(80, 100)
+$form.Controls.Add($label)
+$form.Add_Shown({ [Console]::Out.WriteLine('ready'); [Console]::Out.Flush() })
+[void]$form.ShowDialog()
+`;
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const child = spawn(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+    { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: false },
+  );
+  const stderr = [];
+  collectStream(child.stderr, stderr);
+  await Promise.race([
+    new Promise((resolve) => {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        if (chunk.includes("ready")) resolve();
+      });
+    }),
+    (async () => {
+      await wait(10000);
+      throw new Error(`Timed out waiting for the PID capture test window. stderr:\n${stderr.join("")}`);
+    })(),
+  ]);
+  t.after(async () => terminateChild(child));
+  return child;
+};
+
+test("Windows display capture returns actual JPEG bytes through MCP", { skip: process.platform !== "win32" }, async (t) => {
+  const { port } = await startServer(t);
+  const client = await connectClient(t, port);
+  const result = await client.callTool({
+    name: "windows_host_capture_display",
+    arguments: { quality: 70 },
+  });
+
+  assertJpegToolResult(result);
+  assert.equal(result.structuredContent.data.capture_mode, "full_display");
+});
+
+test("Windows PID program capture returns its actual window as JPEG through MCP", { skip: process.platform !== "win32" }, async (t) => {
+  const windowProcess = await startVisibleTestWindow(t);
+  const { port } = await startServer(t);
+  const client = await connectClient(t, port);
+  const result = await client.callTool({
+    name: "windows_host_capture_program",
+    arguments: { pid: windowProcess.pid, quality: 80 },
+  });
+
+  assertJpegToolResult(result);
+  assert.equal(result.structuredContent.data.capture_mode, "program_pid");
+  assert.equal(result.structuredContent.data.pid, windowProcess.pid);
+  assert.equal(result.structuredContent.data.window_title, "Devbox PID Capture Test");
+});
+
 const assertSseProbeResponse = async (response, errorMessage) => {
   assert.equal(response.status, 200, errorMessage);
   assert.match(response.headers.get("content-type") ?? "", /^text\/event-stream\b/i);

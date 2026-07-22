@@ -46,6 +46,7 @@ import {
   runHostShellCommand,
   writeLargeFileOnHost,
 } from "./host-tools.js";
+import { captureFullDisplayJpeg, captureProgramWindowJpeg } from "./windows-screen-capture.js";
 import { CloudflareAccessOAuthProvider, DemoOAuthProvider } from "./oauth.js";
 import {
   normalizeLargeWritePayload,
@@ -460,6 +461,19 @@ const successResult = (summary, extra = {}) => {
     ],
     structuredContent,
   };
+};
+
+const jpegImageResult = (summary, { jpeg, metadata }) => {
+  const result = successResult(summary, {
+    data: metadata,
+    text: textFromResult(summary, metadata),
+  });
+  result.content.push({
+    type: "image",
+    data: jpeg.toString("base64"),
+    mimeType: "image/jpeg",
+  });
+  return result;
 };
 
 const isCommandStyleError = (error) =>
@@ -1098,6 +1112,57 @@ const buildServer = ({ requestSignal } = {}) => {
       `${hostTitle} tool status ready`,
     ),
     hostStatusHandler,
+  );
+
+  server.registerTool(
+    "windows_host_capture_display",
+    safeReadOnlyTool(
+      {
+        title: "Capture Full Windows Display as JPEG",
+        description:
+          "Capture the complete Windows virtual desktop, including all attached displays, and return the actual screenshot as an image/jpeg MCP content block.",
+        inputSchema: {
+          quality: z.number().int().min(1).max(100).default(85).describe("JPEG quality from 1 through 100."),
+        },
+        outputSchema,
+      },
+      "Capturing full Windows display",
+      "Full Windows display captured",
+    ),
+    async ({ quality }) => {
+      try {
+        const capture = await captureFullDisplayJpeg({ quality });
+        return jpegImageResult("Captured the full Windows display as JPEG.", capture);
+      } catch (error) {
+        return errorResult(error, "Failed to capture the full Windows display.");
+      }
+    },
+  );
+
+  server.registerTool(
+    "windows_host_capture_program",
+    safeReadOnlyTool(
+      {
+        title: "Capture Windows Program by PID as JPEG",
+        description:
+          "Capture the largest visible, non-minimized top-level window owned by a specific Windows host process ID and return the actual screenshot as an image/jpeg MCP content block.",
+        inputSchema: {
+          pid: z.number().int().min(1).describe("Windows host process ID whose visible program window should be captured."),
+          quality: z.number().int().min(1).max(100).default(85).describe("JPEG quality from 1 through 100."),
+        },
+        outputSchema,
+      },
+      "Capturing Windows program window",
+      "Windows program window captured",
+    ),
+    async ({ pid, quality }) => {
+      try {
+        const capture = await captureProgramWindowJpeg({ pid, quality });
+        return jpegImageResult(`Captured Windows program PID ${pid} as JPEG.`, capture);
+      } catch (error) {
+        return errorResult(error, `Failed to capture Windows program PID ${pid}.`);
+      }
+    },
   );
 
   server.registerTool(
