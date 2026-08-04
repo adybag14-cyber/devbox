@@ -22,6 +22,7 @@ const {
   buildWindowsPowerShellFileArgs,
   buildElevatedWindowsPowerShellWrapper,
   buildElevatedWindowsPowerShellLauncher,
+  cleanPowerShellOutput,
   inspectWindowsFile,
   readLargeFileOnHost,
   shouldUsePowerShellScriptFile,
@@ -31,7 +32,7 @@ const {
   writeLargeFileOnHost,
 } = await importFreshHostTools();
 
-test("buildWindowsPowerShellArgs encodes the original script exactly", async () => {
+test("buildWindowsPowerShellArgs suppresses progress streams before the original script", async () => {
   const { buildWindowsPowerShellArgs } = await importFreshHostTools();
   const command = "$value = 'A \"quoted\" value with ''single'' quotes'; Write-Output $value";
   const args = buildWindowsPowerShellArgs(command);
@@ -40,7 +41,9 @@ test("buildWindowsPowerShellArgs encodes the original script exactly", async () 
   assert.equal(args[1], "-NoProfile");
   assert.equal(args[2], "-NonInteractive");
   assert.equal(args[5], "-EncodedCommand");
-  assert.equal(Buffer.from(args[6], "base64").toString("utf16le"), command);
+  const decoded = Buffer.from(args[6], "base64").toString("utf16le");
+  assert.match(decoded, /^\$ProgressPreference = 'SilentlyContinue'\n\$InformationPreference = 'SilentlyContinue'/u);
+  assert.equal(decoded.endsWith(command), true);
 });
 
 test("encoded PowerShell execution preserves nested quotes end to end", { skip: !hasPowerShell }, async () => {
@@ -107,6 +110,7 @@ test("buildElevatedWindowsPowerShellWrapper preserves working directory and outp
   assert.equal(wrapper.includes("$stderrPath = 'C:\\Temp\\stderr.txt'"), true);
   assert.equal(wrapper.includes("$exitCodePath = 'C:\\Temp\\exit.txt'"), true);
   assert.equal(wrapper.includes("& 'C:\\Temp\\command.ps1'"), true);
+  assert.equal(wrapper.includes("$InformationPreference = 'SilentlyContinue'"), true);
 });
 
 test("buildElevatedWindowsPowerShellLauncher uses RunAs elevation", async () => {
@@ -163,6 +167,31 @@ test("inspectWindowsFile flags mojibake-corrupted PowerShell scripts and reports
   }
 });
 
+test("PowerShell CLIXML progress is removed while serialized errors are decoded", () => {
+  const progressOnly = "#< CLIXML\r\n<Objs Version=\"1.1.0.1\"><Obj S=\"progress\"><MS><S N=\"Activity\">Working</S></MS></Obj></Objs>";
+  const serializedError = "#< CLIXML\r\n<Objs Version=\"1.1.0.1\"><S S=\"Error\">real failure_x000D__x000A_</S></Objs>";
+
+  assert.equal(cleanPowerShellOutput(progressOnly), "");
+  assert.equal(cleanPowerShellOutput(serializedError).trim(), "real failure");
+});
+
+test("inspectWindowsFile skips corruption checks for PE executables", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
+  const executablePath = path.join(tempDir, "valid.exe");
+
+  try {
+    await writeFile(executablePath, Buffer.from([0x4d, 0x5a, 0x00, 0x00, 0xff, 0xfe]));
+    const inspection = await inspectWindowsFile({ path: executablePath, workingDir: tempDir });
+
+    assert.equal(inspection.binary_format, "pe");
+    assert.equal(inspection.text_inspection_skipped, true);
+    assert.equal(inspection.likely_corrupted_on_disk, false);
+    assert.equal(inspection.utf8_valid, null);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("runAllowedProgram attaches bridge diagnostics for corrupted script failures", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
   const scriptPath = path.join(tempDir, "corrupt.ps1");
@@ -197,6 +226,24 @@ test("runAllowedProgram attaches bridge diagnostics for corrupted script failure
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
+});
+
+test("automatic diagnostics ignore an existing node.exe binary mentioned by a failed command", async () => {
+  await assert.rejects(
+    () =>
+      runAllowedProgram({
+        program: "node",
+        args: ["-e", "console.error(JSON.stringify(process.execPath)); process.exit(3)"],
+        workingDir: process.cwd(),
+        timeoutMs: 15000,
+      }),
+    (error) => {
+      assert.ok(error instanceof HostCommandError);
+      assert.equal(error.exitCode, 3);
+      assert.equal(error.data?.bridge_diagnostics, undefined);
+      return true;
+    },
+  );
 });
 
 test("host large-file helpers preserve exact bytes for repair workflows", async () => {

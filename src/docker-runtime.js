@@ -420,6 +420,7 @@ export const execInDevbox = async ({
   workingDir = config.devboxWorkspacePath,
   timeoutMs,
   user = config.devboxDefaultUser,
+  signal,
 }) =>
   withDevboxOperation(() => {
     const args = ["exec"];
@@ -427,7 +428,7 @@ export const execInDevbox = async ({
       args.push("-u", user);
     }
     args.push("-w", workingDir, config.devboxContainerName, "bash", "-lc", command);
-    return runDocker(args, { timeoutMs });
+    return runDocker(args, { timeoutMs, signal });
   });
 
 export const execReadOnlyInDevbox = async ({
@@ -435,6 +436,7 @@ export const execReadOnlyInDevbox = async ({
   workingDir = config.devboxWorkspacePath,
   timeoutMs,
   user = config.devboxDefaultUser,
+  signal,
 }) =>
   withDevboxOperation(() => {
     // Avoid disposable docker run for readonly probes; on this host those clients can strand while exec stays healthy.
@@ -445,7 +447,7 @@ export const execReadOnlyInDevbox = async ({
 
     args.push("-w", workingDir, config.devboxContainerName, "bash", "-lc", command);
 
-    return runDocker(args, { timeoutMs });
+    return runDocker(args, { timeoutMs, signal });
   });
 
 export const runProgramInDevbox = async ({
@@ -455,6 +457,7 @@ export const runProgramInDevbox = async ({
   timeoutMs,
   user = config.devboxDefaultUser,
   input,
+  signal,
 }) =>
   withDevboxOperation(() => {
     const dockerArgs = ["exec"];
@@ -466,7 +469,7 @@ export const runProgramInDevbox = async ({
     }
 
     dockerArgs.push("-w", workingDir, config.devboxContainerName, program, ...args);
-    return runDocker(dockerArgs, { timeoutMs, input });
+    return runDocker(dockerArgs, { timeoutMs, input, signal });
   });
 
 export const getDevboxVersions = async () => {
@@ -492,12 +495,19 @@ export const listFilesInDevbox = async ({
   path = config.devboxWorkspacePath,
   recursive = false,
   maxDepth = 4,
+  maxEntries = 5000,
+  timeoutMs = 30000,
+  excludeDirectories = [".git", "node_modules", ".cache", ".venv", "venv", "__pycache__"],
+  signal,
 }) => {
-  const command = recursive
-    ? `find ${shEscape(path)} -maxdepth ${Math.max(1, maxDepth)} \\( -type d -o -type f -o -type l \\) -printf '%y\\t%p\\n' | sort`
-    : `find ${shEscape(path)} -maxdepth 1 \\( -type d -o -type f -o -type l \\) -printf '%y\\t%p\\n' | sort`;
+  const depth = recursive ? Math.max(1, maxDepth) : 1;
+  const prunedNames = recursive
+    ? excludeDirectories.map((name) => `-name ${shEscape(String(name))}`).join(" -o ")
+    : "";
+  const prune = prunedNames ? `\\( -type d \\( ${prunedNames} \\) -prune \\) -o ` : "";
+  const command = `find ${shEscape(path)} -maxdepth ${depth} ${prune}\\( -type d -o -type f -o -type l \\) -printf '%y\\t%p\\n' | head -n ${Math.max(1, maxEntries)}`;
 
-  return execInDevbox({ command, timeoutMs: 30000 });
+  return execInDevbox({ command, timeoutMs, signal });
 };
 
 export const readFileInDevbox = async ({ path, maxBytes = 65536 }) =>
@@ -556,20 +566,34 @@ export const searchFilesInDevbox = async ({
   glob = "*",
   caseSensitive = false,
   maxMatches = 200,
+  maxDepth = 12,
+  maxBytesPerFile = 2 * 1024 * 1024,
+  timeoutMs = 30000,
+  excludeDirectories = [".git", "node_modules", ".cache", ".venv", "venv", "__pycache__"],
+  signal,
 }) =>
   execInDevbox({
     command: [
       "rg",
       caseSensitive ? "-n" : "-ni",
+      "--no-messages",
+      "--max-depth",
+      String(Math.max(1, maxDepth)),
+      "--max-filesize",
+      String(Math.max(1, maxBytesPerFile)),
       "--glob",
       shEscape(glob),
-      "-m",
-      String(Math.max(1, maxMatches)),
+      ...excludeDirectories.flatMap((name) => ["--glob", shEscape(`!**/${String(name)}/**`)]),
       "--",
       shEscape(pattern),
       shEscape(path),
+      "|",
+      "head",
+      "-n",
+      String(Math.max(1, maxMatches)),
     ].join(" "),
-    timeoutMs: 30000,
+    timeoutMs,
+    signal,
   });
 
 export const getDevboxGithubAuthStatus = async () => {

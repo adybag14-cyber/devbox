@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 
 const importFresh = async (relativePath) => {
   const href = pathToFileURL(path.join(process.cwd(), relativePath)).href;
@@ -58,4 +58,40 @@ test("host runtime can run shell commands and perform file operations", async ()
   assert.equal(readResult.stdout, "alpha\nbeta\nbeta\n");
   assert.equal(searchResult.stdout.match(/notes\.txt/g)?.length, 2);
   assert.equal(await readFile(path.join(workspaceDir, "written.txt"), "utf8"), "hello host runtime");
+});
+
+test("recursive host search prunes dependency trees and stops at the global match limit", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "devbox-host-runtime-search-"));
+  process.env.HOST_WORKSPACE_PATH = workspaceDir;
+  process.env.DEVBOX_WORKSPACE_PATH = workspaceDir;
+  const dependencyDir = path.join(workspaceDir, "node_modules", "package");
+  await mkdir(dependencyDir, { recursive: true });
+  await writeFile(path.join(dependencyDir, "ignored.txt"), "needle\n", "utf8");
+  await writeFile(path.join(workspaceDir, "one.txt"), "needle\nneedle\n", "utf8");
+  await writeFile(path.join(workspaceDir, "two.txt"), "needle\n", "utf8");
+
+  const { searchFilesInHostRuntime } = await importFresh("src/host-runtime.js");
+  const result = await searchFilesInHostRuntime({
+    pattern: "needle",
+    path: workspaceDir,
+    maxMatches: 2,
+    maxDepth: 8,
+  });
+
+  assert.equal(result.stdout.match(/needle/g)?.length, 2);
+  assert.doesNotMatch(result.stdout, /node_modules/u);
+  assert.match(result.stderr, /match limit 2 reached/u);
+  assert.match(result.stderr, /pruned 1 excluded directories/u);
+});
+
+test("recursive host search honors an already-cancelled request", async () => {
+  const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "devbox-host-runtime-search-"));
+  const controller = new AbortController();
+  controller.abort();
+  const { searchFilesInHostRuntime } = await importFresh("src/host-runtime.js");
+
+  await assert.rejects(
+    searchFilesInHostRuntime({ pattern: "needle", path: workspaceDir, signal: controller.signal }),
+    (error) => error?.name === "AbortError",
+  );
 });

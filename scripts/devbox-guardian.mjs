@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { appendFile, mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -12,6 +12,7 @@ import {
   isRepairAllowed,
   normalizeRuntimeMode,
   resolveSelectedRuntime,
+  selectRepairScope,
   updateDockerRepairPolicy,
 } from "../src/guardian-core.js";
 import { parseEnvText } from "../src/env.js";
@@ -71,6 +72,198 @@ const parseArgs = (argv) => {
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+export const classifyCommandFailure = (
+  error,
+  { startedAtMs = Date.now(), nowMs = Date.now(), fallbackExitCode = 1, timeoutMs = null } = {},
+) => {
+  const elapsedMs = Math.max(0, nowMs - startedAtMs);
+  const timedOut = Boolean(
+    error?.killed ||
+    error?.timedOut ||
+    error?.code === "ETIMEDOUT" ||
+    error?.code === "ERR_CHILD_PROCESS_TIMEOUT" ||
+    (Number.isFinite(timeoutMs) && elapsedMs >= timeoutMs),
+  );
+  const numericExitCode = Number.isInteger(error?.code) ? error.code : fallbackExitCode;
+
+  return {
+    exitCode: timedOut ? 124 : numericExitCode,
+    timedOut,
+    signal: error?.signal ? String(error.signal) : null,
+    elapsedMs,
+  };
+};
+
+const createChildProcessError = (message, details = {}) =>
+  Object.assign(new Error(message), {
+    code: details.code ?? null,
+    killed: details.killed === true,
+    timedOut: details.timedOut === true,
+    signal: details.signal ?? null,
+    stdout: details.stdout ?? "",
+    stderr: details.stderr ?? "",
+  });
+
+export const runProcessUntilExit = (file, args, options = {}) =>
+  new Promise((resolve, reject) => {
+    const startedAtMs = Date.now();
+    const timeoutMs = Math.max(1, options.timeout ?? 150000);
+    const maxBuffer = Math.max(1, options.maxBuffer ?? 4 * 1024 * 1024);
+    let stdout = "";
+    let stderr = "";
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let timedOut = false;
+    let bufferExceeded = false;
+    let settled = false;
+    let timeoutTimer;
+    let forcedSettleTimer;
+
+    const child = spawn(file, args, {
+      cwd: options.cwd,
+      env: options.env ?? process.env,
+      windowsHide: options.windowsHide !== false,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const cleanup = () => {
+      clearTimeout(timeoutTimer);
+      clearTimeout(forcedSettleTimer);
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      child.stdin?.destroy();
+    };
+    const settle = (handler, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      handler(value);
+    };
+    const snapshotError = (message, details = {}) =>
+      createChildProcessError(message, {
+        ...details,
+        stdout,
+        stderr,
+      });
+    const appendChunk = (stream, chunk) => {
+      const bytes = Buffer.byteLength(chunk);
+      if (stream === "stdout") {
+        stdoutBytes += bytes;
+        if (stdoutBytes <= maxBuffer) stdout += chunk;
+      } else {
+        stderrBytes += bytes;
+        if (stderrBytes <= maxBuffer) stderr += chunk;
+      }
+      if (!bufferExceeded && (stdoutBytes > maxBuffer || stderrBytes > maxBuffer)) {
+        bufferExceeded = true;
+        child.kill();
+        clearTimeout(timeoutTimer);
+        forcedSettleTimer = setTimeout(() => {
+          settle(reject, snapshotError(`Command output exceeded ${maxBuffer} bytes.`, {
+            code: "ENOBUFS",
+            killed: true,
+          }));
+        }, 3000);
+        forcedSettleTimer.unref?.();
+      }
+    };
+
+    child.stdout.setEncoding(options.encoding ?? "utf8");
+    child.stderr.setEncoding(options.encoding ?? "utf8");
+    child.stdout.on("data", (chunk) => appendChunk("stdout", chunk));
+    child.stderr.on("data", (chunk) => appendChunk("stderr", chunk));
+    child.once("error", (error) => {
+      settle(reject, snapshotError(error.message, { code: error.code }));
+    });
+    child.once("exit", (code, signal) => {
+      setTimeout(() => {
+        if (bufferExceeded) {
+          settle(reject, snapshotError(`Command output exceeded ${maxBuffer} bytes.`, { code: "ENOBUFS", killed: true, signal }));
+        } else if (timedOut) {
+          settle(reject, snapshotError(`Command timed out after ${timeoutMs} ms.`, {
+            code,
+            killed: true,
+            timedOut: true,
+            signal,
+          }));
+        } else if (code !== 0) {
+          settle(reject, snapshotError(stderr.trim() || stdout.trim() || `${file} exited with code ${code}.`, {
+            code,
+            signal,
+          }));
+        } else {
+          settle(resolve, { exitCode: 0, stdout, stderr, elapsedMs: Date.now() - startedAtMs });
+        }
+      }, 25);
+    });
+
+    timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+      forcedSettleTimer = setTimeout(() => {
+        settle(reject, snapshotError(`Command timed out after ${timeoutMs} ms.`, {
+          code: 124,
+          killed: true,
+          timedOut: true,
+        }));
+      }, 3000);
+      forcedSettleTimer.unref?.();
+    }, timeoutMs);
+    timeoutTimer.unref?.();
+
+    if (options.input !== undefined) {
+      child.stdin.end(options.input);
+    } else {
+      child.stdin.end();
+    }
+  });
+
+const psSingleQuote = (value) => String(value).replace(/'/gu, "''");
+
+export const buildWindowsGuardianRepairArgs = ({
+  scriptPath,
+  selectedRuntime,
+  settings = {},
+  repairScope = "full",
+}) => {
+  const invocation = [
+    `& '${psSingleQuote(scriptPath)}'`,
+    `-Runtime '${psSingleQuote(selectedRuntime)}'`,
+    settings.Public ? "-Public" : "",
+    settings.OAuth ? "-OAuth" : "",
+    repairScope === "public-tunnel" ? "-TunnelOnly" : "",
+  ].filter(Boolean).join(" ");
+  const command = `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
+$exitCode = 0
+try {
+  ${invocation}
+  if (-not $?) {
+    $exitCode = 1
+  }
+} catch {
+  [Console]::Error.WriteLine(($_ | Out-String))
+  $exitCode = 1
+} finally {
+  [Console]::Out.Flush()
+  [Console]::Error.Flush()
+  [System.Environment]::Exit($exitCode)
+}
+`;
+
+  return [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    Buffer.from(command, "utf16le").toString("base64"),
+  ];
+};
+
 const readJson = async (filePath, fallback = null) => {
   try {
     return JSON.parse(await readFile(filePath, "utf8"));
@@ -114,16 +307,87 @@ const normalizePublicUrl = (value) => {
   return /^https?:\/\//iu.test(raw) ? raw : `https://${raw}`;
 };
 
-const isProcessAlive = (pid) => {
+export const isProcessAlive = (pid, signalProcess = process.kill.bind(process)) => {
   if (!Number.isInteger(pid) || pid < 1) {
     return false;
   }
   try {
-    process.kill(pid, 0);
+    signalProcess(pid, 0);
     return true;
+  } catch (error) {
+    // Windows reports EPERM for a live process in another integrity/session boundary.
+    return error?.code === "EPERM";
+  }
+};
+
+export const isGuardianCommandLine = (commandLine, projectRoot) => {
+  const normalizedCommandLine = String(commandLine ?? "").replaceAll("\\", "/").toLowerCase();
+  const expectedScript = path.join(projectRoot, "scripts", "devbox-guardian.mjs").replaceAll("\\", "/").toLowerCase();
+  return normalizedCommandLine.includes(expectedScript);
+};
+
+const readProcessCommandLine = async (pid) => {
+  try {
+    if (process.platform === "win32") {
+      const powerShell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      const command = [
+        `$process = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction Stop`,
+        "[Console]::Out.Write([string]$process.CommandLine)",
+      ].join("; ");
+      const result = await execFileAsync(powerShell, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-Command", command,
+      ], { encoding: "utf8", timeout: 5000, windowsHide: true });
+      return String(result.stdout ?? "");
+    }
+
+    if (process.platform === "linux") {
+      return (await readFile(`/proc/${pid}/cmdline`, "utf8")).replaceAll("\0", " ");
+    }
+
+    const result = await execFileAsync("ps", ["-p", String(pid), "-o", "command="], {
+      encoding: "utf8",
+      timeout: 5000,
+    });
+    return String(result.stdout ?? "");
   } catch {
+    return null;
+  }
+};
+
+export const isGuardianLockOwner = async (
+  pid,
+  projectRoot,
+  {
+    processAlive = isProcessAlive,
+    commandLineReader = readProcessCommandLine,
+    heartbeat = null,
+    lockModifiedAtMs = 0,
+    nowMs = Date.now(),
+  } = {},
+) => {
+  if (!processAlive(pid)) {
     return false;
   }
+  const commandLine = await commandLineReader(pid);
+  if (String(commandLine ?? "").trim()) {
+    return isGuardianCommandLine(commandLine, projectRoot);
+  }
+
+  // Scheduled-task process command lines can be hidden even from the owning user.
+  // Corroborate a blank result with a recent heartbeat or a short startup grace period.
+  const observedAtMs = Date.parse(String(heartbeat?.ObservedAtUtc ?? ""));
+  const heartbeatMatches = Number(heartbeat?.SupervisorPid) === pid
+    && Number.isFinite(observedAtMs)
+    && nowMs - observedAtMs >= 0
+    && nowMs - observedAtMs < 60000;
+  const lockIsNew = Number.isFinite(lockModifiedAtMs)
+    && lockModifiedAtMs > 0
+    && nowMs - lockModifiedAtMs >= 0
+    && nowMs - lockModifiedAtMs < 30000;
+  return heartbeatMatches || lockIsNew;
 };
 
 const readPid = async (filePath) => {
@@ -162,6 +426,7 @@ const testHealth = async (url, timeoutSeconds = 5) => {
 const resolveDockerExecutable = (environment) => environment.DOCKER_EXE?.trim() || "docker";
 
 const runDocker = async (environment, args, timeoutSeconds) => {
+  const startedAtMs = Date.now();
   try {
     const result = await execFileAsync(resolveDockerExecutable(environment), args, {
       cwd: environment.DEVBOX_PROJECT_ROOT,
@@ -172,8 +437,12 @@ const runDocker = async (environment, args, timeoutSeconds) => {
     });
     return { exitCode: 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   } catch (error) {
+    const failure = classifyCommandFailure(error, { startedAtMs, fallbackExitCode: 127 });
     return {
-      exitCode: Number.isInteger(error.code) ? error.code : error.killed ? 124 : 127,
+      exitCode: failure.exitCode,
+      timedOut: failure.timedOut,
+      signal: failure.signal,
+      elapsedMs: failure.elapsedMs,
       stdout: String(error.stdout ?? ""),
       stderr: String(error.stderr ?? error.message ?? ""),
     };
@@ -249,7 +518,13 @@ export const ensureDockerContainer = async (environment, settings, timeoutSecond
   return { action: "created", containerName };
 };
 
-const runRepairCommand = async ({ environment, settings, selectedRuntime, timeoutSeconds }) => {
+export const runRepairCommand = async ({
+  environment,
+  settings,
+  selectedRuntime,
+  repairScope = "full",
+  timeoutSeconds,
+}) => {
   if (selectedRuntime === "docker" && process.platform !== "win32") {
     await ensureDockerContainer(environment, settings, Math.min(timeoutSeconds, 30));
   }
@@ -258,8 +533,9 @@ const runRepairCommand = async ({ environment, settings, selectedRuntime, timeou
   if (override) {
     const shell = process.platform === "win32" ? (environment.ComSpec || "cmd.exe") : (environment.SHELL || "/bin/sh");
     const args = process.platform === "win32" ? ["/d", "/s", "/c", override] : ["-lc", override];
-    return execFileAsync(shell, args, {
+    return runProcessUntilExit(shell, args, {
       cwd: environment.DEVBOX_PROJECT_ROOT,
+      env: { ...environment, DEVBOX_GUARDIAN_REPAIR_SCOPE: repairScope },
       encoding: "utf8",
       timeout: timeoutSeconds * 1000,
       windowsHide: true,
@@ -269,18 +545,13 @@ const runRepairCommand = async ({ environment, settings, selectedRuntime, timeou
 
   if (process.platform === "win32") {
     const powerShell = path.join(environment.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const args = [
-      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File",
-      path.join(environment.DEVBOX_PROJECT_ROOT, "scripts", "Start-ChatGptDevboxMcp.ps1"),
-      "-Runtime", selectedRuntime,
-    ];
-    if (settings.Public) {
-      args.push("-Public");
-    }
-    if (settings.OAuth) {
-      args.push("-OAuth");
-    }
-    return execFileAsync(powerShell, args, {
+    const args = buildWindowsGuardianRepairArgs({
+      scriptPath: path.join(environment.DEVBOX_PROJECT_ROOT, "scripts", "Start-ChatGptDevboxMcp.ps1"),
+      selectedRuntime,
+      settings,
+      repairScope,
+    });
+    return runProcessUntilExit(powerShell, args, {
       cwd: environment.DEVBOX_PROJECT_ROOT,
       encoding: "utf8",
       timeout: timeoutSeconds * 1000,
@@ -289,7 +560,7 @@ const runRepairCommand = async ({ environment, settings, selectedRuntime, timeou
     });
   }
 
-  return execFileAsync(process.execPath, [path.join(environment.DEVBOX_PROJECT_ROOT, "bin", "devbox.js"), "restart"], {
+  return runProcessUntilExit(process.execPath, [path.join(environment.DEVBOX_PROJECT_ROOT, "bin", "devbox.js"), "restart"], {
     cwd: environment.DEVBOX_PROJECT_ROOT,
     env: { ...environment, DEVBOX_RUNTIME_MODE: selectedRuntime },
     encoding: "utf8",
@@ -317,7 +588,7 @@ const createPaths = (projectRoot) => {
   };
 };
 
-const acquireLock = async (lockPath) => {
+export const acquireGuardianLock = async (lockPath, projectRoot, ownerChecker = isGuardianLockOwner) => {
   await mkdir(path.dirname(lockPath), { recursive: true });
   try {
     const handle = await open(lockPath, "wx");
@@ -329,11 +600,18 @@ const acquireLock = async (lockPath) => {
       throw error;
     }
     const existingPid = await readPid(lockPath);
-    if (isProcessAlive(existingPid)) {
+    const [heartbeat, lockInfo] = await Promise.all([
+      readJson(path.join(path.dirname(lockPath), "heartbeat.json"), null),
+      stat(lockPath).catch(() => null),
+    ]);
+    if (await ownerChecker(existingPid, projectRoot, {
+      heartbeat,
+      lockModifiedAtMs: lockInfo?.mtimeMs ?? 0,
+    })) {
       return false;
     }
     await rm(lockPath, { force: true });
-    return acquireLock(lockPath);
+    return acquireGuardianLock(lockPath, projectRoot, ownerChecker);
   }
 };
 
@@ -341,7 +619,7 @@ const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   const paths = createPaths(options.projectRoot);
   await mkdir(paths.repairsDir, { recursive: true });
-  if (!(await acquireLock(paths.lock))) {
+  if (!(await acquireGuardianLock(paths.lock, options.projectRoot))) {
     return;
   }
 
@@ -478,6 +756,8 @@ const main = async () => {
   };
 
   const repair = async (state) => {
+    const repairStartedAtMs = Date.now();
+    const repairStartedAtUtc = new Date(repairStartedAtMs).toISOString();
     const stamp = new Date().toISOString().replace(/[-:.TZ]/gu, "");
     const stdoutPath = path.join(paths.repairsDir, `${stamp}-stdout.log`);
     const stderrPath = path.join(paths.repairsDir, `${stamp}-stderr.log`);
@@ -485,8 +765,12 @@ const main = async () => {
     await log("REPAIR", `repair start (${state.SelectedRuntime}): ${reason}`);
     await publishState(state, { RepairInProgress: true, RepairReason: reason });
     let exitCode = 0;
+    let timedOut = false;
+    let signal = null;
+    let commandElapsedMs = 0;
     let stdout = "";
     let stderr = "";
+    const repairScope = process.platform === "win32" ? selectRepairScope(state) : "full";
     const repairHeartbeat = setInterval(() => {
       void writeJsonAtomic(paths.heartbeat, {
         GuardianVersion: 2,
@@ -503,20 +787,37 @@ const main = async () => {
         RepairReason: reason,
       }).catch(() => {});
     }, Math.max(2, Math.floor(options.pollSeconds / 2)) * 1000);
+    const commandStartedAtMs = Date.now();
     try {
       const result = await runRepairCommand({
         environment: { ...(await loadGuardianEnv(options.projectRoot)), DEVBOX_PROJECT_ROOT: options.projectRoot },
         settings: state.Settings,
         selectedRuntime: state.SelectedRuntime,
+        repairScope,
         timeoutSeconds: 150,
       });
+      exitCode = Number.isInteger(result.exitCode) ? result.exitCode : 0;
       stdout = String(result.stdout ?? "");
       stderr = String(result.stderr ?? "");
     } catch (error) {
-      exitCode = Number.isInteger(error.code) ? error.code : error.killed ? 124 : 1;
+      const failure = classifyCommandFailure(error, {
+        startedAtMs: commandStartedAtMs,
+        timeoutMs: 150000,
+      });
+      exitCode = failure.exitCode;
+      timedOut = failure.timedOut;
+      signal = failure.signal;
+      commandElapsedMs = failure.elapsedMs;
       stdout = String(error.stdout ?? "");
       stderr = String(error.stderr ?? error.message ?? "");
     } finally {
+      if (commandElapsedMs === 0) {
+        commandElapsedMs = Math.max(0, Date.now() - commandStartedAtMs);
+      }
+      if (commandElapsedMs >= 150000) {
+        timedOut = true;
+        exitCode = 124;
+      }
       clearInterval(repairHeartbeat);
     }
     await Promise.all([
@@ -525,7 +826,7 @@ const main = async () => {
     ]);
     await sleep(3000);
     const recoveredState = await probe();
-    const succeeded = exitCode === 0 && recoveredState.IsHealthy;
+    const succeeded = !timedOut && exitCode === 0 && recoveredState.IsHealthy;
     if (state.SelectedRuntime === "docker") {
       repairPolicy = updateDockerRepairPolicy({
         policy: repairPolicy,
@@ -537,18 +838,33 @@ const main = async () => {
       });
       await writeJsonAtomic(paths.repairPolicy, repairPolicy);
     }
+    const completedAtMs = Date.now();
     const result = {
-      AttemptedAtUtc: new Date().toISOString(),
+      AttemptedAtUtc: repairStartedAtUtc,
+      CompletedAtUtc: new Date(completedAtMs).toISOString(),
       ExitCode: exitCode,
+      TimedOut: timedOut,
+      Signal: signal,
+      ElapsedMs: Math.max(0, completedAtMs - repairStartedAtMs),
+      CommandElapsedMs: commandElapsedMs,
       Reason: reason,
       Runtime: state.SelectedRuntime,
+      Scope: repairScope,
       StdoutPath: stdoutPath,
       StderrPath: stderrPath,
       Succeeded: succeeded,
       RepairPolicy: repairPolicy,
     };
     await writeJsonAtomic(paths.lastRepair, result);
-    await log(succeeded ? "REPAIR" : "ERROR", succeeded ? "repair completed successfully" : `repair failed or did not restore readiness (exit ${exitCode})`);
+    const outcomeSummary = timedOut
+      ? `repair timed out after ${commandElapsedMs} ms (signal ${signal ?? "none"})`
+      : `repair failed or did not restore readiness (exit ${exitCode})`;
+    await log(
+      succeeded ? "REPAIR" : "ERROR",
+      succeeded
+        ? `repair completed successfully (${repairScope}, ${Math.max(0, completedAtMs - repairStartedAtMs)} ms)`
+        : outcomeSummary,
+    );
     recoveredState.RepairPolicy = repairPolicy;
     await publishState(recoveredState);
     return recoveredState;

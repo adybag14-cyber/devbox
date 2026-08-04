@@ -6,6 +6,7 @@ import {
   classifyReadiness,
   isRepairAllowed,
   resolveSelectedRuntime,
+  selectRepairScope,
   updateDockerRepairPolicy,
 } from "../src/guardian-core.js";
 
@@ -97,4 +98,20 @@ test("Docker repair failures back off exponentially and open a circuit", () => {
   assert.equal(policy.ConsecutiveDockerFailures, 0);
   assert.equal(policy.CircuitOpenUntilUtc, null);
   assert.equal(isRepairAllowed({ policy, nowMs }), true);
+});
+
+test("a public-only failure selects a tunnel repair without restarting MCP", () => {
+  assert.equal(selectRepairScope({
+    Settings: { Public: true },
+    McpHealthy: true,
+    SelectedRuntimeHealthy: true,
+    PublicTunnelHealthy: false,
+  }), "public-tunnel");
+
+  assert.equal(selectRepairScope({
+    Settings: { Public: true },
+    McpHealthy: false,
+    SelectedRuntimeHealthy: false,
+    PublicTunnelHealthy: false,
+  }), "full");
 });

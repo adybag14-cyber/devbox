@@ -2,11 +2,14 @@ param(
     [switch]$Public,
     [switch]$OAuth,
     [switch]$RebuildRuntime,
+    [switch]$TunnelOnly,
     [ValidateSet('auto', 'host', 'docker')]
     [string]$Runtime = 'auto'
 )
 
 $ErrorActionPreference = "Stop"
+$ProgressPreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
 $script:dockerExe = $null
 $script:dockerConfiguredPath = $null
 
@@ -911,18 +914,32 @@ if (-not $configuredPublicBaseUrl) {
 $dockerReady = $false
 Ensure-Directory -Path $hostWorkspace
 if ($selectedRuntime -eq 'docker') {
-    $dockerReady = Start-DockerDesktopIfNeeded
-    if ($dockerReady) {
-        Ensure-RuntimeImage -Root $root -ImageName $imageName -ForceRebuild:$RebuildRuntime
-        Ensure-DevboxContainer -ContainerName $containerName -ImageName $imageName -HostWorkspace $hostWorkspace -DevboxWorkspace $devboxWorkspace -Recreate:$RebuildRuntime
+    if ($TunnelOnly) {
+        $dockerReady = Test-DockerEngine -TimeoutSeconds 5
     } else {
-        Write-Warning "Skipping Docker image/container checks because Docker is not ready."
+        $dockerReady = Start-DockerDesktopIfNeeded
+        if ($dockerReady) {
+            Ensure-RuntimeImage -Root $root -ImageName $imageName -ForceRebuild:$RebuildRuntime
+            Ensure-DevboxContainer -ContainerName $containerName -ImageName $imageName -HostWorkspace $hostWorkspace -DevboxWorkspace $devboxWorkspace -Recreate:$RebuildRuntime
+        } else {
+            Write-Warning "Skipping Docker image/container checks because Docker is not ready."
+        }
     }
 }
 
 $publicBaseUrl = $configuredPublicBaseUrl
+if ($TunnelOnly -and -not $Public) {
+    throw '-TunnelOnly requires -Public.'
+}
 if ($Public) {
     $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port -SelectedRuntime $selectedRuntime -RunDir $runDir -DockerReady:$dockerReady
+}
+if ($TunnelOnly) {
+    $hostTunnelPidFile = if ($selectedRuntime -eq 'host') { Join-Path $runDir 'host-cloudflared.pid' } else { '' }
+    Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl -HostCloudflaredPidFile $hostTunnelPidFile
+    Write-Host "Public MCP URL: $publicBaseUrl"
+    Write-Host "Selected runtime: $selectedRuntime (tunnel-only repair)"
+    return
 }
 
 if (-not $configuredAuthMode) {

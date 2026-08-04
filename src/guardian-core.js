@@ -89,6 +89,17 @@ export const isRepairAllowed = ({ policy = {}, nowMs = Date.now() } = {}) => {
   return !(Number.isFinite(circuitMs) && circuitMs > nowMs);
 };
 
+export const selectRepairScope = (state = {}) => {
+  const publicEnabled = state.Settings?.Public === true;
+  const publicOnlyFailure =
+    publicEnabled &&
+    state.McpHealthy === true &&
+    state.SelectedRuntimeHealthy === true &&
+    state.PublicTunnelHealthy === false;
+
+  return publicOnlyFailure ? "public-tunnel" : "full";
+};
+
 export const classifyReadiness = ({
   shouldRun = true,
   selectedRuntime = "host",

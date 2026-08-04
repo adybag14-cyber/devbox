@@ -7,7 +7,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -95,6 +95,10 @@ const startServer = async (t) => {
       PORT: String(port),
       MCP_AUTH_MODE: "none",
       PUBLIC_BASE_URL: "",
+      MAX_TEXT_OUTPUT_CHARS: "20000",
+      DEVBOX_RUNTIME_MODE: "host",
+      HOST_WORKSPACE_PATH: projectRoot,
+      HOST_DEFAULT_WORKDIR: projectRoot,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -369,6 +373,67 @@ test("parallel same-path host writes are serialized by the MCP boundary", async 
       actualSha256 === expectedForwardSha256 || actualSha256 === expectedReverseSha256,
       `Parallel writes produced unexpected bytes. SHA-256=${actualSha256}`,
     );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("oversized failing command output returns a bounded MCP error", async (t) => {
+  const { port, stdout, stderr } = await startServer(t);
+  const client = await connectClient(t, port);
+  const result = await client.callTool({
+    name: "devbox_exec_readonly",
+    arguments: {
+      command: "$value = 'x' * 250000; [Console]::Out.Write(($value -join '')); exit 7",
+      working_dir: projectRoot,
+      timeout_seconds: 15,
+    },
+  });
+
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent?.ok, false);
+  assert.equal(result.structuredContent?.exitCode, 7);
+  assert.equal(result.structuredContent?.truncated, true);
+  assert.ok((result.structuredContent?.summary?.length ?? Infinity) <= 4096);
+  assert.ok((result.structuredContent?.stdout?.length ?? Infinity) <= 20000);
+  assert.ok(
+    (result.content?.[0]?.text?.length ?? Infinity) < 30000,
+    `Expected bounded MCP response.\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}`,
+  );
+});
+
+test("disconnecting an MCP call cancels its host command before side effects", async (t) => {
+  const { port } = await startServer(t);
+  const client = await connectClient(t, port);
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-cancel-test-"));
+  const markerPath = path.join(tempDir, "should-not-exist.txt");
+  const escapedMarkerPath = markerPath.replaceAll("'", "''");
+  const controller = new AbortController();
+
+  try {
+    const pending = client.callTool(
+      {
+        name: "devbox_exec",
+        arguments: {
+          command: `Start-Sleep -Milliseconds 1500; Set-Content -LiteralPath '${escapedMarkerPath}' -Value 'late side effect'`,
+          working_dir: tempDir,
+          timeout_seconds: 15,
+        },
+      },
+      undefined,
+      { signal: controller.signal },
+    );
+    setTimeout(() => controller.abort(new Error("test disconnect")), 200);
+    const outcome = await pending.then(
+      (result) => ({ result }),
+      (error) => ({ error }),
+    );
+    assert.ok(outcome.error || outcome.result?.isError, "Expected the cancelled call to reject or return an MCP error result.");
+    if (outcome.result) {
+      assert.match(outcome.result.structuredContent?.summary ?? "", /cancel/i);
+    }
+    await wait(2200);
+    await assert.rejects(access(markerPath), (error) => error?.code === "ENOENT");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

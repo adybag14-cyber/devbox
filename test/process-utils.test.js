@@ -1,7 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { spawnProcess, trimText } from "../src/process-utils.js";
+import {
+  MAX_PROCESS_ERROR_MESSAGE_CHARS,
+  spawnProcess,
+  summarizeProcessFailure,
+  trimText,
+} from "../src/process-utils.js";
 
 test("trimText does not truncate when the character limit is disabled", () => {
   const text = "abcdef";
@@ -36,4 +41,46 @@ test("spawnProcess rejects promptly when a child ignores graceful timeout termin
   );
 
   assert.ok(Date.now() - startedAt < 5000);
+});
+
+test("spawnProcess cancels a running child when the request signal aborts", async () => {
+  const controller = new AbortController();
+  const pending = spawnProcess(
+    process.execPath,
+    ["-e", "setInterval(() => {}, 1000);"],
+    { signal: controller.signal, timeoutRejectGraceMs: 100 },
+  );
+  controller.abort();
+
+  await assert.rejects(pending, (error) => {
+    assert.equal(error.aborted, true);
+    assert.match(error.message, /cancelled by the MCP client/u);
+    return true;
+  });
+});
+
+test("nonzero commands keep full stdout separately without copying it into the error summary", async () => {
+  const outputLength = MAX_PROCESS_ERROR_MESSAGE_CHARS * 4;
+
+  await assert.rejects(
+    spawnProcess(process.execPath, ["-e", `process.stdout.write('x'.repeat(${outputLength})); process.exit(7);`]),
+    (error) => {
+      assert.equal(error.exitCode, 7);
+      assert.equal(error.stdout.length, outputLength);
+      assert.ok(error.message.length <= MAX_PROCESS_ERROR_MESSAGE_CHARS);
+      assert.match(error.message, /producing 16384 characters of stdout/u);
+      return true;
+    },
+  );
+});
+
+test("stderr-derived process summaries are bounded", () => {
+  const message = summarizeProcessFailure({
+    file: "tool",
+    code: 9,
+    stderr: "failure".repeat(MAX_PROCESS_ERROR_MESSAGE_CHARS),
+  });
+
+  assert.ok(message.length <= MAX_PROCESS_ERROR_MESSAGE_CHARS);
+  assert.match(message, /error summary truncated/u);
 });

@@ -1,6 +1,6 @@
 import { appendFile, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import express from "express";
@@ -60,6 +60,7 @@ const guardianDesiredStatePath = path.join(runDir, "guardian.desired-state.json"
 const toolUsageLogPath = path.join(runDir, "tool-usage.jsonl");
 const httpUsageLogPath = path.join(runDir, "http-usage.jsonl");
 const logRotationChains = new Map();
+const activeMcpRequestControllers = new Map();
 
 const outputSchema = {
   ok: z.boolean(),
@@ -72,6 +73,7 @@ const outputSchema = {
 };
 
 const MAX_USAGE_PREVIEW_CHARS = 240;
+export const MAX_TOOL_SUMMARY_CHARS = 4096;
 const SENSITIVE_ARGUMENT_KEY = /(token|secret|password|authorization|cookie|content_base64|expected_sha256)/i;
 const LARGE_TEXT_ARGUMENT_KEY = /^(command|content)$/i;
 const INTERNAL_TOOL_ARGUMENT_KEYS = new Set([
@@ -176,6 +178,46 @@ const summarizeToolContext = (args) => {
   return Object.keys(context).length > 0 ? context : null;
 };
 
+const boundedToolSummary = (value, fallback = "The command failed.") =>
+  trimText(String(value || fallback), MAX_TOOL_SUMMARY_CHARS);
+
+export const combineAbortSignals = (signals = []) => {
+  const activeSignals = [...new Set(signals.filter(Boolean))];
+  if (activeSignals.length === 0) {
+    return { signal: undefined, dispose() {} };
+  }
+  if (activeSignals.length === 1) {
+    return { signal: activeSignals[0], dispose() {} };
+  }
+
+  const controller = new AbortController();
+  const listeners = [];
+  const abortFrom = (source) => {
+    if (!controller.signal.aborted) {
+      controller.abort(source.reason);
+    }
+  };
+
+  for (const source of activeSignals) {
+    if (source.aborted) {
+      abortFrom(source);
+      break;
+    }
+    const listener = () => abortFrom(source);
+    source.addEventListener("abort", listener, { once: true });
+    listeners.push([source, listener]);
+  }
+
+  return {
+    signal: controller.signal,
+    dispose() {
+      for (const [source, listener] of listeners) {
+        source.removeEventListener("abort", listener);
+      }
+    },
+  };
+};
+
 const rotateUsageLogIfNeeded = async (logPath) => {
   const maxBytes = config.mcpUsageLogMaxBytes;
   const rotations = Math.max(0, config.mcpUsageLogRotations);
@@ -264,12 +306,14 @@ const logToolEvent = async (event) => {
   }
 };
 
-const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
+const instrumentToolHandler = (toolName, handler, requestSignal) => async (args = {}, extra = {}) => {
   const invocationId = randomUUID();
   const startedAt = new Date().toISOString();
   const started = Date.now();
   const argumentSummary = summarizeToolArguments(args);
-  const context = summarizeToolContext(args);
+  const context = summarizeToolContext(extra);
+  const combinedSignal = combineAbortSignals([extra?.signal, requestSignal]);
+  const handlerExtra = { ...extra, signal: combinedSignal.signal };
 
   await logToolEvent({
     type: "tool_start",
@@ -281,8 +325,12 @@ const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
   });
 
   try {
-    const result = await handler(args);
+    const result = await handler(args, handlerExtra);
     const structured = result?.structuredContent ?? {};
+    const loggedSummary = boundedToolSummary(structured.summary, "Tool completed.");
+    const resultTextChars = Array.isArray(result?.content)
+      ? result.content.reduce((total, entry) => total + (entry?.type === "text" ? String(entry.text ?? "").length : 0), 0)
+      : 0;
 
     await logToolEvent({
       type: "tool_finish",
@@ -293,7 +341,11 @@ const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
       duration_ms: Date.now() - started,
       ok: structured.ok ?? !result?.isError,
       is_error: Boolean(result?.isError),
-      summary: structured.summary ?? null,
+      summary: loggedSummary.text || null,
+      summary_truncated: loggedSummary.truncated,
+      result_text_chars: resultTextChars,
+      stdout_chars: String(structured.stdout ?? "").length,
+      stderr_chars: String(structured.stderr ?? "").length,
       exit_code: structured.exitCode ?? null,
       truncated: Boolean(structured.truncated),
       arguments: argumentSummary,
@@ -302,6 +354,7 @@ const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
 
     return result;
   } catch (error) {
+    const loggedError = boundedToolSummary(error instanceof Error ? error.message : String(error));
     await logToolEvent({
       type: "tool_throw",
       invocation_id: invocationId,
@@ -309,11 +362,14 @@ const instrumentToolHandler = (toolName, handler) => async (args = {}) => {
       started_at: startedAt,
       finished_at: new Date().toISOString(),
       duration_ms: Date.now() - started,
-      error: error instanceof Error ? error.message : String(error),
+      error: loggedError.text,
+      error_truncated: loggedError.truncated,
       arguments: argumentSummary,
       context,
     });
     throw error;
+  } finally {
+    combinedSignal.dispose();
   }
 };
 
@@ -381,21 +437,22 @@ const textFromResult = (summary, data, stdout, stderr) => {
 };
 
 const successResult = (summary, extra = {}) => {
+  const boundedSummary = boundedToolSummary(summary, "Tool completed.");
   const structuredContent = {
     ok: true,
-    summary,
+    summary: boundedSummary.text,
     data: extra.data,
     stdout: extra.stdout,
     stderr: extra.stderr,
     exitCode: extra.exitCode ?? null,
-    truncated: extra.truncated ?? false,
+    truncated: Boolean(extra.truncated) || boundedSummary.truncated,
   };
 
   return {
     content: [
       {
         type: "text",
-        text: extra.text ?? textFromResult(summary, extra.data, extra.stdout, extra.stderr),
+        text: extra.text ?? textFromResult(boundedSummary.text, extra.data, extra.stdout, extra.stderr),
       },
     ],
     structuredContent,
@@ -413,43 +470,44 @@ const errorResult = (error, fallbackSummary = "The command failed.") => {
   if (isCommandStyleError(error)) {
     const stdout = trimText(error.stdout, config.maxTextOutputChars);
     const stderr = trimText(error.stderr, config.maxTextOutputChars);
-    const summary = error.message || fallbackSummary;
+    const summary = boundedToolSummary(error.message, fallbackSummary);
     const data = error.data;
 
     return {
       content: [
         {
           type: "text",
-          text: textFromResult(summary, data, stdout.text, stderr.text),
+          text: textFromResult(summary.text, data, stdout.text, stderr.text),
         },
       ],
       structuredContent: {
         ok: false,
-        summary,
+        summary: summary.text,
         data,
         stdout: stdout.text,
         stderr: stderr.text,
         exitCode: error.exitCode ?? null,
-        truncated: stdout.truncated || stderr.truncated,
+        truncated: summary.truncated || stdout.truncated || stderr.truncated,
       },
       isError: true,
     };
   }
 
   const data = error?.data;
+  const summary = boundedToolSummary(error instanceof Error ? error.message : fallbackSummary, fallbackSummary);
   return {
     content: [
       {
         type: "text",
-        text: textFromResult(error instanceof Error ? error.message : fallbackSummary, data),
+        text: textFromResult(summary.text, data),
       },
     ],
     structuredContent: {
       ok: false,
-      summary: error instanceof Error ? error.message : fallbackSummary,
+      summary: summary.text,
       data,
       exitCode: null,
-      truncated: false,
+      truncated: summary.truncated,
     },
     isError: true,
   };
@@ -468,7 +526,7 @@ const fromProcessResult = (summary, result, extra = {}) => {
   });
 };
 
-const buildServer = () => {
+const buildServer = ({ requestSignal } = {}) => {
   const server = new McpServer(
     {
       name: runtimeServerName,
@@ -483,7 +541,8 @@ const buildServer = () => {
   );
 
   const rawRegisterTool = server.registerTool.bind(server);
-  server.registerTool = (name, descriptor, handler) => rawRegisterTool(name, descriptor, instrumentToolHandler(name, handler));
+  server.registerTool = (name, descriptor, handler) =>
+    rawRegisterTool(name, descriptor, instrumentToolHandler(name, handler, requestSignal));
 
   server.registerTool(
     "devbox_github_auth_status",
@@ -691,13 +750,14 @@ const buildServer = () => {
       `Running read-only shell command in ${runtimeLabel}`,
       `Read-only ${runtimeLabel} shell command finished`,
     ),
-    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }) => {
+    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }, extra) => {
       try {
         const result = await execReadOnlyInDevbox({
           command,
           workingDir,
           timeoutMs: (timeoutSeconds + 5) * 1000,
           user,
+          signal: extra?.signal,
         });
         return fromProcessResult(`Ran a read-only shell command in the ${runtimeLabel} at ${workingDir}.`, result);
       } catch (error) {
@@ -725,13 +785,14 @@ const buildServer = () => {
       `Running shell command in ${runtimeLabel}`,
       `${runtimeLabel} shell command finished`,
     ),
-    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }) => {
+    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }, extra) => {
       try {
         const result = await execInDevbox({
           command,
           workingDir,
           timeoutMs: (timeoutSeconds + 5) * 1000,
           user,
+          signal: extra?.signal,
         });
         return fromProcessResult(`Ran a shell command in the ${runtimeLabel} at ${workingDir}.`, result);
       } catch (error) {
@@ -750,15 +811,35 @@ const buildServer = () => {
           path: z.string().default(config.devboxWorkspacePath).describe(`Directory path inside the ${runtimeLabel}.`),
           recursive: z.boolean().default(false).describe("When true, recurse into subdirectories."),
           max_depth: z.number().int().min(1).max(20).default(4).describe("Maximum recursive depth when recursive is true."),
+          max_entries: z.number().int().min(1).max(50000).default(5000).describe("Maximum entries to return before stopping traversal."),
+          timeout_seconds: z.number().int().min(1).max(300).default(30).describe("Maximum time spent traversing directories."),
+          exclude_directories: z.array(z.string().min(1)).max(32)
+            .default([".git", "node_modules", ".cache", ".venv", "venv", "__pycache__"])
+            .describe("Directory names to prune from recursive traversal."),
         },
         outputSchema,
       },
       `Listing ${runtimeLabel} files`,
       `${runtimeLabel} files listed`,
     ),
-    async ({ path, recursive, max_depth: maxDepth }) => {
+    async ({
+      path,
+      recursive,
+      max_depth: maxDepth,
+      max_entries: maxEntries,
+      timeout_seconds: timeoutSeconds,
+      exclude_directories: excludeDirectories,
+    }, extra) => {
       try {
-        const result = await listFilesInDevbox({ path, recursive, maxDepth });
+        const result = await listFilesInDevbox({
+          path,
+          recursive,
+          maxDepth,
+          maxEntries,
+          timeoutMs: timeoutSeconds * 1000,
+          excludeDirectories,
+          signal: extra?.signal,
+        });
         return fromProcessResult(`Listed files in ${path}.`, result);
       } catch (error) {
         return errorResult(error, `Failed to list files in ${path}.`);
@@ -905,15 +986,43 @@ const buildServer = () => {
           glob: z.string().default("*").describe("Optional glob filter."),
           case_sensitive: z.boolean().default(false).describe("When true, use case-sensitive search."),
           max_matches: z.number().int().min(1).max(5000).default(200).describe("Maximum number of matches to return."),
+          max_depth: z.number().int().min(1).max(50).default(12).describe("Maximum recursive directory depth."),
+          max_file_bytes: z.number().int().min(1).max(64 * 1024 * 1024).default(2 * 1024 * 1024)
+            .describe("Skip files larger than this byte count."),
+          timeout_seconds: z.number().int().min(1).max(300).default(30).describe("Maximum time spent searching."),
+          exclude_directories: z.array(z.string().min(1)).max(32)
+            .default([".git", "node_modules", ".cache", ".venv", "venv", "__pycache__"])
+            .describe("Directory names to prune before searching."),
         },
         outputSchema,
       },
       `Searching ${runtimeLabel} files`,
       `${runtimeLabel} search finished`,
     ),
-    async ({ pattern, path, glob, case_sensitive: caseSensitive, max_matches: maxMatches }) => {
+    async ({
+      pattern,
+      path,
+      glob,
+      case_sensitive: caseSensitive,
+      max_matches: maxMatches,
+      max_depth: maxDepth,
+      max_file_bytes: maxBytesPerFile,
+      timeout_seconds: timeoutSeconds,
+      exclude_directories: excludeDirectories,
+    }, extra) => {
       try {
-        const result = await searchFilesInDevbox({ pattern, path, glob, caseSensitive, maxMatches });
+        const result = await searchFilesInDevbox({
+          pattern,
+          path,
+          glob,
+          caseSensitive,
+          maxMatches,
+          maxDepth,
+          maxBytesPerFile,
+          timeoutMs: timeoutSeconds * 1000,
+          excludeDirectories,
+          signal: extra?.signal,
+        });
         return fromProcessResult(`Searched ${path} for "${pattern}" inside the ${runtimeLabel}.`, result);
       } catch (error) {
         return errorResult(error, `Failed to search ${path} inside the ${runtimeLabel}.`);
@@ -931,12 +1040,13 @@ const buildServer = () => {
     }
   };
 
-  const hostExecHandler = async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds }) => {
+  const hostExecHandler = async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds }, extra) => {
     try {
       const result = await runHostShellCommand({
         command,
         workingDir,
         timeoutMs: (timeoutSeconds + 5) * 1000,
+        signal: extra?.signal,
       });
       return fromProcessResult(`Ran a ${hostCommandTitle.toLowerCase()} command in ${workingDir}.`, result);
     } catch (error) {
@@ -944,13 +1054,14 @@ const buildServer = () => {
     }
   };
 
-  const hostRunProgramHandler = async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds }) => {
+  const hostRunProgramHandler = async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds }, extra) => {
     try {
       const result = await runAllowedProgram({
         program,
         args,
         workingDir,
         timeoutMs: (timeoutSeconds + 5) * 1000,
+        signal: extra?.signal,
       });
       return fromProcessResult(`Ran ${program} on the ${hostTitle.toLowerCase()}.`, result);
     } catch (error) {
@@ -1291,6 +1402,60 @@ const gatewayBridgeInfoForRequest = (req) => ({
   private_network_access: shouldExposeGatewayBridge(req),
 });
 
+const mcpRequestPeerKey = (req) => createHash("sha256")
+  .update(JSON.stringify([
+    String(req.headers.authorization ?? ""),
+    String(req.headers["mcp-session-id"] ?? ""),
+    String(req.headers["x-forwarded-for"] ?? req.socket?.remoteAddress ?? ""),
+    String(req.headers["user-agent"] ?? ""),
+  ]))
+  .digest("hex");
+
+const mcpRequestKey = (req, requestId) =>
+  requestId === undefined || requestId === null
+    ? ""
+    : `${mcpRequestPeerKey(req)}:${typeof requestId}:${String(requestId)}`;
+
+const registerActiveMcpRequest = (key, controller) => {
+  if (!key) {
+    return;
+  }
+  const controllers = activeMcpRequestControllers.get(key) ?? new Set();
+  controllers.add(controller);
+  activeMcpRequestControllers.set(key, controllers);
+};
+
+const unregisterActiveMcpRequest = (key, controller) => {
+  const controllers = activeMcpRequestControllers.get(key);
+  if (!controllers) {
+    return;
+  }
+  controllers.delete(controller);
+  if (controllers.size === 0) {
+    activeMcpRequestControllers.delete(key);
+  }
+};
+
+const applyMcpCancellationNotification = (req) => {
+  if (req.body?.method !== "notifications/cancelled") {
+    return 0;
+  }
+  const key = mcpRequestKey(req, req.body?.params?.requestId);
+  const controllers = activeMcpRequestControllers.get(key);
+  if (!controllers) {
+    return 0;
+  }
+  const reason = new Error(String(req.body?.params?.reason || "MCP client cancelled the request."));
+  let cancelled = 0;
+  for (const controller of controllers) {
+    if (!controller.signal.aborted) {
+      controller.abort(reason);
+      cancelled += 1;
+    }
+  }
+  return cancelled;
+};
+
 const allowedHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
 if (config.publicBaseUrl) {
   allowedHosts.add(new URL(config.publicBaseUrl).hostname);
@@ -1324,7 +1489,12 @@ app.use((req, res, next) => {
   const requestId = randomUUID();
   const startedAt = new Date().toISOString();
   const started = Date.now();
-  res.on("finish", () => {
+  let requestLogged = false;
+  const logRequest = (outcome) => {
+    if (requestLogged) {
+      return;
+    }
+    requestLogged = true;
     void appendJsonlEvent(httpUsageLogPath, {
       type: "http_request",
       request_id: requestId,
@@ -1333,11 +1503,19 @@ app.use((req, res, next) => {
       duration_ms: Date.now() - started,
       method: req.method,
       path: req.path,
-      status_code: res.statusCode,
+      status_code: outcome === "finished" ? res.statusCode : null,
+      outcome,
+      client_aborted: outcome === "client_aborted",
       accept: String(req.headers.accept ?? ""),
       user_agent: String(req.headers["user-agent"] ?? ""),
       forwarded_for: String(req.headers["x-forwarded-for"] ?? "").split(",")[0]?.trim() || null,
     }).catch(() => {});
+  };
+  res.once("finish", () => logRequest("finished"));
+  res.once("close", () => {
+    if (!res.writableEnded) {
+      logRequest("client_aborted");
+    }
   });
 
   const origin = normalizeOrigin(req.headers.origin);
@@ -1488,7 +1666,25 @@ if (legacyProtectedResourceMetadata) {
 }
 
 const handleMcpRequest = async (req, res) => {
-  const server = buildServer();
+  applyMcpCancellationNotification(req);
+  const requestAbortController = new AbortController();
+  const activeRequestKey = mcpRequestKey(req, req.body?.id);
+  registerActiveMcpRequest(activeRequestKey, requestAbortController);
+  const server = buildServer({ requestSignal: requestAbortController.signal });
+  let settleResponse;
+  const responseSettled = new Promise((resolve) => {
+    settleResponse = resolve;
+  });
+  const markResponseSettled = () => settleResponse();
+  const abortDisconnectedRequest = () => {
+    if (!res.writableEnded && !requestAbortController.signal.aborted) {
+      requestAbortController.abort(new Error("MCP HTTP client disconnected before the tool result was delivered."));
+    }
+  };
+  req.once("aborted", abortDisconnectedRequest);
+  res.once("close", abortDisconnectedRequest);
+  res.once("finish", markResponseSettled);
+  res.once("close", markResponseSettled);
 
   try {
     const transport = new StreamableHTTPServerTransport({
@@ -1497,13 +1693,9 @@ const handleMcpRequest = async (req, res) => {
 
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-
-    res.on("close", () => {
-      transport.close().catch(() => {});
-      server.close().catch(() => {});
-    });
+    await responseSettled;
   } catch (error) {
-    if (!res.headersSent) {
+    if (!res.headersSent && !res.destroyed) {
       res.status(500).json({
         jsonrpc: "2.0",
         error: {
@@ -1513,6 +1705,16 @@ const handleMcpRequest = async (req, res) => {
         id: req.body?.id ?? null,
       });
     }
+    if (!res.destroyed) {
+      await responseSettled;
+    }
+  } finally {
+    unregisterActiveMcpRequest(activeRequestKey, requestAbortController);
+    req.removeListener("aborted", abortDisconnectedRequest);
+    res.removeListener("close", abortDisconnectedRequest);
+    res.removeListener("finish", markResponseSettled);
+    res.removeListener("close", markResponseSettled);
+    await server.close().catch(() => {});
   }
 };
 

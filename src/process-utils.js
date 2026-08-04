@@ -1,5 +1,23 @@
 import { spawn } from "node:child_process";
 
+export const MAX_PROCESS_ERROR_MESSAGE_CHARS = 4096;
+
+export const summarizeProcessFailure = ({ file, code, stdout = "", stderr = "" }) => {
+  const trimmedStderr = String(stderr).trim();
+  if (trimmedStderr) {
+    if (trimmedStderr.length <= MAX_PROCESS_ERROR_MESSAGE_CHARS) {
+      return trimmedStderr;
+    }
+    const suffix = `\n... error summary truncated to ${MAX_PROCESS_ERROR_MESSAGE_CHARS} characters ...`;
+    return trimmedStderr.slice(0, Math.max(0, MAX_PROCESS_ERROR_MESSAGE_CHARS - suffix.length)) + suffix;
+  }
+
+  const stdoutLength = String(stdout).length;
+  return stdoutLength > 0
+    ? `${file} exited with code ${code} after producing ${stdoutLength} characters of stdout; see the bounded stdout field.`
+    : `${file} exited with code ${code}.`;
+};
+
 export class SpawnProcessError extends Error {
   constructor(message, details = {}) {
     super(message);
@@ -9,6 +27,10 @@ export class SpawnProcessError extends Error {
     this.stderr = details.stderr ?? "";
     this.file = details.file ?? "";
     this.args = details.args ?? [];
+    this.timedOut = details.timedOut === true;
+    this.aborted = details.aborted === true;
+    this.signal = details.signal ?? null;
+    this.elapsedMs = details.elapsedMs ?? null;
   }
 }
 
@@ -39,20 +61,36 @@ const killProcessTree = (child) => {
 
 export const spawnProcess = (file, args, options = {}) =>
   new Promise((resolve, reject) => {
+    const startedAtMs = Date.now();
     let stdout = "";
     let stderr = "";
     let timedOut = false;
+    let aborted = false;
     let settled = false;
     let timer = null;
     let timeoutRejectTimer = null;
 
-    const buildTimeoutError = (code = null) =>
+    const buildTimeoutError = (code = null, signal = null) =>
       new SpawnProcessError(`Command timed out after ${options.timeoutMs} ms.`, {
         exitCode: code,
         stdout,
         stderr,
         file,
         args,
+        timedOut: true,
+        signal,
+        elapsedMs: Date.now() - startedAtMs,
+      });
+    const buildAbortError = (code = null, signal = null) =>
+      new SpawnProcessError("Command cancelled by the MCP client.", {
+        exitCode: code,
+        stdout,
+        stderr,
+        file,
+        args,
+        aborted: true,
+        signal,
+        elapsedMs: Date.now() - startedAtMs,
       });
 
     const cleanupTimers = () => {
@@ -65,6 +103,7 @@ export const spawnProcess = (file, args, options = {}) =>
         clearTimeout(timeoutRejectTimer);
         timeoutRejectTimer = null;
       }
+      options.signal?.removeEventListener("abort", handleAbort);
     };
 
     const settleResolve = (value) => {
@@ -93,6 +132,24 @@ export const spawnProcess = (file, args, options = {}) =>
       shell: false,
       windowsHide: true,
     });
+
+    const handleAbort = () => {
+      if (settled || aborted) {
+        return;
+      }
+      aborted = true;
+      killProcessTree(child);
+      timeoutRejectTimer = setTimeout(() => {
+        settleReject(buildAbortError(null));
+      }, options.timeoutRejectGraceMs ?? 3000);
+      timeoutRejectTimer.unref?.();
+    };
+
+    if (options.signal?.aborted) {
+      handleAbort();
+    } else {
+      options.signal?.addEventListener("abort", handleAbort, { once: true });
+    }
 
     if (options.timeoutMs) {
       timer = setTimeout(() => {
@@ -125,15 +182,20 @@ export const spawnProcess = (file, args, options = {}) =>
       );
     });
 
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (timedOut) {
-        settleReject(buildTimeoutError(code));
+        settleReject(buildTimeoutError(code, signal));
+        return;
+      }
+
+      if (aborted) {
+        settleReject(buildAbortError(code, signal));
         return;
       }
 
       if (code !== 0) {
         settleReject(
-          new SpawnProcessError(stderr.trim() || stdout.trim() || `${file} exited with code ${code}.`, {
+          new SpawnProcessError(summarizeProcessFailure({ file, code, stdout, stderr }), {
             exitCode: code,
             stdout,
             stderr,

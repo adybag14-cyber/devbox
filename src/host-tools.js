@@ -21,19 +21,26 @@ export class HostCommandError extends Error {
 
 const wrapHostError = (error, fallbackMessage) => {
   if (error instanceof SpawnProcessError) {
-    return new HostCommandError(error.message || fallbackMessage, {
+    const stdout = cleanPowerShellOutput(error.stdout);
+    const stderr = cleanPowerShellOutput(error.stderr);
+    const message = cleanPowerShellOutput(error.message).trim() || stderr.trim() || stdout.trim() || fallbackMessage;
+    return new HostCommandError(message, {
       exitCode: error.exitCode,
-      stdout: error.stdout,
-      stderr: error.stderr,
+      stdout,
+      stderr,
       data: error.data,
     });
   }
 
   if (error instanceof HostCommandError) {
+    error.stdout = cleanPowerShellOutput(error.stdout);
+    error.stderr = cleanPowerShellOutput(error.stderr);
+    error.message = cleanPowerShellOutput(error.message).trim() || error.stderr.trim() || fallbackMessage;
     return error;
   }
 
-  return new HostCommandError(error instanceof Error ? error.message : fallbackMessage, {
+  const message = cleanPowerShellOutput(error instanceof Error ? error.message : fallbackMessage).trim() || fallbackMessage;
+  return new HostCommandError(message, {
     data: error?.data,
   });
 };
@@ -59,11 +66,25 @@ export const MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE = 24000;
 const MAX_HOST_DIAGNOSTIC_BYTES = 262144;
 const MAX_HOST_DIAGNOSTIC_HASH_BYTES = 8 * 1024 * 1024;
 const POWERSHELL_FILE_EXTENSIONS = new Set([".ps1", ".psm1", ".psd1"]);
+const AUTOMATIC_TEXT_FILE_EXTENSIONS = new Set([
+  ".bat", ".c", ".cc", ".cfg", ".cjs", ".cmd", ".conf", ".cpp", ".cs", ".css",
+  ".csv", ".cxx", ".go", ".gradle", ".h", ".hpp", ".htm", ".html", ".ini", ".java",
+  ".js", ".json", ".jsonc", ".jsx", ".kt", ".kts", ".less", ".md", ".mjs", ".php",
+  ".pl", ".properties", ".ps1", ".psd1", ".psm1", ".py", ".rb", ".rs", ".scss", ".sh",
+  ".sql", ".svelte", ".svg", ".toml", ".ts", ".tsv", ".tsx", ".txt", ".vue", ".xml",
+  ".yaml", ".yml", ".zig", ".zsh",
+]);
 const MOJIBAKE_MARKERS = ["â€”", "â€“", "â€œ", "â€�", "â€˜", "â€™", "â€¦", "â€¢", "ðŸ", "Ã", "Â"];
 const hostFileLocks = new KeyedReadWriteLock();
+const POWERSHELL_QUIET_PRELUDE = [
+  "$ProgressPreference = 'SilentlyContinue'",
+  "$InformationPreference = 'SilentlyContinue'",
+].join("\n");
+
+const withPowerShellQuietPrelude = (command) => `${POWERSHELL_QUIET_PRELUDE}\n${String(command)}`;
 
 export const buildWindowsPowerShellArgs = (command) => {
-  const encodedCommand = Buffer.from(String(command), "utf16le").toString("base64");
+  const encodedCommand = Buffer.from(withPowerShellQuietPrelude(command), "utf16le").toString("base64");
   return ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand];
 };
 
@@ -117,6 +138,62 @@ const countOccurrences = (value, needle) => {
     count += 1;
     offset = index + needle.length;
   }
+};
+
+const decodePowerShellCliXmlText = (value) =>
+  String(value)
+    .replace(/_x([0-9a-f]{4})_/giu, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/&lt;/gu, "<")
+    .replace(/&gt;/gu, ">")
+    .replace(/&quot;/gu, "\"")
+    .replace(/&apos;/gu, "'")
+    .replace(/&amp;/gu, "&");
+
+export const cleanPowerShellOutput = (value) => {
+  const source = String(value ?? "");
+  if (!source.includes("#< CLIXML")) {
+    return source;
+  }
+
+  return source.replace(/#< CLIXML\s*<Objs\b[\s\S]*?<\/Objs>/gu, (envelope) => {
+    const messages = [];
+    const channelPattern = /<S\s+S="(?:Error|Warning|Verbose|Debug|Information|Output)"[^>]*>([\s\S]*?)<\/S>/giu;
+    for (const match of envelope.matchAll(channelPattern)) {
+      const decoded = decodePowerShellCliXmlText(match[1]).trim();
+      if (decoded) {
+        messages.push(decoded);
+      }
+    }
+    return messages.length > 0 ? `${messages.join("\n")}\n` : "";
+  });
+};
+
+const cleanPowerShellResult = (result) => ({
+  ...result,
+  stdout: cleanPowerShellOutput(result?.stdout),
+  stderr: cleanPowerShellOutput(result?.stderr),
+});
+
+const detectBinaryFormat = (buffer) => {
+  if (buffer.length >= 2 && buffer[0] === 0x4d && buffer[1] === 0x5a) {
+    return "pe";
+  }
+  if (buffer.length >= 4 && buffer.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]))) {
+    return "elf";
+  }
+  if (buffer.length >= 4 && buffer[0] === 0x50 && buffer[1] === 0x4b && [0x03, 0x05, 0x07].includes(buffer[2])) {
+    return "zip";
+  }
+  if (buffer.length >= 2 && buffer[0] === 0x1f && buffer[1] === 0x8b) {
+    return "gzip";
+  }
+  if (buffer.length >= 6 && buffer.subarray(0, 6).equals(Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]))) {
+    return "7z";
+  }
+  if (buffer.length >= 7 && buffer.subarray(0, 7).equals(Buffer.from([0x52, 0x61, 0x72, 0x21, 0x1a, 0x07, 0x00]))) {
+    return "rar";
+  }
+  return null;
 };
 
 const detectBom = (buffer) => {
@@ -327,6 +404,18 @@ export const inspectWindowsFile = async ({
   });
   const headBytes = Buffer.from(chunk.content_base64, "base64");
   const bom = detectBom(headBytes);
+  const binaryFormat = detectBinaryFormat(headBytes);
+  fileInfo.sampled_bytes = headBytes.length;
+  fileInfo.sha256 = fileStat.size <= MAX_HOST_DIAGNOSTIC_HASH_BYTES ? await hashFileSha256(resolvedPath) : null;
+  fileInfo.bom = bom;
+  fileInfo.binary_format = binaryFormat;
+  fileInfo.text_inspection_skipped = binaryFormat !== null;
+  if (binaryFormat) {
+    fileInfo.utf8_valid = null;
+    fileInfo.observations.push(`Skipped text-corruption tests because the file has ${binaryFormat.toUpperCase()} binary magic.`);
+    return fileInfo;
+  }
+
   const nullByteCount = headBytes.reduce((count, byte) => count + (byte === 0 ? 1 : 0), 0);
 
   let strictUtf8Ok = true;
@@ -342,9 +431,6 @@ export const inspectWindowsFile = async ({
   const mojibakeMatches = MOJIBAKE_MARKERS.filter((marker) => decodedText.includes(marker));
   const mojibakeCount = mojibakeMatches.reduce((count, marker) => count + countOccurrences(decodedText, marker), 0);
 
-  fileInfo.sampled_bytes = headBytes.length;
-  fileInfo.sha256 = fileStat.size <= MAX_HOST_DIAGNOSTIC_HASH_BYTES ? await hashFileSha256(resolvedPath) : null;
-  fileInfo.bom = bom;
   fileInfo.utf8_valid = strictUtf8Ok;
   fileInfo.null_byte_count = nullByteCount;
   fileInfo.replacement_character_count = replacementCharacterCount;
@@ -402,16 +488,29 @@ const maybeCollectHostCommandDiagnostics = async ({ commandText, workingDir, std
 
   const inspectedPaths = [];
   for (const candidate of candidatePaths) {
+    const extension = path.win32.extname(candidate.resolved).toLowerCase();
+    if (!AUTOMATIC_TEXT_FILE_EXTENSIONS.has(extension)) {
+      continue;
+    }
     try {
+      const candidateStat = await stat(candidate.resolved);
+      if (!candidateStat.isFile()) {
+        continue;
+      }
       inspectedPaths.push(await inspectWindowsFile({ path: candidate.raw, workingDir }));
     } catch (error) {
-      inspectedPaths.push({
-        requested_path: candidate.raw,
-        resolved_path: candidate.resolved,
-        exists: null,
-        inspection_error: error instanceof Error ? error.message : String(error),
-      });
+      if (error?.code !== "ENOENT") {
+        inspectedPaths.push({
+          requested_path: candidate.raw,
+          resolved_path: candidate.resolved,
+          exists: null,
+          inspection_error: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
+  }
+  if (inspectedPaths.length === 0) {
+    return null;
   }
 
   const suspectedFileIntegrityIssue = inspectedPaths.some((entry) => entry?.likely_corrupted_on_disk);
@@ -459,7 +558,7 @@ const buildHostCommandTextForDiagnostics = (program, args = []) =>
 
 const writeTempPowerShellScript = async ({ tempDir, fileName, command }) => {
   const scriptPath = path.join(tempDir, fileName);
-  await writeFile(scriptPath, String(command), "utf8");
+  await writeFile(scriptPath, withPowerShellQuietPrelude(command), "utf8");
   return scriptPath;
 };
 
@@ -471,6 +570,7 @@ export const buildElevatedWindowsPowerShellWrapper = ({ scriptPath, workingDir, 
   return `
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
 $stdoutPath = '${psSingleQuote(stdoutPath)}'
 $stderrPath = '${psSingleQuote(stderrPath)}'
 $exitCodePath = '${psSingleQuote(exitCodePath)}'
@@ -506,6 +606,8 @@ export const buildElevatedWindowsPowerShellLauncher = ({ scriptPath, workingDir,
 
   return `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$InformationPreference = 'SilentlyContinue'
 $arguments = @(${escapedChildArgs})
 $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -WindowStyle Hidden -WorkingDirectory '${psSingleQuote(workingDir)}' -ArgumentList $arguments
 if ($null -eq $process) {
@@ -584,7 +686,7 @@ export const writeLargeFileOnHost = async ({
   );
 };
 
-const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, isAdmin }) => {
+const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, isAdmin, signal }) => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-hostexec-"));
 
   try {
@@ -598,6 +700,7 @@ const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, is
       return await spawnProcess("powershell.exe", buildWindowsPowerShellFileArgs(scriptPath), {
         cwd: workingDir,
         timeoutMs,
+        signal,
       });
     }
 
@@ -620,14 +723,17 @@ const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, is
       {
         cwd: workingDir,
         timeoutMs: (timeoutMs ?? 300000) + 15000,
+        signal,
       },
     );
 
-    const [stdout, stderr, exitCodeText] = await Promise.all([
+    const [rawStdout, rawStderr, exitCodeText] = await Promise.all([
       readTextFileOrEmpty(stdoutPath),
       readTextFileOrEmpty(stderrPath),
       readTextFileOrEmpty(exitCodePath),
     ]);
+    const stdout = cleanPowerShellOutput(rawStdout);
+    const stderr = cleanPowerShellOutput(rawStderr);
     const parsedExitCode = Number.parseInt(String(exitCodeText).trim() || "0", 10);
     const exitCode = Number.isFinite(parsedExitCode) ? parsedExitCode : 0;
 
@@ -649,37 +755,42 @@ const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, is
   }
 };
 
-export const runWindowsPowerShell = async ({ command, workingDir = config.hostDefaultWorkdir, timeoutMs }) => {
+export const runWindowsPowerShell = async ({ command, workingDir = config.hostDefaultWorkdir, timeoutMs, signal }) => {
   assertHostExecEnabled();
 
   try {
     const adminCheck = await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(buildPowerShellAdminCheckCommand()), {
       cwd: workingDir,
       timeoutMs: Math.min(timeoutMs ?? 15000, 15000),
+      signal,
     });
 
     const isAdmin = Boolean(JSON.parse(adminCheck.stdout || "{}").isAdmin);
     if (shouldUsePowerShellScriptFile(command)) {
-      return await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin });
+      return cleanPowerShellResult(await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin, signal }));
     }
 
     if (isAdmin) {
       try {
-        return await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(command), {
+        return cleanPowerShellResult(await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(command), {
           cwd: workingDir,
           timeoutMs,
-        });
+          signal,
+        }));
       } catch (error) {
         if (isCommandTooLongError(error)) {
-          return await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin });
+          return cleanPowerShellResult(await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin, signal }));
         }
         throw error;
       }
     }
 
-    return await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin });
+    return cleanPowerShellResult(await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin, signal }));
   } catch (error) {
     const wrappedError = wrapHostError(error, "Windows PowerShell command failed.");
+    if (signal?.aborted) {
+      throw wrappedError;
+    }
     const diagnosticData = await maybeCollectHostCommandDiagnostics({
       commandText: command,
       workingDir,
@@ -691,17 +802,18 @@ export const runWindowsPowerShell = async ({ command, workingDir = config.hostDe
   }
 };
 
-export const runHostShellCommand = async ({ command, workingDir = config.hostDefaultWorkdir, timeoutMs }) => {
+export const runHostShellCommand = async ({ command, workingDir = config.hostDefaultWorkdir, timeoutMs, signal }) => {
   ensureHostExecEnabled();
 
   if (platform.isWindows) {
-    return runWindowsPowerShell({ command, workingDir, timeoutMs });
+    return runWindowsPowerShell({ command, workingDir, timeoutMs, signal });
   }
 
   try {
     return await spawnProcess(hostShell, ["-lc", command], {
       cwd: workingDir,
       timeoutMs,
+      signal,
     });
   } catch (error) {
     throw wrapHostError(error, `${platform.displayName} host shell command failed.`);
@@ -714,6 +826,7 @@ export const runAllowedProgram = async ({
   workingDir = config.hostDefaultWorkdir,
   timeoutMs,
   input,
+  signal,
 }) => {
   assertHostExecEnabled();
 
@@ -725,13 +838,18 @@ export const runAllowedProgram = async ({
   }
 
   try {
-    return await spawnProcess(resolveHostProgramExecutable(program), args, {
+    const result = await spawnProcess(resolveHostProgramExecutable(program), args, {
       cwd: workingDir,
       timeoutMs,
       input,
+      signal,
     });
+    return ["powershell", "pwsh"].includes(normalizedProgram) ? cleanPowerShellResult(result) : result;
   } catch (error) {
     const wrappedError = wrapHostError(error, `Host program "${program}" failed.`);
+    if (signal?.aborted) {
+      throw wrappedError;
+    }
     const diagnosticData = await maybeCollectHostCommandDiagnostics({
       commandText: buildHostCommandTextForDiagnostics(program, args),
       workingDir,
