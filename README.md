@@ -221,6 +221,7 @@ Important `.env` values:
 - `ENABLE_GATEWAY_BRIDGE=true|false`
 - `GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com`
 - `MAX_MCP_TRANSFER_CHARS`, `MAX_TEXT_OUTPUT_CHARS`, and `MCP_JSON_BODY_LIMIT` accept numeric limits or `unlimited`
+- `MAX_COMMAND_OUTPUT_CHARS` defaults to `65536` and is a non-bypassable per-stream safety ceiling for command results; use the large-file tools for larger transfers
 - `DOCKER_COMMAND_TIMEOUT_MS` controls bounded Docker subprocess execution
 
 Do not commit `.env`, `run/`, `workspace/`, or live credentials.

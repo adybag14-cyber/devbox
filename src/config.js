@@ -28,6 +28,16 @@ const parseCharacterLimit = (value, fallback) => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 };
 
+export const MAX_SAFE_COMMAND_OUTPUT_CHARS = 65536;
+
+const parseCommandOutputLimit = (value) => {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return MAX_SAFE_COMMAND_OUTPUT_CHARS;
+  }
+  return Math.min(parsed, MAX_SAFE_COMMAND_OUTPUT_CHARS);
+};
+
 const parseJsonBodyLimit = (value, fallback) => {
   if (value === undefined || value === null || String(value).trim() === "") {
     return fallback;
@@ -101,6 +111,7 @@ export const config = {
   authMode: process.env.MCP_AUTH_MODE?.trim() || "none",
   publicBaseUrl,
   maxTextOutputChars: parseCharacterLimit(process.env.MAX_TEXT_OUTPUT_CHARS, 4000000),
+  maxCommandOutputChars: parseCommandOutputLimit(process.env.MAX_COMMAND_OUTPUT_CHARS),
   maxMcpTransferChars: parseCharacterLimit(process.env.MAX_MCP_TRANSFER_CHARS, 4000000),
   mcpJsonBodyLimit: parseJsonBodyLimit(process.env.MCP_JSON_BODY_LIMIT, "16mb"),
   mcpUsageLogMaxBytes: parseInteger(process.env.MCP_USAGE_LOG_MAX_BYTES, 16 * 1024 * 1024),

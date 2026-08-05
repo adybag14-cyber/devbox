@@ -83,7 +83,10 @@ const terminateChild = async (child) => {
   ]);
 };
 
-const startServer = async (t) => {
+const startServer = async (t, {
+  maxTextOutputChars = "20000",
+  maxCommandOutputChars = "65536",
+} = {}) => {
   const port = await getFreePort();
   const stdout = [];
   const stderr = [];
@@ -95,7 +98,8 @@ const startServer = async (t) => {
       PORT: String(port),
       MCP_AUTH_MODE: "none",
       PUBLIC_BASE_URL: "",
-      MAX_TEXT_OUTPUT_CHARS: "20000",
+      MAX_TEXT_OUTPUT_CHARS: maxTextOutputChars,
+      MAX_COMMAND_OUTPUT_CHARS: maxCommandOutputChars,
       DEVBOX_RUNTIME_MODE: "host",
       HOST_WORKSPACE_PATH: projectRoot,
       HOST_DEFAULT_WORKDIR: projectRoot,
@@ -399,6 +403,31 @@ test("oversized failing command output returns a bounded MCP error", async (t) =
   assert.ok(
     (result.content?.[0]?.text?.length ?? Infinity) < 30000,
     `Expected bounded MCP response.\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}`,
+  );
+});
+
+test("unlimited text configuration still returns connector-safe successful command output", async (t) => {
+  const { port, stdout, stderr } = await startServer(t, {
+    maxTextOutputChars: "unlimited",
+    maxCommandOutputChars: "99999999",
+  });
+  const client = await connectClient(t, port);
+  const result = await client.callTool({
+    name: "devbox_exec_readonly",
+    arguments: {
+      command: "$value = 'x' * 900000; [Console]::Out.Write(($value -join ''))",
+      working_dir: projectRoot,
+      timeout_seconds: 15,
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent?.ok, true);
+  assert.equal(result.structuredContent?.truncated, true);
+  assert.ok((result.structuredContent?.stdout?.length ?? Infinity) <= 65536);
+  assert.ok(
+    (result.content?.[0]?.text?.length ?? Infinity) < 70000,
+    `Expected connector-safe MCP response.\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}`,
   );
 });
 

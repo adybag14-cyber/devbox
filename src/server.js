@@ -74,6 +74,9 @@ const outputSchema = {
 
 const MAX_USAGE_PREVIEW_CHARS = 240;
 export const MAX_TOOL_SUMMARY_CHARS = 4096;
+const COMMAND_OUTPUT_LIMIT_CHARS = config.maxTextOutputChars === null
+  ? config.maxCommandOutputChars
+  : Math.min(config.maxTextOutputChars, config.maxCommandOutputChars);
 const SENSITIVE_ARGUMENT_KEY = /(token|secret|password|authorization|cookie|content_base64|expected_sha256)/i;
 const LARGE_TEXT_ARGUMENT_KEY = /^(command|content)$/i;
 const INTERNAL_TOOL_ARGUMENT_KEYS = new Set([
@@ -468,8 +471,8 @@ const isCommandStyleError = (error) =>
 
 const errorResult = (error, fallbackSummary = "The command failed.") => {
   if (isCommandStyleError(error)) {
-    const stdout = trimText(error.stdout, config.maxTextOutputChars);
-    const stderr = trimText(error.stderr, config.maxTextOutputChars);
+    const stdout = trimText(error.stdout, COMMAND_OUTPUT_LIMIT_CHARS);
+    const stderr = trimText(error.stderr, COMMAND_OUTPUT_LIMIT_CHARS);
     const summary = boundedToolSummary(error.message, fallbackSummary);
     const data = error.data;
 
@@ -514,8 +517,8 @@ const errorResult = (error, fallbackSummary = "The command failed.") => {
 };
 
 const fromProcessResult = (summary, result, extra = {}) => {
-  const stdout = trimText(result.stdout, config.maxTextOutputChars);
-  const stderr = trimText(result.stderr, config.maxTextOutputChars);
+  const stdout = trimText(result.stdout, COMMAND_OUTPUT_LIMIT_CHARS);
+  const stderr = trimText(result.stderr, COMMAND_OUTPUT_LIMIT_CHARS);
 
   return successResult(summary, {
     data: extra.data,
