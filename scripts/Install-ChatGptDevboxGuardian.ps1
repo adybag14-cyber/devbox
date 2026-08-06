@@ -17,12 +17,17 @@ $envFile = Join-Path $projectRoot '.env'
 $runtimeEnvFile = Join-Path $projectRoot '.env.runtime'
 $ensureScript = Join-Path $PSScriptRoot 'Ensure-ChatGptDevboxGuardian.ps1'
 $hiddenLauncher = Join-Path $PSScriptRoot 'Run-Ensure-ChatGptDevboxGuardian.vbs'
+$elevatedLauncher = Join-Path $PSScriptRoot 'Run-Start-ChatGptDevboxMcp.vbs'
+$powerShellResolver = Join-Path $PSScriptRoot 'Resolve-DevboxPowerShell.ps1'
+. $powerShellResolver
 $settingsPath = Join-Path $runDir 'guardian.settings.json'
 $desiredStatePath = Join-Path $runDir 'guardian.desired-state.json'
 $wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
 $userId = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
 $logonTaskName = "$TaskPrefix-Logon"
 $keepAliveTaskName = "$TaskPrefix-KeepAlive"
+$elevatedStartTaskName = 'ChatGptDevboxMcp-ElevatedStart'
+$startScript = Join-Path $PSScriptRoot 'Start-ChatGptDevboxMcp.ps1'
 
 foreach ($path in @($runDir, $guardianDir)) {
     if (-not (Test-Path $path)) {
@@ -32,6 +37,9 @@ foreach ($path in @($runDir, $guardianDir)) {
 
 if (-not (Test-Path $hiddenLauncher)) {
     throw "Hidden launcher not found: $hiddenLauncher"
+}
+if (-not (Test-Path $elevatedLauncher)) {
+    throw "Elevated MCP launcher not found: $elevatedLauncher"
 }
 
 function Get-EnvValue {
@@ -246,11 +254,12 @@ Write-JsonFile -Path $desiredStatePath -Value @{
     Source = 'Install-ChatGptDevboxGuardian.ps1'
 }
 
-foreach ($taskName in @($logonTaskName, $keepAliveTaskName)) {
+foreach ($taskName in @($logonTaskName, $keepAliveTaskName, $elevatedStartTaskName)) {
     Remove-TaskIfPresent -TaskName $taskName
 }
 
 $hiddenArgs = @('//B', '//NoLogo', ('"{0}"' -f $hiddenLauncher)) -join ' '
+$powerShellExe = Resolve-DevboxPowerShellExecutable
 
 $action = New-ScheduledTaskAction -Execute $wscriptExe -Argument $hiddenArgs
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
@@ -269,17 +278,36 @@ $createMinuteTask = & schtasks.exe /Create /TN $keepAliveTaskName /SC MINUTE /MO
 if ($LASTEXITCODE -ne 0) {
     throw ($createMinuteTask | Out-String)
 }
+# schtasks.exe applies battery-stopping defaults; normalize the keepalive task
+# to the same always-on settings as the logon task.
+Set-ScheduledTask -TaskName $keepAliveTaskName -Settings $settingsSet | Out-Null
 
-& 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
+# On-demand elevated MCP start (no UAC after registration). Used when a medium
+# shell tries to start host-mode MCP and when agents need silent elevation.
+$elevatedStartArgs = @('-Runtime', 'host')
+if ($publicEnabled) { $elevatedStartArgs += '-Public' }
+if ($oauthEnabled) { $elevatedStartArgs += '-OAuth' }
+$elevatedVbsArgs = @('//B', '//NoLogo', ('"{0}"' -f $elevatedLauncher)) + $elevatedStartArgs
+$elevatedAction = New-ScheduledTaskAction -Execute $wscriptExe -Argument ($elevatedVbsArgs -join ' ')
+$elevatedSettings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+Register-ScheduledTask -TaskName $elevatedStartTaskName -Action $elevatedAction -Settings $elevatedSettings -Principal $principal -Force | Out-Null
+
+& $powerShellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
 Start-Sleep -Seconds 5
 
 $taskInfo = @(
     Get-ScheduledTaskInfo -TaskName $logonTaskName | Select-Object @{Name = 'TaskName'; Expression = { $logonTaskName } }, LastRunTime, NextRunTime, LastTaskResult
     Get-ScheduledTaskInfo -TaskName $keepAliveTaskName | Select-Object @{Name = 'TaskName'; Expression = { $keepAliveTaskName } }, LastRunTime, NextRunTime, LastTaskResult
+    Get-ScheduledTaskInfo -TaskName $elevatedStartTaskName | Select-Object @{Name = 'TaskName'; Expression = { $elevatedStartTaskName } }, LastRunTime, NextRunTime, LastTaskResult
 )
 
-Get-ScheduledTask -TaskName $logonTaskName, $keepAliveTaskName |
-    Select-Object TaskName, State, Author |
+Get-ScheduledTask -TaskName $logonTaskName, $keepAliveTaskName, $elevatedStartTaskName |
+    Select-Object TaskName, State, @{Name = 'RunLevel'; Expression = { $_.Principal.RunLevel } } |
     Format-Table -AutoSize
 
 $taskInfo |

@@ -46,7 +46,32 @@ const wrapHostError = (error, fallbackMessage) => {
 };
 
 const platform = detectPlatform(process.env);
-const hostShell = resolveHostShell(process.env, platform);
+const hostShell = config.hostShell || resolveHostShell(process.env, platform);
+
+const powerShellCandidates = () => [...new Set([config.powerShellExe, config.powerShellFallbackExe].filter(Boolean))];
+const isPowerShellLaunchFailure = (error) =>
+  error instanceof SpawnProcessError
+  && error.exitCode === null
+  && error.timedOut !== true
+  && error.aborted !== true;
+
+export const spawnPowerShellProcess = async (args, options = {}) => {
+  const candidates = powerShellCandidates();
+  let lastError = null;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const executable = candidates[index];
+    try {
+      return await spawnProcess(executable, args, options);
+    } catch (error) {
+      lastError = error;
+      const canFallback = index + 1 < candidates.length && isPowerShellLaunchFailure(error);
+      if (!canFallback) {
+        throw error;
+      }
+    }
+  }
+  throw lastError ?? new HostCommandError("No usable PowerShell executable is configured.");
+};
 
 export const assertHostExecEnabled = () => {
   if (!config.enableHostExec) {
@@ -331,7 +356,7 @@ $result = @{
 `;
 
   try {
-    const result = await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(command), {
+    const result = await spawnPowerShellProcess(buildWindowsPowerShellArgs(command), {
       cwd: workingDir,
       timeoutMs: 15000,
     });
@@ -591,7 +616,7 @@ exit $exitCode
 `;
 };
 
-export const buildElevatedWindowsPowerShellLauncher = ({ scriptPath, workingDir, stdoutPath, stderrPath, exitCodePath, timeoutMs }) => {
+export const buildElevatedWindowsPowerShellLauncher = ({ scriptPath, workingDir, stdoutPath, stderrPath, exitCodePath, timeoutMs, powerShellExe = config.powerShellExe }) => {
   const childArgs = buildWindowsPowerShellArgs(
     buildElevatedWindowsPowerShellWrapper({
       scriptPath,
@@ -609,7 +634,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $InformationPreference = 'SilentlyContinue'
 $arguments = @(${escapedChildArgs})
-$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -WindowStyle Hidden -WorkingDirectory '${psSingleQuote(workingDir)}' -ArgumentList $arguments
+$process = Start-Process -FilePath '${psSingleQuote(powerShellExe)}' -Verb RunAs -PassThru -WindowStyle Hidden -WorkingDirectory '${psSingleQuote(workingDir)}' -ArgumentList $arguments
 if ($null -eq $process) {
   throw 'Failed to start elevated PowerShell process.'
 }
@@ -626,6 +651,9 @@ exit $process.ExitCode
 
 const resolvedNodeExecutable = () => path.normalize(config.nodeExe || process.execPath || "node");
 
+const allowWindowsHostExecUac = () =>
+  ["1", "true", "yes", "on"].includes(String(process.env.ALLOW_WINDOWS_HOST_EXEC_UAC ?? "").trim().toLowerCase());
+
 export const getHostToolStatus = () => ({
   enabled: config.enableHostExec,
   platform: config.platform.id,
@@ -634,7 +662,13 @@ export const getHostToolStatus = () => ({
   defaultWorkdir: config.hostDefaultWorkdir,
   allowlist: config.hostProgramAllowlist,
   resolvedNodeExe: resolvedNodeExecutable(),
+  powerShellExe: config.powerShellExe,
+  powerShellFallbackExe: config.powerShellFallbackExe,
+  powerShellFallbackEnabled: Boolean(config.powerShellFallbackExe && config.powerShellFallbackExe !== config.powerShellExe),
+  // Windows host PowerShell is intended to run inside an already-elevated MCP
+  // process (Highest scheduled task / Guardian repair). That avoids UAC.
   windowsHostExecDefaultsToAdmin: platform.isWindows,
+  allowWindowsHostExecUac: allowWindowsHostExecUac(),
 });
 
 export const resolveHostProgramExecutable = (program) => {
@@ -697,7 +731,7 @@ const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, is
     });
 
     if (isAdmin) {
-      return await spawnProcess("powershell.exe", buildWindowsPowerShellFileArgs(scriptPath), {
+      return await spawnPowerShellProcess(buildWindowsPowerShellFileArgs(scriptPath), {
         cwd: workingDir,
         timeoutMs,
         signal,
@@ -708,8 +742,7 @@ const runWindowsPowerShellFromFile = async ({ command, workingDir, timeoutMs, is
     const stderrPath = path.join(tempDir, "stderr.txt");
     const exitCodePath = path.join(tempDir, "exitcode.txt");
 
-    await spawnProcess(
-      "powershell.exe",
+    await spawnPowerShellProcess(
       buildWindowsPowerShellArgs(
         buildElevatedWindowsPowerShellLauncher({
           scriptPath,
@@ -759,20 +792,47 @@ export const runWindowsPowerShell = async ({ command, workingDir = config.hostDe
   assertHostExecEnabled();
 
   try {
-    const adminCheck = await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(buildPowerShellAdminCheckCommand()), {
+    const adminCheck = await spawnPowerShellProcess(buildWindowsPowerShellArgs(buildPowerShellAdminCheckCommand()), {
       cwd: workingDir,
       timeoutMs: Math.min(timeoutMs ?? 15000, 15000),
       signal,
     });
 
     const isAdmin = Boolean(JSON.parse(adminCheck.stdout || "{}").isAdmin);
+
+    // Prefer an already-elevated MCP process. Triggering RunAs here pops a full
+    // UAC secure-desktop prompt on every host_exec, which breaks unattended
+    // agents. Opt in only with ALLOW_WINDOWS_HOST_EXEC_UAC=true.
+    if (!isAdmin && !allowWindowsHostExecUac()) {
+      throw new HostCommandError(
+        "Windows host PowerShell requires the Devbox MCP process to already be elevated. "
+        + "This MCP process is medium-integrity, so host_exec refused to call Start-Process -Verb RunAs (that would spam UAC). "
+        + "Guardian treats unelevated MCP as unhealthy and restarts it via the Highest scheduled-task path. Retry after repair.",
+        {
+          exitCode: 740,
+          data: {
+            bridge_diagnostics: {
+              suspected_elevation_gap: true,
+              windows_host_exec_defaults_to_admin: true,
+              allow_windows_host_exec_uac: false,
+              hints: [
+                "Keep MCP started only by elevated Guardian / ChatGptDevboxMcp-ElevatedStart (RunLevel Highest).",
+                "Do not start MCP from a normal (non-admin) terminal if you want silent elevated host_exec.",
+                "Set ALLOW_WINDOWS_HOST_EXEC_UAC=true only if you intentionally want per-command UAC prompts.",
+              ],
+            },
+          },
+        },
+      );
+    }
+
     if (shouldUsePowerShellScriptFile(command)) {
       return cleanPowerShellResult(await runWindowsPowerShellFromFile({ command, workingDir, timeoutMs, isAdmin, signal }));
     }
 
     if (isAdmin) {
       try {
-        return cleanPowerShellResult(await spawnProcess("powershell.exe", buildWindowsPowerShellArgs(command), {
+        return cleanPowerShellResult(await spawnPowerShellProcess(buildWindowsPowerShellArgs(command), {
           cwd: workingDir,
           timeoutMs,
           signal,

@@ -34,6 +34,11 @@ The installer creates:
 
 - `ChatGptDevboxGuardian-Logon`
 - `ChatGptDevboxGuardian-KeepAlive`
+- `ChatGptDevboxMcp-ElevatedStart` (on-demand host-mode MCP start at RunLevel Highest)
+
+On Windows host mode, MCP must stay elevated so `host_exec` inherits admin privileges and never calls `Start-Process -Verb RunAs` (that path pops a full UAC secure-desktop prompt). Guardian treats a healthy but medium-integrity MCP process as unhealthy and restarts it via the elevated repair path.
+
+Windows launchers prefer `POWERSHELL_EXE` when configured, otherwise `C:\Program Files\PowerShell\7\pwsh.exe` when installed, and finally Windows PowerShell 5.1. `POWERSHELL_FALLBACK_EXE` can override the fallback. The scheduled-task VBS launchers resolve this policy at execution time, so removing or breaking PowerShell 7 does not strand Guardian; it can still start through the legacy 5.1 executable.
 
 The scheduled tasks run `Ensure-ChatGptDevboxGuardian.ps1`, which checks the heartbeat and safely restarts only the verified Guardian wrapper/supervisor PIDs when stale. `Watch-ChatGptDevboxGuardian.ps1` is a thin Windows wrapper around the portable foreground supervisor.
 

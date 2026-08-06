@@ -115,3 +115,27 @@ test("a public-only failure selects a tunnel repair without restarting MCP", () 
     PublicTunnelHealthy: false,
   }), "full");
 });
+
+test("Windows host mode treats unelevated MCP as unhealthy to prevent UAC host_exec", () => {
+  const healthyElevated = classifyReadiness({
+    selectedRuntime: "host",
+    mcpProcessRunning: true,
+    localHealth: true,
+    requireMcpElevated: true,
+    mcpElevated: true,
+  });
+  assert.equal(healthyElevated.IsHealthy, true);
+  assert.deepEqual(healthyElevated.Reasons, []);
+
+  const unelevated = classifyReadiness({
+    selectedRuntime: "host",
+    mcpProcessRunning: true,
+    localHealth: true,
+    requireMcpElevated: true,
+    mcpElevated: false,
+  });
+  assert.equal(unelevated.IsHealthy, false);
+  assert.equal(unelevated.McpHealthy, false);
+  assert.equal(unelevated.NeedsRepair, true);
+  assert.match(unelevated.Reasons.join("; "), /not elevated/i);
+});

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { existsSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -18,6 +19,20 @@ import {
 import { parseEnvText } from "../src/env.js";
 
 const execFileAsync = promisify(execFile);
+
+export const resolveWindowsPowerShellExecutable = (environment = process.env) => {
+  const legacy = path.join(environment.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const pwsh7 = path.join(environment.ProgramFiles || "C:\\Program Files", "PowerShell", "7", "pwsh.exe");
+  const configured = String(environment.POWERSHELL_EXE ?? "").trim();
+  const candidates = [configured, pwsh7, legacy].filter(Boolean);
+  for (const candidate of candidates) {
+    if (!path.isAbsolute(candidate) || existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return "powershell.exe";
+};
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultProjectRoot = path.resolve(scriptDir, "..");
 
@@ -329,7 +344,7 @@ export const isGuardianCommandLine = (commandLine, projectRoot) => {
 const readProcessCommandLine = async (pid) => {
   try {
     if (process.platform === "win32") {
-      const powerShell = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+      const powerShell = resolveWindowsPowerShellExecutable(process.env);
       const command = [
         `$process = Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}' -ErrorAction Stop`,
         "[Console]::Out.Write([string]$process.CommandLine)",
@@ -408,6 +423,77 @@ const findMcpProcess = async (runDir) => {
     }
   }
   return { pid: null, pidFile: null };
+};
+
+/**
+ * True when the target Windows process has an elevated admin token.
+ * Non-Windows platforms always report elevated (no UAC host bridge).
+ */
+export const isWindowsProcessElevated = async (pid) => {
+  if (process.platform !== "win32") {
+    return true;
+  }
+  if (!Number.isInteger(pid) || pid < 1) {
+    return false;
+  }
+
+  const powerShell = resolveWindowsPowerShellExecutable(process.env);
+  // Fresh process each probe; still guard Add-Type redefinition and ignore CLIXML noise.
+  const command = `
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$pidToCheck = ${pid}
+if (-not ('DevboxTokenElev' -as [type])) {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class DevboxTokenElev {
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint a, bool b, int c);
+  [DllImport("advapi32.dll", SetLastError=true)] public static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t);
+  [DllImport("advapi32.dll", SetLastError=true)] public static extern bool GetTokenInformation(IntPtr t, int c, IntPtr i, int l, out int r);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+}
+"@
+}
+$hProc = [DevboxTokenElev]::OpenProcess(0x1000, $false, $pidToCheck)
+if ($hProc -eq [IntPtr]::Zero) { [Console]::Out.Write('{"elevated":false}'); exit 0 }
+$hTok = [IntPtr]::Zero
+if (-not [DevboxTokenElev]::OpenProcessToken($hProc, 0x0008, [ref]$hTok)) {
+  [void][DevboxTokenElev]::CloseHandle($hProc)
+  [Console]::Out.Write('{"elevated":false}')
+  exit 0
+}
+$len = 0
+[void][DevboxTokenElev]::GetTokenInformation($hTok, 20, [IntPtr]::Zero, 0, [ref]$len)
+$ptr = [Runtime.InteropServices.Marshal]::AllocHGlobal($len)
+$ok = [DevboxTokenElev]::GetTokenInformation($hTok, 20, $ptr, $len, [ref]$len)
+$elevated = $false
+if ($ok) { $elevated = [Runtime.InteropServices.Marshal]::ReadInt32($ptr) -ne 0 }
+[Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+[void][DevboxTokenElev]::CloseHandle($hTok)
+[void][DevboxTokenElev]::CloseHandle($hProc)
+[Console]::Out.Write((@{ elevated = [bool]$elevated } | ConvertTo-Json -Compress))
+`;
+
+  try {
+    const result = await execFileAsync(powerShell, [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      command,
+    ], { encoding: "utf8", timeout: 8000, windowsHide: true });
+    const stdout = String(result.stdout ?? "");
+    const match = stdout.match(/\{"elevated":(true|false)\}/u);
+    if (match) {
+      return match[1] === "true";
+    }
+    const parsed = JSON.parse(stdout.trim() || "{}");
+    return parsed.elevated === true;
+  } catch {
+    return false;
+  }
 };
 
 const testHealth = async (url, timeoutSeconds = 5) => {
@@ -544,7 +630,7 @@ export const runRepairCommand = async ({
   }
 
   if (process.platform === "win32") {
-    const powerShell = path.join(environment.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const powerShell = resolveWindowsPowerShellExecutable(environment);
     const args = buildWindowsGuardianRepairArgs({
       scriptPath: path.join(environment.DEVBOX_PROJECT_ROOT, "scripts", "Start-ChatGptDevboxMcp.ps1"),
       selectedRuntime,
@@ -689,6 +775,16 @@ const main = async () => {
       tunnelRunning = tunnelInspection.exists === true ? tunnelInspection.running : null;
     }
 
+    // Windows host mode keeps host PowerShell elevated by default. If MCP is
+    // healthy but medium-integrity, every host_exec would pop UAC via RunAs.
+    // Treat that as unhealthy so elevated Guardian restarts MCP with Highest.
+    const requireMcpElevated = process.platform === "win32" && selectedRuntime === "host";
+    const mcpElevated = requireMcpElevated && mcpProcess.pid
+      ? await isWindowsProcessElevated(mcpProcess.pid)
+      : requireMcpElevated
+        ? false
+        : null;
+
     const optionalDegradations = [];
     if (publicEnabled && publicHealth && tunnelRunning === null) {
       optionalDegradations.push("public endpoint is healthy but the tunnel is externally managed");
@@ -704,6 +800,8 @@ const main = async () => {
       dockerReady,
       devboxContainerRunning,
       optionalDegradations,
+      requireMcpElevated,
+      mcpElevated,
     });
 
     return {
@@ -729,6 +827,8 @@ const main = async () => {
       CloudflaredRunning: tunnelRunning,
       HostCloudflaredProcessId: hostTunnelPid && isProcessAlive(hostTunnelPid) ? hostTunnelPid : null,
       McpProcessId: mcpProcess.pid,
+      McpElevated: mcpElevated,
+      RequireMcpElevated: requireMcpElevated,
       LocalHealth: localHealth,
       PublicHealth: publicHealth,
       RepairPolicy: repairPolicy,

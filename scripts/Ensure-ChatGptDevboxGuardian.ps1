@@ -12,13 +12,21 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
 }
 $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 
-$powerShellExe = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
+$powerShellResolver = Join-Path $PSScriptRoot 'Resolve-DevboxPowerShell.ps1'
+. $powerShellResolver
+$powerShellExe = Resolve-DevboxPowerShellExecutable
 $guardianScript = Join-Path $ProjectRoot 'scripts\Watch-ChatGptDevboxGuardian.ps1'
 $guardianDir = Join-Path $ProjectRoot 'run\guardian'
 $guardianPidPath = Join-Path $guardianDir 'guardian.pid'
 $heartbeatPath = Join-Path $guardianDir 'heartbeat.json'
 $ensureLogPath = Join-Path $guardianDir 'ensure.log'
 $hiddenLauncher = Join-Path $PSScriptRoot 'Run-ChatGptDevboxGuardian.vbs'
+$guardianSourcePaths = @(
+    $guardianScript,
+    $powerShellResolver,
+    (Join-Path $ProjectRoot 'scripts\devbox-guardian.mjs'),
+    (Join-Path $ProjectRoot 'src\guardian-core.js')
+)
 
 if (-not (Test-Path $guardianDir)) {
     New-Item -ItemType Directory -Path $guardianDir | Out-Null
@@ -71,6 +79,32 @@ function Get-LiveGuardianProcess {
         Select-Object -First 1
 }
 
+function Test-GuardianSourceFresh {
+    param(
+        [Parameter(Mandatory = $true)]$Process
+    )
+
+    try {
+        $startedAt = ([DateTime]$Process.CreationDate).ToUniversalTime()
+        $newestSource = $guardianSourcePaths |
+            Where-Object { Test-Path -LiteralPath $_ } |
+            ForEach-Object { (Get-Item -LiteralPath $_ -ErrorAction Stop).LastWriteTimeUtc } |
+            Sort-Object -Descending |
+            Select-Object -First 1
+
+        if (-not $newestSource) {
+            return $true
+        }
+
+        # A small tolerance avoids restart loops on filesystems with coarse timestamps.
+        return ($newestSource -le $startedAt.AddSeconds(2))
+    }
+    catch {
+        # Do not kill a healthy guardian solely because metadata inspection failed.
+        return $true
+    }
+}
+
 function Test-GuardianHeartbeatFresh {
     if (-not (Test-Path $heartbeatPath)) {
         return $false
@@ -85,7 +119,17 @@ function Test-GuardianHeartbeatFresh {
             return $false
         }
 
-        $observedAt = [DateTime]::Parse([string]$heartbeat.ObservedAtUtc).ToUniversalTime()
+        $observedValue = $heartbeat.ObservedAtUtc
+        if ($observedValue -is [DateTime]) {
+            $observedAt = $observedValue.ToUniversalTime()
+        }
+        else {
+            $observedAt = [DateTime]::Parse(
+                [string]$observedValue,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).ToUniversalTime()
+        }
         return (([DateTime]::UtcNow - $observedAt).TotalSeconds -lt $HeartbeatMaxAgeSeconds)
     }
     catch {
@@ -94,12 +138,15 @@ function Test-GuardianHeartbeatFresh {
 }
 
 $existing = Get-LiveGuardianProcess
-if ($existing -and (Test-GuardianHeartbeatFresh)) {
+$heartbeatFresh = Test-GuardianHeartbeatFresh
+$sourceFresh = if ($existing) { Test-GuardianSourceFresh -Process $existing } else { $false }
+if ($existing -and $heartbeatFresh -and $sourceFresh) {
     exit 0
 }
 
 if ($existing) {
-    Write-EnsureLog -Level 'WARN' -Message ("guardian heartbeat is stale; restarting pid={0}" -f $existing.ProcessId)
+    $restartReason = if (-not $heartbeatFresh) { 'heartbeat is stale' } elseif (-not $sourceFresh) { 'guardian source is newer than the running process' } else { 'guardian requires restart' }
+    Write-EnsureLog -Level 'WARN' -Message ("{0}; restarting pid={1}" -f $restartReason, $existing.ProcessId)
     $supervisorPid = $null
     try {
         $heartbeat = Get-Content -Path $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json

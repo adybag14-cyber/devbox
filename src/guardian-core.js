@@ -111,11 +111,16 @@ export const classifyReadiness = ({
   dockerReady = null,
   devboxContainerRunning = null,
   optionalDegradations = [],
+  // When true (Windows host mode), MCP must already be elevated so host_exec
+  // never falls back to Start-Process -Verb RunAs (UAC spam).
+  requireMcpElevated = false,
+  mcpElevated = null,
 } = {}) => {
   const runtime = selectedRuntime === "docker" ? "docker" : "host";
   const reasons = [];
   const degradations = [...new Set(optionalDegradations.filter(Boolean).map(String))];
-  const mcpHealthy = Boolean(mcpProcessRunning && localHealth);
+  const elevationOk = !requireMcpElevated || mcpElevated === true;
+  const mcpHealthy = Boolean(mcpProcessRunning && localHealth && elevationOk);
   const publicTunnelHealthy = publicEnabled
     ? Boolean(publicHealth && tunnelRunning !== false)
     : null;
@@ -129,6 +134,9 @@ export const classifyReadiness = ({
     }
     if (!localHealth) {
       reasons.push("local health check failed");
+    }
+    if (requireMcpElevated && mcpProcessRunning && mcpElevated !== true) {
+      reasons.push("MCP server process is not elevated (host PowerShell would trigger UAC)");
     }
     if (runtime === "docker" && !dockerReady) {
       reasons.push("docker engine not ready");

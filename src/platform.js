@@ -41,7 +41,7 @@ export const defaultHostProgramAllowlist = (platform) =>
 
 export const resolveHostShell = (env = process.env, platform = detectPlatform(env)) => {
   if (platform?.isWindows) {
-    return String(env.HOST_SHELL ?? "powershell.exe").trim() || "powershell.exe";
+    return String(env.HOST_SHELL ?? env.POWERSHELL_EXE ?? "powershell.exe").trim() || "powershell.exe";
   }
 
   return String(env.HOST_SHELL ?? env.SHELL ?? "/bin/sh").trim() || "/bin/sh";

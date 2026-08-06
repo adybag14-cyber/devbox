@@ -142,7 +142,7 @@ The Rust bootstrap binary still needs the runtime prerequisites used by Devbox i
 ### Docker mode
 
 - Docker Desktop or a compatible Docker engine
-- Windows PowerShell for the supplied Windows automation scripts
+- PowerShell 7 is preferred for Windows automation; Windows PowerShell 5.1 remains a compatibility fallback
 - optional: GitHub CLI, Cloudflare Tunnel, and Cloudflare Access
 
 ## Manual installation
@@ -215,6 +215,8 @@ Important `.env` values:
 - `HOST` and `PORT`
 - `HOST_WORKSPACE_PATH`
 - `HOST_DEFAULT_WORKDIR`
+- `POWERSHELL_EXE` (optional Windows primary override; defaults to installed PowerShell 7)
+- `POWERSHELL_FALLBACK_EXE` (optional Windows fallback override; defaults to Windows PowerShell 5.1)
 - `HOST_SHELL`
 - `HOST_PROGRAM_ALLOWLIST`
 - `PUBLIC_BASE_URL` for public OAuth deployments

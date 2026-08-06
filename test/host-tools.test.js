@@ -120,7 +120,7 @@ test("buildElevatedWindowsPowerShellWrapper preserves working directory and outp
   assert.equal(wrapper.includes("$InformationPreference = 'SilentlyContinue'"), true);
 });
 
-test("buildElevatedWindowsPowerShellLauncher uses RunAs elevation", async () => {
+test("buildElevatedWindowsPowerShellLauncher uses the configured PowerShell executable for RunAs elevation", async () => {
   const { buildElevatedWindowsPowerShellLauncher } = await importFreshHostTools();
   const launcher = buildElevatedWindowsPowerShellLauncher({
     scriptPath: "C:\\Temp\\command.ps1",
@@ -129,9 +129,10 @@ test("buildElevatedWindowsPowerShellLauncher uses RunAs elevation", async () => 
     stderrPath: "C:\\Temp\\stderr.txt",
     exitCodePath: "C:\\Temp\\exit.txt",
     timeoutMs: 15000,
+    powerShellExe: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
   });
 
-  assert.match(launcher, /Start-Process -FilePath 'powershell\.exe' -Verb RunAs/);
+  assert.match(launcher, /Start-Process -FilePath 'C:\\Program Files\\PowerShell\\7\\pwsh\.exe' -Verb RunAs/);
   assert.match(launcher, /WaitForExit\(15000\)/);
   assert.match(launcher, /Stop-Process -Id \$process\.Id -Force/);
 });

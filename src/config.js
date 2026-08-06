@@ -1,4 +1,5 @@
 import os from "node:os";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -94,7 +95,18 @@ const defaultHostWorkdir = process.env.HOST_DEFAULT_WORKDIR?.trim() || hostWorks
 const defaultNodeExe = process.execPath || "node";
 const defaultDevboxWorkspacePath = runtimeMode === "host" ? hostWorkspacePath : "/workspace";
 const enableHostExec = parseBoolean(process.env.ENABLE_HOST_EXEC ?? process.env.ENABLE_WINDOWS_HOST_EXEC, true);
-const hostShell = resolveHostShell(process.env, platform);
+const legacyWindowsPowerShellExe = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+const installedPowerShell7Exe = path.join(process.env.ProgramFiles || "C:\\Program Files", "PowerShell", "7", "pwsh.exe");
+const configuredPowerShellExe = process.env.POWERSHELL_EXE?.trim() || "";
+const configuredPowerShellFallbackExe = process.env.POWERSHELL_FALLBACK_EXE?.trim() || "";
+const isUsablePowerShellCandidate = (candidate) => Boolean(candidate) && (!path.isAbsolute(candidate) || existsSync(candidate));
+const powerShellExe = platform.isWindows
+  ? [configuredPowerShellExe, installedPowerShell7Exe, legacyWindowsPowerShellExe].find(isUsablePowerShellCandidate) || "powershell.exe"
+  : "";
+const powerShellFallbackExe = platform.isWindows
+  ? [configuredPowerShellFallbackExe, legacyWindowsPowerShellExe].find(isUsablePowerShellCandidate) || "powershell.exe"
+  : "";
+const hostShell = process.env.HOST_SHELL?.trim() || (platform.isWindows ? powerShellExe : resolveHostShell(process.env, platform));
 const hostProgramAllowlist = parseCsv(process.env.HOST_PROGRAM_ALLOWLIST, defaultHostProgramAllowlist(platform));
 const defaultGatewayBridgeOrigins = "https://chatgpt.com,https://chat.openai.com";
 const gatewayBridgeOrigins = parseCsv(process.env.GATEWAY_BRIDGE_ORIGINS ?? defaultGatewayBridgeOrigins);
@@ -106,6 +118,10 @@ export const config = {
   platform,
   runtimeMode,
   hostShell,
+  powerShellExe,
+  powerShellFallbackExe,
+  legacyWindowsPowerShellExe,
+  installedPowerShell7Exe,
   host: process.env.HOST?.trim() || "0.0.0.0",
   port: parseInteger(process.env.PORT, 8100),
   authMode: process.env.MCP_AUTH_MODE?.trim() || "none",

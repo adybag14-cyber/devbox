@@ -41,11 +41,16 @@ Dim powerShellExe
 powerShellExe = ResolvePowerShellExe()
 
 Dim targetScript
-targetScript = fso.BuildPath(root, "Ensure-ChatGptDevboxGuardian.ps1")
+targetScript = fso.BuildPath(root, "Start-ChatGptDevboxMcp.ps1")
 
 Dim command
 command = Chr(34) & powerShellExe & Chr(34) & _
     " -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File " & _
     Chr(34) & targetScript & Chr(34)
 
-WScript.Quit shell.Run(command, 0, True)
+Dim i
+For i = 0 To WScript.Arguments.Count - 1
+    command = command & " " & Chr(34) & Replace(WScript.Arguments(i), Chr(34), Chr(34) & Chr(34)) & Chr(34)
+Next
+
+WScript.Quit shell.Run(command, 0, False)

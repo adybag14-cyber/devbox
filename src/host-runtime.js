@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { mkdir, lstat, readdir, readFile, writeFile } from "node:fs/promises";
 
+import { config } from "./config.js";
 import { readLargeFileChunk, writeLargeFileMirror } from "./large-file-cli.js";
 import { buildHostShellArgs, detectPlatform, resolveHostShell } from "./platform.js";
 import { SpawnProcessError, spawnProcess } from "./process-utils.js";
@@ -23,11 +24,20 @@ const getRuntimeConfig = (env = process.env) => {
   const hostWorkspacePath = env.HOST_WORKSPACE_PATH?.trim() || path.join(projectRoot, "workspace");
   const hostDefaultWorkdir = env.HOST_DEFAULT_WORKDIR?.trim() || hostWorkspacePath || os.homedir() || projectRoot;
 
+  const explicitHostShell = env.HOST_SHELL?.trim() || "";
+  const explicitPowerShell = env.POWERSHELL_EXE?.trim() || "";
+  const hostShell = explicitHostShell
+    || (platform.isWindows ? explicitPowerShell || config.powerShellExe : resolveHostShell(env, platform));
+  const hostShellFallback = platform.isWindows && !explicitHostShell
+    ? env.POWERSHELL_FALLBACK_EXE?.trim() || config.powerShellFallbackExe
+    : "";
+
   return {
     platform,
     hostWorkspacePath,
     hostDefaultWorkdir,
-    hostShell: resolveHostShell(env, platform),
+    hostShell,
+    hostShellFallback,
   };
 };
 
@@ -45,6 +55,34 @@ const wrapRuntimeError = (error, fallbackMessage) => {
   }
 
   return new HostRuntimeCommandError(error instanceof Error ? error.message : fallbackMessage);
+};
+
+const isRuntimeShellLaunchFailure = (error) =>
+  error instanceof SpawnProcessError
+  && error.exitCode === null
+  && error.timedOut !== true
+  && error.aborted !== true;
+
+const spawnRuntimeShell = async ({ runtimeConfig, command, cwd, timeoutMs, signal }) => {
+  const candidates = [...new Set([runtimeConfig.hostShell, runtimeConfig.hostShellFallback].filter(Boolean))];
+  let lastError = null;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const shell = candidates[index];
+    try {
+      return await spawnProcess(shell, buildHostShellArgs(shell, command, runtimeConfig.platform), {
+        cwd,
+        timeoutMs,
+        signal,
+      });
+    } catch (error) {
+      lastError = error;
+      const canFallback = index + 1 < candidates.length && isRuntimeShellLaunchFailure(error);
+      if (!canFallback) {
+        throw error;
+      }
+    }
+  }
+  throw lastError ?? new HostRuntimeCommandError("No usable host shell is configured.");
 };
 
 const asProcessResult = (stdout = "", stderr = "") => ({ stdout, stderr, exitCode: 0 });
@@ -289,6 +327,7 @@ export const getHostRuntimeInfo = async () => {
     platform: runtimeConfig.platform.id,
     hostDefaultWorkdir: runtimeConfig.hostDefaultWorkdir,
     hostShell: runtimeConfig.hostShell,
+    hostShellFallback: runtimeConfig.hostShellFallback || null,
   };
 };
 
@@ -304,11 +343,7 @@ export const execInHostRuntime = async ({ command, workingDir, timeoutMs, signal
   const cwd = workingDir || runtimeConfig.hostDefaultWorkdir;
 
   try {
-    return await spawnProcess(runtimeConfig.hostShell, buildHostShellArgs(runtimeConfig.hostShell, command, runtimeConfig.platform), {
-      cwd,
-      timeoutMs,
-      signal,
-    });
+    return await spawnRuntimeShell({ runtimeConfig, command, cwd, timeoutMs, signal });
   } catch (error) {
     throw wrapRuntimeError(error, "Host runtime command failed.");
   }

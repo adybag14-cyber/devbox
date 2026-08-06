@@ -78,6 +78,102 @@ function ConvertTo-WindowsProcessArgument {
     return '"' + ($value.Replace('\', '\\').Replace('"', '\"')) + '"'
 }
 
+function Test-IsCurrentProcessElevated {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Test-IsProcessElevated {
+    param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+    $code = @'
+using System;
+using System.Runtime.InteropServices;
+public static class DevboxStartElev {
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint a, bool b, int c);
+  [DllImport("advapi32.dll", SetLastError=true)] public static extern bool OpenProcessToken(IntPtr p, uint a, out IntPtr t);
+  [DllImport("advapi32.dll", SetLastError=true)] public static extern bool GetTokenInformation(IntPtr t, int c, IntPtr i, int l, out int r);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+}
+'@
+    if (-not ('DevboxStartElev' -as [type])) {
+        Add-Type -TypeDefinition $code -ErrorAction Stop
+    }
+
+    $hProc = [DevboxStartElev]::OpenProcess(0x1000, $false, $ProcessId)
+    if ($hProc -eq [IntPtr]::Zero) {
+        return $false
+    }
+
+    $hTok = [IntPtr]::Zero
+    try {
+        if (-not [DevboxStartElev]::OpenProcessToken($hProc, 0x0008, [ref]$hTok)) {
+            return $false
+        }
+        $len = 0
+        [void][DevboxStartElev]::GetTokenInformation($hTok, 20, [IntPtr]::Zero, 0, [ref]$len)
+        $ptr = [Runtime.InteropServices.Marshal]::AllocHGlobal($len)
+        try {
+            $ok = [DevboxStartElev]::GetTokenInformation($hTok, 20, $ptr, $len, [ref]$len)
+            if (-not $ok) {
+                return $false
+            }
+            return [Runtime.InteropServices.Marshal]::ReadInt32($ptr) -ne 0
+        } finally {
+            [Runtime.InteropServices.Marshal]::FreeHGlobal($ptr)
+        }
+    } finally {
+        if ($hTok -ne [IntPtr]::Zero) {
+            [void][DevboxStartElev]::CloseHandle($hTok)
+        }
+        [void][DevboxStartElev]::CloseHandle($hProc)
+    }
+}
+
+function Ensure-WindowsHostStartIsElevated {
+    param(
+        [string]$SelectedRuntime,
+        [string]$ProjectRoot,
+        [int]$Port = 8100
+    )
+
+    if ($SelectedRuntime -ne 'host') {
+        return
+    }
+    if (Test-IsCurrentProcessElevated) {
+        return
+    }
+
+    $taskName = 'ChatGptDevboxMcp-ElevatedStart'
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if (-not $task) {
+        throw @"
+Start-ChatGptDevboxMcp.ps1 must run elevated on Windows host mode so host_exec never pops UAC.
+This process is not elevated, and scheduled task '$taskName' is missing.
+Fix: re-run scripts\Install-ChatGptDevboxGuardian.ps1 from an elevated PowerShell, or start MCP only via elevated Guardian repair.
+"@
+    }
+
+    Write-Host "Current shell is not elevated; re-launching MCP via scheduled task '$taskName' (RunLevel Highest, no UAC)..."
+    Start-ScheduledTask -TaskName $taskName
+
+    $localUrl = "http://127.0.0.1:$Port"
+    for ($i = 0; $i -lt 45; $i++) {
+        Start-Sleep -Seconds 2
+        try {
+            $response = Invoke-WebRequest -Uri "$localUrl/healthz" -UseBasicParsing -TimeoutSec 5
+            if ($response.Content -match 'ok') {
+                Write-Host "Elevated MCP is healthy at $localUrl"
+                return
+            }
+        } catch {
+        }
+    }
+
+    throw "Scheduled task '$taskName' was started but MCP did not become healthy on port $Port."
+}
+
 function Add-ProcessArguments {
     param(
         [Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$StartInfo,
@@ -849,8 +945,6 @@ function Start-CloudflaredPublicTunnel {
     return Start-CloudflaredQuickTunnel -ContainerName $ContainerName -Port $Port
 }
 
-Enter-ChatGptDevboxLifecycleMutex
-try {
 $root = Split-Path -Parent $PSScriptRoot
 $envFile = Join-Path $root ".env"
 $runtimeEnvFile = Join-Path $root ".env.runtime"
@@ -863,6 +957,29 @@ if (-not (Test-Path $envFile)) {
     & (Join-Path $PSScriptRoot "Initialize-ChatGptDevboxMcp.ps1")
 }
 
+# Resolve runtime before taking the lifecycle mutex so an unelevated host-mode
+# start can hand off to ChatGptDevboxMcp-ElevatedStart without deadlocking.
+$envRuntimeEarly = (Get-EnvValue -FilePath $envFile -Name 'DEVBOX_RUNTIME_MODE').ToLowerInvariant()
+$runtimeModeEarly = if ($PSBoundParameters.ContainsKey('Runtime')) {
+    $Runtime.ToLowerInvariant()
+} elseif ($envRuntimeEarly -in @('auto', 'host', 'docker')) {
+    $envRuntimeEarly
+} else {
+    'auto'
+}
+$selectedRuntimeEarly = if ($runtimeModeEarly -eq 'auto') { 'docker' } else { $runtimeModeEarly }
+$portValueEarly = Get-EnvValue -FilePath $envFile -Name "PORT"
+$portEarly = if ([string]::IsNullOrWhiteSpace($portValueEarly)) { 8100 } else { [int]$portValueEarly }
+if ($selectedRuntimeEarly -eq 'host') {
+    Ensure-WindowsHostStartIsElevated -SelectedRuntime $selectedRuntimeEarly -ProjectRoot $root -Port $portEarly
+    if (-not (Test-IsCurrentProcessElevated)) {
+        # Elevated scheduled task owns the real start.
+        exit 0
+    }
+}
+
+Enter-ChatGptDevboxLifecycleMutex
+try {
 Ensure-Directory -Path $runDir
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $true -Source "Start-ChatGptDevboxMcp.ps1"
 
@@ -1022,6 +1139,11 @@ $process.Refresh()
 if ($process.HasExited) {
     $stderr = if (Test-Path $stderrLog) { Get-Content $stderrLog -Raw } else { "" }
     throw "The MCP server process exited before health validation completed. stderr:`n$stderr"
+}
+
+if ($selectedRuntime -eq 'host' -and -not (Test-IsProcessElevated -ProcessId ([int]$process.Id))) {
+    try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
+    throw "MCP server PID $($process.Id) started without elevation. Host mode refuses medium-integrity MCP so host_exec cannot spam UAC. Start via elevated Guardian or ChatGptDevboxMcp-ElevatedStart."
 }
 
 Set-Content -Path $pidFile -Value $process.Id

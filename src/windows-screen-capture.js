@@ -4,7 +4,7 @@ import path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { config } from "./config.js";
-import { HostCommandError, assertHostExecEnabled, buildWindowsPowerShellFileArgs } from "./host-tools.js";
+import { HostCommandError, assertHostExecEnabled, buildWindowsPowerShellFileArgs, spawnPowerShellProcess } from "./host-tools.js";
 import { spawnProcess } from "./process-utils.js";
 
 const JPEG_START = Buffer.from([0xff, 0xd8, 0xff]);
@@ -234,8 +234,7 @@ const captureWindowsJpeg = async ({ mode, pid = 0, quality = 85, timeoutMs = 300
 
   try {
     await writeFile(scriptPath, captureScript, "utf8");
-    const result = await spawnProcess(
-      "powershell.exe",
+    const result = await spawnPowerShellProcess(
       [
         ...buildWindowsPowerShellFileArgs(scriptPath),
         "-Mode",

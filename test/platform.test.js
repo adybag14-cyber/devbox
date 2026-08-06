@@ -38,6 +38,7 @@ test("resolveHostShell prefers SHELL on posix and PowerShell on Windows", () => 
   assert.equal(resolveHostShell({ SHELL: "/bin/bash" }, detectPlatform({}, "linux")), "/bin/bash");
   assert.equal(resolveHostShell({}, detectPlatform({}, "linux")), "/bin/sh");
   assert.equal(resolveHostShell({}, detectPlatform({}, "win32")), "powershell.exe");
+  assert.equal(resolveHostShell({ POWERSHELL_EXE: "C:\\Program Files\\PowerShell\\7\\pwsh.exe" }, detectPlatform({}, "win32")), "C:\\Program Files\\PowerShell\\7\\pwsh.exe");
 });
 
 test("Termux detection is a Linux subtype, never Windows", () => {

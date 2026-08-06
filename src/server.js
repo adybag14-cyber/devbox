@@ -1171,7 +1171,7 @@ const buildServer = ({ requestSignal } = {}) => {
       {
         title: `Run ${hostCommandTitle} Command`,
         description: config.platform.isWindows
-          ? `Use this when you explicitly need native ${hostTitle.toLowerCase()} tooling rather than the ${runtimeLabel}, such as winget, host Git, host Docker CLI, or PowerShell automation. This may prompt for elevation on Windows when needed.`
+          ? `Use this when you explicitly need native ${hostTitle.toLowerCase()} tooling rather than the ${runtimeLabel}, such as winget, host Git, host Docker CLI, or PowerShell automation. On Windows this runs elevated inside the already-elevated MCP service (no per-command UAC).`
           : `Use this when you explicitly need native ${hostTitle.toLowerCase()} tooling rather than the ${runtimeLabel}, such as shell automation, git, node, python, or other host commands.`,
         inputSchema: {
           command: z.string().min(1).describe(`Command to run on the ${hostTitle.toLowerCase()}.`),
