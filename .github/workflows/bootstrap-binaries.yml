@@ -33,24 +33,28 @@ jobs:
             rust_output: devbox-setup-linux-x86_64
             tui_binary: setup-tui/build/devbox-tui
             tui_output: devbox-tui-linux-x86_64
+            cloudflare_hint: pkg.cloudflare.com/cloudflare-main.gpg
           - os: windows-latest
             artifact: devbox-setup-windows-x86_64
             rust_binary: bootstrap/target/release/devbox-setup.exe
             rust_output: devbox-setup-windows-x86_64.exe
             tui_binary: setup-tui/build/Release/devbox-tui.exe
             tui_output: devbox-tui-windows-x86_64.exe
+            cloudflare_hint: winget install --id Cloudflare.cloudflared --exact
           - os: macos-15-intel
             artifact: devbox-setup-macos-x86_64
             rust_binary: bootstrap/target/release/devbox-setup
             rust_output: devbox-setup-macos-x86_64
             tui_binary: setup-tui/build/devbox-tui
             tui_output: devbox-tui-macos-x86_64
+            cloudflare_hint: brew install cloudflared
           - os: macos-15
             artifact: devbox-setup-macos-aarch64
             rust_binary: bootstrap/target/release/devbox-setup
             rust_output: devbox-setup-macos-aarch64
             tui_binary: setup-tui/build/devbox-tui
             tui_output: devbox-tui-macos-aarch64
+            cloudflare_hint: brew install cloudflared
 
     runs-on: ${{ matrix.os }}
 
@@ -80,6 +84,8 @@ jobs:
           "./${{ matrix.rust_output }}" --version
           "./${{ matrix.tui_output }}" --version
           "./${{ matrix.tui_output }}" --diagnostics --no-color
+          "./${{ matrix.tui_output }}" --cloudflare-help --no-color | tee cloudflare-help.txt
+          grep -F "${{ matrix.cloudflare_hint }}" cloudflare-help.txt
       - name: Upload binaries
         uses: actions/upload-artifact@v7
         with:
@@ -111,6 +117,8 @@ jobs:
           ./devbox-setup-linux-aarch64 --version
           ./devbox-tui-linux-aarch64 --version
           ./devbox-tui-linux-aarch64 --diagnostics --no-color
+          ./devbox-tui-linux-aarch64 --cloudflare-help --no-color | tee cloudflare-help-arm64.txt
+          grep -F "pkg.cloudflare.com/cloudflare-main.gpg" cloudflare-help-arm64.txt
       - name: Upload ARM64 binaries
         uses: actions/upload-artifact@v7
         with:

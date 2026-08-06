@@ -26,7 +26,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "0.4.0";
+constexpr const char* kVersion = "0.4.1";
 constexpr const char* kRepoUrl = "https://github.com/adybag14-cyber/devbox.git";
 
 struct Theme {
@@ -459,6 +459,63 @@ bool has_tool(const std::vector<ToolStatus>& tools, const std::string& name) {
     return it != tools.end() && it->available;
 }
 
+std::string cloudflared_install_hint(const PlatformInfo& platform) {
+    if (platform.termux) return "pkg update && pkg install cloudflared termux-services";
+#ifdef _WIN32
+    return "winget install --id Cloudflare.cloudflared --exact";
+#elif defined(__APPLE__)
+    return "brew install cloudflared";
+#else
+    const std::string manager = package_manager(platform);
+    if (manager == "apt-get") {
+        return "sudo mkdir -p --mode=0755 /usr/share/keyrings\n"
+               "curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null\n"
+               "echo \"deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main\" | sudo tee /etc/apt/sources.list.d/cloudflared.list\n"
+               "sudo apt-get update && sudo apt-get install cloudflared";
+    }
+    if (manager == "dnf" || manager == "yum") {
+        return "curl -fsSL https://pkg.cloudflare.com/cloudflared.repo | sudo tee /etc/yum.repos.d/cloudflared.repo\n"
+               "sudo dnf install cloudflared  # use yum on yum-based systems";
+    }
+    if (manager == "pacman") return "sudo pacman -Syu cloudflared";
+    if (manager == "apk") {
+        return "Alpine: install the matching official cloudflared Linux binary and put it on PATH; see docs/CLOUDFLARE_TUNNEL.md";
+    }
+    return "Install the matching official cloudflared package/binary and put it on PATH; see docs/CLOUDFLARE_TUNNEL.md";
+#endif
+}
+
+void print_cloudflare_help(const Theme& theme, const PlatformInfo& platform) {
+    header(theme, platform);
+    std::cout << theme.paint(theme.bold, "Cloudflare Tunnel transport") << "\n"
+              << "Authentication and tunnel transport are separate. Cloudflare Tunnel publishes the local Devbox origin without opening an inbound port.\n\n"
+              << theme.paint(theme.bold, "Install cloudflared") << "\n"
+              << cloudflared_install_hint(platform) << "\n\n"
+              << theme.paint(theme.bold, "Create the tunnel") << "\n"
+              << "  Cloudflare Zero Trust -> Networks -> Tunnels -> create a Cloudflared tunnel\n"
+              << "  Add a public hostname such as mcp.example.com\n"
+              << "  Route it to http://127.0.0.1:8100 (or your configured Devbox port)\n"
+              << "  Copy the connector tunnel token\n\n"
+              << theme.paint(theme.bold, "Configure Devbox .env") << "\n"
+              << "  CLOUDFLARED_TUNNEL_TOKEN=<secret token>\n"
+              << "  CLOUDFLARED_PUBLIC_HOSTNAME=mcp.example.com\n"
+              << "  PUBLIC_BASE_URL=https://mcp.example.com\n\n";
+#ifdef _WIN32
+    std::cout << "Restart Devbox; Windows host mode starts the configured named tunnel automatically.\n";
+#else
+    if (platform.termux) {
+        std::cout << "Install persistent Termux service:\n"
+                  << "  sh scripts/install-cloudflare-tunnel.sh termux\n"
+                  << "  sv status devbox-cloudflared\n";
+    } else {
+        std::cout << "Install persistent tunnel service:\n"
+                  << "  sh scripts/install-cloudflare-tunnel.sh auto\n";
+    }
+#endif
+    std::cout << "\nFull guide: docs/CLOUDFLARE_TUNNEL.md\n"
+              << "Online: https://github.com/adybag14-cyber/devbox/blob/main/docs/CLOUDFLARE_TUNNEL.md\n";
+}
+
 void print_diagnostics(const Theme& theme, const PlatformInfo& platform) {
     header(theme, platform);
     const auto tools = collect_tools(platform);
@@ -582,6 +639,26 @@ int interactive_setup(const Theme& theme, const PlatformInfo& platform, const st
         config.cloudflare_jwks_url = prompt_text("Cloudflare Access JWKS URL", default_jwks);
     }
 
+    if (config.auth != AuthChoice::None) {
+        std::cout << "\n" << theme.paint(theme.bold, "Public transport check") << "\n";
+        if (!has_tool(tools, "cloudflared")) {
+            std::cout << theme.paint(theme.yellow, "cloudflared is not installed.") << "\n"
+                      << "Authentication can still work behind another HTTPS reverse proxy.\n"
+                      << "For Cloudflare Tunnel transport on this machine, install it with:\n"
+                      << cloudflared_install_hint(platform) << "\n"
+                      << "Then run `devbox-tui --cloudflare-help` or read docs/CLOUDFLARE_TUNNEL.md.\n\n";
+        } else {
+            std::cout << theme.paint(theme.green, "cloudflared is available.") << "\n";
+#ifndef _WIN32
+            std::cout << "After setup, add the tunnel token/hostname to .env and run:\n"
+                      << (platform.termux ? "  sh scripts/install-cloudflare-tunnel.sh termux\n" : "  sh scripts/install-cloudflare-tunnel.sh auto\n")
+                      << "See docs/CLOUDFLARE_TUNNEL.md for the dashboard and troubleshooting steps.\n\n";
+#else
+            std::cout << "Windows host mode can start the token-based named tunnel after the token/hostname are present in .env.\n\n";
+#endif
+        }
+    }
+
     config.host = prompt_text("Bind address", "127.0.0.1");
     config.port = prompt_port(8100);
     const std::string workspace = prompt_text("Workspace (blank uses <repo>/workspace)", "");
@@ -632,6 +709,7 @@ void print_help() {
               << "Usage: devbox-tui [options]\n\n"
               << "  --bootstrap <path>  Explicit devbox-setup binary\n"
               << "  --diagnostics       Print platform/tool diagnostics and exit\n"
+              << "  --cloudflare-help   Print platform-specific Cloudflare Tunnel setup instructions\n"
               << "  --dry-run           Guide through setup but make the Rust bootstrap print its plan only\n"
               << "  --no-color          Disable ANSI color\n"
               << "  -h, --help          Show this help\n"
@@ -647,6 +725,7 @@ int main(int argc, char** argv) {
     const PlatformInfo platform = detect_platform();
     std::optional<std::string> bootstrap;
     bool diagnostics = false;
+    bool cloudflare_help = false;
     bool dry_run = false;
 
     for (int i = 1; i < argc; ++i) {
@@ -659,6 +738,8 @@ int main(int argc, char** argv) {
             bootstrap = argv[++i];
         } else if (arg == "--diagnostics") {
             diagnostics = true;
+        } else if (arg == "--cloudflare-help") {
+            cloudflare_help = true;
         } else if (arg == "--dry-run") {
             dry_run = true;
         } else if (arg == "--no-color") {
@@ -678,6 +759,10 @@ int main(int argc, char** argv) {
 
     if (diagnostics) {
         print_diagnostics(theme, platform);
+        return 0;
+    }
+    if (cloudflare_help) {
+        print_cloudflare_help(theme, platform);
         return 0;
     }
     if (!stdin_is_tty()) {

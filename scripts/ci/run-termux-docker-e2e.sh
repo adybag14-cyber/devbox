@@ -44,6 +44,10 @@ docker run --rm \
     clang++ -std=c++17 -O2 -DNDEBUG setup-tui/src/main.cpp -o devbox-tui-termux-ci
     ./devbox-tui-termux-ci --version
     ./devbox-tui-termux-ci --diagnostics --no-color
+    ./devbox-tui-termux-ci --cloudflare-help --no-color | tee cloudflare-help-termux.txt
+    grep -F 'pkg update && pkg install cloudflared termux-services' cloudflare-help-termux.txt
+    sh -n scripts/install-cloudflare-tunnel.sh
+    sh scripts/ci/test-cloudflare-tunnel-errors.sh
 
     echo '=== Full bootstrap -> launcher -> MCP workflow ==='
     ./bootstrap/target/release/devbox-setup \

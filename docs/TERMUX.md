@@ -66,7 +66,7 @@ ENABLE_HOST_EXEC=true
 - Use `HOST=127.0.0.1` for loopback-only access.
 - Host mode runs with Termux app permissions and is not a container sandbox.
 - Shared Android storage requires the relevant Android permission and `termux-setup-storage`.
-- The TUI supports `none`, `oauth`, and `cloudflare` authentication on Termux. Public OAuth deployments require `PUBLIC_BASE_URL`; Cloudflare Access additionally requires the team domain and audience. Authentication is independent of the tunnel provider.
+- The TUI supports `none`, `oauth`, and `cloudflare` authentication on Termux. Public OAuth deployments require `PUBLIC_BASE_URL`; Cloudflare Access additionally requires the team domain and audience. Authentication is independent of the tunnel provider. To publish Devbox through Cloudflare Tunnel, install `cloudflared` plus `termux-services` and follow [Cloudflare Tunnel setup](./CLOUDFLARE_TUNNEL.md); `sh scripts/install-cloudflare-tunnel.sh termux` installs the persistent runit service.
 
 
 ## Full Termux Docker CI validation

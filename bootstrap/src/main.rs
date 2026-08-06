@@ -464,6 +464,74 @@ fn first_available_command(candidates: &[&str], arguments: &[&str]) -> Option<St
         .map(|candidate| (*candidate).to_string())
 }
 
+fn cloudflared_install_hint_for(platform: PlatformKind, linux_manager: Option<&str>) -> String {
+    match platform {
+        PlatformKind::Windows =>
+            "winget install --id Cloudflare.cloudflared --exact".to_string(),
+        PlatformKind::MacOS => "brew install cloudflared".to_string(),
+        PlatformKind::Termux =>
+            "pkg update && pkg install cloudflared termux-services".to_string(),
+        PlatformKind::Linux => match linux_manager.unwrap_or_default() {
+            "apt-get" => concat!(
+                "sudo mkdir -p --mode=0755 /usr/share/keyrings\n",
+                "curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null\n",
+                "echo \"deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared any main\" | sudo tee /etc/apt/sources.list.d/cloudflared.list\n",
+                "sudo apt-get update && sudo apt-get install cloudflared"
+            ).to_string(),
+            "dnf" | "yum" => concat!(
+                "curl -fsSL https://pkg.cloudflare.com/cloudflared.repo | sudo tee /etc/yum.repos.d/cloudflared.repo\n",
+                "sudo dnf install cloudflared  # use yum instead of dnf on yum-based systems"
+            ).to_string(),
+            "pacman" => "sudo pacman -Syu cloudflared".to_string(),
+            "apk" => concat!(
+                "Cloudflare does not document an apk repository for cloudflared. ",
+                "Install the matching official Linux binary and put it on PATH; see docs/CLOUDFLARE_TUNNEL.md."
+            ).to_string(),
+            _ => concat!(
+                "Install the matching official cloudflared Linux package/binary and put it on PATH; ",
+                "see docs/CLOUDFLARE_TUNNEL.md."
+            ).to_string(),
+        },
+        PlatformKind::Other =>
+            "See docs/CLOUDFLARE_TUNNEL.md for a supported cloudflared installation path.".to_string(),
+    }
+}
+
+fn cloudflared_install_hint() -> String {
+    let platform = platform_kind();
+    let linux_manager = if platform == PlatformKind::Linux {
+        first_available_command(
+            &["apt-get", "dnf", "yum", "pacman", "zypper", "apk"],
+            &["--version"],
+        )
+        .or_else(|| {
+            first_available_command(
+                &["apt-get", "dnf", "yum", "pacman", "zypper", "apk"],
+                &["--help"],
+            )
+        })
+        .and_then(|value| {
+            Path::new(&value)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_string)
+        })
+    } else {
+        None
+    };
+    cloudflared_install_hint_for(platform, linux_manager.as_deref())
+}
+
+fn cloudflare_transport_next_step(platform: PlatformKind) -> &'static str {
+    match platform {
+        PlatformKind::Windows =>
+            "Set CLOUDFLARED_TUNNEL_TOKEN/CLOUDFLARED_PUBLIC_HOSTNAME in .env, then restart Devbox.",
+        PlatformKind::MacOS | PlatformKind::Linux | PlatformKind::Termux =>
+            "Set CLOUDFLARED_TUNNEL_TOKEN/CLOUDFLARED_PUBLIC_HOSTNAME in .env, then run: sh scripts/install-cloudflare-tunnel.sh auto",
+        PlatformKind::Other => "See docs/CLOUDFLARE_TUNNEL.md.",
+    }
+}
+
 fn termux_package_arguments() -> Vec<&'static str> {
     let mut arguments = vec!["install", "-y"];
     arguments.extend_from_slice(TERMUX_PACKAGES);
@@ -1128,9 +1196,17 @@ fn setup(options: Options) -> SetupResult<()> {
     warn_if_docker_unavailable(prepared.runtime);
     if options.auth.is_some_and(|auth| auth != AuthChoice::None) {
         match capture_command("cloudflared", &["--version"], None) {
-            Ok(version) => println!("cloudflared: {version}"),
+            Ok(version) => {
+                println!("cloudflared: {version}");
+                println!(
+                    "Cloudflare Tunnel setup: {}",
+                    cloudflare_transport_next_step(platform_kind())
+                );
+            }
             Err(_) => eprintln!(
-                "note: cloudflared is not installed. Authentication still works behind another HTTPS reverse proxy; install cloudflared only if you want Cloudflare Tunnel transport."
+                "note: cloudflared is not installed. Authentication still works behind another HTTPS reverse proxy.\nIf you want Cloudflare Tunnel transport on this platform, install it with:\n{}\nThen: {}\nFull guide: docs/CLOUDFLARE_TUNNEL.md",
+                cloudflared_install_hint(),
+                cloudflare_transport_next_step(platform_kind()),
             ),
         }
     }
@@ -1331,6 +1407,33 @@ mod tests {
             "cloudflare-access"
         );
         assert!(AuthChoice::parse("invalid").is_err());
+    }
+
+    #[test]
+    fn cloudflared_install_hints_are_platform_specific() {
+        assert!(
+            cloudflared_install_hint_for(PlatformKind::Windows, None).contains("winget install")
+        );
+        assert!(cloudflared_install_hint_for(PlatformKind::MacOS, None)
+            .contains("brew install cloudflared"));
+        assert!(cloudflared_install_hint_for(PlatformKind::Termux, None)
+            .contains("pkg install cloudflared termux-services"));
+        assert!(
+            cloudflared_install_hint_for(PlatformKind::Linux, Some("apt-get"))
+                .contains("pkg.cloudflare.com/cloudflare-main.gpg")
+        );
+        assert!(
+            cloudflared_install_hint_for(PlatformKind::Linux, Some("dnf"))
+                .contains("cloudflared.repo")
+        );
+        assert!(
+            cloudflared_install_hint_for(PlatformKind::Linux, Some("pacman"))
+                .contains("pacman -Syu cloudflared")
+        );
+        assert!(
+            cloudflared_install_hint_for(PlatformKind::Linux, Some("apk"))
+                .contains("does not document an apk repository")
+        );
     }
 
     #[test]
