@@ -43,6 +43,42 @@ enum RuntimeMode {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AuthChoice {
+    None,
+    OAuth,
+    Cloudflare,
+}
+
+impl AuthChoice {
+    fn parse(value: &str) -> SetupResult<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "oauth" => Ok(Self::OAuth),
+            "cloudflare" => Ok(Self::Cloudflare),
+            _ => Err(Box::new(SetupError(format!(
+                "invalid auth mode {value:?}; expected none, oauth, or cloudflare"
+            )))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::OAuth => "oauth",
+            Self::Cloudflare => "cloudflare",
+        }
+    }
+
+    fn env_mode(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::OAuth => "demo-oauth",
+            Self::Cloudflare => "cloudflare-access",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PlatformKind {
     Windows,
     MacOS,
@@ -100,6 +136,11 @@ struct Options {
     bind_host: Option<String>,
     port: Option<u16>,
     workspace: Option<PathBuf>,
+    auth: Option<AuthChoice>,
+    public_base_url: Option<String>,
+    cloudflare_team_domain: Option<String>,
+    cloudflare_aud: Option<String>,
+    cloudflare_jwks_url: Option<String>,
     install_system_packages: bool,
     install_dependencies: bool,
     link_command: bool,
@@ -117,6 +158,11 @@ impl Default for Options {
             bind_host: None,
             port: None,
             workspace: None,
+            auth: None,
+            public_base_url: None,
+            cloudflare_team_domain: None,
+            cloudflare_aud: None,
+            cloudflare_jwks_url: None,
             install_system_packages: true,
             install_dependencies: true,
             link_command: true,
@@ -147,6 +193,11 @@ OPTIONS:
     --host <ADDRESS>       Set HOST in .env
     --port <PORT>          Set PORT in .env
     --workspace <PATH>     Set host workspace and default work directory
+    --auth <MODE>          Authentication: none, oauth (connector/test), or cloudflare
+    --public-base-url <URL> Public MCP base URL (required for oauth/cloudflare)
+    --cloudflare-team-domain <URL> Cloudflare Access team domain
+    --cloudflare-aud <AUD> Cloudflare Access application audience
+    --cloudflare-jwks-url <URL> Cloudflare Access JWKS URL (derived from team domain if omitted)
     --skip-system-packages Do not install Termux packages with pkg
     --skip-install         Do not run npm install
     --no-link              Do not run npm link
@@ -193,6 +244,23 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> SetupResult<Option
             }
             "--workspace" => {
                 options.workspace = Some(PathBuf::from(next_value(&mut arguments, "--workspace")?))
+            }
+            "--auth" => {
+                options.auth = Some(AuthChoice::parse(&next_value(&mut arguments, "--auth")?)?)
+            }
+            "--public-base-url" => {
+                options.public_base_url = Some(next_value(&mut arguments, "--public-base-url")?)
+            }
+            "--cloudflare-team-domain" => {
+                options.cloudflare_team_domain =
+                    Some(next_value(&mut arguments, "--cloudflare-team-domain")?)
+            }
+            "--cloudflare-aud" => {
+                options.cloudflare_aud = Some(next_value(&mut arguments, "--cloudflare-aud")?)
+            }
+            "--cloudflare-jwks-url" => {
+                options.cloudflare_jwks_url =
+                    Some(next_value(&mut arguments, "--cloudflare-jwks-url")?)
             }
             "--skip-system-packages" => options.install_system_packages = false,
             "--skip-install" => options.install_dependencies = false,
@@ -809,6 +877,52 @@ fn prepare_files(repo: &Path, options: &Options) -> SetupResult<PreparedConfig> 
     if let Some(port) = options.port {
         content = set_env_value(&content, "PORT", &port.to_string());
     }
+    if let Some(auth) = options.auth {
+        content = set_env_value(&content, "MCP_AUTH_MODE", auth.env_mode());
+    }
+    if let Some(public_base_url) = &options.public_base_url {
+        content = set_env_value(&content, "PUBLIC_BASE_URL", public_base_url.trim());
+    }
+    if let Some(team_domain) = &options.cloudflare_team_domain {
+        content = set_env_value(
+            &content,
+            "CLOUDFLARE_ACCESS_TEAM_DOMAIN",
+            team_domain.trim(),
+        );
+    }
+    if let Some(audience) = &options.cloudflare_aud {
+        content = set_env_value(&content, "CLOUDFLARE_ACCESS_AUD", audience.trim());
+    }
+    if let Some(jwks_url) = &options.cloudflare_jwks_url {
+        content = set_env_value(&content, "CLOUDFLARE_ACCESS_JWKS_URL", jwks_url.trim());
+    }
+
+    if let Some(auth) = options.auth {
+        if auth != AuthChoice::None {
+            let public = get_env_value(&content, "PUBLIC_BASE_URL").unwrap_or_default();
+            if public.trim().is_empty() {
+                return Err(Box::new(SetupError(format!(
+                    "--auth {} requires --public-base-url (or an existing PUBLIC_BASE_URL in .env)",
+                    auth.as_str()
+                ))));
+            }
+        }
+        if auth == AuthChoice::Cloudflare {
+            let team_domain =
+                get_env_value(&content, "CLOUDFLARE_ACCESS_TEAM_DOMAIN").unwrap_or_default();
+            let audience = get_env_value(&content, "CLOUDFLARE_ACCESS_AUD").unwrap_or_default();
+            if team_domain.trim().is_empty() || audience.trim().is_empty() {
+                return Err(Box::new(SetupError(
+                    "--auth cloudflare requires Cloudflare team domain and audience".to_string(),
+                )));
+            }
+            let jwks = get_env_value(&content, "CLOUDFLARE_ACCESS_JWKS_URL").unwrap_or_default();
+            if jwks.trim().is_empty() {
+                let derived = format!("{}/cdn-cgi/access/certs", team_domain.trim_end_matches('/'));
+                content = set_env_value(&content, "CLOUDFLARE_ACCESS_JWKS_URL", &derived);
+            }
+        }
+    }
 
     let workspace = options
         .workspace
@@ -1012,6 +1126,14 @@ fn setup(options: Options) -> SetupResult<()> {
     }
     let prepared = prepare_files(&repo, &options)?;
     warn_if_docker_unavailable(prepared.runtime);
+    if options.auth.is_some_and(|auth| auth != AuthChoice::None) {
+        match capture_command("cloudflared", &["--version"], None) {
+            Ok(version) => println!("cloudflared: {version}"),
+            Err(_) => eprintln!(
+                "note: cloudflared is not installed. Authentication still works behind another HTTPS reverse proxy; install cloudflared only if you want Cloudflare Tunnel transport."
+            ),
+        }
+    }
 
     if options.install_dependencies {
         run_command(
@@ -1074,6 +1196,9 @@ fn setup(options: Options) -> SetupResult<()> {
     );
     println!("MCP URL: http://{host}:{}/mcp", prepared.port);
     println!("Health URL: http://{host}:{}/healthz", prepared.port);
+    if let Some(auth) = options.auth {
+        println!("Authentication: {}", auth.as_str());
+    }
     println!("Commands: devbox status | devbox restart | devbox stop | devbox run");
     Ok(())
 }
@@ -1175,6 +1300,10 @@ mod tests {
             "host".to_string(),
             "--port".to_string(),
             "9000".to_string(),
+            "--auth".to_string(),
+            "oauth".to_string(),
+            "--public-base-url".to_string(),
+            "https://mcp.example.test".to_string(),
             "--skip-system-packages".to_string(),
             "--no-start".to_string(),
             "--guardian".to_string(),
@@ -1183,9 +1312,25 @@ mod tests {
         assert_eq!(options.repo, Some(PathBuf::from("sample")));
         assert_eq!(options.runtime, Some(RuntimeMode::Host));
         assert_eq!(options.port, Some(9000));
+        assert_eq!(options.auth, Some(AuthChoice::OAuth));
+        assert_eq!(
+            options.public_base_url.as_deref(),
+            Some("https://mcp.example.test")
+        );
         assert!(!options.install_system_packages);
         assert!(!options.start_server);
         assert!(options.install_guardian);
+    }
+
+    #[test]
+    fn maps_user_facing_auth_choices_to_server_modes() {
+        assert_eq!(AuthChoice::parse("none").unwrap().env_mode(), "none");
+        assert_eq!(AuthChoice::parse("oauth").unwrap().env_mode(), "demo-oauth");
+        assert_eq!(
+            AuthChoice::parse("cloudflare").unwrap().env_mode(),
+            "cloudflare-access"
+        );
+        assert!(AuthChoice::parse("invalid").is_err());
     }
 
     #[test]

@@ -421,6 +421,9 @@ export const execInDevbox = async ({
   timeoutMs,
   user = config.devboxDefaultUser,
   signal,
+  onStdout,
+  onStderr,
+  maxCaptureChars,
 }) =>
   withDevboxOperation(() => {
     const args = ["exec"];
@@ -428,7 +431,7 @@ export const execInDevbox = async ({
       args.push("-u", user);
     }
     args.push("-w", workingDir, config.devboxContainerName, "bash", "-lc", command);
-    return runDocker(args, { timeoutMs, signal });
+    return runDocker(args, { timeoutMs, signal, onStdout, onStderr, maxCaptureChars });
   });
 
 export const execReadOnlyInDevbox = async ({
@@ -437,6 +440,9 @@ export const execReadOnlyInDevbox = async ({
   timeoutMs,
   user = config.devboxDefaultUser,
   signal,
+  onStdout,
+  onStderr,
+  maxCaptureChars,
 }) =>
   withDevboxOperation(() => {
     // Avoid disposable docker run for readonly probes; on this host those clients can strand while exec stays healthy.
@@ -447,7 +453,7 @@ export const execReadOnlyInDevbox = async ({
 
     args.push("-w", workingDir, config.devboxContainerName, "bash", "-lc", command);
 
-    return runDocker(args, { timeoutMs, signal });
+    return runDocker(args, { timeoutMs, signal, onStdout, onStderr, maxCaptureChars });
   });
 
 export const runProgramInDevbox = async ({

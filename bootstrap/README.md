@@ -1,6 +1,6 @@
 # Devbox setup binary
 
-`devbox-setup` v0.3 is the automation-friendly Rust bootstrap for Devbox MCP on Windows, Linux, macOS, and Termux/Android. It is also the backend used by the C++ `devbox-tui`, so there is one setup implementation rather than separate interactive and CLI installers.
+`devbox-setup` v0.4 is the automation-friendly Rust bootstrap for Devbox MCP on Windows, Linux, macOS, and Termux/Android. It is also the backend used by the C++ `devbox-tui`, so there is one setup implementation rather than separate interactive and CLI installers.
 
 It can configure an existing checkout or clone the official repository, then:
 
@@ -8,6 +8,7 @@ It can configure an existing checkout or clone the official repository, then:
 - provisions missing Node.js/npm/Git prerequisites when requested
 - verifies Node.js 18+, npm, and Git
 - creates `.env` without discarding existing configuration
+- configures `none`, built-in connector/test OAuth, or Cloudflare Access authentication
 - creates `workspace/` and `run/`
 - runs `npm install` and optionally `npm link`
 - starts Devbox and verifies `/healthz`
@@ -50,6 +51,15 @@ devbox-setup --repo . --guardian
 
 # Fresh clone into ./devbox
 devbox-setup
+
+# OAuth
+devbox-setup --repo . --auth oauth --public-base-url https://mcp.example.com --guardian
+
+# Cloudflare Access-backed OAuth
+devbox-setup --repo . --auth cloudflare \
+  --public-base-url https://mcp.example.com \
+  --cloudflare-team-domain https://team.cloudflareaccess.com \
+  --cloudflare-aud <audience> --guardian
 
 # Automation preview
 devbox-setup --repo . --runtime host --no-start --dry-run

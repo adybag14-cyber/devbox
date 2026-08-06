@@ -100,6 +100,14 @@ export const selectRepairScope = (state = {}) => {
   return publicOnlyFailure ? "public-tunnel" : "full";
 };
 
+export const resolveFailureThreshold = ({ state = {}, configuredThreshold = 3 } = {}) => {
+  const configured = Math.max(1, Number.parseInt(configuredThreshold, 10) || 1);
+  // A failed localhost health probe means the MCP itself is unavailable or
+  // hung, so recover after two observations. Public-only tunnel failures keep
+  // the configured threshold to tolerate normal edge/QUIC reconnect churn.
+  return state.LocalHealth === false ? Math.min(2, configured) : configured;
+};
+
 export const classifyReadiness = ({
   shouldRun = true,
   selectedRuntime = "host",
@@ -119,7 +127,14 @@ export const classifyReadiness = ({
   const runtime = selectedRuntime === "docker" ? "docker" : "host";
   const reasons = [];
   const degradations = [...new Set(optionalDegradations.filter(Boolean).map(String))];
-  const elevationOk = !requireMcpElevated || mcpElevated === true;
+  // Elevation probes are allowed to return null when Windows token inspection
+  // itself fails. Unknown must not be treated as a definitive medium-integrity
+  // token or Guardian can restart a healthy MCP because of a transient probe.
+  const elevationKnownBad = requireMcpElevated && mcpElevated === false;
+  const elevationOk = !elevationKnownBad;
+  if (requireMcpElevated && mcpProcessRunning && mcpElevated === null) {
+    degradations.push("MCP elevation could not be verified; retaining the current process");
+  }
   const mcpHealthy = Boolean(mcpProcessRunning && localHealth && elevationOk);
   const publicTunnelHealthy = publicEnabled
     ? Boolean(publicHealth && tunnelRunning !== false)
@@ -135,7 +150,7 @@ export const classifyReadiness = ({
     if (!localHealth) {
       reasons.push("local health check failed");
     }
-    if (requireMcpElevated && mcpProcessRunning && mcpElevated !== true) {
+    if (requireMcpElevated && mcpProcessRunning && mcpElevated === false) {
       reasons.push("MCP server process is not elevated (host PowerShell would trigger UAC)");
     }
     if (runtime === "docker" && !dockerReady) {

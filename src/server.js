@@ -1,4 +1,4 @@
-import { appendFile, mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -54,6 +54,12 @@ import {
   summarizeLargeWriteData,
 } from "./large-file-cli.js";
 import { trimText } from "./process-utils.js";
+import {
+  cancelDevboxJob,
+  getDevboxJobLogs,
+  getDevboxJobStatus,
+  startDevboxJob,
+} from "./async-jobs.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runDir = path.join(projectRoot, "run");
@@ -62,6 +68,26 @@ const toolUsageLogPath = path.join(runDir, "tool-usage.jsonl");
 const httpUsageLogPath = path.join(runDir, "http-usage.jsonl");
 const logRotationChains = new Map();
 const activeMcpRequestControllers = new Map();
+const guardianStatePath = path.join(runDir, "guardian", "state.json");
+
+const readGuardianStatusSnapshot = async () => {
+  try {
+    const state = JSON.parse(await readFile(guardianStatePath, "utf8"));
+    return {
+      observedAtUtc: state.ObservedAtUtc ?? null,
+      isHealthy: state.IsHealthy ?? null,
+      needsRepair: state.NeedsRepair ?? null,
+      mcpElevated: state.McpElevated ?? null,
+      publicTunnelHealthy: state.PublicTunnelHealthy ?? null,
+      cloudflaredRunning: state.CloudflaredRunning ?? null,
+      cloudflaredMetrics: state.CloudflaredMetrics ?? null,
+      readiness: state.Readiness ?? null,
+      reasons: state.Reasons ?? [],
+    };
+  } catch {
+    return null;
+  }
+};
 
 const outputSchema = {
   ok: z.boolean(),
@@ -635,6 +661,7 @@ const buildServer = ({ requestSignal } = {}) => {
           hostWorkspacePath: config.hostWorkspacePath,
           devboxWorkspacePath: config.devboxWorkspacePath,
           hostExecEnabled: config.enableHostExec,
+          guardian: await readGuardianStatusSnapshot(),
         };
 
         if (info.running) {
@@ -814,6 +841,107 @@ const buildServer = ({ requestSignal } = {}) => {
         return fromProcessResult(`Ran a shell command in the ${runtimeLabel} at ${workingDir}.`, result);
       } catch (error) {
         return errorResult(error, `Failed to run the ${runtimeLabel} shell command.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_exec_start",
+    safeActionTool(
+      {
+        title: `Start Background Shell Job In ${runtimeTitle}`,
+        description: `Use this for ${runtimeLabel} commands expected to run longer than about 90 seconds. It starts a detached persisted job and returns immediately so connector request deadlines do not cancel the work.`,
+        inputSchema: {
+          command: z.string().min(1).describe(`Shell command to run asynchronously inside the ${runtimeLabel}.`),
+          working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
+          timeout_seconds: z.number().int().min(1).max(86400).default(7200).describe("Maximum background job runtime in seconds."),
+          user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
+          read_only: z.boolean().default(false).describe("When true, use the read-only execution path. Read-only enforcement is advisory in host mode."),
+        },
+        outputSchema,
+      },
+      `Starting background job in ${runtimeLabel}`,
+      `${runtimeLabel} background job started`,
+    ),
+    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user, read_only: readOnly }) => {
+      try {
+        const data = await startDevboxJob({ command, workingDir, timeoutSeconds, user, readOnly });
+        return successResult(`Started background ${runtimeLabel} job ${data.id}.`, { data });
+      } catch (error) {
+        return errorResult(error, `Failed to start the background ${runtimeLabel} job.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_job_status",
+    safeReadOnlyTool(
+      {
+        title: "Get Devbox Background Job Status",
+        description: "Use this to poll a job started by devbox_exec_start without holding a long MCP request open.",
+        inputSchema: {
+          job_id: z.string().min(8).describe("Job id returned by devbox_exec_start."),
+        },
+        outputSchema,
+      },
+      "Checking Devbox background job",
+      "Devbox background job checked",
+    ),
+    async ({ job_id: jobId }) => {
+      try {
+        const data = await getDevboxJobStatus(jobId);
+        return successResult(`Background job ${jobId} is ${data.status}.`, { data });
+      } catch (error) {
+        return errorResult(error, `Failed to read background job ${jobId}.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_job_logs",
+    safeReadOnlyTool(
+      {
+        title: "Read Devbox Background Job Logs",
+        description: "Use this to retrieve bounded stdout/stderr tails for a job started by devbox_exec_start.",
+        inputSchema: {
+          job_id: z.string().min(8).describe("Job id returned by devbox_exec_start."),
+          max_chars: z.number().int().min(100).max(100000).default(20000).describe("Maximum characters returned from each stdout/stderr tail."),
+        },
+        outputSchema,
+      },
+      "Reading Devbox background job logs",
+      "Devbox background job logs read",
+    ),
+    async ({ job_id: jobId, max_chars: maxChars }) => {
+      try {
+        const data = await getDevboxJobLogs({ jobId, maxChars });
+        return successResult(`Read logs for background job ${jobId}.`, { data });
+      } catch (error) {
+        return errorResult(error, `Failed to read logs for background job ${jobId}.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_job_cancel",
+    safeActionTool(
+      {
+        title: "Cancel Devbox Background Job",
+        description: "Use this to stop a job started by devbox_exec_start. The detached runner and its process tree are terminated.",
+        inputSchema: {
+          job_id: z.string().min(8).describe("Job id returned by devbox_exec_start."),
+        },
+        outputSchema,
+      },
+      "Cancelling Devbox background job",
+      "Devbox background job cancelled",
+    ),
+    async ({ job_id: jobId }) => {
+      try {
+        const data = await cancelDevboxJob(jobId);
+        return successResult(`Background job ${jobId} is ${data.status}.`, { data });
+      } catch (error) {
+        return errorResult(error, `Failed to cancel background job ${jobId}.`);
       }
     },
   );

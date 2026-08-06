@@ -26,7 +26,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "0.3.0";
+constexpr const char* kVersion = "0.4.0";
 constexpr const char* kRepoUrl = "https://github.com/adybag14-cyber/devbox.git";
 
 struct Theme {
@@ -59,10 +59,16 @@ struct ToolStatus {
 };
 
 enum class RuntimeChoice { Auto, Host, Docker };
+enum class AuthChoice { None, OAuth, Cloudflare };
 
 struct SetupConfig {
     fs::path repo_path;
     RuntimeChoice runtime = RuntimeChoice::Host;
+    AuthChoice auth = AuthChoice::None;
+    std::string public_base_url;
+    std::string cloudflare_team_domain;
+    std::string cloudflare_aud;
+    std::string cloudflare_jwks_url;
     std::string host = "127.0.0.1";
     int port = 8100;
     std::optional<fs::path> workspace;
@@ -342,6 +348,14 @@ std::string prompt_text(const std::string& label, const std::string& fallback) {
     return value.empty() ? fallback : value;
 }
 
+std::string prompt_required_text(const std::string& label, const std::string& fallback = "") {
+    while (true) {
+        const std::string value = prompt_text(label, fallback);
+        if (!value.empty()) return value;
+        std::cout << "A value is required for this authentication mode.\n";
+    }
+}
+
 bool prompt_yes_no(const std::string& label, bool fallback) {
     while (true) {
         std::cout << label << (fallback ? " [Y/n]: " : " [y/N]: ");
@@ -393,6 +407,15 @@ std::string runtime_name(RuntimeChoice runtime) {
     return "host";
 }
 
+std::string auth_name(AuthChoice auth) {
+    switch (auth) {
+        case AuthChoice::None: return "none";
+        case AuthChoice::OAuth: return "oauth";
+        case AuthChoice::Cloudflare: return "cloudflare";
+    }
+    return "none";
+}
+
 bool looks_like_repo(const fs::path& path) {
     return fs::exists(path / "package.json") && fs::exists(path / ".env.example") && fs::exists(path / "src" / "server.js");
 }
@@ -421,6 +444,7 @@ std::vector<ToolStatus> collect_tools(const PlatformInfo& platform) {
 #endif
     tools.push_back(probe_tool("Git", "git", true));
     tools.push_back(probe_tool("Docker", "docker", false));
+    tools.push_back(probe_tool("cloudflared", "cloudflared", false));
 #ifdef _WIN32
     const std::string pwsh = fs::exists("C:\\Program Files\\PowerShell\\7\\pwsh.exe") ? "C:\\Program Files\\PowerShell\\7\\pwsh.exe" : "pwsh";
     tools.push_back(probe_tool("PowerShell 7", pwsh, false, "-Version"));
@@ -447,7 +471,19 @@ void print_diagnostics(const Theme& theme, const PlatformInfo& platform) {
 
 std::vector<std::string> build_bootstrap_args(const std::string& bootstrap, const SetupConfig& config) {
     std::vector<std::string> args{bootstrap, "--repo", config.repo_path.string(), "--runtime", runtime_name(config.runtime),
-                                  "--host", config.host, "--port", std::to_string(config.port)};
+                                  "--auth", auth_name(config.auth), "--host", config.host, "--port", std::to_string(config.port)};
+    if (!config.public_base_url.empty()) {
+        args.emplace_back("--public-base-url");
+        args.push_back(config.public_base_url);
+    }
+    if (config.auth == AuthChoice::Cloudflare) {
+        args.emplace_back("--cloudflare-team-domain");
+        args.push_back(config.cloudflare_team_domain);
+        args.emplace_back("--cloudflare-aud");
+        args.push_back(config.cloudflare_aud);
+        args.emplace_back("--cloudflare-jwks-url");
+        args.push_back(config.cloudflare_jwks_url);
+    }
     if (config.workspace && !config.workspace->empty()) {
         args.emplace_back("--workspace");
         args.push_back(config.workspace->string());
@@ -465,6 +501,13 @@ void print_plan(const Theme& theme, const SetupConfig& config) {
     std::cout << theme.paint(theme.bold, "Setup plan") << "\n";
     std::cout << "  Repository       " << config.repo_path.string() << "\n";
     std::cout << "  Runtime          " << runtime_name(config.runtime) << "\n";
+    std::cout << "  Authentication   " << auth_name(config.auth) << "\n";
+    if (!config.public_base_url.empty()) std::cout << "  Public base URL  " << config.public_base_url << "\n";
+    if (config.auth == AuthChoice::Cloudflare) {
+        std::cout << "  CF team domain   " << config.cloudflare_team_domain << "\n";
+        std::cout << "  CF audience      " << config.cloudflare_aud << "\n";
+        std::cout << "  CF JWKS URL      " << config.cloudflare_jwks_url << "\n";
+    }
     std::cout << "  Bind             " << config.host << ':' << config.port << "\n";
     std::cout << "  Workspace        " << (config.workspace ? config.workspace->string() : "<repo>/workspace") << "\n";
     std::cout << "  System packages  " << (config.install_system_packages ? "install missing" : "do not install") << "\n";
@@ -520,6 +563,24 @@ int interactive_setup(const Theme& theme, const PlatformInfo& platform, const st
         "Docker (isolated runtime; requires a working Docker engine)"
     }, recommended_runtime);
     config.runtime = runtime == 0 ? RuntimeChoice::Auto : runtime == 1 ? RuntimeChoice::Host : RuntimeChoice::Docker;
+
+    const auto auth = menu(theme, "Authentication", {
+        "None (local/trusted network only)",
+        "OAuth (built-in connector/test flow; no external identity check)",
+        "Cloudflare Access (Cloudflare-backed OAuth; requires Access application details)"
+    }, 0);
+    config.auth = auth == 0 ? AuthChoice::None : auth == 1 ? AuthChoice::OAuth : AuthChoice::Cloudflare;
+    if (config.auth != AuthChoice::None) {
+        config.public_base_url = prompt_required_text("Public MCP base URL (for example https://mcp.example.com)");
+    }
+    if (config.auth == AuthChoice::Cloudflare) {
+        config.cloudflare_team_domain = prompt_required_text("Cloudflare Access team domain (https://<team>.cloudflareaccess.com)");
+        config.cloudflare_aud = prompt_required_text("Cloudflare Access application audience (AUD)");
+        std::string default_jwks = config.cloudflare_team_domain;
+        while (!default_jwks.empty() && default_jwks.back() == '/') default_jwks.pop_back();
+        default_jwks += "/cdn-cgi/access/certs";
+        config.cloudflare_jwks_url = prompt_text("Cloudflare Access JWKS URL", default_jwks);
+    }
 
     config.host = prompt_text("Bind address", "127.0.0.1");
     config.port = prompt_port(8100);
