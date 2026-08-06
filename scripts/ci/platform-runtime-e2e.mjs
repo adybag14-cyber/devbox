@@ -60,6 +60,10 @@ try {
     "devbox_status",
     "devbox_exec_readonly",
     "devbox_exec",
+    "devbox_exec_start",
+    "devbox_job_status",
+    "devbox_job_logs",
+    "devbox_job_cancel",
     "devbox_list_files",
     "devbox_read_file",
     "devbox_write_file",
@@ -184,6 +188,65 @@ try {
     await client.callTool({ name: "devbox_read_file", arguments: { path: execFile, max_bytes: 65536 } }),
   );
   assert.match(execRead.stdout || "", new RegExp(`${marker}_EXEC`, "u"));
+
+
+  const backgroundStart = requireSuccess(
+    "devbox_exec_start",
+    await client.callTool({
+      name: "devbox_exec_start",
+      arguments: {
+        command: "printf 'ASYNC_JOB_START\n'; sleep 1; printf 'ASYNC_JOB_DONE\n'",
+        working_dir: workspace,
+        timeout_seconds: 30,
+        read_only: true,
+      },
+    }),
+  );
+  const backgroundJobId = backgroundStart.data?.id;
+  assert.match(backgroundJobId || "", /^job-/u);
+  let backgroundStatus = null;
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    backgroundStatus = requireSuccess(
+      "devbox_job_status",
+      await client.callTool({ name: "devbox_job_status", arguments: { job_id: backgroundJobId } }),
+    );
+    if (["succeeded", "failed", "cancelled", "timed_out"].includes(backgroundStatus.data?.status)) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assert.equal(backgroundStatus?.data?.status, "succeeded");
+  const backgroundLogs = requireSuccess(
+    "devbox_job_logs",
+    await client.callTool({ name: "devbox_job_logs", arguments: { job_id: backgroundJobId, max_chars: 5000 } }),
+  );
+  assert.match(backgroundLogs.data?.stdout || "", /ASYNC_JOB_START/u);
+  assert.match(backgroundLogs.data?.stdout || "", /ASYNC_JOB_DONE/u);
+
+  const cancelStart = requireSuccess(
+    "devbox_exec_start cancel fixture",
+    await client.callTool({
+      name: "devbox_exec_start",
+      arguments: {
+        command: "printf 'ASYNC_CANCEL_START\n'; sleep 30",
+        working_dir: workspace,
+        timeout_seconds: 60,
+        read_only: true,
+      },
+    }),
+  );
+  const cancelJobId = cancelStart.data?.id;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    const pending = requireSuccess(
+      "devbox_job_status cancel fixture",
+      await client.callTool({ name: "devbox_job_status", arguments: { job_id: cancelJobId } }),
+    );
+    if (pending.data?.status === "running") break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  const cancelled = requireSuccess(
+    "devbox_job_cancel",
+    await client.callTool({ name: "devbox_job_cancel", arguments: { job_id: cancelJobId } }),
+  );
+  assert.equal(cancelled.data?.status, "cancelled");
 
   const hostExec = requireSuccess(
     "host_exec",

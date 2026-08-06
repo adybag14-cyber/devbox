@@ -40,7 +40,9 @@ On Windows host mode, MCP must stay elevated so `host_exec` inherits admin privi
 
 Windows launchers prefer `POWERSHELL_EXE` when configured, otherwise `C:\Program Files\PowerShell\7\pwsh.exe` when installed, and finally Windows PowerShell 5.1. `POWERSHELL_FALLBACK_EXE` can override the fallback. The scheduled-task VBS launchers resolve this policy at execution time, so removing or breaking PowerShell 7 does not strand Guardian; it can still start through the legacy 5.1 executable.
 
-The scheduled tasks run `Ensure-ChatGptDevboxGuardian.ps1`, which checks the heartbeat and safely restarts only the verified Guardian wrapper/supervisor PIDs when stale. `Watch-ChatGptDevboxGuardian.ps1` is a thin Windows wrapper around the portable foreground supervisor.
+The scheduled tasks run `Ensure-ChatGptDevboxGuardian.ps1`, which checks the heartbeat and safely restarts only the verified Guardian wrapper/supervisor PIDs when stale. Guardian writes an independent heartbeat every five seconds so slow health probes do not look like supervisor death. KeepAlive uses a 60-second stale threshold and requires two consecutive stale observations before killing the verified Guardian process. `Watch-ChatGptDevboxGuardian.ps1` is a thin Windows wrapper around the portable foreground supervisor.
+
+Windows MCP elevation inspection is tri-state. A definitive medium-integrity result is unhealthy, but a PowerShell/token-query timeout is `unknown` rather than falsely treated as unelevated. A confirmed elevation result is cached for the lifetime of that MCP PID.
 
 Inspect current status:
 
@@ -99,7 +101,7 @@ npm run guardian:check
 
 ## Repair safety and circuit breaking
 
-Guardian waits for repeated failures before repair. Docker repairs use exponential backoff and open a one-hour circuit after three consecutive failed attempts by default. The persistent decision state is in `run/guardian/repair-policy.json` and survives Guardian restarts.
+Guardian waits for repeated failures before repair. A failed localhost MCP health probe uses a faster two-observation threshold; public-tunnel-only failures retain the configured threshold so normal QUIC/edge reconnect churn does not restart the MCP. Cloudflared Prometheus metrics (HA connections, request errors, total requests, and QUIC closed connections) are recorded in Guardian state when available. Docker repairs use exponential backoff and open a one-hour circuit after three consecutive failed attempts by default. The persistent decision state is in `run/guardian/repair-policy.json` and survives Guardian restarts.
 
 Container repair first inspects the exact configured name. A stopped container is started. If it cannot start, it is replaced. A create race is re-inspected and started. An ambiguous Docker/inspect error never falls through to a conflicting `docker run`.
 

@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$ProjectRoot = '',
-    [int]$HeartbeatMaxAgeSeconds = 20
+    [int]$HeartbeatMaxAgeSeconds = 60
 )
 
 Set-StrictMode -Version Latest
@@ -20,6 +20,7 @@ $guardianDir = Join-Path $ProjectRoot 'run\guardian'
 $guardianPidPath = Join-Path $guardianDir 'guardian.pid'
 $heartbeatPath = Join-Path $guardianDir 'heartbeat.json'
 $ensureLogPath = Join-Path $guardianDir 'ensure.log'
+$staleObservationPath = Join-Path $guardianDir 'ensure-stale-observation.json'
 $hiddenLauncher = Join-Path $PSScriptRoot 'Run-ChatGptDevboxGuardian.vbs'
 $guardianSourcePaths = @(
     $guardianScript,
@@ -105,6 +106,43 @@ function Test-GuardianSourceFresh {
     }
 }
 
+
+function Clear-StaleHeartbeatObservation {
+    Remove-Item -LiteralPath $staleObservationPath -Force -ErrorAction SilentlyContinue
+}
+
+function Test-SecondStaleHeartbeatObservation {
+    param(
+        [Parameter(Mandatory = $true)]$Process
+    )
+
+    $now = [DateTime]::UtcNow
+    try {
+        if (Test-Path -LiteralPath $staleObservationPath) {
+            $previous = Get-Content -LiteralPath $staleObservationPath -Raw -ErrorAction Stop | ConvertFrom-Json
+            $samePid = ([int]$previous.ProcessId -eq [int]$Process.ProcessId)
+            $observed = if ($previous.ObservedAtUtc -is [DateTime]) {
+                $previous.ObservedAtUtc.ToUniversalTime()
+            } else {
+                [DateTime]::Parse(
+                    [string]$previous.ObservedAtUtc,
+                    [Globalization.CultureInfo]::InvariantCulture,
+                    [Globalization.DateTimeStyles]::RoundtripKind
+                ).ToUniversalTime()
+            }
+            if ($samePid -and (($now - $observed).TotalSeconds -le 180)) {
+                return $true
+            }
+        }
+    } catch {
+    }
+
+    @{ ProcessId = [int]$Process.ProcessId; ObservedAtUtc = $now.ToString('o') } |
+        ConvertTo-Json -Compress |
+        Set-Content -LiteralPath $staleObservationPath -Encoding UTF8
+    return $false
+}
+
 function Test-GuardianHeartbeatFresh {
     if (-not (Test-Path $heartbeatPath)) {
         return $false
@@ -141,11 +179,20 @@ $existing = Get-LiveGuardianProcess
 $heartbeatFresh = Test-GuardianHeartbeatFresh
 $sourceFresh = if ($existing) { Test-GuardianSourceFresh -Process $existing } else { $false }
 if ($existing -and $heartbeatFresh -and $sourceFresh) {
+    Clear-StaleHeartbeatObservation
     exit 0
 }
 
+if ($existing -and -not $heartbeatFresh) {
+    if (-not (Test-SecondStaleHeartbeatObservation -Process $existing)) {
+        Write-EnsureLog -Level 'WARN' -Message ("heartbeat is stale for pid={0}; waiting for a second stale observation before restart" -f $existing.ProcessId)
+        exit 0
+    }
+}
+
 if ($existing) {
-    $restartReason = if (-not $heartbeatFresh) { 'heartbeat is stale' } elseif (-not $sourceFresh) { 'guardian source is newer than the running process' } else { 'guardian requires restart' }
+    $restartReason = if (-not $heartbeatFresh) { 'heartbeat is stale on two consecutive observations' } elseif (-not $sourceFresh) { 'guardian source is newer than the running process' } else { 'guardian requires restart' }
+    Clear-StaleHeartbeatObservation
     Write-EnsureLog -Level 'WARN' -Message ("{0}; restarting pid={1}" -f $restartReason, $existing.ProcessId)
     $supervisorPid = $null
     try {
@@ -166,6 +213,10 @@ if ($existing) {
             Start-Sleep -Seconds 1
         }
     }
+}
+
+if (-not $existing) {
+    Clear-StaleHeartbeatObservation
 }
 
 if (-not (Test-Path $guardianScript)) {

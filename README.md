@@ -16,7 +16,7 @@ Devbox now ships two native setup programs from the same release:
 - **`devbox-tui`** — the guided C++17 interactive setup experience for new users.
 - **`devbox-setup`** — the Rust CLI used by the TUI and intended for scripts, CI, and unattended installation.
 
-The TUI performs a platform/tool preflight, lets you choose host or Docker runtime, repository location, bind address, workspace, dependency installation, service startup, and Guardian supervision, then delegates the actual changes to the Rust bootstrap. The Rust CLI is the single setup backend, so interactive and automated installs follow the same rules.
+The TUI performs a platform/tool preflight, lets you choose host or Docker runtime, authentication (`none`, `oauth`, or `cloudflare`), repository location, bind address, workspace, dependency installation, service startup, and Guardian supervision, then delegates the actual changes to the Rust bootstrap. The Rust CLI is the single setup backend, so interactive and automated installs follow the same rules.
 
 Prebuilt release binaries are produced for:
 
@@ -73,6 +73,11 @@ Useful options:
 --host 127.0.0.1
 --port 8100
 --workspace /path/to/workspace
+--auth none|oauth|cloudflare
+--public-base-url https://mcp.example.com
+--cloudflare-team-domain https://team.cloudflareaccess.com
+--cloudflare-aud <audience>
+--cloudflare-jwks-url https://team.cloudflareaccess.com/cdn-cgi/access/certs
 --guardian
 --no-start
 --no-link
@@ -81,7 +86,7 @@ Useful options:
 --dry-run
 ```
 
-Version 0.3 can install missing runtime prerequisites using `winget` on Windows, Homebrew on macOS, `pkg` on Termux, and common Linux package managers (`apt-get`, `dnf`, `yum`, `pacman`, `zypper`, or `apk`). Existing `.env` files are preserved; only selected keys are updated.
+Version 0.4 can install missing runtime prerequisites using `winget` on Windows, Homebrew on macOS, `pkg` on Termux, and common Linux package managers (`apt-get`, `dnf`, `yum`, `pacman`, `zypper`, or `apk`). Existing `.env` files are preserved; only selected keys are updated.
 
 ### Android and Termux
 
@@ -275,7 +280,16 @@ Typical local connector settings:
 
 - **Name**: `Devbox MCP`
 - **MCP Server URL**: `http://127.0.0.1:8100/mcp`
-- **Authentication**: `none`, `demo-oauth`, or `cloudflare-access`
+- **Authentication**: server modes are `none`, `demo-oauth`, or `cloudflare-access`; the setup TUI/CLI presents these as `none`, `oauth`, and `cloudflare`.
+
+Authentication and transport are separate. Selecting `oauth` or `cloudflare` configures MCP authentication and requires a public HTTPS base URL; it does not require Cloudflare Tunnel specifically. `cloudflared` is shown as an optional setup preflight tool when you want Cloudflare Tunnel transport.
+
+For commands likely to exceed the connector request lifetime, use the persistent async job tools instead of holding one MCP request open:
+
+- `devbox_exec_start` starts a detached job and returns a job ID immediately.
+- `devbox_job_status` polls durable state under `run/jobs/`.
+- `devbox_job_logs` returns bounded log tails.
+- `devbox_job_cancel` cancels the detached process tree.
 
 When `MCP_AUTH_MODE=none`, local loopback requests can expose the browser bridge for configured ChatGPT origins. Disable it with `ENABLE_GATEWAY_BRIDGE=false` when it is not needed.
 
@@ -284,7 +298,7 @@ When `MCP_AUTH_MODE=none`, local loopback requests can expose the browser bridge
 - `host_exec` provides direct host shell access and should be enabled only in a trusted environment.
 - `host_run_program` is constrained by `HOST_PROGRAM_ALLOWLIST`.
 - Host-mode read-only execution is cooperative rather than a hard sandbox.
-- Public deployments should use an appropriate OAuth mode and a properly configured public URL.
+- The built-in `oauth`/`demo-oauth` mode is for connector/protocol testing and does not authenticate an external user identity. Public deployments requiring identity enforcement should use `cloudflare-access` or another trusted authentication layer in front of Devbox.
 
 ## Validation
 

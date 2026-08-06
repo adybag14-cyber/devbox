@@ -554,3 +554,62 @@ test("disconnecting an MCP call cancels its host command before side effects", a
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("async MCP jobs survive the request boundary and support status, logs, and cancellation", async (t) => {
+  const { port, stdout, stderr } = await startServer(t);
+  const client = await connectClient(t, port);
+  const tools = await client.listTools();
+  const names = new Set((tools.tools || []).map((tool) => tool.name));
+  for (const name of ["devbox_exec_start", "devbox_job_status", "devbox_job_logs", "devbox_job_cancel"]) {
+    assert.ok(names.has(name), `Expected async MCP tool ${name} to be registered.`);
+  }
+
+  const started = await client.callTool({
+    name: "devbox_exec_start",
+    arguments: {
+      command: `node -e "setTimeout(()=>console.log('ASYNC_DONE'),250)"`,
+      working_dir: projectRoot,
+      timeout_seconds: 30,
+      read_only: true,
+    },
+  });
+  assert.equal(started.structuredContent?.ok, true, `async start failed\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}`);
+  const jobId = started.structuredContent?.data?.id;
+  assert.match(jobId ?? "", /^job-/u);
+
+  let status = null;
+  const deadline = Date.now() + 10000;
+  while (Date.now() < deadline) {
+    const result = await client.callTool({ name: "devbox_job_status", arguments: { job_id: jobId } });
+    assert.equal(result.structuredContent?.ok, true);
+    status = result.structuredContent?.data;
+    if (["succeeded", "failed", "cancelled", "timed_out"].includes(status?.status)) break;
+    await wait(100);
+  }
+  assert.equal(status?.status, "succeeded", `async job did not succeed: ${JSON.stringify(status)}`);
+
+  const logs = await client.callTool({
+    name: "devbox_job_logs",
+    arguments: { job_id: jobId, max_chars: 5000 },
+  });
+  assert.equal(logs.structuredContent?.ok, true);
+  assert.match(logs.structuredContent?.data?.stdout ?? "", /ASYNC_DONE/u);
+
+  const longStarted = await client.callTool({
+    name: "devbox_exec_start",
+    arguments: {
+      command: `node -e "setTimeout(()=>console.log('TOO_LATE'),30000)"`,
+      working_dir: projectRoot,
+      timeout_seconds: 60,
+    },
+  });
+  assert.equal(longStarted.structuredContent?.ok, true);
+  const longJobId = longStarted.structuredContent?.data?.id;
+  assert.match(longJobId ?? "", /^job-/u);
+  const cancelled = await client.callTool({
+    name: "devbox_job_cancel",
+    arguments: { job_id: longJobId },
+  });
+  assert.equal(cancelled.structuredContent?.ok, true);
+  assert.equal(cancelled.structuredContent?.data?.status, "cancelled");
+});

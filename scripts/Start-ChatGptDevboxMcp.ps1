@@ -882,6 +882,14 @@ function Start-CloudflaredNamedTunnel {
     $configFile = Join-Path $RunDir 'host-cloudflared-config.yml'
     $stdoutLog = Join-Path $RunDir 'host-cloudflared.stdout.log'
     $stderrLog = Join-Path $RunDir 'host-cloudflared.stderr.log'
+    $metricsUrlFile = Join-Path $RunDir 'host-cloudflared.metrics-url.txt'
+    $metricsUrl = if (-not [string]::IsNullOrWhiteSpace($env:CLOUDFLARED_METRICS_URL)) { [string]$env:CLOUDFLARED_METRICS_URL } else { 'http://127.0.0.1:20241/metrics' }
+    $metricsUri = [Uri]$metricsUrl
+    if ($metricsUri.Scheme -ne 'http' -or -not $metricsUri.IsLoopback -or $metricsUri.Port -lt 1) {
+        throw "CLOUDFLARED_METRICS_URL must be a loopback http URL such as http://127.0.0.1:20241/metrics."
+    }
+    $metricsAddress = "{0}:{1}" -f $metricsUri.Host, $metricsUri.Port
+    [System.IO.File]::WriteAllText($metricsUrlFile, $metricsUrl, [System.Text.UTF8Encoding]::new($false))
 
     Stop-ExistingHostCloudflared -PidFile $pidFile
     [System.IO.File]::WriteAllText($tokenFile, $TunnelToken, [System.Text.UTF8Encoding]::new($false))
@@ -894,7 +902,7 @@ function Start-CloudflaredNamedTunnel {
     if (Test-Path $stderrLog) { Remove-Item $stderrLog -Force -ErrorAction SilentlyContinue }
 
     $process = Start-Process -FilePath $cloudflaredExe `
-        -ArgumentList @('tunnel', '--config', $configFile, '--no-autoupdate', '--loglevel', 'info', 'run', '--token-file', $tokenFile) `
+        -ArgumentList @('tunnel', '--config', $configFile, '--no-autoupdate', '--loglevel', 'info', '--metrics', $metricsAddress, 'run', '--token-file', $tokenFile) `
         -WorkingDirectory $RunDir `
         -RedirectStandardOutput $stdoutLog `
         -RedirectStandardError $stderrLog `

@@ -163,12 +163,23 @@ export const spawnProcess = (file, args, options = {}) =>
       timer.unref?.();
     }
 
+    const appendCaptured = (current, text) => {
+      const limit = Number.isFinite(options.maxCaptureChars) ? Math.max(0, options.maxCaptureChars) : null;
+      const combined = current + text;
+      if (limit === null || combined.length <= limit) return combined;
+      return combined.slice(Math.max(0, combined.length - limit));
+    };
+
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
+      const text = chunk.toString();
+      stdout = appendCaptured(stdout, text);
+      try { options.onStdout?.(text); } catch {}
     });
 
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
+      const text = chunk.toString();
+      stderr = appendCaptured(stderr, text);
+      try { options.onStderr?.(text); } catch {}
     });
 
     child.on("error", (error) => {

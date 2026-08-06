@@ -63,7 +63,7 @@ const isRuntimeShellLaunchFailure = (error) =>
   && error.timedOut !== true
   && error.aborted !== true;
 
-const spawnRuntimeShell = async ({ runtimeConfig, command, cwd, timeoutMs, signal }) => {
+const spawnRuntimeShell = async ({ runtimeConfig, command, cwd, timeoutMs, signal, onStdout, onStderr, maxCaptureChars }) => {
   const candidates = [...new Set([runtimeConfig.hostShell, runtimeConfig.hostShellFallback].filter(Boolean))];
   let lastError = null;
   for (let index = 0; index < candidates.length; index += 1) {
@@ -73,6 +73,9 @@ const spawnRuntimeShell = async ({ runtimeConfig, command, cwd, timeoutMs, signa
         cwd,
         timeoutMs,
         signal,
+        onStdout,
+        onStderr,
+        maxCaptureChars,
       });
     } catch (error) {
       lastError = error;
@@ -337,20 +340,20 @@ export const ensureHostRuntimeReady = async () => {
   return getHostRuntimeInfo();
 };
 
-export const execInHostRuntime = async ({ command, workingDir, timeoutMs, signal }) => {
+export const execInHostRuntime = async ({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars }) => {
   const runtimeConfig = getRuntimeConfig();
   await ensureHostRuntimeReady();
   const cwd = workingDir || runtimeConfig.hostDefaultWorkdir;
 
   try {
-    return await spawnRuntimeShell({ runtimeConfig, command, cwd, timeoutMs, signal });
+    return await spawnRuntimeShell({ runtimeConfig, command, cwd, timeoutMs, signal, onStdout, onStderr, maxCaptureChars });
   } catch (error) {
     throw wrapRuntimeError(error, "Host runtime command failed.");
   }
 };
 
-export const execReadOnlyInHostRuntime = async ({ command, workingDir, timeoutMs, signal }) =>
-  execInHostRuntime({ command, workingDir, timeoutMs, signal });
+export const execReadOnlyInHostRuntime = async ({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars }) =>
+  execInHostRuntime({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars });
 
 export const listFilesInHostRuntime = async ({
   path: targetPath,

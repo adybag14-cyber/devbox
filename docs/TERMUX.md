@@ -66,7 +66,7 @@ ENABLE_HOST_EXEC=true
 - Use `HOST=127.0.0.1` for loopback-only access.
 - Host mode runs with Termux app permissions and is not a container sandbox.
 - Shared Android storage requires the relevant Android permission and `termux-setup-storage`.
-- Public OAuth deployments still require `PUBLIC_BASE_URL` and the appropriate authentication variables.
+- The TUI supports `none`, `oauth`, and `cloudflare` authentication on Termux. Public OAuth deployments require `PUBLIC_BASE_URL`; Cloudflare Access additionally requires the team domain and audience. Authentication is independent of the tunnel provider.
 
 
 ## Full Termux Docker CI validation

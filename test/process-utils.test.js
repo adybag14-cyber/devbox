@@ -84,3 +84,22 @@ test("stderr-derived process summaries are bounded", () => {
   assert.ok(message.length <= MAX_PROCESS_ERROR_MESSAGE_CHARS);
   assert.match(message, /error summary truncated/u);
 });
+
+test("spawnProcess streams full output while bounding in-memory capture for background jobs", async () => {
+  let streamedStdout = "";
+  let streamedStderr = "";
+  const result = await spawnProcess(
+    process.execPath,
+    ["-e", "process.stdout.write('abcdefgh'); process.stderr.write('12345678');"],
+    {
+      maxCaptureChars: 4,
+      onStdout: (text) => { streamedStdout += text; },
+      onStderr: (text) => { streamedStderr += text; },
+    },
+  );
+
+  assert.equal(streamedStdout, "abcdefgh");
+  assert.equal(streamedStderr, "12345678");
+  assert.equal(result.stdout, "efgh");
+  assert.equal(result.stderr, "5678");
+});

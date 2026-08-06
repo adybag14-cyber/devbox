@@ -13,6 +13,7 @@ import {
   isRepairAllowed,
   normalizeRuntimeMode,
   resolveSelectedRuntime,
+  resolveFailureThreshold,
   selectRepairScope,
   updateDockerRepairPolicy,
 } from "../src/guardian-core.js";
@@ -426,8 +427,8 @@ const findMcpProcess = async (runDir) => {
 };
 
 /**
- * True when the target Windows process has an elevated admin token.
- * Non-Windows platforms always report elevated (no UAC host bridge).
+ * Returns true/false when the target Windows token is verified, or null when
+ * token inspection itself fails. Non-Windows platforms always report true.
  */
 export const isWindowsProcessElevated = async (pid) => {
   if (process.platform !== "win32") {
@@ -492,7 +493,7 @@ if ($ok) { $elevated = [Runtime.InteropServices.Marshal]::ReadInt32($ptr) -ne 0 
     const parsed = JSON.parse(stdout.trim() || "{}");
     return parsed.elevated === true;
   } catch {
-    return false;
+    return null;
   }
 };
 
@@ -506,6 +507,49 @@ const testHealth = async (url, timeoutSeconds = 5) => {
     return response.ok && /ok/iu.test(body);
   } catch {
     return false;
+  }
+};
+
+const sumPrometheusMetric = (text, metricName) => {
+  let total = 0;
+  let found = false;
+  for (const line of String(text ?? "").split(/\r?\n/u)) {
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^([^ {]+)(?:\{[^}]*\})?\s+([-+0-9.eE]+)$/u);
+    if (!match || match[1] !== metricName) continue;
+    const value = Number(match[2]);
+    if (!Number.isFinite(value)) continue;
+    total += value;
+    found = true;
+  }
+  return found ? total : null;
+};
+
+const readCloudflaredMetrics = async (environment, timeoutSeconds = 2) => {
+  const url = String(environment.CLOUDFLARED_METRICS_URL ?? "http://127.0.0.1:20241/metrics").trim();
+  if (!url) return null;
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(timeoutSeconds * 1000) });
+    if (!response.ok) return { Url: url, Reachable: false, HttpStatus: response.status };
+    const text = await response.text();
+    const names = [
+      "cloudflared_tunnel_ha_connections",
+      "cloudflared_tunnel_request_errors",
+      "cloudflared_tunnel_total_requests",
+      "cloudflared_quic_client_closed_connections",
+      "quic_client_closed_connections",
+    ];
+    const values = Object.fromEntries(names.map((name) => [name, sumPrometheusMetric(text, name)]));
+    return {
+      Url: url,
+      Reachable: true,
+      HaConnections: values.cloudflared_tunnel_ha_connections,
+      RequestErrors: values.cloudflared_tunnel_request_errors,
+      TotalRequests: values.cloudflared_tunnel_total_requests,
+      QuicClosedConnections: values.cloudflared_quic_client_closed_connections ?? values.quic_client_closed_connections,
+    };
+  } catch (error) {
+    return { Url: url, Reachable: false, Error: error instanceof Error ? error.message : String(error) };
   }
 };
 
@@ -715,6 +759,9 @@ const main = async () => {
   let unhealthyCount = 0;
   let lastRepairAtMs = 0;
   let repairPolicy = await readJson(paths.repairPolicy, {});
+  let mcpElevationCache = { pid: null, elevated: null };
+  let lastHeartbeatState = null;
+  let heartbeatExtra = {};
 
   const log = async (level, message) => {
     await appendFile(paths.log, `${new Date().toISOString()} [${level}] ${message}\n`, "utf8");
@@ -779,13 +826,35 @@ const main = async () => {
     // healthy but medium-integrity, every host_exec would pop UAC via RunAs.
     // Treat that as unhealthy so elevated Guardian restarts MCP with Highest.
     const requireMcpElevated = process.platform === "win32" && selectedRuntime === "host";
-    const mcpElevated = requireMcpElevated && mcpProcess.pid
-      ? await isWindowsProcessElevated(mcpProcess.pid)
-      : requireMcpElevated
-        ? false
-        : null;
+    let mcpElevated = null;
+    if (requireMcpElevated && mcpProcess.pid) {
+      if (mcpElevationCache.pid === mcpProcess.pid && typeof mcpElevationCache.elevated === "boolean") {
+        mcpElevated = mcpElevationCache.elevated;
+      } else {
+        const observedElevation = await isWindowsProcessElevated(mcpProcess.pid);
+        if (typeof observedElevation === "boolean") {
+          mcpElevationCache = { pid: mcpProcess.pid, elevated: observedElevation };
+          mcpElevated = observedElevation;
+        } else {
+          // Probe failures are unknown, not evidence of a medium-integrity MCP.
+          mcpElevationCache = { pid: mcpProcess.pid, elevated: null };
+          mcpElevated = null;
+        }
+      }
+    } else if (requireMcpElevated) {
+      mcpElevationCache = { pid: null, elevated: null };
+      mcpElevated = false;
+    } else {
+      mcpElevationCache = { pid: null, elevated: null };
+    }
 
+    const cloudflaredMetrics = publicEnabled && tunnelRunning !== false
+      ? await readCloudflaredMetrics(environment)
+      : null;
     const optionalDegradations = [];
+    if (publicEnabled && cloudflaredMetrics && cloudflaredMetrics.Reachable === false) {
+      optionalDegradations.push("cloudflared metrics endpoint is unavailable");
+    }
     if (publicEnabled && publicHealth && tunnelRunning === null) {
       optionalDegradations.push("public endpoint is healthy but the tunnel is externally managed");
     }
@@ -826,6 +895,7 @@ const main = async () => {
       DevboxRunning: devboxContainerRunning,
       CloudflaredRunning: tunnelRunning,
       HostCloudflaredProcessId: hostTunnelPid && isProcessAlive(hostTunnelPid) ? hostTunnelPid : null,
+      CloudflaredMetrics: cloudflaredMetrics,
       McpProcessId: mcpProcess.pid,
       McpElevated: mcpElevated,
       RequireMcpElevated: requireMcpElevated,
@@ -836,24 +906,39 @@ const main = async () => {
     };
   };
 
+  const heartbeatPayload = (state, extra = {}) => ({
+    GuardianVersion: 2,
+    // The watchdog heartbeat timestamp reflects liveness now, not when the
+    // potentially slow health probe began.
+    ObservedAtUtc: new Date().toISOString(),
+    GuardianPid: guardianPid,
+    SupervisorPid: process.pid,
+    DesiredShouldRun: state?.DesiredState?.ShouldRun !== false,
+    IsHealthy: state?.IsHealthy ?? false,
+    SelectedRuntime: state?.SelectedRuntime ?? null,
+    McpProcessId: state?.McpProcessId ?? null,
+    Readiness: state?.Readiness ?? null,
+    Reasons: state?.Reasons ?? [],
+    ...extra,
+  });
+
   const publishState = async (state, extraHeartbeat = {}) => {
+    lastHeartbeatState = state;
+    heartbeatExtra = extraHeartbeat;
     await Promise.all([
       writeJsonAtomic(paths.state, state),
-      writeJsonAtomic(paths.heartbeat, {
-        GuardianVersion: 2,
-        ObservedAtUtc: state.ObservedAtUtc,
-        GuardianPid: guardianPid,
-        SupervisorPid: process.pid,
-        DesiredShouldRun: state.DesiredState.ShouldRun !== false,
-        IsHealthy: state.IsHealthy,
-        SelectedRuntime: state.SelectedRuntime,
-        McpProcessId: state.McpProcessId,
-        Readiness: state.Readiness,
-        Reasons: state.Reasons,
-        ...extraHeartbeat,
-      }),
+      writeJsonAtomic(paths.heartbeat, heartbeatPayload(state, extraHeartbeat)),
     ]);
   };
+
+  // Keep watchdog liveness independent from public health, PowerShell token
+  // inspection, Docker, or any other probe that can block. This prevents the
+  // external KeepAlive task from killing a healthy Guardian during a slow probe.
+  const heartbeatTimer = setInterval(() => {
+    if (!lastHeartbeatState) return;
+    void writeJsonAtomic(paths.heartbeat, heartbeatPayload(lastHeartbeatState, heartbeatExtra)).catch(() => {});
+  }, 5000);
+  heartbeatTimer.unref?.();
 
   const repair = async (state) => {
     const repairStartedAtMs = Date.now();
@@ -996,7 +1081,15 @@ const main = async () => {
         }
         const cooldownElapsed = Date.now() - lastRepairAtMs >= options.repairCooldownSeconds * 1000;
         const dockerAllowed = state.SelectedRuntime !== "docker" || isRepairAllowed({ policy: repairPolicy });
-        if (!options.noRepair && unhealthyCount >= options.failureThreshold && cooldownElapsed && dockerAllowed) {
+        // A dead/hung local MCP is more urgent than public-tunnel churn. Two
+        // failed local probes (~10-20s) are sufficient; tunnel-only failures
+        // retain the configured threshold so transient QUIC reconnects do not
+        // unnecessarily restart the MCP.
+        const effectiveFailureThreshold = resolveFailureThreshold({
+          state,
+          configuredThreshold: options.failureThreshold,
+        });
+        if (!options.noRepair && unhealthyCount >= effectiveFailureThreshold && cooldownElapsed && dockerAllowed) {
           state = await repair(state);
           lastRepairAtMs = Date.now();
           unhealthyCount = state.IsHealthy ? 0 : unhealthyCount;
@@ -1009,6 +1102,7 @@ const main = async () => {
       await sleep(options.pollSeconds * 1000);
     }
   } finally {
+    clearInterval(heartbeatTimer);
     await rm(paths.lock, { force: true });
     await log("INFO", "guardian v2 stopped");
   }
