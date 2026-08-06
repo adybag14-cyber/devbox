@@ -1,6 +1,6 @@
 # Devbox setup binary
 
-`devbox-setup` v0.4 is the automation-friendly Rust bootstrap for Devbox MCP on Windows, Linux, macOS, and Termux/Android. It is also the backend used by the C++ `devbox-tui`, so there is one setup implementation rather than separate interactive and CLI installers.
+`devbox-setup` v0.4.1 is the automation-friendly Rust bootstrap for Devbox MCP on Windows, Linux, macOS, and Termux/Android. It is also the backend used by the C++ `devbox-tui`, so there is one setup implementation rather than separate interactive and CLI installers.
 
 It can configure an existing checkout or clone the official repository, then:
 
@@ -64,5 +64,7 @@ devbox-setup --repo . --auth cloudflare \
 # Automation preview
 devbox-setup --repo . --runtime host --no-start --dry-run
 ```
+
+For Cloudflare Tunnel transport, use `docs/CLOUDFLARE_TUNNEL.md`. If public auth is selected and `cloudflared` is missing, the bootstrap prints the correct installation command for Windows, macOS, Termux, or the detected Linux package manager.
 
 Use `devbox-setup --help` for all options. For interactive setup, keep `devbox-tui` beside this binary and run the TUI instead.

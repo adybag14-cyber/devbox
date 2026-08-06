@@ -1,5 +1,7 @@
 # Host Compatibility
 
+For public deployments, `devbox-tui --cloudflare-help` prints platform-specific Cloudflare Tunnel installation/setup guidance; the complete guide is [CLOUDFLARE_TUNNEL.md](./CLOUDFLARE_TUNNEL.md).
+
 Devbox host mode is supported on Windows, Linux, macOS, and Termux/Android. Docker remains optional where available.
 
 ## Native setup binaries

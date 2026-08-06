@@ -282,7 +282,7 @@ Typical local connector settings:
 - **MCP Server URL**: `http://127.0.0.1:8100/mcp`
 - **Authentication**: server modes are `none`, `demo-oauth`, or `cloudflare-access`; the setup TUI/CLI presents these as `none`, `oauth`, and `cloudflare`.
 
-Authentication and transport are separate. Selecting `oauth` or `cloudflare` configures MCP authentication and requires a public HTTPS base URL; it does not require Cloudflare Tunnel specifically. `cloudflared` is shown as an optional setup preflight tool when you want Cloudflare Tunnel transport.
+Authentication and transport are separate. Selecting `oauth` or `cloudflare` configures MCP authentication and requires a public HTTPS base URL; it does not require Cloudflare Tunnel specifically. `cloudflared` is shown as an optional setup preflight tool when you want Cloudflare Tunnel transport. For platform-specific installation, persistence, and troubleshooting on Windows, Linux, macOS, and Termux, see [Cloudflare Tunnel setup](./docs/CLOUDFLARE_TUNNEL.md) or run `devbox-tui --cloudflare-help`.
 
 For commands likely to exceed the connector request lifetime, use the persistent async job tools instead of holding one MCP request open:
 

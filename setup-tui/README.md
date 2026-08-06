@@ -7,6 +7,7 @@ It provides:
 - platform and architecture detection
 - Node/npm/Git/Docker/PowerShell/cloudflared preflight
 - package-manager visibility
+- platform-specific Cloudflare Tunnel help and recovery instructions
 - repository and runtime selection
 - authentication selection: `none`, `oauth`, or `cloudflare`
 - public base URL prompt for OAuth modes
@@ -36,6 +37,7 @@ Useful noninteractive checks:
 ```bash
 devbox-tui --version
 devbox-tui --diagnostics --no-color
+devbox-tui --cloudflare-help --no-color
 ```
 
 For CI or automation, call `devbox-setup` directly rather than driving the TUI.
