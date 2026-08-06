@@ -6,9 +6,13 @@ export const detectPlatform = (env = process.env, processPlatform = process.plat
   const isWindows = processPlatform === "win32";
   const isMacOS = processPlatform === "darwin";
   const isLinux = processPlatform === "linux";
-  const isTermux = isLinux && Boolean(env.TERMUX_VERSION || prefix.includes("com.termux/files/usr"));
-  const id = isTermux ? "termux" : isWindows ? "windows" : isMacOS ? "macos" : isLinux ? "linux" : processPlatform || "unknown";
-  const displayName = isTermux ? "Termux" : isWindows ? "Windows" : isMacOS ? "macOS" : isLinux ? "Linux" : processPlatform || "Unknown";
+  const isAndroid = processPlatform === "android";
+  // Node.js built for Termux reports process.platform === "android", while some
+  // emulated/test environments report "linux". PREFIX/TERMUX_VERSION are the
+  // authoritative Termux signals, so accept either POSIX platform value.
+  const isTermux = (isLinux || isAndroid) && Boolean(env.TERMUX_VERSION || prefix.includes("com.termux/files/usr"));
+  const id = isTermux ? "termux" : isWindows ? "windows" : isMacOS ? "macos" : isLinux ? "linux" : isAndroid ? "android" : processPlatform || "unknown";
+  const displayName = isTermux ? "Termux" : isWindows ? "Windows" : isMacOS ? "macOS" : isLinux ? "Linux" : isAndroid ? "Android" : processPlatform || "Unknown";
 
   return {
     id,
@@ -17,6 +21,7 @@ export const detectPlatform = (env = process.env, processPlatform = process.plat
     isWindows,
     isMacOS,
     isLinux,
+    isAndroid,
     nodePlatform: processPlatform,
   };
 };

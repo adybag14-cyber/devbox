@@ -30,10 +30,28 @@ const requireSuccess = (name, result) => {
   return result.structuredContent;
 };
 
+const waitForHealth = async (baseUrl, timeoutMs = 20000) => {
+  const healthUrl = new URL("/healthz", baseUrl).toString();
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(healthUrl);
+      if (response.ok) return healthUrl;
+      lastError = new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Runtime did not become healthy at ${healthUrl}: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+};
+
 const transport = new StreamableHTTPClientTransport(new URL(url));
 const client = new Client({ name: "platform-runtime-e2e", version: "1.0.0" });
 
 try {
+  await waitForHealth(url);
   await client.connect(transport);
 
   const listed = await client.listTools();

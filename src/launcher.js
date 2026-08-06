@@ -38,6 +38,38 @@ export const buildServerUrl = ({ host = config.host, port = config.port } = {}) 
   return `http://${normalizedHost}:${port}`;
 };
 
+export const waitForServerReady = async ({
+  url = buildServerUrl(),
+  pid = null,
+  timeoutMs = 15000,
+  pollIntervalMs = 100,
+} = {}) => {
+  const healthUrl = `${String(url).replace(/\/$/u, "")}/healthz`;
+  const deadline = Date.now() + timeoutMs;
+  let lastError = null;
+
+  while (Date.now() < deadline) {
+    if (pid !== null && !isProcessAlive(pid)) {
+      throw new Error(`Devbox process ${pid} exited before ${healthUrl} became ready.`);
+    }
+
+    try {
+      const response = await fetch(healthUrl);
+      if (response.ok) {
+        return { healthUrl, status: response.status };
+      }
+      lastError = new Error(`health endpoint returned HTTP ${response.status}`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  }
+
+  const detail = lastError instanceof Error && lastError.message ? ` Last error: ${lastError.message}` : "";
+  throw new Error(`Timed out after ${timeoutMs} ms waiting for ${healthUrl}.${detail}`);
+};
+
 export const isProcessAlive = (pid) => {
   if (!Number.isInteger(pid) || pid <= 0) {
     return false;
@@ -113,9 +145,33 @@ export const startServerProcess = async (root = projectRoot) => {
   await writeFile(paths.pidFile, `${child.pid}\n`, "utf8");
   await logHandle.close();
 
+  const spawnedStatus = await getServerStatus(root);
+  try {
+    await waitForServerReady({ url: spawnedStatus.url, pid: child.pid });
+  } catch (error) {
+    let logTail = "";
+    try {
+      const logText = await readFile(paths.logFile, "utf8");
+      logTail = logText.slice(-8000).trim();
+    } catch {
+      // The log may not have been created yet.
+    }
+    if (isProcessAlive(child.pid)) {
+      try {
+        process.kill(child.pid, "SIGTERM");
+      } catch {
+        // Best-effort cleanup only.
+      }
+    }
+    await rm(paths.pidFile, { force: true });
+    const suffix = logTail ? `\nRecent ${paths.logFile}:\n${logTail}` : "";
+    throw new Error(`${error instanceof Error ? error.message : String(error)}${suffix}`);
+  }
+
   return {
     ...(await getServerStatus(root)),
     started: true,
+    ready: true,
   };
 };
 

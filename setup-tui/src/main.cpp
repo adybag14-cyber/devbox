@@ -192,6 +192,14 @@ bool command_available(const std::string& command, const std::string& version_ar
     return !capture_command(shell_quote(command) + " " + version_arg).empty();
 }
 
+bool command_exists(const std::string& command) {
+#ifdef _WIN32
+    return !capture_command("where " + shell_quote(command)).empty();
+#else
+    return !capture_command("command -v " + shell_quote(command)).empty();
+#endif
+}
+
 std::string first_line(std::string value) {
     const auto pos = value.find_first_of("\r\n");
     if (pos != std::string::npos) value.resize(pos);
@@ -204,7 +212,7 @@ ToolStatus probe_tool(const std::string& name, const std::string& command, bool 
 }
 
 std::string package_manager(const PlatformInfo& platform) {
-    if (platform.termux) return command_available("pkg", "--help") ? "pkg" : "not found";
+    if (platform.termux) return command_exists("pkg") ? "pkg" : "not found";
 #ifdef _WIN32
     if (command_available("winget", "--version")) return "winget";
     if (command_available("choco", "--version")) return "chocolatey";
@@ -214,7 +222,7 @@ std::string package_manager(const PlatformInfo& platform) {
     return "not found";
 #else
     for (const auto& item : {"apt-get", "dnf", "yum", "pacman", "zypper", "apk"}) {
-        if (command_available(item, "--help")) return item;
+        if (command_exists(item)) return item;
     }
     return "not found";
 #endif
