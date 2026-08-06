@@ -49,6 +49,15 @@ test("Termux detection is a Linux subtype, never Windows", () => {
   assert.equal(platform.isWindows, false);
 });
 
+test("Termux detection accepts Node Android platform builds", () => {
+  const platform = detectPlatform({ PREFIX: "/data/data/com.termux/files/usr" }, "android");
+  assert.equal(platform.id, "termux");
+  assert.equal(platform.displayName, "Termux");
+  assert.equal(platform.isTermux, true);
+  assert.equal(platform.isAndroid, true);
+  assert.equal(platform.isWindows, false);
+});
+
 test("buildHostShellArgs supports PowerShell, cmd, and POSIX shells", () => {
   assert.deepEqual(
     buildHostShellArgs("powershell.exe", "Write-Output ok", detectPlatform({}, "win32")).slice(-2),
