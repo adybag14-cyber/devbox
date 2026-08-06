@@ -9,60 +9,71 @@ It supports two runtime modes:
 
 `auto` selects Docker on Windows and host mode on Termux/Linux/macOS.
 
-## Fastest setup: Rust bootstrap binary
+## Fastest setup: interactive TUI or Rust CLI
 
-The cross-platform `devbox-setup` program can clone the repository or configure an existing checkout. It verifies Node.js, creates the local configuration and working directories, installs dependencies, links the `devbox` command when permissions allow, starts the MCP service, and checks its health endpoint.
+Devbox now ships two native setup programs from the same release:
 
-Prebuilt binaries are produced by the **Build bootstrap binaries** GitHub Actions workflow for:
+- **`devbox-tui`** — the guided C++17 interactive setup experience for new users.
+- **`devbox-setup`** — the Rust CLI used by the TUI and intended for scripts, CI, and unattended installation.
+
+The TUI performs a platform/tool preflight, lets you choose host or Docker runtime, repository location, bind address, workspace, dependency installation, service startup, and Guardian supervision, then delegates the actual changes to the Rust bootstrap. The Rust CLI is the single setup backend, so interactive and automated installs follow the same rules.
+
+Prebuilt release binaries are produced for:
 
 - Windows x86-64
-- Linux x86-64
-- macOS x86-64
-- macOS Apple Silicon
-- Android/Termux arm64-v8a
-- Android/Termux armeabi-v7a
-- Android/Termux x86-64
-- Android/Termux x86
+- Linux x86-64 and ARM64
+- macOS x86-64 and Apple Silicon
+- Android/Termux arm64-v8a, armeabi-v7a, x86-64, and x86
 
-Download the artifact for your operating system from the latest successful workflow run, extract it, and run it.
+### Linux and macOS one-command installer
 
-### Configure an existing checkout
+```bash
+curl --fail --location --output install-devbox.sh \
+  https://raw.githubusercontent.com/adybag14-cyber/devbox/main/scripts/install-devbox.sh
+sh install-devbox.sh
+```
 
-Windows PowerShell:
+The script detects the OS/architecture, downloads both native binaries from the latest release, verifies them against `SHA256SUMS`, and starts the TUI when a terminal is interactive. Pass Rust CLI options to the script for automation.
+
+### Windows
+
+Download the matching Windows release assets and keep them in the same directory:
+
+```text
+devbox-tui-windows-x86_64.exe
+devbox-setup-windows-x86_64.exe
+```
+
+The TUI recognizes the platform-named Rust binary when both release assets are kept in the same directory. For direct CLI setup, launch:
 
 ```powershell
-.\devbox-setup.exe --repo .
+.\devbox-setup-windows-x86_64.exe --repo . --guardian
 ```
 
-Linux:
+The release workflow smoke-tests both binaries. PowerShell 7 is preferred by the Windows runtime while Windows PowerShell 5.1 remains an automatic launch fallback.
+
+### Rust CLI usage
+
+Configure an existing checkout:
 
 ```bash
-chmod +x ./devbox-setup
-./devbox-setup --repo .
+devbox-setup --repo . --guardian
 ```
 
-macOS Apple Silicon:
-
-```bash
-chmod +x ./devbox-setup
-./devbox-setup --repo .
-```
-
-### Clone and configure from an empty directory
-
-Run the binary without `--repo`. It clones the official repository into `./devbox` and completes setup:
+Run without `--repo` to clone the official repository into `./devbox` before configuration:
 
 ```bash
 devbox-setup
 ```
 
-Useful installer options:
+Useful options:
 
 ```text
 --runtime auto|host|docker
 --host 127.0.0.1
 --port 8100
 --workspace /path/to/workspace
+--guardian
 --no-start
 --no-link
 --skip-system-packages
@@ -70,8 +81,7 @@ Useful installer options:
 --dry-run
 ```
 
-The installer does not replace an existing `.env` with `.env.example`; it preserves existing lines and updates only explicitly selected keys.
-
+Version 0.3 can install missing runtime prerequisites using `winget` on Windows, Homebrew on macOS, `pkg` on Termux, and common Linux package managers (`apt-get`, `dnf`, `yum`, `pacman`, `zypper`, or `apk`). Existing `.env` files are preserved; only selected keys are updated.
 
 ### Android and Termux
 
@@ -89,29 +99,25 @@ curl --fail --location --output install-devbox.sh \
 sh install-devbox.sh
 ```
 
-The installer chooses the correct Android ABI, SHA-256 verifies and installs the matching release binary, provisions the required Termux packages, configures host mode, starts Devbox, and checks its health endpoint.
+The Termux installer downloads and SHA-256 verifies both the Rust CLI and C++ TUI for the detected Android ABI. Interactive terminals enter the TUI; scripted invocations use the Rust CLI directly.
 
 Full Android instructions: [docs/TERMUX.md](./docs/TERMUX.md)
 
-## Build the Rust installer yourself
-
-Rust 1.74 or newer is sufficient:
+### Build installers from source
 
 ```bash
 cargo test --manifest-path bootstrap/Cargo.toml
 cargo build --release --manifest-path bootstrap/Cargo.toml
+cmake -S setup-tui -B setup-tui/build -DCMAKE_BUILD_TYPE=Release
+cmake --build setup-tui/build --config Release
 ```
 
-The resulting executable is:
-
-- Windows: `bootstrap/target/release/devbox-setup.exe`
-- Linux/macOS: `bootstrap/target/release/devbox-setup`
-
-Full installer documentation: [bootstrap/README.md](./bootstrap/README.md)
+See [bootstrap/README.md](./bootstrap/README.md) and [setup-tui/README.md](./setup-tui/README.md).
 
 ## What is included
 
-- `bootstrap/`: cross-platform Rust setup binary and tests
+- `bootstrap/`: cross-platform Rust setup CLI and tests
+- `setup-tui/`: dependency-light C++17 interactive setup frontend
 - `bin/devbox.js`: installable `devbox` command
 - `src/server.js`: MCP server exposed over Streamable HTTP
 - `src/runtime.js`: runtime selector for Docker versus host mode
@@ -125,7 +131,7 @@ Full installer documentation: [bootstrap/README.md](./bootstrap/README.md)
 
 ## Requirements
 
-The Rust bootstrap binary still needs the runtime prerequisites used by Devbox itself.
+The setup binaries can provision common prerequisites automatically where a supported package manager is available. You can opt out with `--skip-system-packages`.
 
 ### All modes
 
@@ -243,7 +249,7 @@ Runtime telemetry is appended to `run/tool-usage.jsonl` and `run/http-usage.json
 
 ## Guardian v2 reliability supervisor
 
-Guardian v2 monitors the MCP process, local and public health endpoints, the selected runtime, and the optional tunnel without making host mode depend on Docker. Windows uses the existing scheduled-task watchdog, Linux can use a systemd user service, and Termux can use Termux:Boot; all three run the same foreground supervisor.
+Guardian v2 monitors the MCP process, local and public health endpoints, the selected runtime, and the optional tunnel without making host mode depend on Docker. Windows uses elevated scheduled tasks, Linux uses a systemd user service when available, macOS uses a per-user launchd LaunchAgent, and Termux uses Termux:Boot; all platforms run the same Node supervisor.
 
 ```powershell
 # Windows host mode: Docker is not probed or required

@@ -5,3 +5,4 @@ workspace/
 .env.runtime
 npm-debug.log*
 bootstrap/target/
+setup-tui/build/

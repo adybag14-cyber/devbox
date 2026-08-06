@@ -1,50 +1,58 @@
 # Devbox setup binary
 
-`devbox-setup` is a dependency-free Rust bootstrap program for new Devbox MCP installations on Windows, Linux, macOS, and Termux on Android.
+`devbox-setup` v0.3 is the automation-friendly Rust bootstrap for Devbox MCP on Windows, Linux, macOS, and Termux/Android. It is also the backend used by the C++ `devbox-tui`, so there is one setup implementation rather than separate interactive and CLI installers.
 
-It can configure an existing checkout or clone the official repository into `./devbox`, then:
+It can configure an existing checkout or clone the official repository, then:
 
-- detects Termux and provisions Android packages with `pkg`
-- verifies Node.js 18+ and npm
-- creates `.env` from `.env.example` without discarding an existing configuration
+- detects Windows, Linux, macOS, or Termux
+- provisions missing Node.js/npm/Git prerequisites when requested
+- verifies Node.js 18+, npm, and Git
+- creates `.env` without discarding existing configuration
 - creates `workspace/` and `run/`
-- runs `npm install`
-- attempts `npm link` without blocking setup if the global npm prefix is not writable
-- starts the service and checks `/healthz`
+- runs `npm install` and optionally `npm link`
+- starts Devbox and verifies `/healthz`
+- optionally installs Guardian with `--guardian`
 
-Build and test on the host:
+## Automatic prerequisite installation
+
+| Platform | Package manager used when available |
+|---|---|
+| Windows | `winget` (`OpenJS.NodeJS.LTS`, `Git.Git`) |
+| macOS | Homebrew (`node`, `git`) |
+| Debian/Ubuntu | `apt-get` |
+| Fedora/RHEL | `dnf` / `yum` |
+| Arch | `pacman` |
+| openSUSE | `zypper` |
+| Alpine | `apk` |
+| Termux | `pkg` |
+
+Linux package installation uses `sudo` when the process is not root. Use `--skip-system-packages` if prerequisites are already managed externally.
+
+## Runtime defaults
+
+Host mode is recommended on Linux, macOS, and Termux. Windows selects host mode when Docker is unavailable; `auto` remains available when Docker is healthy. You can always force `--runtime host` or `--runtime docker`.
+
+## Build and test
 
 ```bash
+cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
 cargo test --manifest-path bootstrap/Cargo.toml
 cargo build --release --manifest-path bootstrap/Cargo.toml
 ```
 
-Android release targets are built with Android NDK API 21 for:
+Android release targets use NDK API 21 for `aarch64-linux-android`, `armv7-linux-androideabi`, `x86_64-linux-android`, and `i686-linux-android`.
 
-- `aarch64-linux-android`
-- `armv7-linux-androideabi`
-- `x86_64-linux-android`
-- `i686-linux-android`
-
-Run from an existing checkout:
+## Examples
 
 ```bash
-./bootstrap/target/release/devbox-setup --repo .
-```
+# Existing checkout
+devbox-setup --repo . --guardian
 
-Run from an empty directory to clone and configure Devbox:
-
-```bash
+# Fresh clone into ./devbox
 devbox-setup
+
+# Automation preview
+devbox-setup --repo . --runtime host --no-start --dry-run
 ```
 
-Termux users can install the matching Android binary with:
-
-```bash
-curl --fail --location --output install-devbox.sh   https://raw.githubusercontent.com/adybag14-cyber/devbox/main/scripts/install-termux.sh
-sh install-devbox.sh
-```
-
-Canonical Termux app: <https://github.com/adybag14-cyber/termux-app>
-
-Use `devbox-setup --help` for runtime, port, workspace, package-provisioning, and non-starting setup options.
+Use `devbox-setup --help` for all options. For interactive setup, keep `devbox-tui` beside this binary and run the TUI instead.

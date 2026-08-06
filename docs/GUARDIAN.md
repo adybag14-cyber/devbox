@@ -1,6 +1,6 @@
 # Guardian v2
 
-Guardian v2 keeps Devbox available, records machine-readable readiness, and repairs only the runtime that was selected. The same Node supervisor runs on Windows, Linux, and Termux; platform service managers only keep that foreground supervisor alive.
+Guardian v2 keeps Devbox available, records machine-readable readiness, and repairs only the runtime that was selected. The same Node supervisor runs on Windows, Linux, macOS, and Termux; platform service managers only keep that foreground supervisor alive.
 
 ## Readiness model
 
@@ -59,6 +59,17 @@ journalctl --user -u devbox-guardian.service -f
 ```
 
 The unit uses `Restart=on-failure` and `KillMode=control-group`; Guardian itself owns endpoint checks, runtime classification, repair thresholds, and backoff.
+
+## macOS launchd LaunchAgent
+
+Install the per-user LaunchAgent with:
+
+```bash
+./scripts/install-guardian.sh launchd
+launchctl print "gui/$(id -u)/com.adybag14.devbox.guardian"
+```
+
+The generated plist lives at `~/Library/LaunchAgents/com.adybag14.devbox.guardian.plist`, starts Guardian at login, keeps it alive, and writes stdout/stderr under `run/guardian/`.
 
 ## Termux:Boot
 

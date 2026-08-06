@@ -42,6 +42,27 @@ enum RuntimeMode {
     Docker,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PlatformKind {
+    Windows,
+    MacOS,
+    Linux,
+    Termux,
+    Other,
+}
+
+impl PlatformKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "Windows",
+            Self::MacOS => "macOS",
+            Self::Linux => "Linux",
+            Self::Termux => "Termux / Android",
+            Self::Other => "Other",
+        }
+    }
+}
+
 impl RuntimeMode {
     fn parse(value: &str) -> SetupResult<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -83,6 +104,7 @@ struct Options {
     install_dependencies: bool,
     link_command: bool,
     start_server: bool,
+    install_guardian: bool,
     dry_run: bool,
 }
 
@@ -99,6 +121,7 @@ impl Default for Options {
             install_dependencies: true,
             link_command: true,
             start_server: true,
+            install_guardian: false,
             dry_run: false,
         }
     }
@@ -128,6 +151,7 @@ OPTIONS:
     --skip-install         Do not run npm install
     --no-link              Do not run npm link
     --no-start             Do not start the MCP service
+    --guardian             Install Guardian reliability supervision when supported
     --dry-run              Print planned commands without changing anything
     -h, --help             Show this help
     -V, --version          Show installer version
@@ -174,6 +198,7 @@ fn parse_args(arguments: impl IntoIterator<Item = String>) -> SetupResult<Option
             "--skip-install" => options.install_dependencies = false,
             "--no-link" => options.link_command = false,
             "--no-start" => options.start_server = false,
+            "--guardian" => options.install_guardian = true,
             "--dry-run" => options.dry_run = true,
             "-h" | "--help" => {
                 print!("{}", usage());
@@ -340,27 +365,252 @@ fn is_termux_environment() -> bool {
     is_termux_values(termux_version.as_deref(), prefix.as_deref())
 }
 
+fn platform_kind() -> PlatformKind {
+    if is_termux_environment() {
+        PlatformKind::Termux
+    } else if cfg!(windows) {
+        PlatformKind::Windows
+    } else if cfg!(target_os = "macos") {
+        PlatformKind::MacOS
+    } else if cfg!(target_os = "linux") {
+        PlatformKind::Linux
+    } else {
+        PlatformKind::Other
+    }
+}
+
+fn command_available(program: &str, arguments: &[&str]) -> bool {
+    Command::new(program)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn first_available_command(candidates: &[&str], arguments: &[&str]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|candidate| Path::new(candidate).is_file() || command_available(candidate, arguments))
+        .map(|candidate| (*candidate).to_string())
+}
+
 fn termux_package_arguments() -> Vec<&'static str> {
     let mut arguments = vec!["install", "-y"];
     arguments.extend_from_slice(TERMUX_PACKAGES);
     arguments
 }
 
-fn install_termux_prerequisites(options: &Options) -> SetupResult<()> {
-    if !is_termux_environment() || !options.install_system_packages {
+fn run_owned_command(
+    program: &str,
+    arguments: &[String],
+    working_dir: Option<&Path>,
+    dry_run: bool,
+) -> SetupResult<()> {
+    let refs = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    run_command(program, &refs, working_dir, dry_run)
+}
+
+fn is_root_user() -> bool {
+    if cfg!(windows) || is_termux_environment() {
+        return false;
+    }
+    capture_command("id", &["-u"], None).is_ok_and(|value| value.trim() == "0")
+}
+
+fn run_system_package_command(
+    program: &str,
+    arguments: &[String],
+    dry_run: bool,
+) -> SetupResult<()> {
+    if cfg!(windows) || is_termux_environment() || is_root_user() {
+        return run_owned_command(program, arguments, None, dry_run);
+    }
+    if command_available("sudo", &["--version"]) {
+        let mut sudo_args = vec![program.to_string()];
+        sudo_args.extend(arguments.iter().cloned());
+        return run_owned_command("sudo", &sudo_args, None, dry_run);
+    }
+    Err(Box::new(SetupError(format!(
+        "installing system packages with {program} requires root privileges; install Node.js {MINIMUM_NODE_MAJOR}+, npm, and Git manually or rerun with sudo"
+    ))))
+}
+
+fn install_system_prerequisites(options: &Options) -> SetupResult<()> {
+    let node_missing = !command_available(command_name("node"), &["--version"]);
+    let npm_missing = !command_available(command_name("npm"), &["--version"]);
+    let git_missing = !command_available(command_name("git"), &["--version"]);
+    if !(node_missing || npm_missing || git_missing) {
+        return Ok(());
+    }
+    if !options.install_system_packages {
         return Ok(());
     }
 
-    println!("Termux on Android detected.");
-    println!("Canonical Termux app: {CANONICAL_TERMUX_REPO}");
-    let arguments = termux_package_arguments();
-    run_command("pkg", &arguments, None, options.dry_run).map_err(|error| {
-        Box::new(SetupError(format!(
-            "failed to install Termux packages with pkg: {error}. Use --skip-system-packages only when Node.js 18+, npm, and Git are already installed"
-        ))) as Box<dyn Error>
-    })
+    match platform_kind() {
+        PlatformKind::Termux => {
+            println!("Termux on Android detected.");
+            println!("Canonical Termux app: {CANONICAL_TERMUX_REPO}");
+            let arguments = termux_package_arguments();
+            run_command("pkg", &arguments, None, options.dry_run).map_err(|error| {
+                Box::new(SetupError(format!(
+                    "failed to install Termux packages with pkg: {error}. Use --skip-system-packages only when Node.js {MINIMUM_NODE_MAJOR}+, npm, and Git are already installed"
+                ))) as Box<dyn Error>
+            })?;
+        }
+        PlatformKind::Windows => {
+            let winget = first_available_command(&["winget.exe", "winget"], &["--version"]).ok_or_else(|| {
+                Box::new(SetupError(
+                    "Node.js/npm or Git is missing and winget was not found. Install Node.js LTS and Git for Windows, then rerun devbox-setup, or use --skip-system-packages.".to_string(),
+                )) as Box<dyn Error>
+            })?;
+            if node_missing || npm_missing {
+                run_owned_command(
+                    &winget,
+                    &[
+                        "install".into(),
+                        "--exact".into(),
+                        "--id".into(),
+                        "OpenJS.NodeJS.LTS".into(),
+                        "--accept-package-agreements".into(),
+                        "--accept-source-agreements".into(),
+                        "--silent".into(),
+                    ],
+                    None,
+                    options.dry_run,
+                )?;
+            }
+            if git_missing {
+                run_owned_command(
+                    &winget,
+                    &[
+                        "install".into(),
+                        "--exact".into(),
+                        "--id".into(),
+                        "Git.Git".into(),
+                        "--accept-package-agreements".into(),
+                        "--accept-source-agreements".into(),
+                        "--silent".into(),
+                    ],
+                    None,
+                    options.dry_run,
+                )?;
+            }
+        }
+        PlatformKind::MacOS => {
+            let brew = first_available_command(&["brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"], &["--version"]).ok_or_else(|| {
+                Box::new(SetupError(
+                    "Node.js/npm or Git is missing and Homebrew was not found. Install Homebrew (or Node.js LTS and Git manually), then rerun devbox-setup, or use --skip-system-packages.".to_string(),
+                )) as Box<dyn Error>
+            })?;
+            let mut packages = Vec::<String>::new();
+            if node_missing || npm_missing {
+                packages.push("node".into());
+            }
+            if git_missing {
+                packages.push("git".into());
+            }
+            let mut arguments = vec!["install".to_string()];
+            arguments.extend(packages);
+            run_owned_command(&brew, &arguments, None, options.dry_run)?;
+        }
+        PlatformKind::Linux => {
+            let manager = first_available_command(&["apt-get", "dnf", "yum", "pacman", "zypper", "apk"], &["--version"])
+                .or_else(|| first_available_command(&["apt-get", "dnf", "yum", "pacman", "zypper", "apk"], &["--help"]))
+                .ok_or_else(|| Box::new(SetupError(
+                    "Node.js/npm or Git is missing and no supported package manager was found (apt-get, dnf, yum, pacman, zypper, apk). Install prerequisites manually or use --skip-system-packages.".to_string(),
+                )) as Box<dyn Error>)?;
+            let mut packages = Vec::<String>::new();
+            if node_missing || npm_missing {
+                packages.push("nodejs".into());
+                packages.push("npm".into());
+            }
+            if git_missing {
+                packages.push("git".into());
+            }
+            if manager.ends_with("apt-get") {
+                run_system_package_command(&manager, &["update".into()], options.dry_run)?;
+                let mut args = vec!["install".into(), "-y".into()];
+                args.extend(packages);
+                run_system_package_command(&manager, &args, options.dry_run)?;
+            } else if manager.ends_with("dnf") || manager.ends_with("yum") {
+                let mut args = vec!["install".into(), "-y".into()];
+                args.extend(packages);
+                run_system_package_command(&manager, &args, options.dry_run)?;
+            } else if manager.ends_with("pacman") {
+                let mut args = vec!["-S".into(), "--needed".into(), "--noconfirm".into()];
+                args.extend(packages);
+                run_system_package_command(&manager, &args, options.dry_run)?;
+            } else if manager.ends_with("zypper") {
+                let mut args = vec!["--non-interactive".into(), "install".into()];
+                args.extend(packages);
+                run_system_package_command(&manager, &args, options.dry_run)?;
+            } else {
+                let mut args = vec!["add".into()];
+                args.extend(packages);
+                run_system_package_command(&manager, &args, options.dry_run)?;
+            }
+        }
+        PlatformKind::Other => {
+            return Err(Box::new(SetupError(
+                "required tools are missing and automatic package installation is not available on this platform".to_string(),
+            )));
+        }
+    }
+    Ok(())
 }
 
+fn recommended_runtime_for(platform: PlatformKind, docker_available: bool) -> RuntimeMode {
+    match platform {
+        PlatformKind::Windows if docker_available => RuntimeMode::Auto,
+        PlatformKind::Windows
+        | PlatformKind::MacOS
+        | PlatformKind::Linux
+        | PlatformKind::Termux => RuntimeMode::Host,
+        PlatformKind::Other => RuntimeMode::Auto,
+    }
+}
+
+fn recommended_runtime() -> RuntimeMode {
+    let docker_available = capture_command(
+        command_name("docker"),
+        &["version", "--format", "{{.Server.Version}}"],
+        None,
+    )
+    .is_ok();
+    recommended_runtime_for(platform_kind(), docker_available)
+}
+
+fn refresh_common_tool_paths() {
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let mut entries = env::var_os("PATH")
+        .map(|value| env::split_paths(&value).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut candidates = Vec::<PathBuf>::new();
+    if cfg!(windows) {
+        if let Ok(program_files) = env::var("ProgramFiles") {
+            candidates.push(PathBuf::from(&program_files).join("nodejs"));
+            candidates.push(PathBuf::from(&program_files).join("Git").join("cmd"));
+        }
+        candidates.push(PathBuf::from(r"C:\Program Files\nodejs"));
+        candidates.push(PathBuf::from(r"C:\Program Files\Git\cmd"));
+    } else if cfg!(target_os = "macos") {
+        candidates.push(PathBuf::from("/opt/homebrew/bin"));
+        candidates.push(PathBuf::from("/usr/local/bin"));
+    }
+    for candidate in candidates {
+        if candidate.is_dir() && !entries.iter().any(|existing| existing == &candidate) {
+            entries.push(candidate);
+        }
+    }
+    if let Ok(joined) = env::join_paths(entries) {
+        env::set_var("PATH", joined);
+    } else if let Ok(existing) = env::var("PATH") {
+        let _ = separator;
+        env::set_var("PATH", existing);
+    }
+}
 fn verify_toolchain() -> SetupResult<()> {
     let node = capture_command(command_name("node"), &["--version"], None)?;
     let major = parse_node_major(&node).ok_or_else(|| {
@@ -374,8 +624,10 @@ fn verify_toolchain() -> SetupResult<()> {
         ))));
     }
     let npm = capture_command(command_name("npm"), &["--version"], None)?;
+    let git = capture_command(command_name("git"), &["--version"], None)?;
     println!("Node.js: {node}");
     println!("npm: {npm}");
+    println!("Git: {git}");
     Ok(())
 }
 
@@ -544,11 +796,7 @@ fn prepare_files(repo: &Path, options: &Options) -> SetupResult<PreparedConfig> 
 
     let termux = is_termux_environment();
     if env_created || options.runtime.is_some() {
-        let default_runtime = if termux {
-            RuntimeMode::Host
-        } else {
-            RuntimeMode::Auto
-        };
+        let default_runtime = recommended_runtime();
         content = set_env_value(
             &content,
             "DEVBOX_RUNTIME_MODE",
@@ -694,9 +942,68 @@ fn wait_for_health(host: &str, port: u16) -> bool {
     false
 }
 
+fn install_guardian(repo: &Path, runtime: RuntimeMode, options: &Options) -> SetupResult<()> {
+    if !options.install_guardian {
+        return Ok(());
+    }
+    println!("Installing Guardian reliability supervision...");
+    match platform_kind() {
+        PlatformKind::Windows => {
+            let shell = first_available_command(
+                &["pwsh.exe", "pwsh", "powershell.exe", "powershell"],
+                &[
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-Command",
+                    "$PSVersionTable.PSVersion.ToString()",
+                ],
+            )
+            .ok_or_else(|| {
+                Box::new(SetupError(
+                    "PowerShell is required to install the Windows Guardian tasks".to_string(),
+                )) as Box<dyn Error>
+            })?;
+            let script = repo
+                .join("scripts/Install-ChatGptDevboxGuardian.ps1")
+                .to_string_lossy()
+                .to_string();
+            let args = vec![
+                "-NoLogo".into(),
+                "-NoProfile".into(),
+                "-NonInteractive".into(),
+                "-ExecutionPolicy".into(),
+                "Bypass".into(),
+                "-File".into(),
+                script,
+                "-Runtime".into(),
+                runtime.as_str().into(),
+            ];
+            run_owned_command(&shell, &args, Some(repo), options.dry_run)?;
+        }
+        PlatformKind::Termux | PlatformKind::Linux | PlatformKind::MacOS => {
+            let mode = match platform_kind() {
+                PlatformKind::Termux => "termux",
+                PlatformKind::MacOS => "launchd",
+                _ => "auto",
+            };
+            let script = repo
+                .join("scripts/install-guardian.sh")
+                .to_string_lossy()
+                .to_string();
+            run_command("sh", &[&script, mode], Some(repo), options.dry_run)?;
+        }
+        PlatformKind::Other => {
+            eprintln!("warning: Guardian service installation is not available on this platform");
+        }
+    }
+    Ok(())
+}
+
 fn setup(options: Options) -> SetupResult<()> {
     println!("Devbox MCP setup {VERSION}");
-    install_termux_prerequisites(&options)?;
+    println!("Platform: {}", platform_kind().as_str());
+    install_system_prerequisites(&options)?;
+    refresh_common_tool_paths();
     verify_toolchain()?;
     let repo = clone_or_locate_repo(&options)?;
     if options.dry_run && !is_devbox_repo(&repo) {
@@ -745,12 +1052,19 @@ fn setup(options: Options) -> SetupResult<()> {
         }
     }
 
+    if options.install_guardian {
+        if let Err(error) = install_guardian(&repo, prepared.runtime, &options) {
+            eprintln!("warning: Devbox is installed, but Guardian setup failed: {error}");
+            eprintln!("You can rerun Guardian installation later from the scripts directory.");
+        }
+    }
+
     let host = loopback_host(&prepared.host);
     println!();
     println!("Setup complete.");
     println!("Repository: {}", repo.display());
+    println!("Platform: {}", platform_kind().as_str());
     if is_termux_environment() {
-        println!("Platform: Termux on Android");
         println!("Canonical Termux app: {CANONICAL_TERMUX_REPO}");
     }
     println!(
@@ -863,6 +1177,7 @@ mod tests {
             "9000".to_string(),
             "--skip-system-packages".to_string(),
             "--no-start".to_string(),
+            "--guardian".to_string(),
         ])
         .unwrap();
         assert_eq!(options.repo, Some(PathBuf::from("sample")));
@@ -870,6 +1185,31 @@ mod tests {
         assert_eq!(options.port, Some(9000));
         assert!(!options.install_system_packages);
         assert!(!options.start_server);
+        assert!(options.install_guardian);
+    }
+
+    #[test]
+    fn recommends_host_without_docker_and_preserves_windows_auto_with_docker() {
+        assert_eq!(
+            recommended_runtime_for(PlatformKind::Windows, false),
+            RuntimeMode::Host
+        );
+        assert_eq!(
+            recommended_runtime_for(PlatformKind::Windows, true),
+            RuntimeMode::Auto
+        );
+        assert_eq!(
+            recommended_runtime_for(PlatformKind::Linux, true),
+            RuntimeMode::Host
+        );
+        assert_eq!(
+            recommended_runtime_for(PlatformKind::MacOS, false),
+            RuntimeMode::Host
+        );
+        assert_eq!(
+            recommended_runtime_for(PlatformKind::Termux, false),
+            RuntimeMode::Host
+        );
     }
 
     #[test]
