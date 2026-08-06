@@ -67,3 +67,10 @@ ENABLE_HOST_EXEC=true
 - Host mode runs with Termux app permissions and is not a container sandbox.
 - Shared Android storage requires the relevant Android permission and `termux-setup-storage`.
 - Public OAuth deployments still require `PUBLIC_BASE_URL` and the appropriate authentication variables.
+
+
+## Full Termux Docker CI validation
+
+The `Platform runtime E2E` workflow uses the official `termux/termux-docker:x86_64` userspace image. Inside that Termux environment CI installs the current Termux packages required by Devbox, builds and tests the Rust bootstrap natively, builds the C++ TUI natively, runs `devbox-setup` to perform the actual npm setup and launcher startup, connects through MCP, exercises the Devbox and host bridges, runs Guardian's read-only health check, checks launcher status, and shuts the service down cleanly.
+
+This is materially stronger than Android cross-compilation. It still does not replace an Android emulator/device test because `termux-docker` cannot reproduce every Android framework or system-library behavior.

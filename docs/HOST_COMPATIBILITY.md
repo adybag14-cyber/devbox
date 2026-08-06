@@ -66,3 +66,21 @@ DEVBOX_RUNTIME_MODE=host node bin/devbox.js start
 curl --fail http://127.0.0.1:8100/healthz
 node bin/devbox.js stop
 ```
+
+
+## Runtime E2E CI
+
+The `Platform runtime E2E` workflow validates the real host-mode MCP runtime, not only compilation. It runs the launcher, negotiates MCP over Streamable HTTP, verifies the tool registry, exercises read-only and mutating shell execution, text and exact-byte file round-trips, recursive listing/search, `host_exec`, `host_run_program`, and a Guardian health probe.
+
+Current native/container coverage:
+
+- macOS 15 Apple Silicon (`macos-15`)
+- macOS 15 Intel (`macos-15-intel`)
+- Ubuntu 26.04 LTS
+- Debian 13
+- Fedora 44
+- Alpine 3.23
+- Arch Linux rolling
+- official `termux/termux-docker:x86_64`
+
+The Linux distribution jobs run inside their upstream container images on a GitHub Ubuntu runner. The macOS jobs run directly on GitHub-hosted macOS machines.
