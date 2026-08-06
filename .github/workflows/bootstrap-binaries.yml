@@ -196,19 +196,25 @@ jobs:
           sha256sum devbox-* > SHA256SUMS
           cat SHA256SUMS
       - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          name: Devbox bootstrap ${{ github.ref_name }}
-          generate_release_notes: true
-          make_latest: true
-          body: |
-            Cross-platform Devbox setup binaries and the new interactive C++ setup TUI.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          Cross-platform Devbox setup binaries and the interactive C++ setup TUI.
 
-            Platforms: Windows x86-64, Linux x86-64/ARM64, macOS Intel/Apple Silicon,
-            and Android API 21+ Termux builds for arm64-v8a, armeabi-v7a, x86_64, and x86.
+          Platforms: Windows x86-64, Linux x86-64/ARM64, macOS Intel/Apple Silicon,
+          and Android API 21+ Termux builds for arm64-v8a, armeabi-v7a, x86_64, and x86.
 
-            The Rust `devbox-setup` CLI remains the automation-friendly installer. `devbox-tui`
-            is the guided interactive frontend and is distributed beside the Rust binary.
+          The Rust `devbox-setup` CLI remains the automation-friendly installer. `devbox-tui`
+          is the guided interactive frontend and is distributed beside the Rust binary.
 
-            Canonical Termux app: https://github.com/adybag14-cyber/termux-app
-          files: release-assets/*
+          Canonical Termux app: https://github.com/adybag14-cyber/termux-app
+          EOF
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --title "Devbox bootstrap $GITHUB_REF_NAME" --notes-file release-notes.md --latest
+          else
+            gh release create "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" \
+              --title "Devbox bootstrap $GITHUB_REF_NAME" --notes-file release-notes.md --latest
+          fi
