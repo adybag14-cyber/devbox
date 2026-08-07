@@ -530,21 +530,32 @@ function Stop-ExistingServerIfOwned {
     }
 
     $ownedPid = [int]$ownedProcess.ProcessId
+    Assert-StartupDeadline -Phase 'stopping-existing-mcp'
     Stop-Process -Id $ownedPid -Force -ErrorAction SilentlyContinue
-    for ($i = 0; $i -lt 20; $i++) {
-        Start-Sleep -Milliseconds 500
-        $remaining = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction SilentlyContinue
-        if (-not $remaining) {
-            break
-        }
-        if (-not (Test-IsOwnedServerCommandLine -CommandLine ([string]$remaining.CommandLine))) {
-            break
+
+    # Poll the cheap process table first. Repeated Win32_Process/CIM queries can
+    # themselves become very slow when the Windows/Hyper-V host is under load.
+    for ($i = 0; $i -lt 16; $i++) {
+        Assert-StartupDeadline -Phase 'stopping-existing-mcp'
+        Start-Sleep -Milliseconds 250
+        if (-not (Get-Process -Id $ownedPid -ErrorAction SilentlyContinue)) {
+            Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+            return
         }
     }
 
+    # PID still exists after four seconds. Re-check ownership before issuing one
+    # final force-stop so PID reuse can never cause an unrelated process kill.
     $stillOwned = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction SilentlyContinue
     if ($stillOwned -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$stillOwned.CommandLine))) {
-        throw "Failed to stop owned MCP server PID $ownedPid. CommandLine: $($stillOwned.CommandLine)"
+        Assert-StartupDeadline -Phase 'stopping-existing-mcp'
+        Stop-Process -Id $ownedPid -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Milliseconds 500
+    }
+
+    $finalProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction SilentlyContinue
+    if ($finalProcess -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$finalProcess.CommandLine))) {
+        throw "Failed to stop owned MCP server PID $ownedPid within the bounded stop window. CommandLine: $($finalProcess.CommandLine)"
     }
 
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue

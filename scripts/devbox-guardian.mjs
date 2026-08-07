@@ -45,7 +45,9 @@ const parseArgs = (argv) => {
     projectRoot: process.env.DEVBOX_PROJECT_ROOT || defaultProjectRoot,
     pollSeconds: 10,
     failureThreshold: 3,
+    liveMcpFailureThreshold: 6,
     repairCooldownSeconds: 120,
+    repairFailureBackoffSeconds: 300,
     dockerProbeTimeoutSeconds: 5,
     dockerBackoffBaseSeconds: 60,
     dockerBackoffMaxSeconds: 1800,
@@ -58,7 +60,9 @@ const parseArgs = (argv) => {
   const numeric = new Map([
     ["--poll-seconds", "pollSeconds"],
     ["--failure-threshold", "failureThreshold"],
+    ["--live-mcp-failure-threshold", "liveMcpFailureThreshold"],
     ["--repair-cooldown-seconds", "repairCooldownSeconds"],
+    ["--repair-failure-backoff-seconds", "repairFailureBackoffSeconds"],
     ["--docker-probe-timeout-seconds", "dockerProbeTimeoutSeconds"],
     ["--docker-backoff-base-seconds", "dockerBackoffBaseSeconds"],
     ["--docker-backoff-max-seconds", "dockerBackoffMaxSeconds"],
@@ -782,6 +786,7 @@ const main = async () => {
   let stopping = false;
   let unhealthyCount = 0;
   let lastRepairAtMs = 0;
+  let repairBackoffUntilMs = 0;
   let repairPolicy = await readJson(paths.repairPolicy, {});
   let mcpElevationCache = { pid: null, elevated: null };
   let lastCloudflaredSample = { key: null, metrics: null };
@@ -1081,6 +1086,13 @@ const main = async () => {
     await sleep(3000);
     const recoveredState = await probe();
     const succeeded = !timedOut && exitCode === 0 && recoveredState.IsHealthy;
+    if (succeeded) {
+      repairBackoffUntilMs = 0;
+    } else if (Number.parseInt(recoveredState.McpProcessId ?? "", 10) > 0) {
+      repairBackoffUntilMs = Date.now() + options.repairFailureBackoffSeconds * 1000;
+    } else {
+      repairBackoffUntilMs = 0;
+    }
     if (state.SelectedRuntime === "docker") {
       repairPolicy = updateDockerRepairPolicy({
         policy: repairPolicy,
@@ -1107,6 +1119,9 @@ const main = async () => {
       StdoutPath: stdoutPath,
       StderrPath: stderrPath,
       Succeeded: succeeded,
+      RepairBackoffUntilUtc: repairBackoffUntilMs > Date.now()
+        ? new Date(repairBackoffUntilMs).toISOString()
+        : null,
       RepairPolicy: repairPolicy,
     };
     await writeJsonAtomic(paths.lastRepair, result);
@@ -1141,8 +1156,30 @@ const main = async () => {
         await writeJsonAtomic(paths.repairPolicy, repairPolicy);
       }
       await publishState(state);
+
+      if (
+        state.IsHealthy &&
+        state.StartupActivity?.Stale === true &&
+        state.StartupState?.Status === "running"
+      ) {
+        const recoveredStartupState = {
+          ...state.StartupState,
+          Phase: "ready",
+          Status: "recovered-stale",
+          UpdatedAtUtc: new Date().toISOString(),
+          Details: "Guardian observed a healthy MCP after the recorded startup owner became stale.",
+          RecoveredByGuardian: true,
+        };
+        await writeJsonAtomic(paths.startupState, recoveredStartupState);
+        await log(
+          "INFO",
+          `reconciled stale startup journal attempt=${state.StartupActivity?.AttemptId ?? "unknown"} phase=${state.StartupActivity?.Phase ?? "unknown"}`,
+        );
+      }
+
       if (!state.DesiredState.ShouldRun || state.IsHealthy) {
         unhealthyCount = 0;
+        repairBackoffUntilMs = 0;
         lastDeferredStartupAttemptId = null;
       } else if (state.StartupInProgress) {
         unhealthyCount = 0;
@@ -1161,16 +1198,24 @@ const main = async () => {
           await log("WARN", `unhealthy (${state.SelectedRuntime}): ${state.Reasons.join("; ")}`);
         }
         const cooldownElapsed = Date.now() - lastRepairAtMs >= options.repairCooldownSeconds * 1000;
+        const failureBackoffElapsed = Date.now() >= repairBackoffUntilMs;
         const dockerAllowed = state.SelectedRuntime !== "docker" || isRepairAllowed({ policy: repairPolicy });
-        // A dead/hung local MCP is more urgent than public-tunnel churn. Two
-        // failed local probes (~10-20s) are sufficient; tunnel-only failures
-        // retain the configured threshold so transient QUIC reconnects do not
-        // unnecessarily restart the MCP.
+        // Missing MCP processes and confirmed tunnel transport failures recover
+        // quickly. A verified live MCP that temporarily misses health probes
+        // gets a longer grace window so host/Hyper-V scheduler pressure is not
+        // amplified into a destructive restart loop.
         const effectiveFailureThreshold = resolveFailureThreshold({
           state,
           configuredThreshold: options.failureThreshold,
+          liveMcpFailureThreshold: options.liveMcpFailureThreshold,
         });
-        if (!options.noRepair && unhealthyCount >= effectiveFailureThreshold && cooldownElapsed && dockerAllowed) {
+        if (
+          !options.noRepair &&
+          unhealthyCount >= effectiveFailureThreshold &&
+          cooldownElapsed &&
+          failureBackoffElapsed &&
+          dockerAllowed
+        ) {
           state = await repair(state);
           lastRepairAtMs = Date.now();
           unhealthyCount = state.IsHealthy ? 0 : unhealthyCount;
