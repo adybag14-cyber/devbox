@@ -46,7 +46,7 @@ import {
   runHostShellCommand,
   writeLargeFileOnHost,
 } from "./host-tools.js";
-import { captureFullDisplayJpeg, captureProgramWindowJpeg } from "./windows-screen-capture.js";
+import { captureHostDisplay, captureHostProgram } from "./screen-capture.js";
 import { CloudflareAccessOAuthProvider, DemoOAuthProvider } from "./oauth.js";
 import {
   normalizeLargeWritePayload,
@@ -506,15 +506,16 @@ const successResult = (summary, extra = {}) => {
   };
 };
 
-const jpegImageResult = (summary, { jpeg, metadata }) => {
+const imageCaptureResult = (summary, { image, jpeg, mimeType = "image/jpeg", metadata }) => {
+  const bytes = image ?? jpeg;
   const result = successResult(summary, {
     data: metadata,
     text: textFromResult(summary, metadata),
   });
   result.content.push({
     type: "image",
-    data: jpeg.toString("base64"),
-    mimeType: "image/jpeg",
+    data: bytes.toString("base64"),
+    mimeType,
   });
   return result;
 };
@@ -1260,55 +1261,86 @@ const buildServer = ({ requestSignal } = {}) => {
     hostStatusHandler,
   );
 
+  const captureDisplayHandler = async ({ quality }) => {
+    try {
+      const capture = await captureHostDisplay({ quality });
+      return imageCaptureResult(`Captured the ${hostTitle.toLowerCase()} display.`, capture);
+    } catch (error) {
+      return errorResult(error, `Failed to capture the ${hostTitle.toLowerCase()} display.`);
+    }
+  };
+
+  const captureWindowHandler = async ({ pid, quality, include_process_tree: includeProcessTree }) => {
+    try {
+      const capture = await captureHostProgram({ pid, quality, includeProcessTree });
+      return imageCaptureResult(`Captured ${hostTitle} window for PID ${pid}.`, capture);
+    } catch (error) {
+      return errorResult(error, `Failed to capture ${hostTitle} window for PID ${pid}.`);
+    }
+  };
+
+  const displayCaptureTool = {
+    title: `Capture ${hostTitle} Display`,
+    description:
+      `Capture the complete ${hostTitle.toLowerCase()} desktop using the native compositor/screenshot backend and return an MCP image content block. Windows returns JPEG; macOS/Linux use lossless PNG when their native tools do.`,
+    inputSchema: {
+      quality: z.number().int().min(1).max(100).default(85).describe("Requested image quality from 1 through 100. Native lossless PNG backends record but do not apply JPEG quality."),
+    },
+    outputSchema,
+  };
+
+  const windowCaptureTool = {
+    title: `Capture ${hostTitle} Window by PID`,
+    description:
+      "Capture the largest visible window owned by a host PID or one of its child processes. The Windows backend detects black PrintWindow frames from GPU/DirectComposition surfaces and falls back to compositor-visible pixels. macOS uses CoreGraphics window discovery plus screencapture; Linux supports X11 and compositor-specific Wayland paths.",
+    inputSchema: {
+      pid: z.number().int().min(1).describe("Host process ID whose visible application window should be captured."),
+      quality: z.number().int().min(1).max(100).default(85).describe("Requested image quality from 1 through 100."),
+      include_process_tree: z.boolean().default(true).describe("Also consider visible windows owned by child processes, useful for launchers, browsers, emulators, and multi-process GUI applications."),
+    },
+    outputSchema,
+  };
+
+  server.registerTool(
+    "host_capture_display",
+    safeReadOnlyTool(displayCaptureTool, `Capturing ${hostTitle.toLowerCase()} display`, `${hostTitle} display captured`),
+    captureDisplayHandler,
+  );
+
+  server.registerTool(
+    "host_capture_window",
+    safeReadOnlyTool(windowCaptureTool, `Capturing ${hostTitle.toLowerCase()} window`, `${hostTitle} window captured`),
+    captureWindowHandler,
+  );
+
+  server.registerTool(
+    "host_capture_program",
+    safeReadOnlyTool(
+      { ...windowCaptureTool, description: "Compatibility alias for host_capture_window." },
+      `Capturing ${hostTitle.toLowerCase()} window`,
+      `${hostTitle} window captured`,
+    ),
+    captureWindowHandler,
+  );
+
   server.registerTool(
     "windows_host_capture_display",
     safeReadOnlyTool(
-      {
-        title: "Capture Full Windows Display as JPEG",
-        description:
-          "Capture the complete Windows virtual desktop, including all attached displays, and return the actual screenshot as an image/jpeg MCP content block.",
-        inputSchema: {
-          quality: z.number().int().min(1).max(100).default(85).describe("JPEG quality from 1 through 100."),
-        },
-        outputSchema,
-      },
-      "Capturing full Windows display",
-      "Full Windows display captured",
+      { ...displayCaptureTool, description: "Compatibility alias for host_capture_display. On Windows this retains the original PR tool name." },
+      `Capturing ${hostTitle.toLowerCase()} display`,
+      `${hostTitle} display captured`,
     ),
-    async ({ quality }) => {
-      try {
-        const capture = await captureFullDisplayJpeg({ quality });
-        return jpegImageResult("Captured the full Windows display as JPEG.", capture);
-      } catch (error) {
-        return errorResult(error, "Failed to capture the full Windows display.");
-      }
-    },
+    captureDisplayHandler,
   );
 
   server.registerTool(
     "windows_host_capture_program",
     safeReadOnlyTool(
-      {
-        title: "Capture Windows Program by PID as JPEG",
-        description:
-          "Capture the largest visible, non-minimized top-level window owned by a specific Windows host process ID and return the actual screenshot as an image/jpeg MCP content block.",
-        inputSchema: {
-          pid: z.number().int().min(1).describe("Windows host process ID whose visible program window should be captured."),
-          quality: z.number().int().min(1).max(100).default(85).describe("JPEG quality from 1 through 100."),
-        },
-        outputSchema,
-      },
-      "Capturing Windows program window",
-      "Windows program window captured",
+      { ...windowCaptureTool, description: "Compatibility alias for host_capture_window. On Windows this retains the original PR tool name." },
+      `Capturing ${hostTitle.toLowerCase()} window`,
+      `${hostTitle} window captured`,
     ),
-    async ({ pid, quality }) => {
-      try {
-        const capture = await captureProgramWindowJpeg({ pid, quality });
-        return jpegImageResult(`Captured Windows program PID ${pid} as JPEG.`, capture);
-      } catch (error) {
-        return errorResult(error, `Failed to capture Windows program PID ${pid}.`);
-      }
-    },
+    captureWindowHandler,
   );
 
   server.registerTool(
