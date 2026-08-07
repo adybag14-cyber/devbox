@@ -32,6 +32,7 @@ mkdir -p "$WORKSPACE"
 node bin/devbox.js stop >/dev/null 2>&1 || true
 
 npm ci
+node scripts/ci/screen-capture-platform-e2e.mjs
 node bin/devbox.js start
 node scripts/ci/platform-runtime-e2e.mjs \
   --url "http://127.0.0.1:$PORT/" \

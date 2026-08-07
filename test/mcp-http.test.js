@@ -197,6 +197,98 @@ $form.Add_Shown({ [Console]::Out.WriteLine('ready'); [Console]::Out.Flush() })
   return child;
 };
 
+const terminateWindowsProcessTree = async (pid) => {
+  if (process.platform !== "win32") return;
+  const killer = spawn("taskkill.exe", ["/pid", String(pid), "/t", "/f"], {
+    cwd: projectRoot,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  await Promise.race([once(killer, "exit"), wait(5000)]);
+};
+
+const startChildOwnedTestWindow = async (t) => {
+  const script = String.raw`
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$form = [System.Windows.Forms.Form]::new()
+$form.Text = 'Devbox Child PID Capture Test'
+$form.StartPosition = 'Manual'
+$form.Location = [System.Drawing.Point]::new(180, 180)
+$form.Size = [System.Drawing.Size]::new(700, 400)
+$form.BackColor = [System.Drawing.Color]::DarkBlue
+$form.Add_Shown({ [Console]::Out.WriteLine('ready'); [Console]::Out.Flush() })
+[void]$form.ShowDialog()
+`;
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const command = `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+  const launcher = spawn("cmd.exe", ["/d", "/s", "/c", command], {
+    cwd: projectRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: false,
+  });
+  const stderr = [];
+  collectStream(launcher.stderr, stderr);
+  await Promise.race([
+    new Promise((resolve) => {
+      launcher.stdout.setEncoding("utf8");
+      launcher.stdout.on("data", (chunk) => {
+        if (chunk.includes("ready")) resolve();
+      });
+    }),
+    (async () => {
+      await wait(10000);
+      throw new Error(`Timed out waiting for child-owned capture window. stderr:\\n${stderr.join("")}`);
+    })(),
+  ]);
+  t.after(async () => terminateWindowsProcessTree(launcher.pid));
+  return launcher;
+};
+
+const startBlackPrintWindow = async (t) => {
+  const script = String.raw`
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$form = [System.Windows.Forms.Form]::new()
+$form.Text = 'Devbox Black PrintWindow Test'
+$form.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$form.StartPosition = 'Manual'
+$form.Location = [System.Drawing.Point]::new(120, 120)
+$form.Size = [System.Drawing.Size]::new(720, 420)
+$form.TopMost = $true
+$form.BackColor = [System.Drawing.Color]::Black
+$header = [System.Windows.Forms.Panel]::new()
+$header.Dock = [System.Windows.Forms.DockStyle]::Top
+$header.Height = 60
+$header.BackColor = [System.Drawing.Color]::Magenta
+$form.Controls.Add($header)
+$form.Add_Shown({ [Console]::Out.WriteLine('ready'); [Console]::Out.Flush() })
+[void]$form.ShowDialog()
+`;
+  const encoded = Buffer.from(script, "utf16le").toString("base64");
+  const child = spawn(
+    "powershell.exe",
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
+    { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: false },
+  );
+  const stderr = [];
+  collectStream(child.stderr, stderr);
+  await Promise.race([
+    new Promise((resolve) => {
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => {
+        if (chunk.includes("ready")) resolve();
+      });
+    }),
+    (async () => {
+      await wait(10000);
+      throw new Error(`Timed out waiting for black PrintWindow test window. stderr:\\n${stderr.join("")}`);
+    })(),
+  ]);
+  t.after(async () => terminateChild(child));
+  return child;
+};
+
 test("Windows display capture returns actual JPEG bytes through MCP", { skip: process.platform !== "win32" }, async (t) => {
   const { port } = await startServer(t);
   const client = await connectClient(t, port);
@@ -222,6 +314,58 @@ test("Windows PID program capture returns its actual window as JPEG through MCP"
   assert.equal(result.structuredContent.data.capture_mode, "program_pid");
   assert.equal(result.structuredContent.data.pid, windowProcess.pid);
   assert.equal(result.structuredContent.data.window_title, "Devbox PID Capture Test");
+});
+
+
+test("generic host capture tools expose the Windows capture backend", { skip: process.platform !== "win32" }, async (t) => {
+  const windowProcess = await startVisibleTestWindow(t);
+  const { port } = await startServer(t);
+  const client = await connectClient(t, port);
+  const tools = await client.listTools();
+  const names = new Set(tools.tools.map((tool) => tool.name));
+  assert.equal(names.has("host_capture_display"), true);
+  assert.equal(names.has("host_capture_window"), true);
+  assert.equal(names.has("windows_host_capture_program"), true);
+
+  const result = await client.callTool({
+    name: "host_capture_window",
+    arguments: { pid: windowProcess.pid, quality: 80, include_process_tree: true },
+  });
+  assertJpegToolResult(result);
+  assert.equal(result.structuredContent.data.pid, windowProcess.pid);
+});
+
+test("Windows window capture follows child processes when the launcher PID owns no GUI", { skip: process.platform !== "win32" }, async (t) => {
+  const launcher = await startChildOwnedTestWindow(t);
+  const { port } = await startServer(t);
+  const client = await connectClient(t, port);
+  const result = await client.callTool({
+    name: "host_capture_window",
+    arguments: { pid: launcher.pid, include_process_tree: true, quality: 80 },
+  });
+
+  assertJpegToolResult(result);
+  assert.equal(result.structuredContent.data.pid, launcher.pid);
+  assert.equal(result.structuredContent.data.process_tree_fallback, true);
+  assert.notEqual(result.structuredContent.data.window_owner_pid, launcher.pid);
+  assert.equal(result.structuredContent.data.window_title, "Devbox Child PID Capture Test");
+});
+
+test("Windows capture rejects a successful black PrintWindow frame and falls back to compositor pixels", { skip: process.platform !== "win32" }, async (t) => {
+  const windowProcess = await startBlackPrintWindow(t);
+  const { port } = await startServer(t);
+  const client = await connectClient(t, port);
+  const result = await client.callTool({
+    name: "host_capture_window",
+    arguments: { pid: windowProcess.pid, quality: 82 },
+  });
+
+  assertJpegToolResult(result);
+  assert.equal(result.structuredContent.data.print_window_rejected, true);
+  assert.ok(result.structuredContent.data.print_window_near_black_ratio < 0.985);
+  assert.ok(result.structuredContent.data.print_window_interior_near_black_ratio >= 0.94);
+  assert.equal(result.structuredContent.data.capture_method, "DesktopCompositorCopy(window-bounds)");
+  assert.equal(result.structuredContent.data.screen_fallback_may_include_occluders, true);
 });
 
 const assertSseProbeResponse = async (response, errorMessage) => {

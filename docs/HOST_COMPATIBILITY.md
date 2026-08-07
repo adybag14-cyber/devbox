@@ -4,6 +4,29 @@ For public deployments, `devbox-tui --cloudflare-help` prints platform-specific 
 
 Devbox host mode is supported on Windows, Linux, macOS, and Termux/Android. Docker remains optional where available.
 
+## Display and window screenshots
+
+The preferred cross-platform screenshot tools are:
+
+- `host_capture_display`: capture the host desktop/virtual display
+- `host_capture_window`: capture the largest visible application window owned by a PID or one of its child processes
+- `host_capture_program`: compatibility alias for `host_capture_window`
+- `windows_host_capture_display` and `windows_host_capture_program`: legacy aliases retained for existing clients
+
+Windows uses a layered strategy rather than trusting `PrintWindow` alone. The capture code uses DWM extended frame bounds, skips cloaked/minimized helper windows, searches child processes for multi-process applications, tries `PrintWindow` with `PW_RENDERFULLCONTENT` and default flags, and samples both the complete frame and the client-area interior. If Windows reports a successful capture but the renderer area is effectively black (a common DirectX/DirectComposition, Android-emulator, WebView, or hardware-video failure), Devbox falls back to the pixels visible through the desktop compositor. That fallback can include occluding windows; the returned metadata explicitly reports `screen_fallback_may_include_occluders`.
+
+macOS uses CoreGraphics to discover active display bounds and PID-owned windows, then uses the native `screencapture` compositor path. Screen Recording permission is required. Grant it under **System Settings -> Privacy & Security -> Screen Recording** to the terminal/Node host process and restart that process. The CoreGraphics discovery helper is typechecked on both Intel and Apple Silicon CI runners.
+
+Linux supports both X11 and Wayland:
+
+- X11 window discovery: `wmctrl`, `xdotool` + `xwininfo`, or `xprop` + `xwininfo`; capture uses `maim` or ImageMagick `import`.
+- X11 full desktop: `maim`, `scrot`, `gnome-screenshot`, KDE `spectacle`, or ImageMagick `import`.
+- wlroots/Sway/Hyprland Wayland windows: compositor PID/window metadata plus `grim` region capture.
+- Wayland full desktop: `grim`, `gnome-screenshot`, or `spectacle`.
+
+Pure Wayland deliberately prevents arbitrary cross-application window enumeration on some compositors. When GNOME/KDE does not expose a non-interactive PID-selected window path, Devbox returns an explicit portal/security limitation instead of silently capturing the wrong window. XWayland applications can still use the X11 window path when `DISPLAY` is available.
+
+Termux/Android is intentionally different: ordinary terminal apps cannot capture another Android app by PID without Android's MediaProjection/user-consent flow, so the generic tools return an actionable unsupported error there.
 ## Native setup binaries
 
 Every bootstrap release contains the Rust `devbox-setup` CLI and the C++17 `devbox-tui` frontend. Linux ships x86-64 and ARM64 builds; macOS ships Intel and Apple Silicon builds; Windows ships x86-64; Termux ships four Android API 21+ ABIs.

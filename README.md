@@ -191,6 +191,8 @@ Behavior:
 - `devbox_exec_readonly` is best-effort and is not container-sandboxed
 - generic host tools are exposed through `host_*`
 - legacy `windows_host_*` names remain compatibility aliases
+- `host_capture_display` captures the native desktop; `host_capture_window` captures the largest visible window for a PID or its child processes
+- Windows window capture detects black `PrintWindow` results from GPU/DirectComposition/video/emulator surfaces and falls back to compositor-visible pixels; macOS uses CoreGraphics + `screencapture`; Linux supports X11 plus Sway/Hyprland/wlroots Wayland paths
 
 Termux and Android instructions: [docs/TERMUX.md](./docs/TERMUX.md)
 

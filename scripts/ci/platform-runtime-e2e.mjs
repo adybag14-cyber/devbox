@@ -71,6 +71,8 @@ try {
     "devbox_write_large_file",
     "devbox_search_files",
     "host_status",
+    "host_capture_display",
+    "host_capture_window",
     "host_exec",
     "host_run_program",
   ];
