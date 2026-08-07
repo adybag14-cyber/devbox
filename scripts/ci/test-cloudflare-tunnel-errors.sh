@@ -8,8 +8,8 @@ TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
 : > "$TMP_DIR/empty.env"
 
-cat > "$TMP_DIR/cloudflared" <<'EOF'
-#!/usr/bin/env sh
+cat > "$TMP_DIR/cloudflared" <<EOF
+#!$SH_BIN
 exit 0
 EOF
 chmod +x "$TMP_DIR/cloudflared"
@@ -62,9 +62,9 @@ set -e
 [ "$code" -eq 2 ]
 grep -F "CLOUDFLARED_EDGE_IP_VERSION must be one of: auto, 4, 6" "$TMP_DIR/edge.out" >/dev/null
 
-cat > "$TMP_DIR/systemctl" <<'EOF'
-#!/usr/bin/env sh
-printf '%s\n' "$*" >> "$DEVBOX_FAKE_SYSTEMCTL_LOG"
+cat > "$TMP_DIR/systemctl" <<EOF
+#!$SH_BIN
+printf '%s\n' "\$*" >> "\$DEVBOX_FAKE_SYSTEMCTL_LOG"
 exit 0
 EOF
 chmod +x "$TMP_DIR/systemctl"
