@@ -50,8 +50,8 @@ for info in windows {
     let layer = info[kCGWindowLayer as String] as? Int ?? -1
     let alpha = info[kCGWindowAlpha as String] as? Double ?? 1.0
     guard layer == 0, alpha > 0 else { continue }
-    guard let boundsDict = info[kCGWindowBounds as String] as? CFDictionary,
-          let rect = CGRect(dictionaryRepresentation: boundsDict),
+    guard let boundsValues = info[kCGWindowBounds as String] as? [String: Any],
+          let rect = CGRect(dictionaryRepresentation: boundsValues as CFDictionary),
           rect.width >= 32, rect.height >= 32 else { continue }
     let area = rect.width * rect.height
     guard area > bestArea else { continue }
