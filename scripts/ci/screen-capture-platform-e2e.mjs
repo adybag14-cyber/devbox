@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 
@@ -80,6 +80,48 @@ try {
     assert.equal(x11Window.metadata.window_discovery, "wmctrl");
     assert.equal(x11Window.metadata.capture_method, "maim(window-id)");
     assert.equal(x11Window.metadata.window_title, "CI X11 Window");
+
+    // A broken preferred X11 discovery utility must not prevent later fallbacks.
+    await writeExecutable(path.join(bin, "wmctrl"), "#!/bin/sh\nexit 2\n");
+    await writeExecutable(path.join(bin, "xdotool"), "#!/bin/sh\nprintf '18874371\\n'\n");
+    await writeExecutable(
+      path.join(bin, "xwininfo"),
+      "#!/bin/sh\nprintf '  Absolute upper-left X: 30\\n  Absolute upper-left Y: 40\\n  Width: 640\\n  Height: 480\\n'\n",
+    );
+    const x11FallbackWindow = await captureLinuxProgram({ pid: process.pid, includeProcessTree: false, timeoutMs: 5000 });
+    assert.equal(x11FallbackWindow.metadata.window_discovery, "xdotool+xwininfo");
+
+    // Native compositor node IDs are not X11 window IDs. When grim is absent,
+    // do not hand a Sway/Hyprland ID to maim/import and risk the wrong window.
+    const constrainedPath = process.env.PATH;
+    const maimMarker = path.join(tmp, "maim-invoked");
+    await rm(path.join(bin, "grim"), { force: true });
+    await writeExecutable(
+      path.join(bin, "maim"),
+      `#!/bin/sh\nprintf called > "$DEVBOX_MAIM_MARKER"\nexit 7\n`,
+    );
+    process.env.DEVBOX_MAIM_MARKER = maimMarker;
+    process.env.PATH = bin;
+    delete process.env.DISPLAY;
+    process.env.WAYLAND_DISPLAY = "wayland-ci";
+    process.env.XDG_SESSION_TYPE = "wayland";
+    await assert.rejects(
+      captureLinuxProgram({ pid: process.pid, includeProcessTree: false, timeoutMs: 5000 }),
+      /Wayland compositor does not expose/u,
+    );
+    let maimWasInvoked = false;
+    try { await readFile(maimMarker); maimWasInvoked = true; } catch {}
+    assert.equal(maimWasInvoked, false);
+
+    // If an installed display backend itself fails, preserve that cause instead
+    // of incorrectly claiming that no backend is installed.
+    await writeExecutable(path.join(bin, "grim"), "#!/bin/sh\nprintf 'grim-denied' >&2\nexit 7\n");
+    await assert.rejects(
+      captureLinuxDisplay({ timeoutMs: 5000 }),
+      /grim-denied/u,
+    );
+    process.env.PATH = constrainedPath;
+    delete process.env.DEVBOX_MAIM_MARKER;
 
     console.log("Linux screen capture backend E2E passed for fake Wayland and X11 compositor paths.");
   } else if (process.platform === "darwin") {

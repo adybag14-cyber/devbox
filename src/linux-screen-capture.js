@@ -101,12 +101,18 @@ const noDisplayError = (session) =>
     `No capturable Linux graphical session was detected (session=${session.sessionType}). Set DISPLAY for X11 or WAYLAND_DISPLAY for Wayland and run Devbox inside the logged-in desktop session.`,
   );
 
-const missingDisplayBackendError = (session) =>
-  new HostCommandError(
-    session.wayland
-      ? "No supported Wayland screenshot backend was found. Install grim (wlroots), gnome-screenshot (GNOME), or spectacle (KDE)."
-      : "No supported X11 screenshot backend was found. Install maim, scrot, gnome-screenshot, spectacle, or ImageMagick's import command.",
-  );
+const missingDisplayBackendError = (session, cause = null) => {
+  const baseMessage = session.wayland
+    ? "No supported Wayland screenshot backend was found. Install grim (wlroots), gnome-screenshot (GNOME), or spectacle (KDE)."
+    : "No supported X11 screenshot backend was found. Install maim, scrot, gnome-screenshot, spectacle, or ImageMagick's import command.";
+  if (!cause) return new HostCommandError(baseMessage);
+  const causeMessage = cause instanceof Error ? cause.message : String(cause);
+  return new HostCommandError(`${baseMessage} Installed backend failure: ${causeMessage}`, {
+    exitCode: cause?.exitCode,
+    stdout: cause?.stdout,
+    stderr: cause?.stderr,
+  });
+};
 
 const capturePng = async (file, args, pngPath, { cwd, timeoutMs }) => {
   await captureCommand(file, args, { cwd, timeoutMs });
@@ -130,24 +136,30 @@ const captureLinuxFullPng = async ({ session, pngPath, tempDir, timeoutMs }) => 
         ["import", (file) => ["-window", "root", file], "ImageMagick-import(root)"],
       ];
 
+  let lastError = null;
   for (const [name, argsFor, method] of candidates) {
     const executable = await findExecutable([name]);
     if (!executable) continue;
     try {
       return { image: await capturePng(executable, argsFor(pngPath), pngPath, { cwd: tempDir, timeoutMs }), method };
-    } catch {
+    } catch (error) {
       // Try another compositor-compatible backend before surfacing failure.
+      lastError = error;
     }
   }
-  throw missingDisplayBackendError(session);
+  throw missingDisplayBackendError(session, lastError);
 };
 
 const discoverX11Window = async ({ candidatePids, timeoutMs }) => {
   const wmctrl = await findExecutable(["wmctrl"]);
   if (wmctrl) {
-    const result = await captureCommand(wmctrl, ["-lpG"], { timeoutMs });
-    const selected = selectLargestWindow(parseWmctrlWindows(result.stdout), candidatePids);
-    if (selected) return { ...selected, discovery: "wmctrl" };
+    try {
+      const result = await captureCommand(wmctrl, ["-lpG"], { timeoutMs });
+      const selected = selectLargestWindow(parseWmctrlWindows(result.stdout), candidatePids);
+      if (selected) return { ...selected, discovery: "wmctrl" };
+    } catch {
+      // Continue through the remaining X11 discovery backends.
+    }
   }
 
   const xdotool = await findExecutable(["xdotool"]);
@@ -179,8 +191,13 @@ const discoverX11Window = async ({ candidatePids, timeoutMs }) => {
 
   const xprop = await findExecutable(["xprop"]);
   if (xprop && xwininfo) {
-    const root = await captureCommand(xprop, ["-root", "_NET_CLIENT_LIST_STACKING"], { timeoutMs });
-    const ids = root.stdout.match(/0x[0-9a-f]+/giu) ?? [];
+    let ids = [];
+    try {
+      const root = await captureCommand(xprop, ["-root", "_NET_CLIENT_LIST_STACKING"], { timeoutMs });
+      ids = root.stdout.match(/0x[0-9a-f]+/giu) ?? [];
+    } catch {
+      ids = [];
+    }
     const windows = [];
     for (const id of ids) {
       try {
@@ -237,9 +254,11 @@ const captureLinuxWindowPng = async ({ window, session, pngPath, tempDir, timeou
     }
   }
 
-  // XWayland windows can still use these X11 paths inside a Wayland session.
+  // XWayland windows can still use these X11 paths inside a Wayland session,
+  // but native compositor node/address IDs are not X11 window IDs.
+  const compositorWindow = window.backend === "sway" || window.backend === "hyprland";
   const maim = await findExecutable(["maim"]);
-  if (maim && window.id) {
+  if (maim && window.id && !compositorWindow) {
     try {
       return {
         image: await capturePng(maim, ["-i", String(window.id), pngPath], pngPath, { cwd: tempDir, timeoutMs }),
@@ -250,7 +269,7 @@ const captureLinuxWindowPng = async ({ window, session, pngPath, tempDir, timeou
     }
   }
   const importTool = await findExecutable(["import"]);
-  if (importTool && window.id) {
+  if (importTool && window.id && !compositorWindow) {
     try {
       return {
         image: await capturePng(importTool, ["-window", String(window.id), pngPath], pngPath, { cwd: tempDir, timeoutMs }),

@@ -227,21 +227,25 @@ $form.Add_Shown({ [Console]::Out.WriteLine('ready'); [Console]::Out.Flush() })
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: false,
   });
+  t.after(async () => terminateWindowsProcessTree(launcher.pid));
   const stderr = [];
   collectStream(launcher.stderr, stderr);
-  await Promise.race([
-    new Promise((resolve) => {
+  let readinessTimer;
+  try {
+    await new Promise((resolve, reject) => {
       launcher.stdout.setEncoding("utf8");
       launcher.stdout.on("data", (chunk) => {
         if (chunk.includes("ready")) resolve();
       });
-    }),
-    (async () => {
-      await wait(10000);
-      throw new Error(`Timed out waiting for child-owned capture window. stderr:\\n${stderr.join("")}`);
-    })(),
-  ]);
-  t.after(async () => terminateWindowsProcessTree(launcher.pid));
+      readinessTimer = setTimeout(
+        () => reject(new Error(`Timed out waiting for child-owned capture window. stderr:
+${stderr.join("")}`)),
+        10000,
+      );
+    });
+  } finally {
+    clearTimeout(readinessTimer);
+  }
   return launcher;
 };
 
@@ -271,21 +275,25 @@ $form.Add_Shown({ [Console]::Out.WriteLine('ready'); [Console]::Out.Flush() })
     ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded],
     { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], windowsHide: false },
   );
+  t.after(async () => terminateChild(child));
   const stderr = [];
   collectStream(child.stderr, stderr);
-  await Promise.race([
-    new Promise((resolve) => {
+  let readinessTimer;
+  try {
+    await new Promise((resolve, reject) => {
       child.stdout.setEncoding("utf8");
       child.stdout.on("data", (chunk) => {
         if (chunk.includes("ready")) resolve();
       });
-    }),
-    (async () => {
-      await wait(10000);
-      throw new Error(`Timed out waiting for black PrintWindow test window. stderr:\\n${stderr.join("")}`);
-    })(),
-  ]);
-  t.after(async () => terminateChild(child));
+      readinessTimer = setTimeout(
+        () => reject(new Error(`Timed out waiting for black PrintWindow test window. stderr:
+${stderr.join("")}`)),
+        10000,
+      );
+    });
+  } finally {
+    clearTimeout(readinessTimer);
+  }
   return child;
 };
 

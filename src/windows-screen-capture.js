@@ -150,7 +150,9 @@ public static class DevboxCaptureNative {
 '@
 
 try {
-  [DevboxCaptureNative]::SetProcessDpiAwarenessContext([IntPtr](-4)) | Out-Null
+  if (-not [DevboxCaptureNative]::SetProcessDpiAwarenessContext([IntPtr](-4))) {
+    [DevboxCaptureNative]::SetProcessDPIAware() | Out-Null
+  }
 } catch {
   [DevboxCaptureNative]::SetProcessDPIAware() | Out-Null
 }
@@ -501,7 +503,7 @@ const captureWindowsJpeg = async ({ mode, pid = 0, quality = 85, timeoutMs = 300
       stderr: error?.stderr,
     });
   } finally {
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }).catch(() => {});
   }
 };
 
