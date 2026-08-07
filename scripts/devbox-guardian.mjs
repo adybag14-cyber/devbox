@@ -252,7 +252,7 @@ export const buildWindowsGuardianRepairArgs = ({
   const invocation = [
     `& '${psSingleQuote(scriptPath)}'`,
     `-Runtime '${psSingleQuote(selectedRuntime)}'`,
-    settings.Public ? "-Public" : "",
+    (repairScope === "public-tunnel" || settings.Public) ? "-Public" : "",
     settings.OAuth ? "-OAuth" : "",
     repairScope === "public-tunnel" ? "-TunnelOnly" : "",
   ].filter(Boolean).join(" ");
@@ -973,6 +973,7 @@ const main = async () => {
         SelectedRuntime: selectedRuntime,
         DevboxContainerName: settings.DevboxContainerName || environment.DEVBOX_CONTAINER_NAME || "chatgpt-devbox-runtime",
         CloudflaredContainerName: settings.CloudflaredContainerName || environment.CLOUDFLARED_CONTAINER_NAME || "chatgpt-devbox-cloudflared",
+        NamedTunnel: Boolean(environment.CLOUDFLARED_TUNNEL_TOKEN && environment.CLOUDFLARED_PUBLIC_HOSTNAME),
       },
       RuntimeMode: runtimeMode,
       SelectedRuntime: selectedRuntime,
@@ -1223,7 +1224,9 @@ const main = async () => {
         }
         const cooldownElapsed = Date.now() - lastRepairAtMs >= options.repairCooldownSeconds * 1000;
         const failureBackoffElapsed = Date.now() >= repairBackoffUntilMs;
-        const dockerAllowed = state.SelectedRuntime !== "docker" || isRepairAllowed({ policy: repairPolicy });
+        const plannedRepairScope = selectRepairScope(state);
+        const namedTunnelRepairIndependentOfDocker = plannedRepairScope === "public-tunnel" && state.Settings?.NamedTunnel === true;
+        const dockerAllowed = namedTunnelRepairIndependentOfDocker || state.SelectedRuntime !== "docker" || isRepairAllowed({ policy: repairPolicy });
         // Missing MCP processes and confirmed tunnel transport failures recover
         // quickly. A verified live MCP that temporarily misses health probes
         // gets a longer grace window so host/Hyper-V scheduler pressure is not
@@ -1240,9 +1243,21 @@ const main = async () => {
           failureBackoffElapsed &&
           dockerAllowed
         ) {
-          state = await repair(state);
-          lastRepairAtMs = Date.now();
-          unhealthyCount = state.IsHealthy ? 0 : unhealthyCount;
+          // Re-probe immediately before any repair. A busy host can recover between
+          // the observation that crossed the threshold and the destructive action.
+          // Always repair from the fresh state so a recovered MCP turns a would-be
+          // full restart into either no repair or a tunnel-only repair.
+          const freshState = await probe();
+          await publishState(freshState);
+          if (freshState.IsHealthy) {
+            await log("INFO", "repair cancelled after fresh pre-repair probe recovered readiness");
+            state = freshState;
+            unhealthyCount = 0;
+          } else {
+            state = await repair(freshState);
+            lastRepairAtMs = Date.now();
+            unhealthyCount = state.IsHealthy ? 0 : unhealthyCount;
+          }
         }
       }
 

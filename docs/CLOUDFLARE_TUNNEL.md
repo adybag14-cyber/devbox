@@ -309,6 +309,17 @@ Allowed values are `auto`, `4`, and `6`. Keep `auto` unless diagnostics show a p
 
 ```env
 CLOUDFLARED_EDGE_IP_VERSION=4
+
+On Windows named tunnels you can also make the edge transport explicit. This is useful when virtualization or local network filters make UDP/QUIC unreliable:
+
+```env
+CLOUDFLARED_TRANSPORT_PROTOCOL=http2
+CLOUDFLARED_EDGE_BIND_ADDRESS=192.0.2.10
+```
+
+`CLOUDFLARED_EDGE_BIND_ADDRESS` is optional and must be a local IP. If that address is no longer assigned (for example after DHCP changes), the Windows launcher deliberately falls back to normal route selection instead of leaving the tunnel permanently offline.
+
+Tunnel-only repair does not restart the MCP server. `-TunnelOnly` implies the configured public tunnel, and Guardian performs a fresh health probe immediately before repair so a recovered MCP is not destroyed because of stale failure observations.
 ```
 
 Then restart only the Cloudflare tunnel/service. Devbox writes the active Windows host selection to `run/host-cloudflared.transport.json`; POSIX service installers print the selected edge IP mode after setup.
