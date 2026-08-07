@@ -1449,10 +1449,20 @@ Write-Host "Selected runtime: $selectedRuntime (requested: $runtimeMode)"
         }
     }
 
-    # A full Windows host startup owns the named tunnel it launched. Do not
-    # leave cloudflared advertising an origin that failed to become ready.
+    # A full Windows host startup owns the named tunnel it launched, but a
+    # replacement can fail before the old MCP is stopped (for example a dependency
+    # preflight failure). Preserve the new tunnel when the existing origin still
+    # answers; only tear it down when no healthy MCP remains behind it.
     if (-not $TunnelOnly -and $selectedRuntime -eq 'host' -and $Public) {
-        try { Stop-ExistingHostCloudflared -PidFile (Join-Path $runDir 'host-cloudflared.pid') } catch {}
+        $originStillHealthy = $false
+        try {
+            $originCheck = Invoke-WebRequest -Uri "http://127.0.0.1:$port/healthz" -UseBasicParsing -TimeoutSec 3
+            $originStillHealthy = $originCheck.Content -match 'ok'
+        } catch {
+        }
+        if (-not $originStillHealthy) {
+            try { Stop-ExistingHostCloudflared -PidFile (Join-Path $runDir 'host-cloudflared.pid') } catch {}
+        }
     }
     throw
 } finally {

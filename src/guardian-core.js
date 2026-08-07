@@ -194,7 +194,7 @@ export const resolveFailureThreshold = ({
   // A confirmed tunnel transport collapse or a missing/unhealthy public tunnel
   // is safe to repair quickly when MCP itself is healthy because selectRepairScope
   // keeps the healthy MCP in place.
-  if (state.TunnelTransportDegraded === true || (state.McpHealthy === true && state.PublicTunnelHealthy === false)) {
+  if (selectRepairScope(state) === "public-tunnel") {
     return Math.min(2, configured);
   }
 

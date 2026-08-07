@@ -32,6 +32,7 @@ Assert-Before $start 'Assert-McpReplacementReady -NodeExe $nodeExe -ProjectRoot 
 Assert-Contains $start '$Public = $true' 'Tunnel-only repair must imply the configured public tunnel.'
 Assert-Contains $start '@(''--protocol'', $transportProtocol)' 'Explicit Cloudflare transport protocol support is missing.'
 Assert-Contains $start '@(''--edge-bind-address'', $effectiveEdgeBindAddress)' 'Explicit Cloudflare edge bind support is missing.'
+Assert-Contains $start '$originStillHealthy = $originCheck.Content -match ''ok''' 'Failed full startup must preserve the named tunnel when the existing MCP origin is still healthy.'
 Assert-Contains $start 'for ($i = 0; $i -lt 16; $i++)' 'Owned MCP stop must use a bounded short polling window.'
 Assert-Contains $start '$script:startupMcpPid = [int]$process.Id' 'Spawned MCP PID ownership tracking is missing.'
 Assert-Contains $start 'Stop-Process -Id ([int]$script:startupMcpPid) -Force' 'Failed startup must clean up the spawned MCP process.'

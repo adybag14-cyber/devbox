@@ -208,9 +208,26 @@ test("cloudflared HA collapse is a required tunnel transport failure", () => {
 
 test("missing public tunnel with healthy MCP uses the fast non-destructive threshold", () => {
   assert.equal(resolveFailureThreshold({
-    state: { McpHealthy: true, PublicTunnelHealthy: false, LocalHealth: true },
+    state: {
+      Settings: { Public: true },
+      McpHealthy: true,
+      SelectedRuntimeHealthy: true,
+      PublicTunnelHealthy: false,
+      LocalHealth: true,
+    },
     configuredThreshold: 4,
   }), 2);
+
+  assert.equal(resolveFailureThreshold({
+    state: {
+      Settings: { Public: true },
+      McpHealthy: true,
+      SelectedRuntimeHealthy: false,
+      PublicTunnelHealthy: false,
+      LocalHealth: true,
+    },
+    configuredThreshold: 4,
+  }), 4);
 });
 
 test("cloudflared metrics deltas ignore counter resets and expose transport churn", () => {
@@ -227,7 +244,14 @@ test("cloudflared metrics deltas ignore counter resets and expose transport chur
 
 test("confirmed tunnel transport collapse uses the faster repair threshold", () => {
   assert.equal(resolveFailureThreshold({
-    state: { LocalHealth: true, TunnelTransportDegraded: true },
+    state: {
+      Settings: { Public: true },
+      McpHealthy: true,
+      SelectedRuntimeHealthy: true,
+      PublicTunnelHealthy: false,
+      LocalHealth: true,
+      TunnelTransportDegraded: true,
+    },
     configuredThreshold: 4,
   }), 2);
   assert.equal(resolveFailureThreshold({
