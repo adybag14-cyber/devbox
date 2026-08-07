@@ -14,6 +14,9 @@ export const getLauncherPaths = (root = projectRoot) => {
     runDir,
     pidFile: path.join(runDir, "devbox.pid"),
     logFile: path.join(runDir, "devbox.log"),
+    managedPidFile: path.join(runDir, "mcp.pid"),
+    managedStdoutLogFile: path.join(runDir, "mcp.stdout.log"),
+    managedStderrLogFile: path.join(runDir, "mcp.stderr.log"),
     guardianDesiredStateFile: path.join(runDir, "guardian.desired-state.json"),
   };
 };
@@ -97,6 +100,20 @@ const ensureRunDir = async (runDir) => {
   await mkdir(runDir, { recursive: true });
 };
 
+export const probeServerHealth = async ({ url = buildServerUrl(), timeoutMs = 1000 } = {}) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(100, timeoutMs));
+  timer.unref?.();
+  try {
+    const response = await fetch(`${String(url).replace(/\/$/u, "")}/healthz`, { signal: controller.signal });
+    return response.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
 const writeGuardianDesiredState = async (paths, shouldRun, source) => {
   await writeFile(paths.guardianDesiredStateFile, `${JSON.stringify({
     ShouldRun: shouldRun,
@@ -105,22 +122,60 @@ const writeGuardianDesiredState = async (paths, shouldRun, source) => {
   }, null, 2)}\n`, "utf8");
 };
 
-export const getServerStatus = async (root = projectRoot) => {
+export const getServerStatus = async (root = projectRoot, { url = buildServerUrl(), healthTimeoutMs = 1000 } = {}) => {
   const paths = getLauncherPaths(root);
   await ensureRunDir(paths.runDir);
-  const pid = await readPidFile(paths.pidFile);
-  const running = isProcessAlive(pid);
 
-  if (!running && pid !== null) {
+  const launcherPid = await readPidFile(paths.pidFile);
+  const launcherAlive = isProcessAlive(launcherPid);
+  if (!launcherAlive && launcherPid !== null) {
     await rm(paths.pidFile, { force: true });
+  }
+  if (launcherAlive) {
+    const healthy = await probeServerHealth({ url, timeoutMs: healthTimeoutMs });
+    return {
+      running: true,
+      healthy,
+      pid: launcherPid,
+      pidFile: paths.pidFile,
+      logFile: paths.logFile,
+      stderrLogFile: paths.logFile,
+      manager: "portable-launcher",
+      managedExternally: false,
+      url,
+    };
+  }
+
+  // Windows Guardian/PowerShell startup owns run/mcp.pid instead of devbox.pid.
+  // Recognize that process for status/start de-duplication, but never assume
+  // ownership of it for stop/restart operations.
+  const managedPid = await readPidFile(paths.managedPidFile);
+  const managedAlive = isProcessAlive(managedPid);
+  if (managedAlive) {
+    const healthy = await probeServerHealth({ url, timeoutMs: healthTimeoutMs });
+    return {
+      running: true,
+      healthy,
+      pid: managedPid,
+      pidFile: paths.managedPidFile,
+      logFile: paths.managedStdoutLogFile,
+      stderrLogFile: paths.managedStderrLogFile,
+      manager: "managed-mcp",
+      managedExternally: true,
+      url,
+    };
   }
 
   return {
-    running,
-    pid: running ? pid : null,
+    running: false,
+    healthy: false,
+    pid: null,
     pidFile: paths.pidFile,
     logFile: paths.logFile,
-    url: buildServerUrl(),
+    stderrLogFile: paths.logFile,
+    manager: null,
+    managedExternally: false,
+    url,
   };
 };
 
@@ -130,6 +185,11 @@ export const startServerProcess = async (root = projectRoot) => {
   await writeGuardianDesiredState(paths, true, "devbox start");
   const status = await getServerStatus(root);
   if (status.running) {
+    if (status.healthy === false) {
+      throw new Error(
+        `A Devbox MCP process is already running as PID ${status.pid} (${status.manager}) but its health endpoint is not responding; refusing to start a competing server.`,
+      );
+    }
     return { ...status, started: false };
   }
 
@@ -175,12 +235,20 @@ export const startServerProcess = async (root = projectRoot) => {
   };
 };
 
-export const stopServerProcess = async (root = projectRoot) => {
+export const stopServerProcess = async (root = projectRoot, statusOptions = {}) => {
   const paths = getLauncherPaths(root);
   const pid = await readPidFile(paths.pidFile);
   if (!isProcessAlive(pid)) {
     await rm(paths.pidFile, { force: true });
-    const status = await getServerStatus(root);
+    const status = await getServerStatus(root, statusOptions);
+    if (status.managedExternally) {
+      return {
+        ...status,
+        stopped: false,
+        stopRefused: true,
+        note: `PID ${status.pid} is owned by the managed MCP lifecycle; use Guardian or the platform service/start-stop scripts rather than the portable launcher.`,
+      };
+    }
     await writeGuardianDesiredState(paths, false, "devbox stop");
     return { ...status, stopped: false };
   }
@@ -224,7 +292,10 @@ export const runLauncher = async (argv = process.argv.slice(2), root = projectRo
   }
 
   if (parsed.command === "restart") {
-    await stopServerProcess(root);
+    const stopped = await stopServerProcess(root);
+    if (stopped.stopRefused) {
+      throw new Error(stopped.note);
+    }
     return { command: "restart", ...(await startServerProcess(root)) };
   }
 

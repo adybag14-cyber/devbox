@@ -294,3 +294,34 @@ Cloudflare also supports locally-managed tunnels created with `cloudflared tunne
 - Create a locally-managed tunnel: <https://developers.cloudflare.com/tunnel/advanced/local-management/create-local-tunnel/>
 - Run as a Linux service: <https://developers.cloudflare.com/tunnel/advanced/local-management/as-a-service/linux/>
 - Run as a macOS service: <https://developers.cloudflare.com/tunnel/advanced/local-management/as-a-service/macos/>
+
+## Transport resilience and IPv4/IPv6 selection
+
+Devbox leaves Cloudflare transport/protocol selection under `cloudflared` control, but it now monitors the live HA-connection gauge. If all HA connections collapse while the local MCP remains healthy, Guardian classifies the incident as a tunnel transport failure and performs a tunnel-only recovery instead of restarting the MCP or disturbing unrelated host/WSL workloads.
+
+The edge IP family is configurable on every supported platform:
+
+```env
+CLOUDFLARED_EDGE_IP_VERSION=auto
+```
+
+Allowed values are `auto`, `4`, and `6`. Keep `auto` unless diagnostics show a persistently unreliable IPv6 or IPv4 path. To temporarily force IPv4 while diagnosing a router/ISP IPv6 problem, set:
+
+```env
+CLOUDFLARED_EDGE_IP_VERSION=4
+```
+
+Then restart only the Cloudflare tunnel/service. Devbox writes the active Windows host selection to `run/host-cloudflared.transport.json`; POSIX service installers print the selected edge IP mode after setup.
+
+Guardian records these fields in `run/guardian/state.json` when metrics are available:
+
+- `CloudflaredMetrics.HaConnections`
+- `CloudflaredMetrics.RequestErrors`
+- `CloudflaredMetrics.TotalRequests`
+- `CloudflaredMetrics.QuicClosedConnections`
+- `CloudflaredMetricsDelta`
+- `TunnelTransportHealthy`
+- `TunnelTransportDegraded`
+- `TunnelTransportReasons`
+
+A rising QUIC-close counter is useful evidence but is not alone considered an outage. HA connections reaching zero is the stronger failure signal.

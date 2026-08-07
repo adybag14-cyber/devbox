@@ -12,6 +12,14 @@ $ProgressPreference = 'SilentlyContinue'
 $InformationPreference = 'SilentlyContinue'
 $script:dockerExe = $null
 $script:dockerConfiguredPath = $null
+$script:lifecycleMutex = $null
+$script:lifecycleMutexHeld = $false
+$script:startupStatePath = $null
+$script:startupAttemptId = $null
+$script:startupStartedAtUtc = $null
+$script:startupDeadlineUtc = $null
+$script:startupMcpPid = $null
+$script:startupSucceeded = $false
 
 function Resolve-DockerExecutable {
     param([string]$ConfiguredPath)
@@ -293,11 +301,84 @@ function Get-DockerLogsText {
     return (Invoke-Docker -Arguments @('logs', $ContainerName) -IgnoreExitCode).Text
 }
 
+function Write-StartupPhase {
+    param(
+        [Parameter(Mandatory = $true)][string]$Phase,
+        [ValidateSet('running', 'ready', 'failed', 'timed-out')]
+        [string]$Status = 'running',
+        [string]$Details = '',
+        [hashtable]$Extra = @{}
+    )
+
+    if (-not $script:startupStatePath) {
+        return
+    }
+
+    $payload = [ordered]@{
+        AttemptId = $script:startupAttemptId
+        ProcessId = $PID
+        Phase = $Phase
+        Status = $Status
+        StartedAtUtc = $script:startupStartedAtUtc
+        UpdatedAtUtc = [DateTime]::UtcNow.ToString('o')
+        DeadlineUtc = if ($script:startupDeadlineUtc) { $script:startupDeadlineUtc.ToString('o') } else { $null }
+        Details = $Details
+    }
+    foreach ($key in $Extra.Keys) {
+        $payload[$key] = $Extra[$key]
+    }
+    Write-JsonStateFile -Path $script:startupStatePath -Value $payload
+}
+
+function Assert-StartupDeadline {
+    param([string]$Phase = 'startup')
+
+    if ($script:startupDeadlineUtc -and [DateTime]::UtcNow -gt $script:startupDeadlineUtc) {
+        $details = "Startup deadline exceeded while in phase '$Phase'."
+        Write-StartupPhase -Phase $Phase -Status 'timed-out' -Details $details
+        throw $details
+    }
+}
+
 function Enter-ChatGptDevboxLifecycleMutex {
+    param(
+        [Parameter(Mandatory = $true)][string]$RunDir,
+        [Parameter(Mandatory = $true)][string]$SelectedRuntime,
+        [int]$TimeoutSeconds = 180
+    )
+
+    Ensure-Directory -Path $RunDir
+    $script:startupStatePath = Join-Path $RunDir 'startup-state.json'
+    $script:startupAttemptId = [System.Guid]::NewGuid().ToString('N')
+    $script:startupStartedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $script:startupDeadlineUtc = [DateTime]::UtcNow.AddSeconds([Math]::Max(30, $TimeoutSeconds))
+    $script:startupSucceeded = $false
+    $script:startupMcpPid = $null
+
     $script:lifecycleMutex = New-Object System.Threading.Mutex($false, 'Global\ChatGptDevboxMcpLifecycle')
-    $script:lifecycleMutexHeld = $script:lifecycleMutex.WaitOne(300000, $false)
+    try {
+        $script:lifecycleMutexHeld = $script:lifecycleMutex.WaitOne(0, $false)
+    } catch [System.Threading.AbandonedMutexException] {
+        $script:lifecycleMutexHeld = $true
+    }
+
     if (-not $script:lifecycleMutexHeld) {
-        throw "Timed out waiting for another ChatGPT Devbox lifecycle action to finish."
+        $ownerSummary = ''
+        if (Test-Path $script:startupStatePath) {
+            try {
+                $owner = Get-Content $script:startupStatePath -Raw | ConvertFrom-Json
+                $ownerSummary = " Existing owner PID=$($owner.ProcessId), phase=$($owner.Phase), status=$($owner.Status), updated=$($owner.UpdatedAtUtc)."
+            } catch {
+            }
+        }
+        $script:lifecycleMutex.Dispose()
+        $script:lifecycleMutex = $null
+        throw "Another ChatGPT Devbox lifecycle action is already running; refusing to queue a concurrent start.$ownerSummary"
+    }
+
+    Write-StartupPhase -Phase 'lifecycle-lock-acquired' -Extra @{
+        SelectedRuntime = $SelectedRuntime
+        TimeoutSeconds = [Math]::Max(30, $TimeoutSeconds)
     }
 }
 
@@ -826,6 +907,7 @@ function Wait-ForHealthyPublicEndpoint {
 
     $healthUrl = "$($PublicBaseUrl.TrimEnd('/'))/healthz"
     for ($i = 0; $i -lt 30; $i++) {
+        Assert-StartupDeadline -Phase 'waiting-public-health'
         Start-Sleep -Seconds 2
         if ($HostCloudflaredPidFile) {
             $hostPid = if (Test-Path $HostCloudflaredPidFile) { Get-Content $HostCloudflaredPidFile -ErrorAction SilentlyContinue | Select-Object -First 1 } else { '' }
@@ -864,6 +946,8 @@ function Start-CloudflaredNamedTunnel {
         [string]$PublicHostname,
         [int]$Port,
         [string]$RunDir,
+        [string]$MetricsUrl = '',
+        [string]$EdgeIpVersion = '',
         [bool]$DockerReady = $true
     )
 
@@ -883,13 +967,38 @@ function Start-CloudflaredNamedTunnel {
     $stdoutLog = Join-Path $RunDir 'host-cloudflared.stdout.log'
     $stderrLog = Join-Path $RunDir 'host-cloudflared.stderr.log'
     $metricsUrlFile = Join-Path $RunDir 'host-cloudflared.metrics-url.txt'
-    $metricsUrl = if (-not [string]::IsNullOrWhiteSpace($env:CLOUDFLARED_METRICS_URL)) { [string]$env:CLOUDFLARED_METRICS_URL } else { 'http://127.0.0.1:20241/metrics' }
+    $metricsUrl = if (-not [string]::IsNullOrWhiteSpace($MetricsUrl)) {
+        [string]$MetricsUrl
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:CLOUDFLARED_METRICS_URL)) {
+        [string]$env:CLOUDFLARED_METRICS_URL
+    } else {
+        'http://127.0.0.1:20241/metrics'
+    }
     $metricsUri = [Uri]$metricsUrl
     if ($metricsUri.Scheme -ne 'http' -or -not $metricsUri.IsLoopback -or $metricsUri.Port -lt 1) {
         throw "CLOUDFLARED_METRICS_URL must be a loopback http URL such as http://127.0.0.1:20241/metrics."
     }
     $metricsAddress = "{0}:{1}" -f $metricsUri.Host, $metricsUri.Port
     [System.IO.File]::WriteAllText($metricsUrlFile, $metricsUrl, [System.Text.UTF8Encoding]::new($false))
+    $edgeIpVersion = if (-not [string]::IsNullOrWhiteSpace($EdgeIpVersion)) {
+        [string]$EdgeIpVersion
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:CLOUDFLARED_EDGE_IP_VERSION)) {
+        [string]$env:CLOUDFLARED_EDGE_IP_VERSION
+    } else {
+        'auto'
+    }
+    $edgeIpVersion = $edgeIpVersion.Trim().ToLowerInvariant()
+    if ($edgeIpVersion -notin @('auto', '4', '6')) {
+        throw "CLOUDFLARED_EDGE_IP_VERSION must be one of: auto, 4, 6."
+    }
+    $transportStateFile = Join-Path $RunDir 'host-cloudflared.transport.json'
+    $transportState = [ordered]@{
+        EdgeIpVersion = $edgeIpVersion
+        ProtocolSelection = 'cloudflared-managed'
+        MetricsUrl = $metricsUrl
+        UpdatedAtUtc = [DateTime]::UtcNow.ToString('o')
+    } | ConvertTo-Json -Depth 4
+    [System.IO.File]::WriteAllText($transportStateFile, $transportState, [System.Text.UTF8Encoding]::new($false))
 
     Stop-ExistingHostCloudflared -PidFile $pidFile
     [System.IO.File]::WriteAllText($tokenFile, $TunnelToken, [System.Text.UTF8Encoding]::new($false))
@@ -902,7 +1011,7 @@ function Start-CloudflaredNamedTunnel {
     if (Test-Path $stderrLog) { Remove-Item $stderrLog -Force -ErrorAction SilentlyContinue }
 
     $process = Start-Process -FilePath $cloudflaredExe `
-        -ArgumentList @('tunnel', '--config', $configFile, '--no-autoupdate', '--loglevel', 'info', '--metrics', $metricsAddress, 'run', '--token-file', $tokenFile) `
+        -ArgumentList @('tunnel', '--config', $configFile, '--no-autoupdate', '--loglevel', 'info', '--metrics', $metricsAddress, '--edge-ip-version', $edgeIpVersion, 'run', '--token-file', $tokenFile) `
         -WorkingDirectory $RunDir `
         -RedirectStandardOutput $stdoutLog `
         -RedirectStandardError $stderrLog `
@@ -930,6 +1039,8 @@ function Start-CloudflaredPublicTunnel {
         [ValidateSet('host', 'docker')]
         [string]$SelectedRuntime,
         [string]$RunDir,
+        [string]$MetricsUrl = '',
+        [string]$EdgeIpVersion = '',
         [bool]$DockerReady = $false
     )
 
@@ -941,7 +1052,7 @@ function Start-CloudflaredPublicTunnel {
             throw "CLOUDFLARED_TUNNEL_TOKEN and CLOUDFLARED_PUBLIC_HOSTNAME must both be set to use the named Cloudflare tunnel."
         }
 
-        return Start-CloudflaredNamedTunnel -ContainerName $ContainerName -TunnelToken $TunnelToken -PublicHostname $PublicHostname -Port $Port -RunDir $RunDir -DockerReady:$DockerReady
+        return Start-CloudflaredNamedTunnel -ContainerName $ContainerName -TunnelToken $TunnelToken -PublicHostname $PublicHostname -Port $Port -RunDir $RunDir -MetricsUrl $MetricsUrl -EdgeIpVersion $EdgeIpVersion -DockerReady:$DockerReady
     }
 
     if ($SelectedRuntime -eq 'host') {
@@ -986,9 +1097,19 @@ if ($selectedRuntimeEarly -eq 'host') {
     }
 }
 
-Enter-ChatGptDevboxLifecycleMutex
+$startupTimeoutRaw = Get-EnvValue -FilePath $envFile -Name 'DEVBOX_STARTUP_TIMEOUT_SECONDS'
+$startupTimeoutSeconds = if ($startupTimeoutRaw -match '^\d+$') {
+    [Math]::Min(1800, [Math]::Max(30, [int]$startupTimeoutRaw))
+} elseif ($selectedRuntimeEarly -eq 'host') {
+    180
+} else {
+    900
+}
+
+Enter-ChatGptDevboxLifecycleMutex -RunDir $runDir -SelectedRuntime $selectedRuntimeEarly -TimeoutSeconds $startupTimeoutSeconds
 try {
 Ensure-Directory -Path $runDir
+Write-StartupPhase -Phase 'preparing-runtime'
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $true -Source "Start-ChatGptDevboxMcp.ps1"
 
 $nodeExe = Resolve-NodeExecutable -ConfiguredPath (Get-EnvValue -FilePath $envFile -Name "NODE_EXE")
@@ -1031,6 +1152,8 @@ if ([string]::IsNullOrWhiteSpace($cloudflaredContainerName)) {
 }
 $cloudflaredTunnelToken = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_TUNNEL_TOKEN"
 $cloudflaredPublicHostname = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_PUBLIC_HOSTNAME"
+$cloudflaredMetricsUrl = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_METRICS_URL"
+$cloudflaredEdgeIpVersion = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_EDGE_IP_VERSION"
 $configuredPublicBaseUrl = Normalize-PublicBaseUrl -Value (Get-EnvValue -FilePath $envFile -Name "PUBLIC_BASE_URL")
 if (-not $configuredPublicBaseUrl) {
     $configuredPublicBaseUrl = Normalize-PublicBaseUrl -Value $cloudflaredPublicHostname
@@ -1039,6 +1162,8 @@ if (-not $configuredPublicBaseUrl) {
 $dockerReady = $false
 Ensure-Directory -Path $hostWorkspace
 if ($selectedRuntime -eq 'docker') {
+    Write-StartupPhase -Phase 'preparing-docker-runtime'
+    Assert-StartupDeadline -Phase 'preparing-docker-runtime'
     if ($TunnelOnly) {
         $dockerReady = Test-DockerEngine -TimeoutSeconds 5
     } else {
@@ -1057,11 +1182,17 @@ if ($TunnelOnly -and -not $Public) {
     throw '-TunnelOnly requires -Public.'
 }
 if ($Public) {
-    $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port -SelectedRuntime $selectedRuntime -RunDir $runDir -DockerReady:$dockerReady
+    Write-StartupPhase -Phase 'starting-cloudflare-tunnel'
+    Assert-StartupDeadline -Phase 'starting-cloudflare-tunnel'
+    $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port -SelectedRuntime $selectedRuntime -RunDir $runDir -MetricsUrl $cloudflaredMetricsUrl -EdgeIpVersion $cloudflaredEdgeIpVersion -DockerReady:$dockerReady
+    Write-StartupPhase -Phase 'cloudflare-tunnel-started' -Extra @{ PublicBaseUrl = $publicBaseUrl }
 }
 if ($TunnelOnly) {
     $hostTunnelPidFile = if ($selectedRuntime -eq 'host') { Join-Path $runDir 'host-cloudflared.pid' } else { '' }
+    Write-StartupPhase -Phase 'waiting-public-health'
     Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl -HostCloudflaredPidFile $hostTunnelPidFile
+    $script:startupSucceeded = $true
+    Write-StartupPhase -Phase 'ready' -Status 'ready' -Extra @{ PublicBaseUrl = $publicBaseUrl; TunnelOnly = $true }
     Write-Host "Public MCP URL: $publicBaseUrl"
     Write-Host "Selected runtime: $selectedRuntime (tunnel-only repair)"
     return
@@ -1107,12 +1238,17 @@ if ($selectedRuntime -eq 'host') {
     }
 }
 
+Write-StartupPhase -Phase 'writing-runtime-config'
 Write-RuntimeEnvFile -SourceEnvFile $envFile -RuntimeEnvFile $runtimeEnvFile -Overrides $overrides
+Assert-StartupDeadline -Phase 'stopping-existing-mcp'
+Write-StartupPhase -Phase 'stopping-existing-mcp'
 Stop-ExistingServerIfOwned -PidFile $pidFile -ProjectRoot $root
 
 if (Test-Path $stdoutLog) { Remove-Item $stdoutLog -Force -ErrorAction SilentlyContinue }
 if (Test-Path $stderrLog) { Remove-Item $stderrLog -Force -ErrorAction SilentlyContinue }
 
+Assert-StartupDeadline -Phase 'starting-mcp'
+Write-StartupPhase -Phase 'starting-mcp'
 $process = Start-Process -FilePath $nodeExe `
     -ArgumentList @("--env-file=.env.runtime", "src/server.js") `
     -WorkingDirectory $root `
@@ -1121,8 +1257,15 @@ $process = Start-Process -FilePath $nodeExe `
     -PassThru `
     -WindowStyle Hidden
 
+$script:startupMcpPid = [int]$process.Id
+# Establish ownership immediately. If health/elevation validation later fails,
+# the outer catch block removes this exact owned process and PID file.
+Set-Content -Path $pidFile -Value $process.Id -Encoding ASCII
+Write-StartupPhase -Phase 'waiting-local-health' -Extra @{ McpProcessId = [int]$process.Id; LocalUrl = "http://127.0.0.1:$port" }
+
 $localUrl = "http://127.0.0.1:$port"
 for ($i = 0; $i -lt 30; $i++) {
+    Assert-StartupDeadline -Phase 'waiting-local-health'
     Start-Sleep -Seconds 2
     try {
         $response = Invoke-WebRequest -Uri "$localUrl/healthz" -UseBasicParsing -TimeoutSec 5
@@ -1133,6 +1276,7 @@ for ($i = 0; $i -lt 30; $i++) {
     }
 }
 
+Assert-StartupDeadline -Phase 'waiting-local-health'
 try {
     $health = Invoke-WebRequest -Uri "$localUrl/healthz" -UseBasicParsing -TimeoutSec 5
     if ($health.Content -notmatch "ok") {
@@ -1150,15 +1294,23 @@ if ($process.HasExited) {
 }
 
 if ($selectedRuntime -eq 'host' -and -not (Test-IsProcessElevated -ProcessId ([int]$process.Id))) {
-    try { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue } catch {}
     throw "MCP server PID $($process.Id) started without elevation. Host mode refuses medium-integrity MCP so host_exec cannot spam UAC. Start via elevated Guardian or ChatGptDevboxMcp-ElevatedStart."
 }
 
-Set-Content -Path $pidFile -Value $process.Id
+Write-StartupPhase -Phase 'local-health-ready' -Extra @{ McpProcessId = [int]$process.Id; LocalUrl = $localUrl }
 
 if ($Public) {
     $hostTunnelPidFile = if ($selectedRuntime -eq 'host') { Join-Path $runDir 'host-cloudflared.pid' } else { '' }
+    Write-StartupPhase -Phase 'waiting-public-health' -Extra @{ McpProcessId = [int]$process.Id; PublicBaseUrl = $publicBaseUrl }
     Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl -HostCloudflaredPidFile $hostTunnelPidFile
+}
+
+$script:startupSucceeded = $true
+Write-StartupPhase -Phase 'ready' -Status 'ready' -Extra @{
+    McpProcessId = [int]$process.Id
+    LocalUrl = $localUrl
+    PublicBaseUrl = $publicBaseUrl
+    SelectedRuntime = $selectedRuntime
 }
 
 Write-Host "Local MCP URL: $localUrl"
@@ -1168,6 +1320,41 @@ if ($Public) {
 }
 Write-Host "Authentication mode: $(if ($authMode -eq 'none') { 'No Authentication' } else { 'OAuth' })"
 Write-Host "Selected runtime: $selectedRuntime (requested: $runtimeMode)"
+} catch {
+    $failureMessage = $_.Exception.Message
+    try {
+        Write-StartupPhase -Phase 'failed' -Status 'failed' -Details $failureMessage -Extra @{
+            McpProcessId = $script:startupMcpPid
+            SelectedRuntime = $selectedRuntime
+        }
+    } catch {
+    }
+
+    if ($script:startupMcpPid) {
+        try {
+            $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$script:startupMcpPid) -ErrorAction SilentlyContinue
+            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+                Stop-Process -Id ([int]$script:startupMcpPid) -Force -ErrorAction SilentlyContinue
+            }
+        } catch {
+        }
+        try {
+            if (Test-Path $pidFile) {
+                $pidText = Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($pidText -eq [string]$script:startupMcpPid) {
+                    Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch {
+        }
+    }
+
+    # A full Windows host startup owns the named tunnel it launched. Do not
+    # leave cloudflared advertising an origin that failed to become ready.
+    if (-not $TunnelOnly -and $selectedRuntime -eq 'host' -and $Public) {
+        try { Stop-ExistingHostCloudflared -PidFile (Join-Path $runDir 'host-cloudflared.pid') } catch {}
+    }
+    throw
 } finally {
     Exit-ChatGptDevboxLifecycleMutex
 }

@@ -294,7 +294,7 @@ $elevatedSettings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 Register-ScheduledTask -TaskName $elevatedStartTaskName -Action $elevatedAction -Settings $elevatedSettings -Principal $principal -Force | Out-Null
 
 & $powerShellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null

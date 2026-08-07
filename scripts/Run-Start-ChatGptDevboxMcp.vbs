@@ -53,4 +53,4 @@ For i = 0 To WScript.Arguments.Count - 1
     command = command & " " & Chr(34) & Replace(WScript.Arguments(i), Chr(34), Chr(34) & Chr(34)) & Chr(34)
 Next
 
-WScript.Quit shell.Run(command, 0, False)
+WScript.Quit shell.Run(command, 0, True)

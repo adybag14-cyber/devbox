@@ -563,6 +563,13 @@ test("async MCP jobs survive the request boundary and support status, logs, and 
   for (const name of ["devbox_exec_start", "devbox_job_status", "devbox_job_logs", "devbox_job_cancel"]) {
     assert.ok(names.has(name), `Expected async MCP tool ${name} to be registered.`);
   }
+  for (const name of ["devbox_exec", "devbox_exec_readonly", "host_exec", "windows_host_exec"]) {
+    const tool = (tools.tools || []).find((entry) => entry.name === name);
+    assert.equal(tool?.inputSchema?.properties?.timeout_seconds?.maximum, 90, `${name} should advertise the safe synchronous timeout ceiling.`);
+    assert.match(tool?.inputSchema?.properties?.timeout_seconds?.description ?? "", /devbox_exec_start/i);
+  }
+  const asyncTool = (tools.tools || []).find((entry) => entry.name === "devbox_exec_start");
+  assert.equal(asyncTool?.inputSchema?.properties?.timeout_seconds?.maximum, 86400);
 
   const started = await client.callTool({
     name: "devbox_exec_start",

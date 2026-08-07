@@ -1,6 +1,6 @@
 # Devbox setup binary
 
-`devbox-setup` v0.4.1 is the automation-friendly Rust bootstrap for Devbox MCP on Windows, Linux, macOS, and Termux/Android. It is also the backend used by the C++ `devbox-tui`, so there is one setup implementation rather than separate interactive and CLI installers.
+`devbox-setup` v0.4.2 is the automation-friendly Rust bootstrap for Devbox MCP on Windows, Linux, macOS, and Termux/Android. It is also the backend used by the C++ `devbox-tui`, so there is one setup implementation rather than separate interactive and CLI installers.
 
 It can configure an existing checkout or clone the official repository, then:
 

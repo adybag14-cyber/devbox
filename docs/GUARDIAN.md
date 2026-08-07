@@ -44,6 +44,16 @@ The scheduled tasks run `Ensure-ChatGptDevboxGuardian.ps1`, which checks the hea
 
 Windows MCP elevation inspection is tri-state. A definitive medium-integrity result is unhealthy, but a PowerShell/token-query timeout is `unknown` rather than falsely treated as unelevated. A confirmed elevation result is cached for the lifetime of that MCP PID.
 
+### Startup ownership and recovery journal
+
+Windows/host lifecycle actions use a global single-owner mutex and **fail fast** if another start/restart is already active; they do not queue additional five-minute startup processes. `ChatGptDevboxMcp-ElevatedStart` now waits for the real PowerShell startup child, so Task Scheduler remains `Running` until startup actually succeeds or fails and `LastTaskResult` reflects that outcome.
+
+Every startup writes `run/startup-state.json` with an attempt ID, owner PID, phase, deadline, and status. Important phases include `preparing-runtime`, `starting-cloudflare-tunnel`, `writing-runtime-config`, `stopping-existing-mcp`, `starting-mcp`, `waiting-local-health`, `waiting-public-health`, and `ready`. The MCP PID file is written immediately after Node is spawned, before health validation. If later health/elevation validation fails, Devbox kills only that verified owned MCP process, removes its PID file, and (for a full Windows public start) tears down the tunnel it launched. This prevents an orphan `src/server.js` process from occupying port 8100 without `run/mcp.pid`.
+
+Guardian reads the same startup journal. While the journal says `running`, its owner PID is alive, and the journal is fresh, Guardian defers repair so it cannot race a legitimate startup. A dead owner or stale journal does not suppress recovery. Host startup defaults to a 180-second lifecycle deadline; Docker mode defaults to 900 seconds. Set `DEVBOX_STARTUP_TIMEOUT_SECONDS` only when a different bounded deadline is required.
+
+`node bin/devbox.js status` also recognizes the managed `run/mcp.pid` and reports `manager: managed-mcp` plus endpoint health, so portable status no longer says `stopped` while the Windows Guardian-managed MCP is healthy. This is observability only: the portable launcher refuses to stop/restart a `managed-mcp` process that it does not own and directs recovery through Guardian/platform lifecycle scripts instead.
+
 Inspect current status:
 
 ```powershell
@@ -101,7 +111,9 @@ npm run guardian:check
 
 ## Repair safety and circuit breaking
 
-Guardian waits for repeated failures before repair. A failed localhost MCP health probe uses a faster two-observation threshold; public-tunnel-only failures retain the configured threshold so normal QUIC/edge reconnect churn does not restart the MCP. Cloudflared Prometheus metrics (HA connections, request errors, total requests, and QUIC closed connections) are recorded in Guardian state when available. Docker repairs use exponential backoff and open a one-hour circuit after three consecutive failed attempts by default. The persistent decision state is in `run/guardian/repair-policy.json` and survives Guardian restarts.
+Guardian waits for repeated failures before repair. A failed localhost MCP health probe uses a faster two-observation threshold. A confirmed Cloudflare transport collapse (`cloudflared_tunnel_ha_connections == 0`) also uses the faster threshold, but selects a **public-tunnel-only** repair while the local MCP remains healthy. Generic public-health failures retain the configured threshold so ordinary edge/QUIC reconnect churn does not restart the MCP.
+
+Cloudflared Prometheus metrics (HA connections, request errors, total requests, and QUIC closed connections) are recorded in Guardian state when available. Guardian also records per-probe metric deltas plus `TunnelTransportHealthy`, `TunnelTransportDegraded`, and `TunnelTransportReasons`. QUIC-close deltas are diagnostic signals; they do not by themselves trigger a restart. Docker repairs use exponential backoff and open a one-hour circuit after three consecutive failed attempts by default. The persistent decision state is in `run/guardian/repair-policy.json` and survives Guardian restarts.
 
 Container repair first inspects the exact configured name. A stopped container is started. If it cannot start, it is replaced. A create race is re-inspected and started. An ambiguous Docker/inspect error never falls through to a conflicting `docker run`.
 

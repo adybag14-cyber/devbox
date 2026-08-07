@@ -98,6 +98,12 @@ HOSTNAME=${CLOUDFLARED_PUBLIC_HOSTNAME:-$(read_env_value CLOUDFLARED_PUBLIC_HOST
 PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-$(read_env_value PUBLIC_BASE_URL)}
 PORT=${PORT:-$(read_env_value PORT)}
 PORT=${PORT:-8100}
+EDGE_IP_VERSION=${CLOUDFLARED_EDGE_IP_VERSION:-$(read_env_value CLOUDFLARED_EDGE_IP_VERSION)}
+EDGE_IP_VERSION=${EDGE_IP_VERSION:-auto}
+case "$EDGE_IP_VERSION" in
+  auto|4|6) ;;
+  *) fail "CLOUDFLARED_EDGE_IP_VERSION must be one of: auto, 4, 6" ;;
+esac
 
 if [ -z "$TOKEN" ]; then
   cat >&2 <<EOF
@@ -164,7 +170,7 @@ EOF
     mkdir -p "$SERVICE_DIR/log"
     cat > "$SERVICE_DIR/run" <<EOF
 #!/data/data/com.termux/files/usr/bin/sh
-exec "$CLOUDFLARED" tunnel --no-autoupdate --metrics "$METRICS_ADDRESS" run --token-file "$TOKEN_FILE"
+exec "$CLOUDFLARED" tunnel --no-autoupdate --metrics "$METRICS_ADDRESS" --edge-ip-version "$EDGE_IP_VERSION" run --token-file "$TOKEN_FILE"
 EOF
     chmod 700 "$SERVICE_DIR/run"
     if [ -x "$PREFIX/share/termux-services/svlogger" ]; then
@@ -198,7 +204,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart="$CLOUDFLARED" tunnel --no-autoupdate --metrics "$METRICS_ADDRESS" run --token-file "$TOKEN_FILE"
+ExecStart="$CLOUDFLARED" tunnel --no-autoupdate --metrics "$METRICS_ADDRESS" --edge-ip-version "$EDGE_IP_VERSION" run --token-file "$TOKEN_FILE"
 Restart=on-failure
 RestartSec=5
 
@@ -230,6 +236,7 @@ EOF
     CF_XML=$(xml_escape "$CLOUDFLARED")
     TOKEN_XML=$(xml_escape "$TOKEN_FILE")
     METRICS_XML=$(xml_escape "$METRICS_ADDRESS")
+    EDGE_IP_XML=$(xml_escape "$EDGE_IP_VERSION")
     OUT_XML=$(xml_escape "$RUN_DIR/cloudflared-launchd.stdout.log")
     ERR_XML=$(xml_escape "$RUN_DIR/cloudflared-launchd.stderr.log")
     cat > "$PLIST" <<EOF
@@ -240,6 +247,7 @@ EOF
   <key>ProgramArguments</key><array>
     <string>$CF_XML</string><string>tunnel</string><string>--no-autoupdate</string>
     <string>--metrics</string><string>$METRICS_XML</string>
+    <string>--edge-ip-version</string><string>$EDGE_IP_XML</string>
     <string>run</string><string>--token-file</string><string>$TOKEN_XML</string>
   </array>
   <key>RunAtLoad</key><true/>
@@ -270,7 +278,7 @@ EOF
   foreground)
     log "Starting cloudflared in the foreground. Press Ctrl-C to stop it."
     log "For persistent setup see: $DOC_URL"
-    exec "$CLOUDFLARED" tunnel --no-autoupdate --metrics "$METRICS_ADDRESS" run --token-file "$TOKEN_FILE"
+    exec "$CLOUDFLARED" tunnel --no-autoupdate --metrics "$METRICS_ADDRESS" --edge-ip-version "$EDGE_IP_VERSION" run --token-file "$TOKEN_FILE"
     ;;
 
   *) fail "unknown mode '$MODE'; expected auto, systemd, launchd, termux, or foreground" ;;
@@ -278,6 +286,7 @@ esac
 
 log "Tunnel token is stored with user-only permissions at: $TOKEN_FILE"
 log "Expected origin: http://127.0.0.1:$PORT"
+log "Cloudflare edge IP selection: $EDGE_IP_VERSION"
 [ -n "$PUBLIC_BASE_URL" ] && log "Configured public MCP base URL: $PUBLIC_BASE_URL"
 log "If the hostname does not resolve/reach Devbox, confirm the Cloudflare Tunnel public-hostname route targets http://127.0.0.1:$PORT."
 log "Full troubleshooting guide: $DOC_URL"

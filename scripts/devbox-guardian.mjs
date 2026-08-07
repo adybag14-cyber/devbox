@@ -10,6 +10,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import {
   classifyReadiness,
+  classifyStartupActivity,
+  classifyTunnelTransport,
+  deriveCloudflaredMetricDeltas,
   isRepairAllowed,
   normalizeRuntimeMode,
   resolveSelectedRuntime,
@@ -690,6 +693,26 @@ export const runRepairCommand = async ({
     });
   }
 
+  if (repairScope === "public-tunnel") {
+    const helper = path.join(environment.DEVBOX_PROJECT_ROOT, "scripts", "restart-cloudflare-tunnel.sh");
+    if (existsSync(helper)) {
+      try {
+        return await runProcessUntilExit(environment.SHELL || "/bin/sh", [helper, "auto"], {
+          cwd: environment.DEVBOX_PROJECT_ROOT,
+          env: environment,
+          encoding: "utf8",
+          timeout: timeoutSeconds * 1000,
+          maxBuffer: 4 * 1024 * 1024,
+        });
+      } catch (error) {
+        // If the tunnel was not installed through Devbox's known service
+        // managers, fall back to the ordinary runtime restart below. Preserve
+        // the helper failure as context in the final stderr when possible.
+        environment.DEVBOX_TUNNEL_RESTART_FALLBACK_REASON = String(error.stderr ?? error.message ?? "");
+      }
+    }
+  }
+
   return runProcessUntilExit(process.execPath, [path.join(environment.DEVBOX_PROJECT_ROOT, "bin", "devbox.js"), "restart"], {
     cwd: environment.DEVBOX_PROJECT_ROOT,
     env: { ...environment, DEVBOX_RUNTIME_MODE: selectedRuntime },
@@ -715,6 +738,7 @@ const createPaths = (projectRoot) => {
     log: path.join(guardianDir, "guardian.log"),
     repairPolicy: path.join(guardianDir, "repair-policy.json"),
     lastRepair: path.join(guardianDir, "last-repair.json"),
+    startupState: path.join(runDir, "startup-state.json"),
   };
 };
 
@@ -760,6 +784,8 @@ const main = async () => {
   let lastRepairAtMs = 0;
   let repairPolicy = await readJson(paths.repairPolicy, {});
   let mcpElevationCache = { pid: null, elevated: null };
+  let lastCloudflaredSample = { key: null, metrics: null };
+  let lastDeferredStartupAttemptId = null;
   let lastHeartbeatState = null;
   let heartbeatExtra = {};
 
@@ -768,15 +794,21 @@ const main = async () => {
   };
 
   const probe = async () => {
-    const [environment, settingsValue, desiredValue] = await Promise.all([
+    const [environment, settingsValue, desiredValue, startupStateValue] = await Promise.all([
       loadGuardianEnv(options.projectRoot),
       readJson(paths.settings, {}),
       readJson(paths.desired, { ShouldRun: true, Source: "devbox-guardian.mjs" }),
+      readJson(paths.startupState, null),
     ]);
     environment.DEVBOX_PROJECT_ROOT = options.projectRoot;
     const settings = settingsValue ?? {};
     const desired = desiredValue ?? { ShouldRun: true };
     const shouldRun = desired.ShouldRun !== false;
+    const startupPid = Number.parseInt(startupStateValue?.ProcessId ?? "", 10);
+    const startupActivity = classifyStartupActivity({
+      startupState: startupStateValue,
+      processAlive: Number.isInteger(startupPid) && startupPid > 0 ? isProcessAlive(startupPid) : false,
+    });
     const port = Number.parseInt(settings.Port ?? environment.PORT ?? "8100", 10) || 8100;
     const publicBaseUrl = normalizePublicUrl(settings.PublicBaseUrl || environment.PUBLIC_BASE_URL || environment.CLOUDFLARED_PUBLIC_HOSTNAME);
     const publicEnabled = settings.Public === true || Boolean(publicBaseUrl);
@@ -851,12 +883,39 @@ const main = async () => {
     const cloudflaredMetrics = publicEnabled && tunnelRunning !== false
       ? await readCloudflaredMetrics(environment)
       : null;
+    const cloudflaredSampleKey = hostTunnelPid
+      ? `pid:${hostTunnelPid}`
+      : selectedRuntime === "docker"
+        ? `docker:${settings.CloudflaredContainerName || environment.CLOUDFLARED_CONTAINER_NAME || "chatgpt-devbox-cloudflared"}`
+        : "externally-managed";
+    const previousCloudflaredMetrics = lastCloudflaredSample.key === cloudflaredSampleKey
+      ? lastCloudflaredSample.metrics
+      : null;
+    const cloudflaredMetricsDelta = deriveCloudflaredMetricDeltas({
+      previous: previousCloudflaredMetrics,
+      current: cloudflaredMetrics,
+    });
+    if (cloudflaredMetrics) {
+      lastCloudflaredSample = { key: cloudflaredSampleKey, metrics: cloudflaredMetrics };
+    } else if (tunnelRunning === false) {
+      lastCloudflaredSample = { key: null, metrics: null };
+    }
+    const tunnelTransport = classifyTunnelTransport({
+      publicEnabled,
+      tunnelRunning,
+      metrics: cloudflaredMetrics,
+    });
     const optionalDegradations = [];
     if (publicEnabled && cloudflaredMetrics && cloudflaredMetrics.Reachable === false) {
       optionalDegradations.push("cloudflared metrics endpoint is unavailable");
     }
     if (publicEnabled && publicHealth && tunnelRunning === null) {
       optionalDegradations.push("public endpoint is healthy but the tunnel is externally managed");
+    }
+    if (cloudflaredMetricsDelta?.QuicClosedConnections > 0) {
+      optionalDegradations.push(
+        `cloudflared observed ${cloudflaredMetricsDelta.QuicClosedConnections} newly closed QUIC connection(s) since the previous probe`,
+      );
     }
     const classified = classifyReadiness({
       shouldRun,
@@ -866,6 +925,7 @@ const main = async () => {
       publicEnabled,
       publicHealth,
       tunnelRunning,
+      tunnelTransportHealthy: tunnelTransport.Healthy,
       dockerReady,
       devboxContainerRunning,
       optionalDegradations,
@@ -890,12 +950,19 @@ const main = async () => {
       },
       RuntimeMode: runtimeMode,
       SelectedRuntime: selectedRuntime,
+      StartupState: startupStateValue,
+      StartupInProgress: startupActivity.Active,
+      StartupActivity: startupActivity,
       DockerProbePerformed: selectedRuntime === "docker" && shouldRun,
       DockerReady: dockerReady,
       DevboxRunning: devboxContainerRunning,
       CloudflaredRunning: tunnelRunning,
       HostCloudflaredProcessId: hostTunnelPid && isProcessAlive(hostTunnelPid) ? hostTunnelPid : null,
       CloudflaredMetrics: cloudflaredMetrics,
+      CloudflaredMetricsDelta: cloudflaredMetricsDelta,
+      TunnelTransportHealthy: tunnelTransport.Healthy,
+      TunnelTransportDegraded: tunnelTransport.Degraded,
+      TunnelTransportReasons: tunnelTransport.Reasons,
       McpProcessId: mcpProcess.pid,
       McpElevated: mcpElevated,
       RequireMcpElevated: requireMcpElevated,
@@ -917,6 +984,8 @@ const main = async () => {
     IsHealthy: state?.IsHealthy ?? false,
     SelectedRuntime: state?.SelectedRuntime ?? null,
     McpProcessId: state?.McpProcessId ?? null,
+    StartupInProgress: state?.StartupInProgress ?? false,
+    StartupPhase: state?.StartupActivity?.Phase ?? null,
     Readiness: state?.Readiness ?? null,
     Reasons: state?.Reasons ?? [],
     ...extra,
@@ -955,7 +1024,7 @@ const main = async () => {
     let commandElapsedMs = 0;
     let stdout = "";
     let stderr = "";
-    const repairScope = process.platform === "win32" ? selectRepairScope(state) : "full";
+    const repairScope = selectRepairScope(state);
     const repairHeartbeat = setInterval(() => {
       void writeJsonAtomic(paths.heartbeat, {
         GuardianVersion: 2,
@@ -1074,7 +1143,19 @@ const main = async () => {
       await publishState(state);
       if (!state.DesiredState.ShouldRun || state.IsHealthy) {
         unhealthyCount = 0;
+        lastDeferredStartupAttemptId = null;
+      } else if (state.StartupInProgress) {
+        unhealthyCount = 0;
+        const attemptId = state.StartupActivity?.AttemptId ?? "unknown";
+        if (lastDeferredStartupAttemptId !== attemptId) {
+          await log(
+            "INFO",
+            `startup in progress; deferring repair attempt=${attemptId} pid=${state.StartupActivity?.ProcessId ?? "unknown"} phase=${state.StartupActivity?.Phase ?? "unknown"}`,
+          );
+          lastDeferredStartupAttemptId = attemptId;
+        }
       } else {
+        lastDeferredStartupAttemptId = null;
         unhealthyCount += 1;
         if (unhealthyCount === 1) {
           await log("WARN", `unhealthy (${state.SelectedRuntime}): ${state.Reasons.join("; ")}`);
