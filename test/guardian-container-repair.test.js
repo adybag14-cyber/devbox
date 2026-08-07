@@ -9,6 +9,7 @@ import {
   isGuardianCommandLine,
   isGuardianLockOwner,
   isProcessAlive,
+  restoreRepairBackoff,
   runProcessUntilExit,
 } from "../scripts/devbox-guardian.mjs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -23,6 +24,23 @@ const environment = {
 };
 const settings = { DevboxContainerName: "devbox-runtime" };
 const result = (exitCode, stdout = "", stderr = "") => ({ exitCode, stdout, stderr });
+
+
+test("Guardian restores repair backoff only for the same live MCP PID", () => {
+  const now = Date.parse("2026-08-07T19:00:00.000Z");
+  const lastRepair = {
+    RepairBackoffUntilUtc: "2026-08-07T19:04:00.000Z",
+    RepairBackoffMcpProcessId: 4242,
+  };
+  assert.equal(restoreRepairBackoff({ lastRepair, currentMcpPid: 4242, nowMs: now }), Date.parse(lastRepair.RepairBackoffUntilUtc));
+  assert.equal(restoreRepairBackoff({ lastRepair, currentMcpPid: 4343, nowMs: now }), 0);
+  assert.equal(restoreRepairBackoff({ lastRepair, currentMcpPid: null, nowMs: now }), 0);
+  assert.equal(restoreRepairBackoff({
+    lastRepair: { ...lastRepair, RepairBackoffUntilUtc: "2026-08-07T18:59:59.000Z" },
+    currentMcpPid: 4242,
+    nowMs: now,
+  }), 0);
+});
 
 test("Windows EPERM process probes still mean the PID is alive", () => {
   const deniedProbe = () => {

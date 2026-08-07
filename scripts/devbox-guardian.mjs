@@ -343,6 +343,20 @@ export const isProcessAlive = (pid, signalProcess = process.kill.bind(process)) 
   }
 };
 
+export const restoreRepairBackoff = ({ lastRepair = null, currentMcpPid = null, nowMs = Date.now() } = {}) => {
+  const persistedPid = Number.parseInt(lastRepair?.RepairBackoffMcpProcessId ?? "", 10);
+  const activePid = Number.parseInt(currentMcpPid ?? "", 10);
+  const deadlineMs = Date.parse(String(lastRepair?.RepairBackoffUntilUtc ?? ""));
+  if (
+    !Number.isInteger(persistedPid) || persistedPid < 1 ||
+    !Number.isInteger(activePid) || activePid !== persistedPid ||
+    !Number.isFinite(deadlineMs) || deadlineMs <= nowMs
+  ) {
+    return 0;
+  }
+  return deadlineMs;
+};
+
 export const isGuardianCommandLine = (commandLine, projectRoot) => {
   const normalizedCommandLine = String(commandLine ?? "").replaceAll("\\", "/").toLowerCase();
   const expectedScript = path.join(projectRoot, "scripts", "devbox-guardian.mjs").replaceAll("\\", "/").toLowerCase();
@@ -786,7 +800,14 @@ const main = async () => {
   let stopping = false;
   let unhealthyCount = 0;
   let lastRepairAtMs = 0;
-  let repairBackoffUntilMs = 0;
+  const [persistedLastRepair, initialMcpProcess] = await Promise.all([
+    readJson(paths.lastRepair, null),
+    findMcpProcess(paths.runDir),
+  ]);
+  let repairBackoffUntilMs = restoreRepairBackoff({
+    lastRepair: persistedLastRepair,
+    currentMcpPid: initialMcpProcess.pid,
+  });
   let repairPolicy = await readJson(paths.repairPolicy, {});
   let mcpElevationCache = { pid: null, elevated: null };
   let lastCloudflaredSample = { key: null, metrics: null };
@@ -1121,6 +1142,9 @@ const main = async () => {
       Succeeded: succeeded,
       RepairBackoffUntilUtc: repairBackoffUntilMs > Date.now()
         ? new Date(repairBackoffUntilMs).toISOString()
+        : null,
+      RepairBackoffMcpProcessId: repairBackoffUntilMs > Date.now()
+        ? recoveredState.McpProcessId
         : null,
       RepairPolicy: repairPolicy,
     };
