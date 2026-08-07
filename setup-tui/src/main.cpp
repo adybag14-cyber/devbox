@@ -26,7 +26,7 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* kVersion = "0.4.1";
+constexpr const char* kVersion = "0.4.2";
 constexpr const char* kRepoUrl = "https://github.com/adybag14-cyber/devbox.git";
 
 struct Theme {

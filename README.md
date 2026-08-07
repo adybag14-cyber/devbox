@@ -266,7 +266,7 @@ Guardian v2 monitors the MCP process, local and public health endpoints, the sel
 ./scripts/install-guardian.sh auto
 ```
 
-Docker mode includes stale-container start/replace repair plus exponential backoff and a persistent circuit breaker after repeated Docker Desktop failures. See [docs/GUARDIAN.md](./docs/GUARDIAN.md) for readiness fields, status commands, and service-manager setup.
+Docker mode includes stale-container start/replace repair plus exponential backoff and a persistent circuit breaker after repeated Docker Desktop failures. Windows/host startup also has single-owner lifecycle locking, a bounded startup deadline, immediate MCP PID ownership, cleanup-on-failure, and a machine-readable `run/startup-state.json` phase journal that Guardian uses to avoid racing an in-progress start. See [docs/GUARDIAN.md](./docs/GUARDIAN.md) for readiness fields, status commands, and service-manager setup.
 
 ## ChatGPT connector values
 
@@ -286,7 +286,8 @@ Authentication and transport are separate. Selecting `oauth` or `cloudflare` con
 
 For commands likely to exceed the connector request lifetime, use the persistent async job tools instead of holding one MCP request open:
 
-- `devbox_exec_start` starts a detached job and returns a job ID immediately.
+- Synchronous shell tools are intentionally capped at **90 seconds** because upstream MCP/connector requests can be aborted around the two-minute mark. Do not use a long synchronous timeout for builds, exports, sleeps, or soak tests.
+- `devbox_exec_start` starts a detached job and returns a job ID immediately; use it for work expected to approach or exceed 90 seconds.
 - `devbox_job_status` polls durable state under `run/jobs/`.
 - `devbox_job_logs` returns bounded log tails.
 - `devbox_job_cancel` cancels the detached process tree.

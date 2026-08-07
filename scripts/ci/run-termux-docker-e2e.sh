@@ -47,6 +47,7 @@ docker run --rm \
     ./devbox-tui-termux-ci --cloudflare-help --no-color | tee cloudflare-help-termux.txt
     grep -F 'pkg update && pkg install cloudflared termux-services' cloudflare-help-termux.txt
     sh -n scripts/install-cloudflare-tunnel.sh
+    sh -n scripts/restart-cloudflare-tunnel.sh
     sh scripts/ci/test-cloudflare-tunnel-errors.sh
 
     echo '=== Full bootstrap -> launcher -> MCP workflow ==='

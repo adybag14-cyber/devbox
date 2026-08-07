@@ -12,6 +12,13 @@ on:
       - "scripts/install-devbox.sh"
       - "scripts/install-termux.sh"
       - "scripts/install-guardian.sh"
+      - "scripts/Start-ChatGptDevboxMcp.ps1"
+      - "scripts/Install-ChatGptDevboxGuardian.ps1"
+      - "scripts/Run-Start-ChatGptDevboxMcp.vbs"
+      - "scripts/ci/test-windows-startup-contract.ps1"
+      - "scripts/devbox-guardian.mjs"
+      - "src/guardian-core.js"
+      - "test/guardian-core.test.js"
       - "docs/TERMUX.md"
       - "docs/HOST_COMPATIBILITY.md"
       - ".github/workflows/bootstrap-binaries.yml"
@@ -68,6 +75,10 @@ jobs:
         run: cargo test --manifest-path bootstrap/Cargo.toml
       - name: Build Rust bootstrap
         run: cargo build --release --manifest-path bootstrap/Cargo.toml
+      - name: Validate Windows startup lifecycle contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci/test-windows-startup-contract.ps1
       - name: Build C++ setup TUI
         run: |
           cmake -S setup-tui -B setup-tui/build -DCMAKE_BUILD_TYPE=Release

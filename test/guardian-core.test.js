@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import {
   calculateRepairBackoffSeconds,
   classifyReadiness,
+  classifyStartupActivity,
+  classifyTunnelTransport,
+  deriveCloudflaredMetricDeltas,
   isRepairAllowed,
   resolveSelectedRuntime,
   resolveFailureThreshold,
@@ -162,4 +165,93 @@ test("local MCP health failures use a faster repair threshold than tunnel-only f
   assert.equal(resolveFailureThreshold({ state: { LocalHealth: false }, configuredThreshold: 1 }), 1);
   assert.equal(resolveFailureThreshold({ state: { LocalHealth: true }, configuredThreshold: 3 }), 3);
   assert.equal(resolveFailureThreshold({ state: { LocalHealth: null }, configuredThreshold: 4 }), 4);
+});
+
+
+test("cloudflared HA collapse is a required tunnel transport failure", () => {
+  const transport = classifyTunnelTransport({
+    publicEnabled: true,
+    tunnelRunning: true,
+    metrics: { Reachable: true, HaConnections: 0 },
+  });
+  assert.equal(transport.Healthy, false);
+  assert.equal(transport.Degraded, true);
+  assert.match(transport.Reasons.join("; "), /no active HA connections/i);
+
+  const state = classifyReadiness({
+    selectedRuntime: "host",
+    mcpProcessRunning: true,
+    localHealth: true,
+    publicEnabled: true,
+    publicHealth: true,
+    tunnelRunning: true,
+    tunnelTransportHealthy: transport.Healthy,
+  });
+  assert.equal(state.McpHealthy, true);
+  assert.equal(state.PublicTunnelHealthy, false);
+  assert.equal(state.NeedsRepair, true);
+  assert.match(state.Reasons.join("; "), /transport has no active HA/i);
+  assert.equal(selectRepairScope({ Settings: { Public: true }, ...state }), "public-tunnel");
+});
+
+test("cloudflared metrics deltas ignore counter resets and expose transport churn", () => {
+  assert.deepEqual(deriveCloudflaredMetricDeltas({
+    previous: { Reachable: true, RequestErrors: 10, TotalRequests: 100, QuicClosedConnections: 2 },
+    current: { Reachable: true, RequestErrors: 12, TotalRequests: 109, QuicClosedConnections: 5 },
+  }), { RequestErrors: 2, TotalRequests: 9, QuicClosedConnections: 3 });
+
+  assert.deepEqual(deriveCloudflaredMetricDeltas({
+    previous: { Reachable: true, RequestErrors: 12, TotalRequests: 109, QuicClosedConnections: 5 },
+    current: { Reachable: true, RequestErrors: 0, TotalRequests: 1, QuicClosedConnections: 0 },
+  }), { RequestErrors: null, TotalRequests: null, QuicClosedConnections: null });
+});
+
+test("confirmed tunnel transport collapse uses the faster repair threshold", () => {
+  assert.equal(resolveFailureThreshold({
+    state: { LocalHealth: true, TunnelTransportDegraded: true },
+    configuredThreshold: 4,
+  }), 2);
+  assert.equal(resolveFailureThreshold({
+    state: { LocalHealth: true, TunnelTransportDegraded: false },
+    configuredThreshold: 4,
+  }), 4);
+});
+
+
+test("startup activity requires a fresh live owner and expires safely", () => {
+  const now = Date.parse("2026-08-06T23:00:00.000Z");
+  const active = classifyStartupActivity({
+    startupState: {
+      Status: "running",
+      ProcessId: 4242,
+      Phase: "waiting-local-health",
+      AttemptId: "attempt-1",
+      UpdatedAtUtc: "2026-08-06T22:59:30.000Z",
+    },
+    processAlive: true,
+    nowMs: now,
+    maxAgeMs: 60000,
+  });
+  assert.equal(active.Active, true);
+  assert.equal(active.Stale, false);
+  assert.equal(active.ProcessId, 4242);
+  assert.equal(active.Phase, "waiting-local-health");
+
+  const dead = classifyStartupActivity({
+    startupState: { Status: "running", ProcessId: 4242, UpdatedAtUtc: "2026-08-06T22:59:30.000Z" },
+    processAlive: false,
+    nowMs: now,
+    maxAgeMs: 60000,
+  });
+  assert.equal(dead.Active, false);
+  assert.equal(dead.Stale, true);
+
+  const old = classifyStartupActivity({
+    startupState: { Status: "running", ProcessId: 4242, UpdatedAtUtc: "2026-08-06T22:50:00.000Z" },
+    processAlive: true,
+    nowMs: now,
+    maxAgeMs: 60000,
+  });
+  assert.equal(old.Active, false);
+  assert.equal(old.Stale, true);
 });

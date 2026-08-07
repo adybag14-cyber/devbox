@@ -69,6 +69,15 @@ const httpUsageLogPath = path.join(runDir, "http-usage.jsonl");
 const logRotationChains = new Map();
 const activeMcpRequestControllers = new Map();
 const guardianStatePath = path.join(runDir, "guardian", "state.json");
+const startupStatePath = path.join(runDir, "startup-state.json");
+
+const readStartupStatusSnapshot = async () => {
+  try {
+    return JSON.parse(await readFile(startupStatePath, "utf8"));
+  } catch {
+    return null;
+  }
+};
 
 const readGuardianStatusSnapshot = async () => {
   try {
@@ -81,6 +90,10 @@ const readGuardianStatusSnapshot = async () => {
       publicTunnelHealthy: state.PublicTunnelHealthy ?? null,
       cloudflaredRunning: state.CloudflaredRunning ?? null,
       cloudflaredMetrics: state.CloudflaredMetrics ?? null,
+      cloudflaredMetricsDelta: state.CloudflaredMetricsDelta ?? null,
+      tunnelTransportHealthy: state.TunnelTransportHealthy ?? null,
+      tunnelTransportDegraded: state.TunnelTransportDegraded ?? false,
+      tunnelTransportReasons: state.TunnelTransportReasons ?? [],
       readiness: state.Readiness ?? null,
       reasons: state.Reasons ?? [],
     };
@@ -101,6 +114,10 @@ const outputSchema = {
 
 const MAX_USAGE_PREVIEW_CHARS = 240;
 export const MAX_TOOL_SUMMARY_CHARS = 4096;
+export const SYNC_MCP_TIMEOUT_SECONDS = 90;
+const syncCommandTimeoutSchema = () => z.number().int().min(1).max(SYNC_MCP_TIMEOUT_SECONDS).default(SYNC_MCP_TIMEOUT_SECONDS).describe(
+  `Synchronous command timeout in seconds (maximum ${SYNC_MCP_TIMEOUT_SECONDS}). Use devbox_exec_start for longer work so upstream MCP request deadlines cannot cancel it.`,
+);
 const COMMAND_OUTPUT_LIMIT_CHARS = config.maxTextOutputChars === null
   ? config.maxCommandOutputChars
   : Math.min(config.maxTextOutputChars, config.maxCommandOutputChars);
@@ -662,6 +679,7 @@ const buildServer = ({ requestSignal } = {}) => {
           devboxWorkspacePath: config.devboxWorkspacePath,
           hostExecEnabled: config.enableHostExec,
           guardian: await readGuardianStatusSnapshot(),
+          startup: await readStartupStatusSnapshot(),
         };
 
         if (info.running) {
@@ -781,12 +799,12 @@ const buildServer = ({ requestSignal } = {}) => {
       {
         title: `Run Read-Only Shell Command In ${runtimeTitle}`,
         description: isDockerRuntime
-          ? "Prefer this for inspection-only shell work such as ls, find, cat, sed -n, rg, git diff, git log, or config inspection. It runs in the long-lived devbox container; read-only behavior is advisory so Docker clients do not strand during disposable-container probes."
-          : `Prefer this for inspection-only shell work such as ls, find, cat, sed -n, rg, git diff, git log, or config inspection. In ${runtimeLabel} mode this runs directly on the host shell, so read-only behavior is advisory rather than sandbox-enforced.`,
+          ? `Prefer this for inspection-only shell work such as ls, find, cat, sed -n, rg, git diff, git log, or config inspection. It runs in the long-lived devbox container; read-only behavior is advisory. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for longer work.`
+          : `Prefer this for inspection-only shell work such as ls, find, cat, sed -n, rg, git diff, git log, or config inspection. In ${runtimeLabel} mode this runs directly on the host shell, so read-only behavior is advisory rather than sandbox-enforced. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for longer work.`,
         inputSchema: {
           command: z.string().min(1).describe(`Read-only shell command to run inside the ${runtimeLabel}.`),
           working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
-          timeout_seconds: z.number().int().min(1).max(7200).default(900).describe("Command timeout in seconds."),
+          timeout_seconds: syncCommandTimeoutSchema(),
           user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the disposable read-only container." : `Host user hint for ${runtimeLabel} mode.`),
         },
         outputSchema,
@@ -816,12 +834,12 @@ const buildServer = ({ requestSignal } = {}) => {
       {
         title: `Run Mutating Shell Command In ${runtimeTitle}`,
         description: isDockerRuntime
-          ? "Use this only when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the devbox or workspace. Prefer devbox_exec_readonly for inspection, search, and file-reading commands."
-          : `Use this when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the ${runtimeLabel}. Prefer devbox_exec_readonly for inspection, search, and file-reading commands.`,
+          ? `Use this only when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the devbox or workspace. Prefer devbox_exec_readonly for inspection. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for builds or other longer work.`
+          : `Use this when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the ${runtimeLabel}. Prefer devbox_exec_readonly for inspection. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for builds or other longer work.`,
         inputSchema: {
           command: z.string().min(1).describe(`Shell command to run inside the ${runtimeLabel}.`),
           working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
-          timeout_seconds: z.number().int().min(1).max(7200).default(900).describe("Command timeout in seconds."),
+          timeout_seconds: syncCommandTimeoutSchema(),
           user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
         },
         outputSchema,
@@ -1304,7 +1322,7 @@ const buildServer = ({ requestSignal } = {}) => {
         inputSchema: {
           command: z.string().min(1).describe(`Command to run on the ${hostTitle.toLowerCase()}.`),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe(`Working directory on the ${hostTitle.toLowerCase()}.`),
-          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+          timeout_seconds: syncCommandTimeoutSchema(),
         },
         outputSchema,
       },
@@ -1435,7 +1453,7 @@ const buildServer = ({ requestSignal } = {}) => {
         inputSchema: {
           command: z.string().min(1).describe(`Command to run on the ${hostTitle.toLowerCase()}.`),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe(`Working directory on the ${hostTitle.toLowerCase()}.`),
-          timeout_seconds: z.number().int().min(1).max(7200).default(900).describe("Command timeout in seconds."),
+          timeout_seconds: syncCommandTimeoutSchema(),
         },
         outputSchema,
       },
@@ -1455,7 +1473,7 @@ const buildServer = ({ requestSignal } = {}) => {
           program: z.string().min(1).describe("Program name or path. It must be allowed by HOST_PROGRAM_ALLOWLIST."),
           args: z.array(z.string()).default([]).describe("Argument list for the program."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe(`Working directory on the ${hostTitle.toLowerCase()}.`),
-          timeout_seconds: z.number().int().min(1).max(7200).default(300).describe("Command timeout in seconds."),
+          timeout_seconds: syncCommandTimeoutSchema(),
         },
         outputSchema,
       },
@@ -1475,7 +1493,7 @@ const buildServer = ({ requestSignal } = {}) => {
           program: z.string().min(1).describe("Program name or path. It must be allowed by HOST_PROGRAM_ALLOWLIST."),
           args: z.array(z.string()).default([]).describe("Argument list for the program."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe(`Working directory on the ${hostTitle.toLowerCase()}.`),
-          timeout_seconds: z.number().int().min(1).max(7200).default(900).describe("Command timeout in seconds."),
+          timeout_seconds: syncCommandTimeoutSchema(),
         },
         outputSchema,
       },

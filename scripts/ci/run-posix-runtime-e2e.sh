@@ -25,6 +25,7 @@ trap cleanup EXIT INT TERM
 
 cd "$ROOT_DIR"
 sh -n scripts/install-cloudflare-tunnel.sh
+sh -n scripts/restart-cloudflare-tunnel.sh
 sh scripts/ci/test-cloudflare-tunnel-errors.sh
 rm -rf "$WORKSPACE"
 mkdir -p "$WORKSPACE"

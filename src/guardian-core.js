@@ -100,12 +100,98 @@ export const selectRepairScope = (state = {}) => {
   return publicOnlyFailure ? "public-tunnel" : "full";
 };
 
+export const classifyStartupActivity = ({
+  startupState = null,
+  processAlive = false,
+  nowMs = Date.now(),
+  maxAgeMs = 300000,
+} = {}) => {
+  const status = String(startupState?.Status ?? "").trim().toLowerCase();
+  const pid = Number.parseInt(startupState?.ProcessId ?? "", 10);
+  const updatedAtMs = Date.parse(startupState?.UpdatedAtUtc ?? "");
+  const ageMs = Number.isFinite(updatedAtMs) ? Math.max(0, nowMs - updatedAtMs) : null;
+  const fresh = ageMs !== null && ageMs <= Math.max(1000, maxAgeMs);
+  const active = status === "running" && Number.isInteger(pid) && pid > 0 && processAlive === true && fresh;
+
+  return {
+    Active: active,
+    Stale: status === "running" && !active,
+    ProcessId: Number.isInteger(pid) && pid > 0 ? pid : null,
+    Phase: startupState?.Phase ?? null,
+    Status: status || null,
+    AttemptId: startupState?.AttemptId ?? null,
+    UpdatedAtUtc: startupState?.UpdatedAtUtc ?? null,
+    AgeMs: ageMs,
+  };
+};
+
+export const classifyTunnelTransport = ({
+  publicEnabled = false,
+  tunnelRunning = null,
+  metrics = null,
+} = {}) => {
+  if (!publicEnabled || tunnelRunning === false || !metrics || metrics.Reachable !== true) {
+    return {
+      Healthy: null,
+      Degraded: false,
+      Reasons: [],
+    };
+  }
+
+  const reasons = [];
+  const rawHaConnections = metrics.HaConnections;
+  if (rawHaConnections === null || rawHaConnections === undefined) {
+    return {
+      Healthy: null,
+      Degraded: false,
+      Reasons: [],
+    };
+  }
+  const haConnections = Number(rawHaConnections);
+  if (Number.isFinite(haConnections) && haConnections <= 0) {
+    reasons.push("cloudflared has no active HA connections");
+  }
+
+  return {
+    Healthy: Number.isFinite(haConnections) ? reasons.length === 0 : null,
+    Degraded: reasons.length > 0,
+    Reasons: reasons,
+  };
+};
+
+export const deriveCloudflaredMetricDeltas = ({ previous = null, current = null } = {}) => {
+  if (!previous || !current || current.Reachable !== true || previous.Reachable !== true) {
+    return null;
+  }
+
+  const delta = (name) => {
+    const rawBefore = previous[name];
+    const rawAfter = current[name];
+    if (rawBefore === null || rawBefore === undefined || rawAfter === null || rawAfter === undefined) return null;
+    const before = Number(rawBefore);
+    const after = Number(rawAfter);
+    if (!Number.isFinite(before) || !Number.isFinite(after) || after < before) return null;
+    return after - before;
+  };
+
+  return {
+    RequestErrors: delta("RequestErrors"),
+    TotalRequests: delta("TotalRequests"),
+    QuicClosedConnections: delta("QuicClosedConnections"),
+  };
+};
+
 export const resolveFailureThreshold = ({ state = {}, configuredThreshold = 3 } = {}) => {
   const configured = Math.max(1, Number.parseInt(configuredThreshold, 10) || 1);
   // A failed localhost health probe means the MCP itself is unavailable or
-  // hung, so recover after two observations. Public-only tunnel failures keep
-  // the configured threshold to tolerate normal edge/QUIC reconnect churn.
-  return state.LocalHealth === false ? Math.min(2, configured) : configured;
+  // hung, so recover after two observations. A confirmed cloudflared transport
+  // collapse (for example HA connections reaching zero) also gets the faster
+  // threshold, but still selects a tunnel-only repair while MCP stays healthy.
+  // Generic public-health failures retain the configured threshold so normal
+  // edge/QUIC reconnect churn does not trigger unnecessary repair.
+  return state.LocalHealth === false || state.TunnelTransportDegraded === true
+    ? Math.min(2, configured)
+    : configured;
 };
 
 export const classifyReadiness = ({
@@ -116,6 +202,7 @@ export const classifyReadiness = ({
   publicEnabled = false,
   publicHealth = null,
   tunnelRunning = null,
+  tunnelTransportHealthy = null,
   dockerReady = null,
   devboxContainerRunning = null,
   optionalDegradations = [],
@@ -137,7 +224,7 @@ export const classifyReadiness = ({
   }
   const mcpHealthy = Boolean(mcpProcessRunning && localHealth && elevationOk);
   const publicTunnelHealthy = publicEnabled
-    ? Boolean(publicHealth && tunnelRunning !== false)
+    ? Boolean(publicHealth && tunnelRunning !== false && tunnelTransportHealthy !== false)
     : null;
   const selectedRuntimeHealthy = runtime === "docker"
     ? Boolean(dockerReady && devboxContainerRunning)
@@ -160,6 +247,9 @@ export const classifyReadiness = ({
     }
     if (publicEnabled && tunnelRunning === false) {
       reasons.push("public tunnel is not running");
+    }
+    if (publicEnabled && tunnelTransportHealthy === false) {
+      reasons.push("cloudflared transport has no active HA connections");
     }
     if (publicEnabled && !publicHealth) {
       reasons.push("public health check failed");
