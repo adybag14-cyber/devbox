@@ -235,13 +235,14 @@ test("Windows public-only repair forces wrapper exit and selects TunnelOnly", ()
   const args = buildWindowsGuardianRepairArgs({
     scriptPath: "C:\\repo\\scripts\\Start-ChatGptDevboxMcp.ps1",
     selectedRuntime: "host",
-    settings: { Public: true, OAuth: true },
+    settings: { Public: false, OAuth: true },
     repairScope: "public-tunnel",
   });
   const encodedIndex = args.indexOf("-EncodedCommand");
   const command = Buffer.from(args[encodedIndex + 1], "base64").toString("utf16le");
 
   assert.match(command, /-TunnelOnly/u);
+  assert.match(command, /-Public/u);
   assert.match(command, /\[System\.Environment\]::Exit\(\$exitCode\)/u);
   assert.match(command, /\$ProgressPreference = 'SilentlyContinue'/u);
   assert.match(command, /\$InformationPreference = 'SilentlyContinue'/u);

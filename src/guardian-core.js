@@ -191,9 +191,10 @@ export const resolveFailureThreshold = ({
   const mcpPid = Number.parseInt(state.McpProcessId ?? "", 10);
   const mcpProcessAlive = Number.isInteger(mcpPid) && mcpPid > 0;
 
-  // A confirmed tunnel transport collapse is safe to repair quickly because
-  // selectRepairScope keeps the healthy MCP in place.
-  if (state.TunnelTransportDegraded === true) {
+  // A confirmed tunnel transport collapse or a missing/unhealthy public tunnel
+  // is safe to repair quickly when MCP itself is healthy because selectRepairScope
+  // keeps the healthy MCP in place.
+  if (selectRepairScope(state) === "public-tunnel") {
     return Math.min(2, configured);
   }
 

@@ -893,6 +893,34 @@ function Start-CloudflaredQuickTunnel {
     throw "Cloudflare quick tunnel did not publish a URL. Logs:`n$logs"
 }
 
+function Assert-McpReplacementReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$NodeExe,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][string]$RuntimeEnvFile
+    )
+
+    $serverPath = Join-Path $ProjectRoot 'src/server.js'
+    $syntaxOutput = & $NodeExe '--check' $serverPath 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        throw "MCP replacement preflight failed JavaScript syntax validation. The existing MCP was not stopped. Output:`n$syntaxOutput"
+    }
+
+    $dependencyProbe = @'
+const dependencies = ['express', '@modelcontextprotocol/sdk/server/mcp.js', 'zod/v4', 'jose'];
+for (const dependency of dependencies) await import(dependency);
+'@
+    Push-Location $ProjectRoot
+    try {
+        $dependencyOutput = & $NodeExe ("--env-file={0}" -f $RuntimeEnvFile) '--input-type=module' '-e' $dependencyProbe 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            throw "MCP replacement dependency preflight failed. The existing MCP was not stopped. Restore the locked dependencies with npm ci. Output:`n$dependencyOutput"
+        }
+    } finally {
+        Pop-Location
+    }
+}
+
 function Normalize-PublicBaseUrl {
     param([string]$Value)
 
@@ -959,6 +987,8 @@ function Start-CloudflaredNamedTunnel {
         [string]$RunDir,
         [string]$MetricsUrl = '',
         [string]$EdgeIpVersion = '',
+        [string]$TransportProtocol = '',
+        [string]$EdgeBindAddress = '',
         [bool]$DockerReady = $true
     )
 
@@ -1002,10 +1032,50 @@ function Start-CloudflaredNamedTunnel {
     if ($edgeIpVersion -notin @('auto', '4', '6')) {
         throw "CLOUDFLARED_EDGE_IP_VERSION must be one of: auto, 4, 6."
     }
+
+    $transportProtocol = if (-not [string]::IsNullOrWhiteSpace($TransportProtocol)) {
+        [string]$TransportProtocol
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:TUNNEL_TRANSPORT_PROTOCOL)) {
+        [string]$env:TUNNEL_TRANSPORT_PROTOCOL
+    } else {
+        'auto'
+    }
+    $transportProtocol = $transportProtocol.Trim().ToLowerInvariant()
+    if ($transportProtocol -notin @('auto', 'quic', 'http2')) {
+        throw "CLOUDFLARED_TRANSPORT_PROTOCOL must be one of: auto, quic, http2."
+    }
+
+    $requestedEdgeBindAddress = if (-not [string]::IsNullOrWhiteSpace($EdgeBindAddress)) {
+        [string]$EdgeBindAddress
+    } elseif (-not [string]::IsNullOrWhiteSpace($env:TUNNEL_EDGE_BIND_ADDRESS)) {
+        [string]$env:TUNNEL_EDGE_BIND_ADDRESS
+    } else {
+        ''
+    }
+    $requestedEdgeBindAddress = $requestedEdgeBindAddress.Trim()
+    $effectiveEdgeBindAddress = $requestedEdgeBindAddress
+    if ($effectiveEdgeBindAddress) {
+        $parsedBindAddress = $null
+        if (-not [System.Net.IPAddress]::TryParse($effectiveEdgeBindAddress, [ref]$parsedBindAddress)) {
+            throw "CLOUDFLARED_EDGE_BIND_ADDRESS must be a valid local IP address."
+        }
+        try {
+            $localBind = Get-NetIPAddress -IPAddress $effectiveEdgeBindAddress -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $localBind) {
+                Write-Warning "Configured Cloudflare edge bind address $effectiveEdgeBindAddress is not currently assigned locally; falling back to normal Windows route selection so the tunnel can still recover."
+                $effectiveEdgeBindAddress = ''
+            }
+        } catch {
+            # If adapter inspection is unavailable, let cloudflared validate the explicit address.
+        }
+    }
+
     $transportStateFile = Join-Path $RunDir 'host-cloudflared.transport.json'
     $transportState = [ordered]@{
         EdgeIpVersion = $edgeIpVersion
-        ProtocolSelection = 'cloudflared-managed'
+        ProtocolSelection = $transportProtocol
+        RequestedEdgeBindAddress = $requestedEdgeBindAddress
+        EffectiveEdgeBindAddress = $effectiveEdgeBindAddress
         MetricsUrl = $metricsUrl
         UpdatedAtUtc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json -Depth 4
@@ -1021,8 +1091,17 @@ function Start-CloudflaredNamedTunnel {
     if (Test-Path $stdoutLog) { Remove-Item $stdoutLog -Force -ErrorAction SilentlyContinue }
     if (Test-Path $stderrLog) { Remove-Item $stderrLog -Force -ErrorAction SilentlyContinue }
 
+    $cloudflaredArgs = @('tunnel', '--config', $configFile, '--no-autoupdate', '--loglevel', 'info', '--metrics', $metricsAddress, '--edge-ip-version', $edgeIpVersion)
+    if ($transportProtocol -ne 'auto') {
+        $cloudflaredArgs += @('--protocol', $transportProtocol)
+    }
+    if ($effectiveEdgeBindAddress) {
+        $cloudflaredArgs += @('--edge-bind-address', $effectiveEdgeBindAddress)
+    }
+    $cloudflaredArgs += @('run', '--token-file', $tokenFile)
+
     $process = Start-Process -FilePath $cloudflaredExe `
-        -ArgumentList @('tunnel', '--config', $configFile, '--no-autoupdate', '--loglevel', 'info', '--metrics', $metricsAddress, '--edge-ip-version', $edgeIpVersion, 'run', '--token-file', $tokenFile) `
+        -ArgumentList $cloudflaredArgs `
         -WorkingDirectory $RunDir `
         -RedirectStandardOutput $stdoutLog `
         -RedirectStandardError $stderrLog `
@@ -1052,6 +1131,8 @@ function Start-CloudflaredPublicTunnel {
         [string]$RunDir,
         [string]$MetricsUrl = '',
         [string]$EdgeIpVersion = '',
+        [string]$TransportProtocol = '',
+        [string]$EdgeBindAddress = '',
         [bool]$DockerReady = $false
     )
 
@@ -1063,7 +1144,7 @@ function Start-CloudflaredPublicTunnel {
             throw "CLOUDFLARED_TUNNEL_TOKEN and CLOUDFLARED_PUBLIC_HOSTNAME must both be set to use the named Cloudflare tunnel."
         }
 
-        return Start-CloudflaredNamedTunnel -ContainerName $ContainerName -TunnelToken $TunnelToken -PublicHostname $PublicHostname -Port $Port -RunDir $RunDir -MetricsUrl $MetricsUrl -EdgeIpVersion $EdgeIpVersion -DockerReady:$DockerReady
+        return Start-CloudflaredNamedTunnel -ContainerName $ContainerName -TunnelToken $TunnelToken -PublicHostname $PublicHostname -Port $Port -RunDir $RunDir -MetricsUrl $MetricsUrl -EdgeIpVersion $EdgeIpVersion -TransportProtocol $TransportProtocol -EdgeBindAddress $EdgeBindAddress -DockerReady:$DockerReady
     }
 
     if ($SelectedRuntime -eq 'host') {
@@ -1165,6 +1246,9 @@ $cloudflaredTunnelToken = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_TUN
 $cloudflaredPublicHostname = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_PUBLIC_HOSTNAME"
 $cloudflaredMetricsUrl = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_METRICS_URL"
 $cloudflaredEdgeIpVersion = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_EDGE_IP_VERSION"
+$cloudflaredTransportProtocol = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_TRANSPORT_PROTOCOL"
+$cloudflaredEdgeBindAddress = Get-EnvValue -FilePath $envFile -Name "CLOUDFLARED_EDGE_BIND_ADDRESS"
+$usingNamedTunnel = (-not [string]::IsNullOrWhiteSpace($cloudflaredTunnelToken)) -and (-not [string]::IsNullOrWhiteSpace($cloudflaredPublicHostname))
 $configuredPublicBaseUrl = Normalize-PublicBaseUrl -Value (Get-EnvValue -FilePath $envFile -Name "PUBLIC_BASE_URL")
 if (-not $configuredPublicBaseUrl) {
     $configuredPublicBaseUrl = Normalize-PublicBaseUrl -Value $cloudflaredPublicHostname
@@ -1190,16 +1274,18 @@ if ($selectedRuntime -eq 'docker') {
 
 $publicBaseUrl = $configuredPublicBaseUrl
 if ($TunnelOnly -and -not $Public) {
-    throw '-TunnelOnly requires -Public.'
+    # Tunnel-only is itself an explicit request to repair the configured public path.
+    # Do not require callers/Guardian to redundantly repeat -Public.
+    $Public = $true
 }
 if ($Public) {
     Write-StartupPhase -Phase 'starting-cloudflare-tunnel'
     Assert-StartupDeadline -Phase 'starting-cloudflare-tunnel'
-    $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port -SelectedRuntime $selectedRuntime -RunDir $runDir -MetricsUrl $cloudflaredMetricsUrl -EdgeIpVersion $cloudflaredEdgeIpVersion -DockerReady:$dockerReady
+    $publicBaseUrl = Start-CloudflaredPublicTunnel -ContainerName $cloudflaredContainerName -TunnelToken $cloudflaredTunnelToken -PublicHostname $cloudflaredPublicHostname -Port $port -SelectedRuntime $selectedRuntime -RunDir $runDir -MetricsUrl $cloudflaredMetricsUrl -EdgeIpVersion $cloudflaredEdgeIpVersion -TransportProtocol $cloudflaredTransportProtocol -EdgeBindAddress $cloudflaredEdgeBindAddress -DockerReady:$dockerReady
     Write-StartupPhase -Phase 'cloudflare-tunnel-started' -Extra @{ PublicBaseUrl = $publicBaseUrl }
 }
 if ($TunnelOnly) {
-    $hostTunnelPidFile = if ($selectedRuntime -eq 'host') { Join-Path $runDir 'host-cloudflared.pid' } else { '' }
+    $hostTunnelPidFile = if ($usingNamedTunnel) { Join-Path $runDir 'host-cloudflared.pid' } else { '' }
     Write-StartupPhase -Phase 'waiting-public-health'
     Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl -HostCloudflaredPidFile $hostTunnelPidFile
     $script:startupSucceeded = $true
@@ -1251,6 +1337,9 @@ if ($selectedRuntime -eq 'host') {
 
 Write-StartupPhase -Phase 'writing-runtime-config'
 Write-RuntimeEnvFile -SourceEnvFile $envFile -RuntimeEnvFile $runtimeEnvFile -Overrides $overrides
+Assert-StartupDeadline -Phase 'preflighting-mcp-replacement'
+Write-StartupPhase -Phase 'preflighting-mcp-replacement'
+Assert-McpReplacementReady -NodeExe $nodeExe -ProjectRoot $root -RuntimeEnvFile $runtimeEnvFile
 Assert-StartupDeadline -Phase 'stopping-existing-mcp'
 Write-StartupPhase -Phase 'stopping-existing-mcp'
 Stop-ExistingServerIfOwned -PidFile $pidFile -ProjectRoot $root
@@ -1311,7 +1400,7 @@ if ($selectedRuntime -eq 'host' -and -not (Test-IsProcessElevated -ProcessId ([i
 Write-StartupPhase -Phase 'local-health-ready' -Extra @{ McpProcessId = [int]$process.Id; LocalUrl = $localUrl }
 
 if ($Public) {
-    $hostTunnelPidFile = if ($selectedRuntime -eq 'host') { Join-Path $runDir 'host-cloudflared.pid' } else { '' }
+    $hostTunnelPidFile = if ($usingNamedTunnel) { Join-Path $runDir 'host-cloudflared.pid' } else { '' }
     Write-StartupPhase -Phase 'waiting-public-health' -Extra @{ McpProcessId = [int]$process.Id; PublicBaseUrl = $publicBaseUrl }
     Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl -HostCloudflaredPidFile $hostTunnelPidFile
 }
@@ -1360,10 +1449,20 @@ Write-Host "Selected runtime: $selectedRuntime (requested: $runtimeMode)"
         }
     }
 
-    # A full Windows host startup owns the named tunnel it launched. Do not
-    # leave cloudflared advertising an origin that failed to become ready.
+    # A full Windows host startup owns the named tunnel it launched, but a
+    # replacement can fail before the old MCP is stopped (for example a dependency
+    # preflight failure). Preserve the new tunnel when the existing origin still
+    # answers; only tear it down when no healthy MCP remains behind it.
     if (-not $TunnelOnly -and $selectedRuntime -eq 'host' -and $Public) {
-        try { Stop-ExistingHostCloudflared -PidFile (Join-Path $runDir 'host-cloudflared.pid') } catch {}
+        $originStillHealthy = $false
+        try {
+            $originCheck = Invoke-WebRequest -Uri "http://127.0.0.1:$port/healthz" -UseBasicParsing -TimeoutSec 3
+            $originStillHealthy = $originCheck.Content -match 'ok'
+        } catch {
+        }
+        if (-not $originStillHealthy) {
+            try { Stop-ExistingHostCloudflared -PidFile (Join-Path $runDir 'host-cloudflared.pid') } catch {}
+        }
     }
     throw
 } finally {
