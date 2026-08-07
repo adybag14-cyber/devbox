@@ -160,9 +160,21 @@ test("Windows host mode keeps a healthy MCP when elevation inspection is tempora
   assert.match(unknown.OptionalDegradations.join("; "), /could not be verified/i);
 });
 
-test("local MCP health failures use a faster repair threshold than tunnel-only failures", () => {
-  assert.equal(resolveFailureThreshold({ state: { LocalHealth: false }, configuredThreshold: 3 }), 2);
-  assert.equal(resolveFailureThreshold({ state: { LocalHealth: false }, configuredThreshold: 1 }), 1);
+test("local MCP health failures distinguish missing processes from live process stalls", () => {
+  assert.equal(resolveFailureThreshold({
+    state: { LocalHealth: false, McpProcessId: null },
+    configuredThreshold: 3,
+  }), 2);
+  assert.equal(resolveFailureThreshold({
+    state: { LocalHealth: false, McpProcessId: 4242 },
+    configuredThreshold: 3,
+    liveMcpFailureThreshold: 6,
+  }), 6);
+  assert.equal(resolveFailureThreshold({
+    state: { LocalHealth: false, McpProcessId: 4242 },
+    configuredThreshold: 8,
+    liveMcpFailureThreshold: 6,
+  }), 8);
   assert.equal(resolveFailureThreshold({ state: { LocalHealth: true }, configuredThreshold: 3 }), 3);
   assert.equal(resolveFailureThreshold({ state: { LocalHealth: null }, configuredThreshold: 4 }), 4);
 });

@@ -181,17 +181,32 @@ export const deriveCloudflaredMetricDeltas = ({ previous = null, current = null 
   };
 };
 
-export const resolveFailureThreshold = ({ state = {}, configuredThreshold = 3 } = {}) => {
+export const resolveFailureThreshold = ({
+  state = {},
+  configuredThreshold = 3,
+  liveMcpFailureThreshold = 6,
+} = {}) => {
   const configured = Math.max(1, Number.parseInt(configuredThreshold, 10) || 1);
-  // A failed localhost health probe means the MCP itself is unavailable or
-  // hung, so recover after two observations. A confirmed cloudflared transport
-  // collapse (for example HA connections reaching zero) also gets the faster
-  // threshold, but still selects a tunnel-only repair while MCP stays healthy.
-  // Generic public-health failures retain the configured threshold so normal
-  // edge/QUIC reconnect churn does not trigger unnecessary repair.
-  return state.LocalHealth === false || state.TunnelTransportDegraded === true
-    ? Math.min(2, configured)
-    : configured;
+  const liveThreshold = Math.max(configured, Number.parseInt(liveMcpFailureThreshold, 10) || configured);
+  const mcpPid = Number.parseInt(state.McpProcessId ?? "", 10);
+  const mcpProcessAlive = Number.isInteger(mcpPid) && mcpPid > 0;
+
+  // A confirmed tunnel transport collapse is safe to repair quickly because
+  // selectRepairScope keeps the healthy MCP in place.
+  if (state.TunnelTransportDegraded === true) {
+    return Math.min(2, configured);
+  }
+
+  // A missing MCP plus a failed localhost probe is an unambiguous process
+  // failure, so recover quickly. If the verified MCP process is still alive,
+  // however, several failed probes can be caused by temporary host scheduler,
+  // paging, Hyper-V, or antivirus pressure. Give that live process a longer
+  // grace window before a destructive full restart.
+  if (state.LocalHealth === false) {
+    return mcpProcessAlive ? liveThreshold : Math.min(2, configured);
+  }
+
+  return configured;
 };
 
 export const classifyReadiness = ({
