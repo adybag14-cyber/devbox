@@ -17,11 +17,14 @@ schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
-tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tokio-util = "0.7"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", features = ["process", "signal"] }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
