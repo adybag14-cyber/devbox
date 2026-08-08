@@ -27,6 +27,7 @@ import {
   readLargeFileInDevbox,
   recreateDevbox,
   restartDevbox,
+  runProgramInDevbox,
   runtimeLabel,
   runtimeServerName,
   runtimeTitle,
@@ -44,6 +45,7 @@ import {
   readLargeFileOnHost,
   runAllowedProgram,
   runHostShellCommand,
+  warmHostExecutionState,
   writeLargeFileOnHost,
 } from "./host-tools.js";
 import { captureHostDisplay, captureHostProgram } from "./screen-capture.js";
@@ -54,6 +56,7 @@ import {
   summarizeLargeWriteData,
 } from "./large-file-cli.js";
 import { trimText } from "./process-utils.js";
+import { getExecutionSlotSnapshot, withExecutionSlot } from "./execution-slots.js";
 import {
   cancelDevboxJob,
   getDevboxJobLogs,
@@ -66,7 +69,7 @@ const runDir = path.join(projectRoot, "run");
 const guardianDesiredStatePath = path.join(runDir, "guardian.desired-state.json");
 const toolUsageLogPath = path.join(runDir, "tool-usage.jsonl");
 const httpUsageLogPath = path.join(runDir, "http-usage.jsonl");
-const logRotationChains = new Map();
+const usageLogStates = new Map();
 const activeMcpRequestControllers = new Map();
 const guardianStatePath = path.join(runDir, "guardian", "state.json");
 const startupStatePath = path.join(runDir, "startup-state.json");
@@ -121,6 +124,28 @@ const syncCommandTimeoutSchema = () => z.number().int().min(1).max(SYNC_MCP_TIME
 const COMMAND_OUTPUT_LIMIT_CHARS = config.maxTextOutputChars === null
   ? config.maxCommandOutputChars
   : Math.min(config.maxTextOutputChars, config.maxCommandOutputChars);
+const withInteractiveExecution = async ({ label, signal }, callback) =>
+  withExecutionSlot({
+    kind: "interactive",
+    label,
+    maxConcurrent: config.mcpExecMaxConcurrent,
+    reservedInteractive: config.mcpExecReservedInteractive,
+    queueTimeoutMs: config.mcpExecQueueTimeoutMs,
+    signal,
+  }, async (lease) => {
+    try {
+      return await callback(lease);
+    } catch (error) {
+      if (error && typeof error === "object") {
+        error.data = {
+          ...(error.data && typeof error.data === "object" ? error.data : {}),
+          execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot },
+        };
+      }
+      throw error;
+    }
+  });
+
 const SENSITIVE_ARGUMENT_KEY = /(token|secret|password|authorization|cookie|content_base64|expected_sha256)/i;
 const LARGE_TEXT_ARGUMENT_KEY = /^(command|content)$/i;
 const INTERNAL_TOOL_ARGUMENT_KEYS = new Set([
@@ -265,60 +290,60 @@ export const combineAbortSignals = (signals = []) => {
   };
 };
 
-const rotateUsageLogIfNeeded = async (logPath) => {
-  const maxBytes = config.mcpUsageLogMaxBytes;
-  const rotations = Math.max(0, config.mcpUsageLogRotations);
-  if (!Number.isFinite(maxBytes) || maxBytes <= 0 || rotations <= 0) {
-    return;
+const getUsageLogState = async (logPath) => {
+  let state = usageLogStates.get(logPath);
+  if (!state) {
+    state = { chain: Promise.resolve(), bytes: null, directoryReady: false };
+    usageLogStates.set(logPath, state);
   }
-
-  let currentStat;
-  try {
-    currentStat = await stat(logPath);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      return;
+  if (!state.directoryReady) {
+    await mkdir(path.dirname(logPath), { recursive: true });
+    state.directoryReady = true;
+  }
+  if (state.bytes === null) {
+    try {
+      state.bytes = (await stat(logPath)).size;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      state.bytes = 0;
     }
-    throw error;
   }
+  return state;
+};
 
-  if (currentStat.size < maxBytes) {
-    return;
-  }
-
+const rotateUsageLog = async (logPath) => {
+  const rotations = Math.max(0, config.mcpUsageLogRotations);
+  if (rotations <= 0) return;
   await rm(`${logPath}.${rotations}`, { force: true });
   for (let index = rotations - 1; index >= 1; index -= 1) {
     await rename(`${logPath}.${index}`, `${logPath}.${index + 1}`).catch((error) => {
-      if (error?.code !== "ENOENT") {
-        throw error;
-      }
+      if (error?.code !== "ENOENT") throw error;
     });
   }
   await rename(logPath, `${logPath}.1`).catch((error) => {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
+    if (error?.code !== "ENOENT") throw error;
   });
 };
 
 const appendJsonlEvent = async (logPath, event) => {
-  await mkdir(path.dirname(logPath), { recursive: true });
-  const previous = logRotationChains.get(logPath) ?? Promise.resolve();
+  const state = await getUsageLogState(logPath);
+  const line = `${JSON.stringify(event)}\n`;
+  const lineBytes = Buffer.byteLength(line);
+  const maxBytes = config.mcpUsageLogMaxBytes;
+  const rotations = Math.max(0, config.mcpUsageLogRotations);
+  const previous = state.chain;
   const next = previous
     .catch(() => {})
     .then(async () => {
-      await rotateUsageLogIfNeeded(logPath);
-      await appendFile(logPath, `${JSON.stringify(event)}\n`, "utf8");
+      if (Number.isFinite(maxBytes) && maxBytes > 0 && rotations > 0 && state.bytes + lineBytes >= maxBytes) {
+        await rotateUsageLog(logPath);
+        state.bytes = 0;
+      }
+      await appendFile(logPath, line, "utf8");
+      state.bytes += lineBytes;
     });
-
-  logRotationChains.set(logPath, next);
-  try {
-    await next;
-  } finally {
-    if (logRotationChains.get(logPath) === next) {
-      logRotationChains.delete(logPath);
-    }
-  }
+  state.chain = next;
+  await next;
 };
 
 const writeJsonStateFile = async (filePath, value) => {
@@ -395,6 +420,8 @@ const instrumentToolHandler = (toolName, handler, requestSignal) => async (args 
       stderr_chars: String(structured.stderr ?? "").length,
       exit_code: structured.exitCode ?? null,
       truncated: Boolean(structured.truncated),
+      queue_wait_ms: structured.data?.execution?.queue_wait_ms ?? null,
+      execution_slot: structured.data?.execution?.slot ?? null,
       arguments: argumentSummary,
       context,
     });
@@ -681,6 +708,10 @@ const buildServer = ({ requestSignal } = {}) => {
           hostExecEnabled: config.enableHostExec,
           guardian: await readGuardianStatusSnapshot(),
           startup: await readStartupStatusSnapshot(),
+          execution: await getExecutionSlotSnapshot({
+            maxConcurrent: config.mcpExecMaxConcurrent,
+            reservedInteractive: config.mcpExecReservedInteractive,
+          }),
         };
 
         if (info.running) {
@@ -800,8 +831,8 @@ const buildServer = ({ requestSignal } = {}) => {
       {
         title: `Run Read-Only Shell Command In ${runtimeTitle}`,
         description: isDockerRuntime
-          ? `Prefer this for inspection-only shell work such as ls, find, cat, sed -n, rg, git diff, git log, or config inspection. It runs in the long-lived devbox container; read-only behavior is advisory. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for longer work.`
-          : `Prefer this for inspection-only shell work such as ls, find, cat, sed -n, rg, git diff, git log, or config inspection. In ${runtimeLabel} mode this runs directly on the host shell, so read-only behavior is advisory rather than sandbox-enforced. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for longer work.`,
+          ? `Use this only when inspection requires shell syntax such as pipelines, redirection, variables, or compound commands. Prefer devbox_run_program for a single executable such as git, gh, node, python, or rg because it avoids shell startup overhead. It runs in the long-lived devbox container; read-only behavior is advisory. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for longer work.`
+          : `Use this only when inspection requires shell syntax such as pipelines, redirection, variables, or compound commands. Prefer devbox_run_program for a single executable such as git, gh, node, python, or rg because it avoids shell startup overhead. In ${runtimeLabel} mode this runs directly on the host shell, so read-only behavior is advisory rather than sandbox-enforced. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for longer work.`,
         inputSchema: {
           command: z.string().min(1).describe(`Read-only shell command to run inside the ${runtimeLabel}.`),
           working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
@@ -815,14 +846,18 @@ const buildServer = ({ requestSignal } = {}) => {
     ),
     async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }, extra) => {
       try {
-        const result = await execReadOnlyInDevbox({
-          command,
-          workingDir,
-          timeoutMs: (timeoutSeconds + 5) * 1000,
-          user,
-          signal: extra?.signal,
+        return await withInteractiveExecution({ label: "devbox_exec_readonly", signal: extra?.signal }, async (lease) => {
+          const result = await execReadOnlyInDevbox({
+            command,
+            workingDir,
+            timeoutMs: (timeoutSeconds + 5) * 1000,
+            user,
+            signal: extra?.signal,
+          });
+          return fromProcessResult(`Ran a read-only shell command in the ${runtimeLabel} at ${workingDir}.`, result, {
+            data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+          });
         });
-        return fromProcessResult(`Ran a read-only shell command in the ${runtimeLabel} at ${workingDir}.`, result);
       } catch (error) {
         return errorResult(error, `Failed to run the read-only ${runtimeLabel} shell command.`);
       }
@@ -835,8 +870,8 @@ const buildServer = ({ requestSignal } = {}) => {
       {
         title: `Run Mutating Shell Command In ${runtimeTitle}`,
         description: isDockerRuntime
-          ? `Use this only when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the devbox or workspace. Prefer devbox_exec_readonly for inspection. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for builds or other longer work.`
-          : `Use this when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the ${runtimeLabel}. Prefer devbox_exec_readonly for inspection. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for builds or other longer work.`,
+          ? `Use this only when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the devbox or workspace. Prefer devbox_run_program for a single executable and devbox_exec_readonly for shell-based inspection. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for builds or other longer work.`
+          : `Use this when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the ${runtimeLabel}. Prefer devbox_run_program for a single executable and devbox_exec_readonly for shell-based inspection. Synchronous calls are capped at ${SYNC_MCP_TIMEOUT_SECONDS}s; use devbox_exec_start for builds or other longer work.`,
         inputSchema: {
           command: z.string().min(1).describe(`Shell command to run inside the ${runtimeLabel}.`),
           working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
@@ -850,16 +885,59 @@ const buildServer = ({ requestSignal } = {}) => {
     ),
     async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }, extra) => {
       try {
-        const result = await execInDevbox({
-          command,
-          workingDir,
-          timeoutMs: (timeoutSeconds + 5) * 1000,
-          user,
-          signal: extra?.signal,
+        return await withInteractiveExecution({ label: "devbox_exec", signal: extra?.signal }, async (lease) => {
+          const result = await execInDevbox({
+            command,
+            workingDir,
+            timeoutMs: (timeoutSeconds + 5) * 1000,
+            user,
+            signal: extra?.signal,
+          });
+          return fromProcessResult(`Ran a shell command in the ${runtimeLabel} at ${workingDir}.`, result, {
+            data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+          });
         });
-        return fromProcessResult(`Ran a shell command in the ${runtimeLabel} at ${workingDir}.`, result);
       } catch (error) {
         return errorResult(error, `Failed to run the ${runtimeLabel} shell command.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_run_program",
+    safeActionTool(
+      {
+        title: `Run Program Directly In ${runtimeTitle}`,
+        description: `Preferred fast path for running one executable with structured arguments inside the ${runtimeLabel} (for example git, gh, node, python, or rg). This avoids shell startup and quoting overhead. Use devbox_exec or devbox_exec_readonly only when shell syntax is actually required.`,
+        inputSchema: {
+          program: z.string().min(1).describe("Allowed executable name."),
+          args: z.array(z.string()).default([]).describe("Argument list passed directly to the executable without shell parsing."),
+          working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
+          timeout_seconds: syncCommandTimeoutSchema(),
+          user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
+        },
+        outputSchema,
+      },
+      `Running direct program in ${runtimeLabel}`,
+      `${runtimeLabel} direct program finished`,
+    ),
+    async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }, extra) => {
+      try {
+        return await withInteractiveExecution({ label: "devbox_run_program", signal: extra?.signal }, async (lease) => {
+          const result = await runProgramInDevbox({
+            program,
+            args,
+            workingDir,
+            timeoutMs: (timeoutSeconds + 5) * 1000,
+            user,
+            signal: extra?.signal,
+          });
+          return fromProcessResult(`Ran ${program} directly in the ${runtimeLabel}.`, result, {
+            data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+          });
+        });
+      } catch (error) {
+        return errorResult(error, `Failed to run ${program} directly in the ${runtimeLabel}.`);
       }
     },
   );
@@ -1157,6 +1235,8 @@ const buildServer = ({ requestSignal } = {}) => {
           exclude_directories: z.array(z.string().min(1)).max(32)
             .default([".git", "node_modules", ".cache", ".venv", "venv", "__pycache__"])
             .describe("Directory names to prune before searching."),
+          include_ignored: z.boolean().default(false)
+            .describe("When true, include hidden and ignore-file-excluded content. This is slower and should be used only for exhaustive searches."),
         },
         outputSchema,
       },
@@ -1173,21 +1253,27 @@ const buildServer = ({ requestSignal } = {}) => {
       max_file_bytes: maxBytesPerFile,
       timeout_seconds: timeoutSeconds,
       exclude_directories: excludeDirectories,
+      include_ignored: includeIgnored,
     }, extra) => {
       try {
-        const result = await searchFilesInDevbox({
-          pattern,
-          path,
-          glob,
-          caseSensitive,
-          maxMatches,
-          maxDepth,
-          maxBytesPerFile,
-          timeoutMs: timeoutSeconds * 1000,
-          excludeDirectories,
-          signal: extra?.signal,
+        return await withInteractiveExecution({ label: "devbox_search_files", signal: extra?.signal }, async (lease) => {
+          const result = await searchFilesInDevbox({
+            pattern,
+            path,
+            glob,
+            caseSensitive,
+            maxMatches,
+            maxDepth,
+            maxBytesPerFile,
+            timeoutMs: timeoutSeconds * 1000,
+            excludeDirectories,
+            includeIgnored,
+            signal: extra?.signal,
+          });
+          return fromProcessResult(`Searched ${path} for "${pattern}" inside the ${runtimeLabel}.`, result, {
+            data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+          });
         });
-        return fromProcessResult(`Searched ${path} for "${pattern}" inside the ${runtimeLabel}.`, result);
       } catch (error) {
         return errorResult(error, `Failed to search ${path} inside the ${runtimeLabel}.`);
       }
@@ -1206,13 +1292,17 @@ const buildServer = ({ requestSignal } = {}) => {
 
   const hostExecHandler = async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds }, extra) => {
     try {
-      const result = await runHostShellCommand({
-        command,
-        workingDir,
-        timeoutMs: (timeoutSeconds + 5) * 1000,
-        signal: extra?.signal,
+      return await withInteractiveExecution({ label: "host_exec", signal: extra?.signal }, async (lease) => {
+        const result = await runHostShellCommand({
+          command,
+          workingDir,
+          timeoutMs: (timeoutSeconds + 5) * 1000,
+          signal: extra?.signal,
+        });
+        return fromProcessResult(`Ran a ${hostCommandTitle.toLowerCase()} command in ${workingDir}.`, result, {
+          data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+        });
       });
-      return fromProcessResult(`Ran a ${hostCommandTitle.toLowerCase()} command in ${workingDir}.`, result);
     } catch (error) {
       return errorResult(error, `Failed to run the ${hostCommandTitle.toLowerCase()} command.`);
     }
@@ -1220,14 +1310,18 @@ const buildServer = ({ requestSignal } = {}) => {
 
   const hostRunProgramHandler = async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds }, extra) => {
     try {
-      const result = await runAllowedProgram({
-        program,
-        args,
-        workingDir,
-        timeoutMs: (timeoutSeconds + 5) * 1000,
-        signal: extra?.signal,
+      return await withInteractiveExecution({ label: "host_run_program", signal: extra?.signal }, async (lease) => {
+        const result = await runAllowedProgram({
+          program,
+          args,
+          workingDir,
+          timeoutMs: (timeoutSeconds + 5) * 1000,
+          signal: extra?.signal,
+        });
+        return fromProcessResult(`Ran ${program} on the ${hostTitle.toLowerCase()}.`, result, {
+          data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+        });
       });
-      return fromProcessResult(`Ran ${program} on the ${hostTitle.toLowerCase()}.`, result);
     } catch (error) {
       return errorResult(error, `Failed to run ${program} on the ${hostTitle.toLowerCase()}.`);
     }
@@ -1349,7 +1443,7 @@ const buildServer = ({ requestSignal } = {}) => {
       {
         title: `Run ${hostCommandTitle} Command`,
         description: config.platform.isWindows
-          ? `Use this when you explicitly need native ${hostTitle.toLowerCase()} tooling rather than the ${runtimeLabel}, such as winget, host Git, host Docker CLI, or PowerShell automation. On Windows this runs elevated inside the already-elevated MCP service (no per-command UAC).`
+          ? `Use this when you explicitly need native ${hostTitle.toLowerCase()} shell automation rather than the ${runtimeLabel}. Prefer host_run_program for a single allowed executable such as git, gh, node, python, or rg because it avoids PowerShell startup overhead. On Windows this runs elevated inside the already-elevated MCP service (no per-command UAC).`
           : `Use this when you explicitly need native ${hostTitle.toLowerCase()} tooling rather than the ${runtimeLabel}, such as shell automation, git, node, python, or other host commands.`,
         inputSchema: {
           command: z.string().min(1).describe(`Command to run on the ${hostTitle.toLowerCase()}.`),
@@ -1500,7 +1594,7 @@ const buildServer = ({ requestSignal } = {}) => {
     safeActionTool(
       {
         title: `Run Allowed ${hostTitle} Program`,
-        description: `Use this when you need a specific allowed ${hostTitle.toLowerCase()} program such as git, node, python, gh, or other tools from HOST_PROGRAM_ALLOWLIST with structured arguments.`,
+        description: `Preferred fast path when you need a specific allowed ${hostTitle.toLowerCase()} program such as git, gh, node, python, or rg with structured arguments; this avoids shell startup and quoting overhead.`,
         inputSchema: {
           program: z.string().min(1).describe("Program name or path. It must be allowed by HOST_PROGRAM_ALLOWLIST."),
           args: z.array(z.string()).default([]).describe("Argument list for the program."),
@@ -2024,6 +2118,8 @@ export const startServer = () =>
     if (config.publicBaseUrl) {
       console.log(`Public MCP URL: ${config.publicBaseUrl}/mcp`);
     }
+    warmHostExecutionState().catch(() => {});
+    getDevboxVersions().catch(() => {});
   });
 
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

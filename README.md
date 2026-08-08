@@ -188,7 +188,10 @@ DEVBOX_RUNTIME_MODE=host devbox
 Behavior:
 
 - file and shell operations run directly on the host
-- `devbox_exec_readonly` is best-effort and is not container-sandboxed
+- `devbox_run_program` is the preferred fast path for a single executable with structured arguments; it avoids shell startup and quoting overhead
+- `devbox_exec_readonly` is best-effort and is not container-sandboxed; use it when shell syntax such as pipelines, variables, or redirection is actually needed
+- host-mode `devbox_search_files` prefers native ripgrep when available and retains the portable JS walker as a fallback; normal searches respect ignore files for speed, while `include_ignored=true` opts into exhaustive hidden/ignored content
+- synchronous process tools share a bounded execution pool; detached jobs cannot consume the reserved interactive slot, while `/healthz`, status, file I/O, and Guardian remain outside the process queue
 - generic host tools are exposed through `host_*`
 - legacy `windows_host_*` names remain compatibility aliases
 - `host_capture_display` captures the native desktop; `host_capture_window` captures the largest visible window for a PID or its child processes
@@ -232,6 +235,10 @@ Important `.env` values:
 - `POWERSHELL_FALLBACK_EXE` (optional Windows fallback override; defaults to Windows PowerShell 5.1)
 - `HOST_SHELL`
 - `HOST_PROGRAM_ALLOWLIST`
+- `DEVBOX_PROGRAM_ALLOWLIST` controls the structured `devbox_run_program` fast path; in host mode the executable must also be allowed by `HOST_PROGRAM_ALLOWLIST`
+- `HOST_SEARCH_BACKEND=auto|rg|js` selects host search acceleration; `auto` prefers ripgrep
+- `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune process admission control
+- `DEVBOX_VERSION_CACHE_MS` controls the short-lived `devbox_status` toolchain-version cache
 - `PUBLIC_BASE_URL` for public OAuth deployments
 - `ENABLE_GATEWAY_BRIDGE=true|false`
 - `GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com`
@@ -252,7 +259,7 @@ devbox run
 
 Plain `devbox` behaves like `devbox start`. `devbox run` keeps the server in the foreground.
 
-Runtime telemetry is appended to `run/tool-usage.jsonl` and `run/http-usage.jsonl`. Summarize it with `npm run usage:summary`, or run the live reliability probe with `npm run soak:live`.
+Runtime telemetry is appended to `run/tool-usage.jsonl` and `run/http-usage.jsonl`. Log size is tracked in memory after the first stat so normal tool calls do not perform an extra filesystem metadata lookup per telemetry event. Tool telemetry also records execution-slot queue wait where applicable. Summarize it with `npm run usage:summary`, or run the live reliability probe with `npm run soak:live`.
 
 ## Guardian v2 reliability supervisor
 
@@ -289,7 +296,8 @@ Authentication and transport are separate. Selecting `oauth` or `cloudflare` con
 For commands likely to exceed the connector request lifetime, use the persistent async job tools instead of holding one MCP request open:
 
 - Synchronous shell tools are intentionally capped at **90 seconds** because upstream MCP/connector requests can be aborted around the two-minute mark. Do not use a long synchronous timeout for builds, exports, sleeps, or soak tests.
-- `devbox_exec_start` starts a detached job and returns a job ID immediately; use it for work expected to approach or exceed 90 seconds.
+- `devbox_run_program` should be preferred for one executable such as `git`, `gh`, `node`, `python`, or `rg`; it bypasses the shell.
+- `devbox_exec_start` starts a detached job and returns a job ID immediately; use it for work expected to approach or exceed 90 seconds. Detached jobs participate in the shared execution pool and cannot consume the reserved interactive slot.
 - `devbox_job_status` polls durable state under `run/jobs/`.
 - `devbox_job_logs` returns bounded log tails.
 - `devbox_job_cancel` cancels the detached process tree.
@@ -299,7 +307,8 @@ When `MCP_AUTH_MODE=none`, local loopback requests can expose the browser bridge
 ## Security notes
 
 - `host_exec` provides direct host shell access and should be enabled only in a trusted environment.
-- `host_run_program` is constrained by `HOST_PROGRAM_ALLOWLIST`.
+- `host_run_program` is constrained by `HOST_PROGRAM_ALLOWLIST` and is the preferred native-host fast path for a single executable.
+- Persistent OAuth state automatically prunes expired authorization codes and tokens during load/persistence so long-running public deployments do not accumulate stale state indefinitely.
 - Host-mode read-only execution is cooperative rather than a hard sandbox.
 - The built-in `oauth`/`demo-oauth` mode is for connector/protocol testing and does not authenticate an external user identity. Public deployments requiring identity enforcement should use `cloudflare-access` or another trusted authentication layer in front of Devbox.
 

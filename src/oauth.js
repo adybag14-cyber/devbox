@@ -80,7 +80,7 @@ const toOAuthServerError = (error, fallbackMessage) => {
   return new ServerError(fallbackMessage);
 };
 
-class PersistentOAuthState {
+export class PersistentOAuthState {
   constructor(filePath) {
     this.filePath = filePath;
     this.loaded = false;
@@ -155,6 +155,22 @@ class PersistentOAuthState {
     }
 
     this.loaded = true;
+    if (this.pruneExpired() > 0 && this.filePath) {
+      await this.persist();
+    }
+  }
+
+  pruneExpired(now = Date.now()) {
+    let removed = 0;
+    for (const collection of [this.authorizationCodes, this.accessTokens, this.refreshTokens]) {
+      for (const [key, record] of collection.entries()) {
+        if (Number.isFinite(record?.expiresAt) && record.expiresAt <= now) {
+          collection.delete(key);
+          removed += 1;
+        }
+      }
+    }
+    return removed;
   }
 
   snapshot() {
@@ -202,6 +218,7 @@ class PersistentOAuthState {
       return;
     }
 
+    this.pruneExpired();
     const snapshot = this.snapshot();
     this.writePromise = this.writePromise.then(async () => {
       await mkdir(path.dirname(this.filePath), { recursive: true });

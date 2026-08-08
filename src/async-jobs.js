@@ -5,7 +5,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const jobsRoot = path.join(projectRoot, "run", "jobs");
+const jobsRoot = process.env.MCP_JOBS_ROOT?.trim()
+  ? path.resolve(process.env.MCP_JOBS_ROOT.trim())
+  : path.join(projectRoot, "run", "jobs");
 const runnerPath = path.join(projectRoot, "scripts", "devbox-job-runner.mjs");
 const JOB_ID_RE = /^[a-z0-9][a-z0-9-]{7,80}$/iu;
 
@@ -25,6 +27,7 @@ const jobPaths = (jobId) => {
     status: path.join(dir, "status.json"),
     stdout: path.join(dir, "stdout.log"),
     stderr: path.join(dir, "stderr.log"),
+    cancel: path.join(dir, "cancel.requested"),
   };
 };
 
@@ -35,6 +38,16 @@ const writeJsonAtomic = async (filePath, value) => {
 };
 
 const readJson = async (filePath) => JSON.parse(await readFile(filePath, "utf8"));
+
+const cancellationRequested = async (paths) => {
+  try {
+    await stat(paths.cancel);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+};
 
 const processAlive = (pid) => {
   if (!Number.isInteger(pid) || pid < 1) return false;
@@ -111,22 +124,22 @@ export const startDevboxJob = async ({
   child.on("error", () => {});
   child.unref();
   const runnerPid = child.pid ?? null;
-  if (runnerPid) {
-    const queued = await readJson(paths.status);
-    if (queued.status === "queued") {
-      await writeJsonAtomic(paths.status, { ...queued, runnerPid });
-    }
-  }
 
+  // The runner is the sole status.json writer after spawn. This avoids a
+  // Windows rename/replace race between the MCP server and detached runner.
   return { id, status: "queued", runnerPid, jobDir: paths.dir };
 };
 
 export const getDevboxJobStatus = async (jobId) => {
   const paths = jobPaths(jobId);
   const value = await readJson(paths.status);
-  const running = value.status === "running" && processAlive(Number(value.runnerPid));
+  const cancelRequested = await cancellationRequested(paths);
+  const effectiveValue = cancelRequested && !["succeeded", "failed", "timed_out"].includes(value.status)
+    ? { ...value, status: "cancelled", cancelRequested: true }
+    : value;
+  const running = ["queued", "running"].includes(effectiveValue.status) && processAlive(Number(effectiveValue.runnerPid));
   return {
-    ...value,
+    ...effectiveValue,
     runnerAlive: running,
     jobDir: paths.dir,
   };
@@ -135,12 +148,16 @@ export const getDevboxJobStatus = async (jobId) => {
 export const getDevboxJobLogs = async ({ jobId, maxChars = 20000 }) => {
   const paths = jobPaths(jobId);
   const bounded = Math.max(100, Math.min(100000, Number(maxChars) || 20000));
-  const [stdout, stderr, statusValue] = await Promise.all([
+  const [stdout, stderr, statusValue, cancelRequested] = await Promise.all([
     readTail(paths.stdout, bounded),
     readTail(paths.stderr, bounded),
     readJson(paths.status),
+    cancellationRequested(paths),
   ]);
-  return { id: paths.id, status: statusValue.status, stdout, stderr, maxChars: bounded };
+  const status = cancelRequested && !["succeeded", "failed", "timed_out"].includes(statusValue.status)
+    ? "cancelled"
+    : statusValue.status;
+  return { id: paths.id, status, stdout, stderr, maxChars: bounded };
 };
 
 const killDetachedTree = async (pid) => {
@@ -171,9 +188,14 @@ export const cancelDevboxJob = async (jobId) => {
     completedAtUtc: new Date().toISOString(),
     cancelRequested: true,
   };
-  await writeJsonAtomic(paths.status, cancelled);
+  await writeFile(paths.cancel, `${cancelled.completedAtUtc}\n`, { encoding: "utf8", flag: "wx" }).catch((error) => {
+    if (error?.code !== "EEXIST") throw error;
+  });
+  // The cancellation marker is authoritative. Do not race the detached runner
+  // by replacing status.json from this process; status/log reads overlay the
+  // marker immediately and the runner writes a final cancelled state if alive.
   await killDetachedTree(Number(statusValue.runnerPid));
   return cancelled;
 };
 
-export const asyncJobsInternals = { assertJobId, jobPaths, readTail, processAlive };
+export const asyncJobsInternals = { assertJobId, jobPaths, readTail, processAlive, cancellationRequested };

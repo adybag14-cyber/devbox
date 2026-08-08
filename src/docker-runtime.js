@@ -576,6 +576,7 @@ export const searchFilesInDevbox = async ({
   maxBytesPerFile = 2 * 1024 * 1024,
   timeoutMs = 30000,
   excludeDirectories = [".git", "node_modules", ".cache", ".venv", "venv", "__pycache__"],
+  includeIgnored = false,
   signal,
 }) =>
   execInDevbox({
@@ -583,6 +584,7 @@ export const searchFilesInDevbox = async ({
       "rg",
       caseSensitive ? "-n" : "-ni",
       "--no-messages",
+      ...(includeIgnored ? ["--hidden", "--no-ignore"] : []),
       "--max-depth",
       String(Math.max(1, maxDepth)),
       "--max-filesize",

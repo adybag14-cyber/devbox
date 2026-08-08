@@ -29,3 +29,20 @@ test("async job status and logs are persisted and bounded", async () => {
     await rm(paths.dir, { recursive: true, force: true });
   }
 });
+
+
+test("cancellation marker is authoritative over a racing queued/running status write", async () => {
+  const id = `job-test-${Date.now().toString(36)}-cancel12`;
+  const paths = asyncJobsInternals.jobPaths(id);
+  await mkdir(paths.dir, { recursive: true });
+  try {
+    await writeFile(paths.status, `${JSON.stringify({ id, status: "running", runnerPid: process.pid, exitCode: null })}\n`, "utf8");
+    await writeFile(paths.cancel, `${new Date().toISOString()}\n`, "utf8");
+    const status = await getDevboxJobStatus(id);
+    assert.equal(status.status, "cancelled");
+    assert.equal(status.cancelRequested, true);
+    assert.equal(status.runnerAlive, false);
+  } finally {
+    await rm(paths.dir, { recursive: true, force: true });
+  }
+});

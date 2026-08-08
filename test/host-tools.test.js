@@ -39,6 +39,18 @@ test("isJpegBuffer accepts complete JPEG bytes and rejects truncated data", () =
   assert.equal(isJpegBuffer(Buffer.from("not-a-jpeg")), false);
 });
 
+test("an already-cancelled host PowerShell call does not wait for the shared elevation probe", { skip: !hasPowerShell }, async () => {
+  const { runWindowsPowerShell } = await importFreshHostTools();
+  const controller = new AbortController();
+  controller.abort();
+  const startedAt = Date.now();
+  await assert.rejects(
+    runWindowsPowerShell({ command: "Write-Output should-not-run", workingDir: process.cwd(), timeoutMs: 15000, signal: controller.signal }),
+    /cancelled by the MCP client/u,
+  );
+  assert.ok(Date.now() - startedAt < 1000);
+});
+
 test("buildWindowsPowerShellArgs suppresses progress streams before the original script", async () => {
   const { buildWindowsPowerShellArgs } = await importFreshHostTools();
   const command = "$value = 'A \"quoted\" value with ''single'' quotes'; Write-Output $value";

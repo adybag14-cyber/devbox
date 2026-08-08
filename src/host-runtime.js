@@ -422,6 +422,281 @@ export const writeLargeFileInHostRuntime = async ({
     expectedSha256,
   });
 
+const parseRipgrepJsonSearch = ({ stdout, maxMatches }) => {
+  const matches = [];
+  let filesScanned = 0;
+  let sawMoreMatches = false;
+  for (const line of String(stdout ?? "").split(/\r?\n/u)) {
+    if (!line) continue;
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event?.type === "begin") {
+      filesScanned += 1;
+      continue;
+    }
+    if (event?.type !== "match") continue;
+    if (matches.length >= maxMatches) {
+      sawMoreMatches = true;
+      continue;
+    }
+    const filePath = event.data?.path?.text ?? "";
+    const lineNumber = event.data?.line_number ?? 0;
+    const text = String(event.data?.lines?.text ?? "").replace(/\r?\n$/u, "");
+    matches.push(`${filePath}:${lineNumber}:${text}`);
+  }
+  return { matches, filesScanned, sawMoreMatches };
+};
+
+const ripgrepBaseFilterArgs = ({ glob, maxDepth, maxBytesPerFile, excludeDirectories, includeIgnored }) => {
+  const args = [
+    "--color", "never",
+    "--max-depth", String(Math.max(1, maxDepth)),
+    "--max-filesize", String(Math.max(1, maxBytesPerFile)),
+  ];
+  if (includeIgnored) args.push("--hidden", "--no-ignore");
+  for (const name of excludeDirectories) args.push("--glob", `!**/${String(name)}/**`);
+  return args;
+};
+
+const listRipgrepCandidateFiles = async ({
+  rootPath,
+  glob,
+  maxDepth,
+  maxFiles,
+  maxBytesPerFile,
+  timeoutMs,
+  excludeDirectories,
+  includeIgnored,
+  signal,
+}) => {
+  const args = [
+    "--files",
+    "--null",
+    ...ripgrepBaseFilterArgs({ glob, maxDepth, maxBytesPerFile, excludeDirectories, includeIgnored }),
+    String(rootPath),
+  ];
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(signal?.reason);
+  if (signal?.aborted) throwIfAborted(signal);
+  signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const files = [];
+  const fileMatcher = glob ? globToRegExp(glob) : null;
+  const acceptsFile = (filePath) => !fileMatcher || fileMatcher.test(path.basename(filePath)) || fileMatcher.test(filePath);
+  let tail = "";
+  let limitReached = false;
+  const inspectChunk = (chunk) => {
+    if (limitReached) return;
+    const pieces = `${tail}${chunk}`.split("\0");
+    tail = pieces.pop() ?? "";
+    for (const filePath of pieces) {
+      if (!filePath || !acceptsFile(filePath)) continue;
+      files.push(filePath);
+      if (files.length >= maxFiles) {
+        limitReached = true;
+        controller.abort(new Error("ripgrep file scan limit reached"));
+        break;
+      }
+    }
+  };
+
+  try {
+    await spawnProcess("rg", args, {
+      timeoutMs,
+      signal: controller.signal,
+      onStdout: inspectChunk,
+      maxCaptureChars: 1_000_000,
+    });
+    if (tail && files.length < maxFiles && acceptsFile(tail)) files.push(tail);
+  } catch (error) {
+    if (signal?.aborted) {
+      const aborted = new Error("Recursive filesystem operation cancelled by the MCP client.");
+      aborted.name = "AbortError";
+      throw aborted;
+    }
+    if (!(limitReached && error?.aborted)) {
+      if (error?.timedOut) throw error;
+      if (error instanceof SpawnProcessError && error.exitCode === 1) {
+        return { files: [], limitReached: false };
+      }
+      return null;
+    }
+  } finally {
+    signal?.removeEventListener("abort", abortFromCaller);
+  }
+
+  return { files: files.slice(0, maxFiles), limitReached };
+};
+
+const batchRipgrepFiles = (files) => {
+  const maxArgumentChars = process.platform === "win32" ? 16000 : 64000;
+  const batches = [];
+  let current = [];
+  let chars = 0;
+  for (const filePath of files) {
+    const added = String(filePath).length + 3;
+    if (current.length > 0 && (current.length >= 256 || chars + added > maxArgumentChars)) {
+      batches.push(current);
+      current = [];
+      chars = 0;
+    }
+    current.push(filePath);
+    chars += added;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+};
+
+const searchRipgrepBatch = async ({
+  files,
+  pattern,
+  caseSensitive,
+  fixedStrings,
+  maxBytesPerFile,
+  remainingMatches,
+  timeoutMs,
+  includeIgnored,
+  signal,
+}) => {
+  const args = [
+    "--json",
+    "--line-number",
+    "--color", "never",
+    "--no-messages",
+    "--max-filesize", String(Math.max(1, maxBytesPerFile)),
+  ];
+  if (includeIgnored) args.push("--hidden", "--no-ignore");
+  if (fixedStrings) args.push("--fixed-strings");
+  if (!caseSensitive) args.push("--ignore-case");
+  args.push("--regexp", String(pattern), ...files);
+
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(signal?.reason);
+  if (signal?.aborted) throwIfAborted(signal);
+  signal?.addEventListener("abort", abortFromCaller, { once: true });
+  let tail = "";
+  let streamedMatches = 0;
+  let stoppedForMatchLimit = false;
+  const inspectChunk = (chunk) => {
+    if (stoppedForMatchLimit) return;
+    const lines = `${tail}${chunk}`.split(/\r?\n/u);
+    tail = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line) continue;
+      let event;
+      try { event = JSON.parse(line); } catch { continue; }
+      if (event?.type === "match") streamedMatches += 1;
+      if (streamedMatches >= remainingMatches) {
+        stoppedForMatchLimit = true;
+        controller.abort(new Error("ripgrep match limit reached"));
+        break;
+      }
+    }
+  };
+
+  let stdout = "";
+  try {
+    const result = await spawnProcess("rg", args, {
+      timeoutMs,
+      signal: controller.signal,
+      onStdout: inspectChunk,
+      maxCaptureChars: 32 * 1024 * 1024,
+    });
+    stdout = result.stdout;
+  } catch (error) {
+    if (signal?.aborted) {
+      const aborted = new Error("Recursive filesystem operation cancelled by the MCP client.");
+      aborted.name = "AbortError";
+      throw aborted;
+    }
+    if (stoppedForMatchLimit && error?.aborted) {
+      stdout = error.stdout ?? "";
+    } else if (error?.timedOut) {
+      throw error;
+    } else if (error instanceof SpawnProcessError && error.exitCode === 1) {
+      stdout = error.stdout ?? "";
+    } else {
+      return null;
+    }
+  } finally {
+    signal?.removeEventListener("abort", abortFromCaller);
+  }
+
+  return {
+    ...parseRipgrepJsonSearch({ stdout, maxMatches: remainingMatches }),
+    stoppedForMatchLimit,
+  };
+};
+
+const searchFilesWithRipgrep = async ({
+  pattern,
+  rootPath,
+  glob,
+  caseSensitive,
+  fixedStrings,
+  maxMatches,
+  maxDepth,
+  maxFiles,
+  maxBytesPerFile,
+  timeoutMs,
+  excludeDirectories,
+  includeIgnored,
+  signal,
+}) => {
+  throwIfAborted(signal);
+  const startedAt = Date.now();
+  const candidates = await listRipgrepCandidateFiles({
+    rootPath,
+    glob,
+    maxDepth,
+    maxFiles,
+    maxBytesPerFile,
+    timeoutMs,
+    excludeDirectories,
+    includeIgnored,
+    signal,
+  });
+  if (!candidates) return null;
+
+  const matches = [];
+  let matchLimitReached = false;
+  for (const files of batchRipgrepFiles(candidates.files)) {
+    const elapsed = Date.now() - startedAt;
+    const remainingTimeoutMs = Math.max(1, timeoutMs - elapsed);
+    if (remainingTimeoutMs <= 1 && elapsed >= timeoutMs) {
+      const error = new Error(`Command timed out after ${timeoutMs} ms.`);
+      error.timedOut = true;
+      throw error;
+    }
+    const batch = await searchRipgrepBatch({
+      files,
+      pattern,
+      caseSensitive,
+      fixedStrings,
+      maxBytesPerFile,
+      remainingMatches: Math.max(1, maxMatches - matches.length),
+      timeoutMs: remainingTimeoutMs,
+      includeIgnored,
+      signal,
+    });
+    if (!batch) return null;
+    matches.push(...batch.matches);
+    if (batch.stoppedForMatchLimit || matches.length >= maxMatches) {
+      matchLimitReached = true;
+      break;
+    }
+  }
+
+  const notices = ["search backend ripgrep"];
+  if (matchLimitReached) notices.push(`match limit ${maxMatches} reached`);
+  if (candidates.limitReached) notices.push(`file scan limit ${maxFiles} reached`);
+  if (excludeDirectories.length > 0) notices.push(`excluded ${excludeDirectories.length} directory names`);
+  notices.push(`candidate files ${candidates.files.length}`);
+  return asProcessResult(
+    matches.slice(0, maxMatches).join("\n") + (matches.length ? "\n" : ""),
+    `${notices.join("; ")}\n`,
+  );
+};
+
 export const searchFilesInHostRuntime = async ({
   pattern,
   path: searchPath,
@@ -433,10 +708,36 @@ export const searchFilesInHostRuntime = async ({
   maxBytesPerFile = 2 * 1024 * 1024,
   timeoutMs = 30000,
   excludeDirectories = DEFAULT_PRUNED_DIRECTORIES,
+  includeIgnored = false,
   signal,
 }) => {
   const info = await ensureHostRuntimeReady();
   const rootPath = searchPath || info.workspacePath;
+  const normalizedExcludedDirectories = [...normalizePrunedDirectories(excludeDirectories)];
+  let fixedStrings = false;
+  try {
+    new RegExp(pattern, caseSensitive ? "" : "i");
+  } catch {
+    fixedStrings = true;
+  }
+  if (config.hostSearchBackend !== "js") {
+    const fastResult = await searchFilesWithRipgrep({
+      pattern,
+      rootPath,
+      glob,
+      caseSensitive,
+      fixedStrings,
+      maxMatches: Math.max(1, maxMatches),
+      maxDepth: Math.max(0, maxDepth),
+      maxFiles: Math.max(1, maxFiles),
+      maxBytesPerFile: Math.max(1, maxBytesPerFile),
+      timeoutMs: Math.max(1, timeoutMs),
+      excludeDirectories: normalizedExcludedDirectories,
+      includeIgnored,
+      signal,
+    });
+    if (fastResult) return fastResult;
+  }
   const matcher = glob ? globToRegExp(glob) : null;
   const lineMatcher = createMatcher(pattern, caseSensitive);
   const state = {
@@ -459,7 +760,7 @@ export const searchFilesInHostRuntime = async ({
     maxFiles: Math.max(1, maxFiles),
     maxBytesPerFile: Math.max(1, maxBytesPerFile),
     signal,
-    prunedDirectories: normalizePrunedDirectories(excludeDirectories),
+    prunedDirectories: new Set(normalizedExcludedDirectories),
     state,
   });
   const notices = [];
@@ -495,16 +796,13 @@ export const getHostRuntimeVersions = async () => {
         ["rg", ["--version"]],
       ];
 
-  const versions = [];
-  for (const [program, args] of candidates) {
+  return Promise.all(candidates.map(async ([program, args]) => {
     try {
       const result = await spawnProcess(program, args, { cwd: runtimeConfig.hostDefaultWorkdir, timeoutMs: 15000 });
       const line = `${program}=${`${result.stdout}${result.stderr}`.split(/\r?\n/).find(Boolean) ?? "available"}`;
-      versions.push(line.trim());
+      return line.trim();
     } catch {
-      versions.push(`${program}=unavailable`);
+      return `${program}=unavailable`;
     }
-  }
-
-  return versions;
+  }));
 };

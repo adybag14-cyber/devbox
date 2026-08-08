@@ -41,7 +41,7 @@ export const resolveRuntimeMode = ({ requestedMode, platform }) => {
 
 export const defaultHostProgramAllowlist = (platform) =>
   platform?.isWindows
-    ? ["powershell", "pwsh", "cmd", "git", "gh", "docker", "node", "npm", "npx", "python", "py", "pip", "winget"]
+    ? ["powershell", "pwsh", "cmd", "git", "gh", "docker", "node", "npm", "npx", "python", "py", "pip", "rg", "curl", "winget"]
     : ["bash", "sh", "git", "gh", "node", "npm", "npx", "python", "python3", "pip", "pip3", "rg", "curl"];
 
 export const resolveHostShell = (env = process.env, platform = detectPlatform(env)) => {
