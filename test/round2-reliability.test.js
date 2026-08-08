@@ -225,7 +225,7 @@ test("orphan reconciliation terminates a surviving detached child process tree",
   const id = `job-test-${Date.now().toString(36)}-child123`;
   const paths = jobs.asyncJobsInternals.jobPaths(id);
   await mkdir(paths.dir, { recursive: true });
-  const old = new Date(Date.now() - 60000);
+  const old = new Date(Date.now() - 20000);
   await writeFile(paths.status, `${JSON.stringify({ id, status: "running", runnerPid: 99999999, childPid, createdAtUtc: old.toISOString(), startedAtUtc: old.toISOString() })}\n`, "utf8");
   await writeFile(paths.heartbeat, `${JSON.stringify({ pid: 99999999, status: "running", childPid, updatedAtUtc: old.toISOString() })}\n`, "utf8");
   await utimes(paths.heartbeat, old, old);
@@ -236,6 +236,39 @@ test("orphan reconciliation terminates a surviving detached child process tree",
     assert.equal(status.orphanChildTerminated, true);
     await new Promise((resolve) => setTimeout(resolve, 150));
     assert.equal(jobs.asyncJobsInternals.processAlive(childPid), false);
+  } finally {
+    if (jobs.asyncJobsInternals.processAlive(childPid)) {
+      try { child.kill("SIGKILL"); } catch {}
+    }
+    await rm(jobsRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("old orphan heartbeats never kill a live PID that may have been reused", async () => {
+  const jobsRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-round2-old-orphan-child-"));
+  process.env.MCP_JOBS_ROOT = jobsRoot;
+  const href = pathToFileURL(path.join(projectRoot, "src/async-jobs.js")).href;
+  const jobs = await import(`${href}?old-orphan-child=${Date.now()}-${Math.random()}`);
+  const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], {
+    cwd: projectRoot,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  const childPid = child.pid;
+  const id = `job-test-${Date.now().toString(36)}-oldchild`;
+  const paths = jobs.asyncJobsInternals.jobPaths(id);
+  await mkdir(paths.dir, { recursive: true });
+  const old = new Date(Date.now() - 120000);
+  await writeFile(paths.status, `${JSON.stringify({ id, status: "running", runnerPid: 99999999, childPid, createdAtUtc: old.toISOString(), startedAtUtc: old.toISOString() })}\n`, "utf8");
+  await writeFile(paths.heartbeat, `${JSON.stringify({ pid: 99999999, status: "running", childPid, updatedAtUtc: old.toISOString() })}\n`, "utf8");
+  await utimes(paths.heartbeat, old, old);
+  try {
+    const status = await jobs.getDevboxJobStatus(id);
+    assert.equal(status.status, "interrupted");
+    assert.equal(status.orphanChildTerminated, false);
+    assert.equal(status.orphanChildCleanupSkipped, "heartbeat-too-old-to-safely-trust-reused-pid");
+    assert.equal(jobs.asyncJobsInternals.processAlive(childPid), true);
   } finally {
     if (jobs.asyncJobsInternals.processAlive(childPid)) {
       try { child.kill("SIGKILL"); } catch {}

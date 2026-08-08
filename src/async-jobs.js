@@ -258,9 +258,14 @@ const reconcileStatus = async (paths, value) => {
   if (!runnerAlive && heartbeatStale) {
     const childPid = Number(heartbeat.value?.childPid ?? value.childPid);
     let orphanChildTerminated = false;
-    if (Number.isInteger(childPid) && childPid > 0 && processAlive(childPid)) {
+    let orphanChildCleanupSkipped = null;
+    const childAppearsAlive = Number.isInteger(childPid) && childPid > 0 && processAlive(childPid);
+    const childIdentityFreshEnough = heartbeatAgeMs !== null && heartbeatAgeMs <= 60000;
+    if (childAppearsAlive && childIdentityFreshEnough) {
       await killDetachedTree(childPid);
       orphanChildTerminated = !processAlive(childPid);
+    } else if (childAppearsAlive) {
+      orphanChildCleanupSkipped = "heartbeat-too-old-to-safely-trust-reused-pid";
     }
     const interrupted = {
       ...value,
@@ -270,6 +275,7 @@ const reconcileStatus = async (paths, value) => {
       interrupted: true,
       childPid: Number.isInteger(childPid) && childPid > 0 ? childPid : value.childPid ?? null,
       orphanChildTerminated,
+      orphanChildCleanupSkipped,
       error: value.error || "Detached job runner disappeared before recording a terminal status.",
       heartbeatAgeMs,
     };
