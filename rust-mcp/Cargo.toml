@@ -10,12 +10,14 @@ publish = false
 [dependencies]
 anyhow = "1.0"
 axum = "0.8"
+base64 = "0.22"
 dotenvy = "0.15"
 rmcp = { version = "3.1.2", features = ["transport-streamable-http-server"] }
 schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.48", features = ["fs", "macros", "net", "rt-multi-thread", "signal", "time"] }
+sha2 = "0.10"
+tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "time"] }
 tokio-util = "0.7"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"

@@ -1,5 +1,6 @@
 pub mod config;
 pub mod contract;
+pub mod files;
 pub mod result;
 pub mod server;
 
