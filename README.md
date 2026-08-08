@@ -190,7 +190,7 @@ Behavior:
 - file and shell operations run directly on the host
 - `devbox_run_program` is the preferred fast path for a single executable with structured arguments; it avoids shell startup and quoting overhead
 - `devbox_exec_readonly` is best-effort and is not container-sandboxed; use it when shell syntax such as pipelines, variables, or redirection is actually needed
-- host-mode `devbox_search_files` prefers native ripgrep when available and retains the portable JS walker as a fallback
+- host-mode `devbox_search_files` prefers native ripgrep when available and retains the portable JS walker as a fallback; normal searches respect ignore files for speed, while `include_ignored=true` opts into exhaustive hidden/ignored content
 - synchronous process tools share a bounded execution pool; detached jobs cannot consume the reserved interactive slot, while `/healthz`, status, file I/O, and Guardian remain outside the process queue
 - generic host tools are exposed through `host_*`
 - legacy `windows_host_*` names remain compatibility aliases

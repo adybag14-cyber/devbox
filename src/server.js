@@ -1235,6 +1235,8 @@ const buildServer = ({ requestSignal } = {}) => {
           exclude_directories: z.array(z.string().min(1)).max(32)
             .default([".git", "node_modules", ".cache", ".venv", "venv", "__pycache__"])
             .describe("Directory names to prune before searching."),
+          include_ignored: z.boolean().default(false)
+            .describe("When true, include hidden and ignore-file-excluded content. This is slower and should be used only for exhaustive searches."),
         },
         outputSchema,
       },
@@ -1251,6 +1253,7 @@ const buildServer = ({ requestSignal } = {}) => {
       max_file_bytes: maxBytesPerFile,
       timeout_seconds: timeoutSeconds,
       exclude_directories: excludeDirectories,
+      include_ignored: includeIgnored,
     }, extra) => {
       try {
         return await withInteractiveExecution({ label: "devbox_search_files", signal: extra?.signal }, async (lease) => {
@@ -1264,6 +1267,7 @@ const buildServer = ({ requestSignal } = {}) => {
             maxBytesPerFile,
             timeoutMs: timeoutSeconds * 1000,
             excludeDirectories,
+            includeIgnored,
             signal: extra?.signal,
           });
           return fromProcessResult(`Searched ${path} for "${pattern}" inside the ${runtimeLabel}.`, result, {

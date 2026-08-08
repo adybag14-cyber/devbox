@@ -61,3 +61,32 @@ test("ripgrep host search honors the file scan ceiling", { skip: !hasRg }, async
   assert.match(result.stderr, /search backend ripgrep/u);
   assert.match(result.stderr, /file scan limit 2 reached/u);
 });
+
+
+test("ripgrep host search respects ignore files by default and supports explicit exhaustive mode", { skip: !hasRg }, async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "devbox-rg-ignore-"));
+  await writeFile(path.join(workspace, ".ignore"), "ignored.txt\n.hidden.txt\n", "utf8");
+  await writeFile(path.join(workspace, "visible.txt"), "needle visible\n", "utf8");
+  await writeFile(path.join(workspace, "ignored.txt"), "needle ignored\n", "utf8");
+  await writeFile(path.join(workspace, ".hidden.txt"), "needle hidden\n", "utf8");
+  process.env.MCP_AUTH_MODE = "none";
+  process.env.PUBLIC_BASE_URL = "";
+  process.env.DEVBOX_RUNTIME_MODE = "host";
+  process.env.HOST_WORKSPACE_PATH = workspace;
+  process.env.DEVBOX_WORKSPACE_PATH = workspace;
+  process.env.HOST_SEARCH_BACKEND = "rg";
+  const href = pathToFileURL(path.join(process.cwd(), "src/host-runtime.js")).href;
+  const { searchFilesInHostRuntime } = await import(`${href}?rg-ignore=${Date.now()}-${Math.random()}`);
+
+  const normal = await searchFilesInHostRuntime({ pattern: "needle", path: workspace, glob: "*.txt", maxMatches: 10 });
+  assert.match(normal.stdout, /visible\.txt/u);
+  assert.doesNotMatch(normal.stdout, /ignored\.txt/u);
+  assert.doesNotMatch(normal.stdout, /\.hidden\.txt/u);
+
+  const exhaustive = await searchFilesInHostRuntime({
+    pattern: "needle", path: workspace, glob: "*.txt", maxMatches: 10, includeIgnored: true,
+  });
+  assert.match(exhaustive.stdout, /visible\.txt/u);
+  assert.match(exhaustive.stdout, /ignored\.txt/u);
+  assert.match(exhaustive.stdout, /\.hidden\.txt/u);
+});

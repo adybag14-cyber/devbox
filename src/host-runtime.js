@@ -447,15 +447,13 @@ const parseRipgrepJsonSearch = ({ stdout, maxMatches }) => {
   return { matches, filesScanned, sawMoreMatches };
 };
 
-const ripgrepBaseFilterArgs = ({ glob, maxDepth, maxBytesPerFile, excludeDirectories }) => {
+const ripgrepBaseFilterArgs = ({ glob, maxDepth, maxBytesPerFile, excludeDirectories, includeIgnored }) => {
   const args = [
-    "--hidden",
-    "--no-ignore",
     "--color", "never",
     "--max-depth", String(Math.max(1, maxDepth)),
     "--max-filesize", String(Math.max(1, maxBytesPerFile)),
   ];
-  if (glob) args.push("--glob", glob);
+  if (includeIgnored) args.push("--hidden", "--no-ignore");
   for (const name of excludeDirectories) args.push("--glob", `!**/${String(name)}/**`);
   return args;
 };
@@ -468,12 +466,13 @@ const listRipgrepCandidateFiles = async ({
   maxBytesPerFile,
   timeoutMs,
   excludeDirectories,
+  includeIgnored,
   signal,
 }) => {
   const args = [
     "--files",
     "--null",
-    ...ripgrepBaseFilterArgs({ glob, maxDepth, maxBytesPerFile, excludeDirectories }),
+    ...ripgrepBaseFilterArgs({ glob, maxDepth, maxBytesPerFile, excludeDirectories, includeIgnored }),
     String(rootPath),
   ];
   const controller = new AbortController();
@@ -481,6 +480,8 @@ const listRipgrepCandidateFiles = async ({
   if (signal?.aborted) throwIfAborted(signal);
   signal?.addEventListener("abort", abortFromCaller, { once: true });
   const files = [];
+  const fileMatcher = glob ? globToRegExp(glob) : null;
+  const acceptsFile = (filePath) => !fileMatcher || fileMatcher.test(path.basename(filePath)) || fileMatcher.test(filePath);
   let tail = "";
   let limitReached = false;
   const inspectChunk = (chunk) => {
@@ -488,7 +489,7 @@ const listRipgrepCandidateFiles = async ({
     const pieces = `${tail}${chunk}`.split("\0");
     tail = pieces.pop() ?? "";
     for (const filePath of pieces) {
-      if (!filePath) continue;
+      if (!filePath || !acceptsFile(filePath)) continue;
       files.push(filePath);
       if (files.length >= maxFiles) {
         limitReached = true;
@@ -505,7 +506,7 @@ const listRipgrepCandidateFiles = async ({
       onStdout: inspectChunk,
       maxCaptureChars: 1_000_000,
     });
-    if (tail && files.length < maxFiles) files.push(tail);
+    if (tail && files.length < maxFiles && acceptsFile(tail)) files.push(tail);
   } catch (error) {
     if (signal?.aborted) {
       const aborted = new Error("Recursive filesystem operation cancelled by the MCP client.");
@@ -549,17 +550,17 @@ const searchRipgrepBatch = async ({
   maxBytesPerFile,
   remainingMatches,
   timeoutMs,
+  includeIgnored,
   signal,
 }) => {
   const args = [
     "--json",
     "--line-number",
-    "--hidden",
-    "--no-ignore",
     "--color", "never",
     "--no-messages",
     "--max-filesize", String(Math.max(1, maxBytesPerFile)),
   ];
+  if (includeIgnored) args.push("--hidden", "--no-ignore");
   if (!caseSensitive) args.push("--ignore-case");
   args.push("--regexp", String(pattern), ...files);
 
@@ -632,6 +633,7 @@ const searchFilesWithRipgrep = async ({
   maxBytesPerFile,
   timeoutMs,
   excludeDirectories,
+  includeIgnored,
   signal,
 }) => {
   throwIfAborted(signal);
@@ -644,6 +646,7 @@ const searchFilesWithRipgrep = async ({
     maxBytesPerFile,
     timeoutMs,
     excludeDirectories,
+    includeIgnored,
     signal,
   });
   if (!candidates) return null;
@@ -665,6 +668,7 @@ const searchFilesWithRipgrep = async ({
       maxBytesPerFile,
       remainingMatches: Math.max(1, maxMatches - matches.length),
       timeoutMs: remainingTimeoutMs,
+      includeIgnored,
       signal,
     });
     if (!batch) return null;
@@ -697,6 +701,7 @@ export const searchFilesInHostRuntime = async ({
   maxBytesPerFile = 2 * 1024 * 1024,
   timeoutMs = 30000,
   excludeDirectories = DEFAULT_PRUNED_DIRECTORIES,
+  includeIgnored = false,
   signal,
 }) => {
   const info = await ensureHostRuntimeReady();
@@ -714,6 +719,7 @@ export const searchFilesInHostRuntime = async ({
       maxBytesPerFile: Math.max(1, maxBytesPerFile),
       timeoutMs: Math.max(1, timeoutMs),
       excludeDirectories: normalizedExcludedDirectories,
+      includeIgnored,
       signal,
     });
     if (fastResult) return fastResult;
