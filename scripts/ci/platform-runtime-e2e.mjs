@@ -61,8 +61,11 @@ try {
     "devbox_exec_readonly",
     "devbox_exec",
     "devbox_run_program",
+    "devbox_run_program_start",
     "devbox_exec_start",
     "devbox_job_status",
+    "devbox_wait",
+    "devbox_wait_for_file",
     "devbox_job_logs",
     "devbox_job_cancel",
     "devbox_list_files",
@@ -87,6 +90,23 @@ try {
   if (expectedPlatform) {
     assert.equal(status.data?.platform, expectedPlatform, `Expected platform ${expectedPlatform}.`);
   }
+  const isWindowsHost = status.data?.platform === "windows";
+  const psLiteral = (value) => `'${String(value).replaceAll("'", "''")}'`;
+  const readonlyShellCommand = isWindowsHost
+    ? "[Console]::Out.Write('DEVBOX_E2E_READONLY_OK')"
+    : "printf '%s' 'DEVBOX_E2E_READONLY_OK'";
+  const mutatingShellCommand = isWindowsHost
+    ? `Set-Content -LiteralPath ${psLiteral(execFile)} -Value ${psLiteral(`${marker}_EXEC`)} -NoNewline`
+    : `mkdir -p ${shellQuote(testDir)} && printf '%s' '${marker}_EXEC' > ${shellQuote(execFile)}`;
+  const asyncShellCommand = isWindowsHost
+    ? "Write-Output 'ASYNC_JOB_START'; Start-Sleep -Seconds 1; Write-Output 'ASYNC_JOB_DONE'"
+    : "printf 'ASYNC_JOB_START\n'; sleep 1; printf 'ASYNC_JOB_DONE\n'";
+  const cancelShellCommand = isWindowsHost
+    ? "Write-Output 'ASYNC_CANCEL_START'; Start-Sleep -Seconds 30"
+    : "printf 'ASYNC_CANCEL_START\n'; sleep 30";
+  const hostShellCommand = isWindowsHost
+    ? "[Console]::Out.Write('DEVBOX_E2E_HOST_OK')"
+    : "printf '%s' 'DEVBOX_E2E_HOST_OK'";
 
   const hostStatus = requireSuccess("host_status", await client.callTool({ name: "host_status", arguments: {} }));
   assert.equal(hostStatus.data?.enabled, true, "Host execution must be enabled in runtime E2E.");
@@ -99,7 +119,7 @@ try {
     await client.callTool({
       name: "devbox_exec_readonly",
       arguments: {
-        command: "printf '%s' 'DEVBOX_E2E_READONLY_OK'",
+        command: readonlyShellCommand,
         working_dir: workspace,
         timeout_seconds: 30,
       },
@@ -194,7 +214,7 @@ try {
     await client.callTool({
       name: "devbox_exec",
       arguments: {
-        command: `mkdir -p ${shellQuote(testDir)} && printf '%s' '${marker}_EXEC' > ${shellQuote(execFile)}`,
+        command: mutatingShellCommand,
         working_dir: workspace,
         timeout_seconds: 30,
       },
@@ -212,7 +232,7 @@ try {
     await client.callTool({
       name: "devbox_exec_start",
       arguments: {
-        command: "printf 'ASYNC_JOB_START\n'; sleep 1; printf 'ASYNC_JOB_DONE\n'",
+        command: asyncShellCommand,
         working_dir: workspace,
         timeout_seconds: 30,
         read_only: true,
@@ -243,7 +263,7 @@ try {
     await client.callTool({
       name: "devbox_exec_start",
       arguments: {
-        command: "printf 'ASYNC_CANCEL_START\n'; sleep 30",
+        command: cancelShellCommand,
         working_dir: workspace,
         timeout_seconds: 60,
         read_only: true,
@@ -270,7 +290,7 @@ try {
     await client.callTool({
       name: "host_exec",
       arguments: {
-        command: "printf '%s' 'DEVBOX_E2E_HOST_OK'",
+        command: hostShellCommand,
         working_dir: workspace,
         timeout_seconds: 30,
       },

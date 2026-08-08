@@ -18,6 +18,7 @@ const metrics = {
   cancelled: 0,
   totalQueueWaitMs: 0,
   maxQueueWaitMs: 0,
+  byClass: new Map(),
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -46,7 +47,28 @@ export class ExecutionQueueTimeoutError extends Error {
   }
 }
 
-const slotPath = (index) => path.join(slotRoot, `slot-${String(index).padStart(2, "0")}.json`);
+const normalizeResourceClass = (value) => {
+  const normalized = String(value ?? "light").trim().toLowerCase();
+  return ["watch", "light", "heavy"].includes(normalized) ? normalized : "light";
+};
+
+const classMetrics = (resourceClass) => {
+  const key = normalizeResourceClass(resourceClass);
+  let value = metrics.byClass.get(key);
+  if (!value) {
+    value = { acquired: 0, active: 0, totalQueueWaitMs: 0, maxQueueWaitMs: 0 };
+    metrics.byClass.set(key, value);
+  }
+  return value;
+};
+
+const poolFor = ({ kind, resourceClass }) =>
+  kind === "background" && normalizeResourceClass(resourceClass) === "watch" ? "watch" : "execution";
+
+const slotPath = (pool, index) => path.join(
+  slotRoot,
+  `${pool === "watch" ? "watch-slot" : "slot"}-${String(index).padStart(2, "0")}.json`,
+);
 
 const removeStaleSlot = async (filePath) => {
   let owner = null;
@@ -72,19 +94,41 @@ const removeStaleSlot = async (filePath) => {
   return true;
 };
 
+const releaseOwnedFiles = async (owned) => {
+  for (const { filePath, token } of owned) {
+    try {
+      const current = JSON.parse(await readFile(filePath, "utf8"));
+      if (current?.token === token) await rm(filePath, { force: true });
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+};
+
 export const acquireExecutionSlot = async ({
   kind = "interactive",
+  resourceClass = "light",
+  weight = 1,
   maxConcurrent = 6,
   reservedInteractive = 1,
+  watchMaxConcurrent = 4,
   queueTimeoutMs = 15000,
   signal,
   label = "execution",
 } = {}) => {
-  const total = Math.max(1, Number(maxConcurrent) || 1);
-  const reserved = Math.max(0, Math.min(total - 1, Number(reservedInteractive) || 0));
-  const usableSlots = kind === "background" ? Math.max(1, total - reserved) : total;
+  const normalizedClass = normalizeResourceClass(resourceClass);
+  const pool = poolFor({ kind, resourceClass: normalizedClass });
+  const executionTotal = Math.max(1, Number(maxConcurrent) || 1);
+  const watchTotal = Math.max(1, Number(watchMaxConcurrent) || 1);
+  const total = pool === "watch" ? watchTotal : executionTotal;
+  const reserved = pool === "execution"
+    ? Math.max(0, Math.min(total - 1, Number(reservedInteractive) || 0))
+    : 0;
+  const usableSlots = kind === "background" && pool === "execution" ? Math.max(1, total - reserved) : total;
+  const requestedWeight = pool === "watch"
+    ? 1
+    : Math.max(1, Math.min(usableSlots, Number(weight) || 1));
   const timeoutMs = Math.max(1, Number(queueTimeoutMs) || 1);
-  const token = randomUUID();
   const queuedAt = Date.now();
   await mkdir(slotRoot, { recursive: true });
   metrics.queued += 1;
@@ -96,56 +140,83 @@ export const acquireExecutionSlot = async ({
         throw abortError();
       }
 
-      for (let index = 0; index < usableSlots; index += 1) {
-        const filePath = slotPath(index);
+      const owned = [];
+      for (let index = 0; index < usableSlots && owned.length < requestedWeight; index += 1) {
+        const filePath = slotPath(pool, index);
+        const token = randomUUID();
         let handle = null;
         try {
           handle = await open(filePath, "wx");
-          const queueWaitMs = Date.now() - queuedAt;
           await handle.writeFile(`${JSON.stringify({
             token,
             pid: process.pid,
             kind,
+            pool,
+            resourceClass: normalizedClass,
+            weight: requestedWeight,
             label,
             acquiredAtUtc: new Date().toISOString(),
           })}\n`, "utf8");
           await handle.close();
           handle = null;
-          metrics.queued -= 1;
-          metrics.active += 1;
-          metrics.acquired += 1;
-          metrics.totalQueueWaitMs += queueWaitMs;
-          metrics.maxQueueWaitMs = Math.max(metrics.maxQueueWaitMs, queueWaitMs);
-          let released = false;
-          return {
-            slot: index,
-            kind,
-            queueWaitMs,
-            async release() {
-              if (released) return;
-              released = true;
-              metrics.active = Math.max(0, metrics.active - 1);
-              try {
-                const current = JSON.parse(await readFile(filePath, "utf8"));
-                if (current?.token === token) await rm(filePath, { force: true });
-              } catch (error) {
-                if (error?.code !== "ENOENT") throw error;
-              }
-            },
-          };
+          owned.push({ filePath, token, index });
         } catch (error) {
           try { await handle?.close(); } catch {}
-          if (error?.code !== "EEXIST") throw error;
+          if (error?.code !== "EEXIST") {
+            await releaseOwnedFiles(owned).catch(() => {});
+            throw error;
+          }
           if (await removeStaleSlot(filePath)) index -= 1;
         }
       }
 
+      if (owned.length === requestedWeight) {
+        const queueWaitMs = Date.now() - queuedAt;
+        metrics.queued -= 1;
+        metrics.active += 1;
+        metrics.acquired += 1;
+        metrics.totalQueueWaitMs += queueWaitMs;
+        metrics.maxQueueWaitMs = Math.max(metrics.maxQueueWaitMs, queueWaitMs);
+        const perClass = classMetrics(normalizedClass);
+        perClass.active += 1;
+        perClass.acquired += 1;
+        perClass.totalQueueWaitMs += queueWaitMs;
+        perClass.maxQueueWaitMs = Math.max(perClass.maxQueueWaitMs, queueWaitMs);
+        let released = false;
+        return {
+          slot: owned[0]?.index ?? null,
+          slots: owned.map((entry) => entry.index),
+          kind,
+          pool,
+          resourceClass: normalizedClass,
+          weight: requestedWeight,
+          queueWaitMs,
+          async release() {
+            if (released) return;
+            released = true;
+            metrics.active = Math.max(0, metrics.active - 1);
+            perClass.active = Math.max(0, perClass.active - 1);
+            await releaseOwnedFiles(owned);
+          },
+        };
+      }
+
+      await releaseOwnedFiles(owned).catch(() => {});
       const elapsed = Date.now() - queuedAt;
       if (elapsed >= timeoutMs) {
         metrics.timedOut += 1;
         throw new ExecutionQueueTimeoutError(
-          `Execution queue remained saturated for ${elapsed} ms. Retry shortly or use devbox_exec_start for long work.`,
-          { kind, label, queue_wait_ms: elapsed, max_concurrent: total, reserved_interactive: reserved },
+          `Execution queue remained saturated for ${elapsed} ms. Retry shortly or use a detached job for long work.`,
+          {
+            kind,
+            label,
+            pool,
+            resource_class: normalizedClass,
+            weight: requestedWeight,
+            queue_wait_ms: elapsed,
+            max_concurrent: total,
+            reserved_interactive: reserved,
+          },
         );
       }
       await sleep(Math.min(POLL_MS, timeoutMs - elapsed));
@@ -165,13 +236,12 @@ export const withExecutionSlot = async (options, callback) => {
   }
 };
 
-export const getExecutionSlotSnapshot = async ({ maxConcurrent = 6, reservedInteractive = 1 } = {}) => {
-  const total = Math.max(1, Number(maxConcurrent) || 1);
-  const reserved = Math.max(0, Math.min(total - 1, Number(reservedInteractive) || 0));
-  await mkdir(slotRoot, { recursive: true });
+const readPoolEntries = async (pool) => {
+  const prefix = pool === "watch" ? /^watch-slot-(\d+)\.json$/u : /^slot-(\d+)\.json$/u;
   const entries = [];
   for (const name of await readdir(slotRoot).catch(() => [])) {
-    if (!/^slot-\d+\.json$/u.test(name)) continue;
+    const match = name.match(prefix);
+    if (!match) continue;
     const filePath = path.join(slotRoot, name);
     try {
       const value = JSON.parse(await readFile(filePath, "utf8"));
@@ -179,16 +249,38 @@ export const getExecutionSlotSnapshot = async ({ maxConcurrent = 6, reservedInte
         await rm(filePath, { force: true });
         continue;
       }
-      entries.push({ slot: Number(name.match(/\d+/u)?.[0]), ...value });
+      entries.push({ slot: Number(match[1]), ...value });
     } catch {
     }
   }
+  return entries.sort((a, b) => a.slot - b.slot);
+};
+
+export const getExecutionSlotSnapshot = async ({
+  maxConcurrent = 6,
+  reservedInteractive = 1,
+  watchMaxConcurrent = 4,
+} = {}) => {
+  const total = Math.max(1, Number(maxConcurrent) || 1);
+  const reserved = Math.max(0, Math.min(total - 1, Number(reservedInteractive) || 0));
+  const watchTotal = Math.max(1, Number(watchMaxConcurrent) || 1);
+  await mkdir(slotRoot, { recursive: true });
+  const [entries, watchEntries] = await Promise.all([readPoolEntries("execution"), readPoolEntries("watch")]);
+  const byClass = Object.fromEntries([...metrics.byClass.entries()].map(([name, value]) => [name, {
+    active: value.active,
+    acquired: value.acquired,
+    average_queue_wait_ms: value.acquired > 0 ? Math.round(value.totalQueueWaitMs / value.acquired) : 0,
+    max_queue_wait_ms: value.maxQueueWaitMs,
+  }]));
   return {
     max_concurrent: total,
     reserved_interactive: reserved,
     background_capacity: Math.max(1, total - reserved),
+    watch_capacity: watchTotal,
     occupied: entries.length,
     occupied_slots: entries,
+    watch_occupied: watchEntries.length,
+    watch_slots: watchEntries,
     local_process: {
       queued: metrics.queued,
       active: metrics.active,
@@ -197,6 +289,9 @@ export const getExecutionSlotSnapshot = async ({ maxConcurrent = 6, reservedInte
       cancelled: metrics.cancelled,
       average_queue_wait_ms: metrics.acquired > 0 ? Math.round(metrics.totalQueueWaitMs / metrics.acquired) : 0,
       max_queue_wait_ms: metrics.maxQueueWaitMs,
+      by_resource_class: byClass,
     },
   };
 };
+
+export const executionSlotInternals = { normalizeResourceClass, poolFor, processAlive, slotPath };

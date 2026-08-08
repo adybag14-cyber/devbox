@@ -132,6 +132,7 @@ export const spawnProcess = (file, args, options = {}) =>
       shell: false,
       windowsHide: true,
     });
+    try { options.onSpawn?.(child.pid ?? null); } catch {}
 
     const handleAbort = () => {
       if (settled || aborted) {

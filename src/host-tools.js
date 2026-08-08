@@ -925,6 +925,10 @@ export const runAllowedProgram = async ({
   timeoutMs,
   input,
   signal,
+  onStdout,
+  onStderr,
+  maxCaptureChars,
+  onSpawn,
 }) => {
   assertHostExecEnabled();
 
@@ -941,6 +945,10 @@ export const runAllowedProgram = async ({
       timeoutMs,
       input,
       signal,
+      onStdout,
+      onStderr,
+      maxCaptureChars,
+      onSpawn,
     });
     return ["powershell", "pwsh"].includes(normalizedProgram) ? cleanPowerShellResult(result) : result;
   } catch (error) {

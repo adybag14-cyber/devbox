@@ -63,7 +63,7 @@ const isRuntimeShellLaunchFailure = (error) =>
   && error.timedOut !== true
   && error.aborted !== true;
 
-const spawnRuntimeShell = async ({ runtimeConfig, command, cwd, timeoutMs, signal, onStdout, onStderr, maxCaptureChars }) => {
+const spawnRuntimeShell = async ({ runtimeConfig, command, cwd, timeoutMs, signal, onStdout, onStderr, maxCaptureChars, onSpawn }) => {
   const candidates = [...new Set([runtimeConfig.hostShell, runtimeConfig.hostShellFallback].filter(Boolean))];
   let lastError = null;
   for (let index = 0; index < candidates.length; index += 1) {
@@ -76,6 +76,7 @@ const spawnRuntimeShell = async ({ runtimeConfig, command, cwd, timeoutMs, signa
         onStdout,
         onStderr,
         maxCaptureChars,
+        onSpawn,
       });
     } catch (error) {
       lastError = error;
@@ -340,20 +341,20 @@ export const ensureHostRuntimeReady = async () => {
   return getHostRuntimeInfo();
 };
 
-export const execInHostRuntime = async ({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars }) => {
+export const execInHostRuntime = async ({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars, onSpawn }) => {
   const runtimeConfig = getRuntimeConfig();
   await ensureHostRuntimeReady();
   const cwd = workingDir || runtimeConfig.hostDefaultWorkdir;
 
   try {
-    return await spawnRuntimeShell({ runtimeConfig, command, cwd, timeoutMs, signal, onStdout, onStderr, maxCaptureChars });
+    return await spawnRuntimeShell({ runtimeConfig, command, cwd, timeoutMs, signal, onStdout, onStderr, maxCaptureChars, onSpawn });
   } catch (error) {
     throw wrapRuntimeError(error, "Host runtime command failed.");
   }
 };
 
-export const execReadOnlyInHostRuntime = async ({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars }) =>
-  execInHostRuntime({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars });
+export const execReadOnlyInHostRuntime = async ({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars, onSpawn }) =>
+  execInHostRuntime({ command, workingDir, timeoutMs, signal, onStdout, onStderr, maxCaptureChars, onSpawn });
 
 export const listFilesInHostRuntime = async ({
   path: targetPath,

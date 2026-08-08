@@ -237,7 +237,12 @@ Important `.env` values:
 - `HOST_PROGRAM_ALLOWLIST`
 - `DEVBOX_PROGRAM_ALLOWLIST` controls the structured `devbox_run_program` fast path; in host mode the executable must also be allowed by `HOST_PROGRAM_ALLOWLIST`
 - `HOST_SEARCH_BACKEND=auto|rg|js` selects host search acceleration; `auto` prefers ripgrep
-- `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune process admission control
+- `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune the light/heavy execution pool
+- `MCP_WATCH_MAX_CONCURRENT` gives passive watchers such as `gh run watch` a separate pool; `MCP_EXEC_HEAVY_WEIGHT` controls how much execution capacity heavy build/browser jobs consume
+- `MCP_JOB_LOG_MAX_BYTES` and `MCP_JOB_LOG_ROTATIONS` bound detached-job stdout/stderr on disk; `MCP_JOB_HEARTBEAT_MS` and `MCP_JOB_ORPHAN_STALE_MS` control orphan detection
+- `MCP_WAIT_MAX_SECONDS` bounds no-process waits; prefer `devbox_wait`, `devbox_wait_for_file`, or `devbox_job_status(wait_seconds=...)` over shell `sleep`/`Start-Sleep`
+- `SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS`, `SCREEN_CAPTURE_RETRIES`, and `SCREEN_CAPTURE_QUEUE_TIMEOUT_MS` control serialized fail-fast screenshot capture
+- `GUARDIAN_HOST_PRESSURE_SAMPLE_MS` controls diagnostic Windows CPU/memory/commit/pagefile sampling; it does not trigger repair by itself
 - `DEVBOX_VERSION_CACHE_MS` controls the short-lived `devbox_status` toolchain-version cache
 - `PUBLIC_BASE_URL` for public OAuth deployments
 - `ENABLE_GATEWAY_BRIDGE=true|false`
@@ -296,9 +301,12 @@ Authentication and transport are separate. Selecting `oauth` or `cloudflare` con
 For commands likely to exceed the connector request lifetime, use the persistent async job tools instead of holding one MCP request open:
 
 - Synchronous shell tools are intentionally capped at **90 seconds** because upstream MCP/connector requests can be aborted around the two-minute mark. Do not use a long synchronous timeout for builds, exports, sleeps, or soak tests.
-- `devbox_run_program` should be preferred for one executable such as `git`, `gh`, `node`, `python`, or `rg`; it bypasses the shell.
-- `devbox_exec_start` starts a detached job and returns a job ID immediately; use it for work expected to approach or exceed 90 seconds. Detached jobs participate in the shared execution pool and cannot consume the reserved interactive slot.
-- `devbox_job_status` polls durable state under `run/jobs/`.
+- `devbox_run_program` should be preferred for one executable such as `git`, `gh`, `node`, `python`, or `rg`; it bypasses the shell. Long direct programs should use `devbox_run_program_start`.
+- `devbox_exec_start` starts a detached shell job and returns a job ID immediately; use `resource_class=watch|light|heavy` when auto-detection is not appropriate.
+- Passive watchers use their own bounded pool; heavy jobs consume weighted execution capacity while at least one interactive slot remains reserved.
+- `devbox_job_status(wait_seconds=...)` long-polls using a Node timer without occupying an execution slot. `devbox_wait` and host-mode `devbox_wait_for_file` likewise avoid spawning a shell just to sleep/poll.
+- Detached job logs rotate at configured byte limits, and dead runners with stale heartbeats reconcile to terminal `interrupted` state.
+- Synchronous shell/direct-program tools support `output_mode=head|tail|summary`, `max_output_chars`, and `max_output_lines` for bounded large-output inspection.
 - `devbox_job_logs` returns bounded log tails.
 - `devbox_job_cancel` cancels the detached process tree.
 
@@ -430,3 +438,7 @@ If you are lazy to type continue and press enter here's another console script f
 })();
 ```
 and the auto continue script above too. 
+
+### Windows named-tunnel source binding
+
+For Windows named Cloudflare Tunnel, `CLOUDFLARED_EDGE_BIND_ADDRESS=auto` selects the current IPv4 address on the active **physical** default-route adapter and records the interface/address in `run/host-cloudflared.transport.json`. If an explicitly configured DHCP address is no longer assigned, startup automatically resolves the replacement physical default-route IPv4 instead of leaving cloudflared bound to a stale lease.

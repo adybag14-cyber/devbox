@@ -531,6 +531,50 @@ const testHealth = async (url, timeoutSeconds = 5) => {
   }
 };
 
+const readMcpPerformanceState = async (projectRoot, environment = process.env) => {
+  const configured = String(environment.MCP_PERFORMANCE_STATE_PATH ?? "").trim();
+  const statePath = configured ? path.resolve(configured) : path.join(projectRoot, "run", "mcp-performance.json");
+  return readJson(statePath, null);
+};
+
+
+export const sampleWindowsHostPressure = async (environment = process.env) => {
+  if (process.platform !== "win32") return null;
+  const powerShell = resolveWindowsPowerShellExecutable(environment);
+  const command = String.raw`
+$ErrorActionPreference='Stop'
+$os = Get-CimInstance Win32_OperatingSystem
+$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+$memory = Get-CimInstance Win32_PerfFormattedData_PerfOS_Memory -ErrorAction SilentlyContinue
+$page = @(Get-CimInstance Win32_PageFileUsage -ErrorAction SilentlyContinue)
+$pageAllocatedMb = ($page | Measure-Object -Property AllocatedBaseSize -Sum).Sum
+$pageUsedMb = ($page | Measure-Object -Property CurrentUsage -Sum).Sum
+[Console]::Out.Write((([ordered]@{
+  SampledAtUtc = [DateTime]::UtcNow.ToString('o')
+  CpuPercent = if($null -ne $cpu){[double]$cpu}else{$null}
+  TotalPhysicalBytes = [int64]$os.TotalVisibleMemorySize * 1024
+  FreePhysicalBytes = [int64]$os.FreePhysicalMemory * 1024
+  TotalVirtualBytes = [int64]$os.TotalVirtualMemorySize * 1024
+  FreeVirtualBytes = [int64]$os.FreeVirtualMemory * 1024
+  CommittedBytes = if($memory){[int64]$memory.CommittedBytes}else{$null}
+  CommitLimitBytes = if($memory){[int64]$memory.CommitLimit}else{$null}
+  PageFileAllocatedBytes = if($null -ne $pageAllocatedMb){[int64]$pageAllocatedMb * 1MB}else{$null}
+  PageFileUsedBytes = if($null -ne $pageUsedMb){[int64]$pageUsedMb * 1MB}else{$null}
+} | ConvertTo-Json -Compress)))
+`;
+  try {
+    const result = await execFileAsync(powerShell, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], {
+      encoding: "utf8",
+      timeout: 8000,
+      windowsHide: true,
+      maxBuffer: 256 * 1024,
+    });
+    return JSON.parse(String(result.stdout ?? "{}").trim() || "{}");
+  } catch (error) {
+    return { SampledAtUtc: new Date().toISOString(), Error: error instanceof Error ? error.message : String(error) };
+  }
+};
+
 const sumPrometheusMetric = (text, metricName) => {
   let total = 0;
   let found = false;
@@ -814,6 +858,8 @@ const main = async () => {
   let lastDeferredStartupAttemptId = null;
   let lastHeartbeatState = null;
   let heartbeatExtra = {};
+  let lastHostPressureSampleMs = 0;
+  let hostPressureSample = null;
 
   const log = async (level, message) => {
     await appendFile(paths.log, `${new Date().toISOString()} [${level}] ${message}\n`, "utf8");
@@ -839,10 +885,17 @@ const main = async () => {
     const publicBaseUrl = normalizePublicUrl(settings.PublicBaseUrl || environment.PUBLIC_BASE_URL || environment.CLOUDFLARED_PUBLIC_HOSTNAME);
     const publicEnabled = settings.Public === true || Boolean(publicBaseUrl);
     const mcpProcess = await findMcpProcess(paths.runDir);
-    const [localHealth, publicHealth] = await Promise.all([
-      testHealth(`http://127.0.0.1:${port}/healthz`),
+    const localBaseUrl = `http://127.0.0.1:${port}`;
+    const [localHealth, publicHealth, mcpPerformance] = await Promise.all([
+      testHealth(`${localBaseUrl}/healthz`),
       publicEnabled ? testHealth(`${publicBaseUrl}/healthz`) : Promise.resolve(null),
+      readMcpPerformanceState(options.projectRoot, environment),
     ]);
+    const pressureIntervalMs = Math.max(10000, Number.parseInt(environment.GUARDIAN_HOST_PRESSURE_SAMPLE_MS ?? "60000", 10) || 60000);
+    if (process.platform === "win32" && (hostPressureSample === null || Date.now() - lastHostPressureSampleMs >= pressureIntervalMs)) {
+      hostPressureSample = await sampleWindowsHostPressure(environment);
+      lastHostPressureSampleMs = Date.now();
+    }
     const runtimeMode = normalizeRuntimeMode(settings.RuntimeMode || environment.DEVBOX_RUNTIME_MODE || "auto");
     const selectedRuntime = resolveSelectedRuntime({
       runtimeMode,
@@ -995,6 +1048,8 @@ const main = async () => {
       RequireMcpElevated: requireMcpElevated,
       LocalHealth: localHealth,
       PublicHealth: publicHealth,
+      McpPerformance: mcpPerformance,
+      HostPressure: hostPressureSample,
       RepairPolicy: repairPolicy,
       ...classified,
     };

@@ -803,3 +803,80 @@ test("async MCP jobs survive the request boundary and support status, logs, and 
   assert.equal(cancelled.structuredContent?.ok, true);
   assert.equal(cancelled.structuredContent?.data?.status, "cancelled");
 });
+
+
+test("round-two wait, output shaping, and structured async tools work end to end", async (t) => {
+  const { port, stdout, stderr } = await startServer(t);
+  const client = await connectClient(t, port);
+  const listed = await client.listTools();
+  const tools = new Map((listed.tools || []).map((tool) => [tool.name, tool]));
+  for (const name of ["devbox_wait", "devbox_wait_for_file", "devbox_run_program_start"]) {
+    assert.ok(tools.has(name), `Expected round-two tool ${name}.`);
+  }
+  assert.ok(tools.get("devbox_job_status")?.inputSchema?.properties?.wait_seconds);
+  assert.ok(tools.get("devbox_exec_readonly")?.inputSchema?.properties?.output_mode);
+  assert.ok(tools.get("host_exec")?.inputSchema?.properties?.output_mode);
+
+  const waitStarted = Date.now();
+  const waited = await client.callTool({ name: "devbox_wait", arguments: { seconds: 0.1, reason: "integration-test" } });
+  assert.equal(waited.structuredContent?.ok, true);
+  assert.ok(Date.now() - waitStarted < 2000);
+  assert.equal(waited.structuredContent?.data?.execution, undefined);
+
+  const fileDir = await mkdtemp(path.join(os.tmpdir(), "devbox-round2-mcp-file-"));
+  const readyFile = path.join(fileDir, "ready.txt");
+  t.after(() => rm(fileDir, { recursive: true, force: true }));
+  setTimeout(() => writeFile(readyFile, "ready", "utf8"), 100);
+  const fileWait = await client.callTool({
+    name: "devbox_wait_for_file",
+    arguments: { path: readyFile, min_bytes: 5, timeout_seconds: 3, poll_ms: 50 },
+  });
+  assert.equal(fileWait.structuredContent?.ok, true);
+  assert.equal(fileWait.structuredContent?.data?.conditionMet, true);
+
+  const shaped = await client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "node",
+      args: ["-e", "for(let i=0;i<20;i++) console.log('LINE-'+i)"],
+      working_dir: projectRoot,
+      timeout_seconds: 10,
+      output_mode: "tail",
+      max_output_lines: 3,
+      max_output_chars: 2000,
+    },
+  });
+  assert.equal(shaped.structuredContent?.ok, true, `direct output shaping failed\nstdout:\n${stdout.join("")}\nstderr:\n${stderr.join("")}`);
+  assert.match(shaped.structuredContent?.stdout ?? "", /LINE-19/u);
+  assert.doesNotMatch(shaped.structuredContent?.stdout ?? "", /LINE-0(?:\r?\n|$)/u);
+  assert.equal(shaped.structuredContent?.data?.output?.mode, "tail");
+
+  const started = await client.callTool({
+    name: "devbox_run_program_start",
+    arguments: {
+      program: "node",
+      args: ["-e", "setTimeout(()=>console.log('DIRECT_ASYNC_OK'),200)"],
+      working_dir: projectRoot,
+      timeout_seconds: 20,
+      resource_class: "light",
+    },
+  });
+  assert.equal(started.structuredContent?.ok, true);
+  const jobId = started.structuredContent?.data?.id;
+  assert.match(jobId ?? "", /^job-/u);
+  const status = await client.callTool({
+    name: "devbox_job_status",
+    arguments: { job_id: jobId, wait_seconds: 5, terminal_only: true },
+  });
+  assert.equal(status.structuredContent?.ok, true);
+  assert.equal(status.structuredContent?.data?.status, "succeeded");
+  assert.equal(status.structuredContent?.data?.mode, "program");
+  const logs = await client.callTool({ name: "devbox_job_logs", arguments: { job_id: jobId, max_chars: 2000 } });
+  assert.equal(logs.structuredContent?.ok, true);
+  assert.match(logs.structuredContent?.data?.stdout ?? "", /DIRECT_ASYNC_OK/u);
+
+  const statusDetails = await client.callTool({ name: "devbox_status", arguments: {} });
+  assert.equal(statusDetails.structuredContent?.ok, true);
+  assert.ok(statusDetails.structuredContent?.data?.performance?.eventLoop);
+  assert.equal(typeof statusDetails.structuredContent?.data?.performance?.process?.pid, "number");
+});

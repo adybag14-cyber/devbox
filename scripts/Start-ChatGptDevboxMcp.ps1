@@ -978,6 +978,46 @@ function Wait-ForHealthyPublicEndpoint {
     throw "The Cloudflare tunnel did not expose a healthy public endpoint at $healthUrl. Logs:`n$logs"
 }
 
+function Resolve-DefaultRouteIPv4BindAddress {
+    try {
+        $routes = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+            Sort-Object -Property @{ Expression = {
+                $interfaceMetric = 0
+                try {
+                    $ipInterface = Get-NetIPInterface -InterfaceIndex $_.InterfaceIndex -AddressFamily IPv4 -ErrorAction Stop
+                    $interfaceMetric = [int]$ipInterface.InterfaceMetric
+                } catch {
+                }
+                [int]$_.RouteMetric + $interfaceMetric
+            } })
+        foreach ($route in $routes) {
+            $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue
+            if (-not $adapter -or $adapter.Status -ne 'Up' -or $adapter.HardwareInterface -ne $true) {
+                continue
+            }
+            $address = Get-NetIPAddress -InterfaceIndex $route.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.IPAddress -and
+                    $_.IPAddress -notmatch '^127\.' -and
+                    $_.IPAddress -notmatch '^169\.254\.' -and
+                    ($_.AddressState -eq 'Preferred' -or $null -eq $_.AddressState)
+                } |
+                Select-Object -First 1
+            if ($address) {
+                return [pscustomobject]@{
+                    Address = [string]$address.IPAddress
+                    InterfaceAlias = [string]$adapter.Name
+                    InterfaceIndex = [int]$route.InterfaceIndex
+                    PrefixOrigin = [string]$address.PrefixOrigin
+                    RouteMetric = [int]$route.RouteMetric
+                }
+            }
+        }
+    } catch {
+    }
+    return $null
+}
+
 function Start-CloudflaredNamedTunnel {
     param(
         [string]$ContainerName,
@@ -1050,24 +1090,57 @@ function Start-CloudflaredNamedTunnel {
     } elseif (-not [string]::IsNullOrWhiteSpace($env:TUNNEL_EDGE_BIND_ADDRESS)) {
         [string]$env:TUNNEL_EDGE_BIND_ADDRESS
     } else {
-        ''
+        'auto'
     }
     $requestedEdgeBindAddress = $requestedEdgeBindAddress.Trim()
-    $effectiveEdgeBindAddress = $requestedEdgeBindAddress
-    if ($effectiveEdgeBindAddress) {
+    $effectiveEdgeBindAddress = ''
+    $bindResolution = 'unbound'
+    $bindInterfaceAlias = $null
+    $bindInterfaceIndex = $null
+    $bindPrefixOrigin = $null
+    $shouldResolveDefaultRoute = [string]::IsNullOrWhiteSpace($requestedEdgeBindAddress) -or $requestedEdgeBindAddress -eq 'auto'
+
+    if (-not $shouldResolveDefaultRoute) {
         $parsedBindAddress = $null
-        if (-not [System.Net.IPAddress]::TryParse($effectiveEdgeBindAddress, [ref]$parsedBindAddress)) {
-            throw "CLOUDFLARED_EDGE_BIND_ADDRESS must be a valid local IP address."
+        if (-not [System.Net.IPAddress]::TryParse($requestedEdgeBindAddress, [ref]$parsedBindAddress)) {
+            throw "CLOUDFLARED_EDGE_BIND_ADDRESS must be 'auto' or a valid local IP address."
         }
         try {
-            $localBind = Get-NetIPAddress -IPAddress $effectiveEdgeBindAddress -ErrorAction SilentlyContinue | Select-Object -First 1
-            if (-not $localBind) {
-                Write-Warning "Configured Cloudflare edge bind address $effectiveEdgeBindAddress is not currently assigned locally; falling back to normal Windows route selection so the tunnel can still recover."
-                $effectiveEdgeBindAddress = ''
+            $localBind = Get-NetIPAddress -IPAddress $requestedEdgeBindAddress -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($localBind) {
+                $effectiveEdgeBindAddress = $requestedEdgeBindAddress
+                $bindResolution = 'configured-local-address'
+                $bindInterfaceAlias = [string]$localBind.InterfaceAlias
+                $bindInterfaceIndex = [int]$localBind.InterfaceIndex
+                $bindPrefixOrigin = [string]$localBind.PrefixOrigin
+            } else {
+                Write-Warning "Configured Cloudflare edge bind address $requestedEdgeBindAddress is not currently assigned locally; resolving the active physical default-route IPv4 address instead."
+                $shouldResolveDefaultRoute = $true
+                $bindResolution = 'configured-address-stale'
             }
         } catch {
-            # If adapter inspection is unavailable, let cloudflared validate the explicit address.
+            # If adapter inspection itself fails, preserve the explicit value and
+            # let cloudflared validate it rather than silently changing routing.
+            $effectiveEdgeBindAddress = $requestedEdgeBindAddress
+            $bindResolution = 'configured-unverified'
         }
+    }
+
+    if ($shouldResolveDefaultRoute -and $edgeIpVersion -ne '6') {
+        $resolvedBind = Resolve-DefaultRouteIPv4BindAddress
+        if ($resolvedBind) {
+            $effectiveEdgeBindAddress = [string]$resolvedBind.Address
+            $bindResolution = if ($bindResolution -eq 'configured-address-stale') { 'configured-stale-default-route' } else { 'auto-default-route' }
+            $bindInterfaceAlias = [string]$resolvedBind.InterfaceAlias
+            $bindInterfaceIndex = [int]$resolvedBind.InterfaceIndex
+            $bindPrefixOrigin = [string]$resolvedBind.PrefixOrigin
+        } else {
+            $effectiveEdgeBindAddress = ''
+            $bindResolution = 'auto-unbound-fallback'
+            Write-Warning 'Could not resolve an active physical default-route IPv4 address; cloudflared will use normal Windows route selection.'
+        }
+    } elseif ($shouldResolveDefaultRoute -and $edgeIpVersion -eq '6') {
+        $bindResolution = 'ipv6-unbound'
     }
 
     $transportStateFile = Join-Path $RunDir 'host-cloudflared.transport.json'
@@ -1076,6 +1149,10 @@ function Start-CloudflaredNamedTunnel {
         ProtocolSelection = $transportProtocol
         RequestedEdgeBindAddress = $requestedEdgeBindAddress
         EffectiveEdgeBindAddress = $effectiveEdgeBindAddress
+        BindResolution = $bindResolution
+        BindInterfaceAlias = $bindInterfaceAlias
+        BindInterfaceIndex = $bindInterfaceIndex
+        BindPrefixOrigin = $bindPrefixOrigin
         MetricsUrl = $metricsUrl
         UpdatedAtUtc = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json -Depth 4

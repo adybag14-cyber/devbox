@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:f
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { monitorEventLoopDelay } from "node:perf_hooks";
 
 import express from "express";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -56,12 +57,17 @@ import {
   summarizeLargeWriteData,
 } from "./large-file-cli.js";
 import { trimText } from "./process-utils.js";
+import { shapeProcessOutput } from "./output-shaping.js";
+import { abortableSleep, waitForPathCondition } from "./wait-utils.js";
 import { getExecutionSlotSnapshot, withExecutionSlot } from "./execution-slots.js";
 import {
   cancelDevboxJob,
   getDevboxJobLogs,
   getDevboxJobStatus,
+  reconcileOrphanedDevboxJobs,
   startDevboxJob,
+  startDevboxProgramJob,
+  waitForDevboxJobStatus,
 } from "./async-jobs.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -73,6 +79,61 @@ const usageLogStates = new Map();
 const activeMcpRequestControllers = new Map();
 const guardianStatePath = path.join(runDir, "guardian", "state.json");
 const startupStatePath = path.join(runDir, "startup-state.json");
+const mcpPerformanceStatePath = process.env.MCP_PERFORMANCE_STATE_PATH?.trim() ? path.resolve(process.env.MCP_PERFORMANCE_STATE_PATH.trim()) : path.join(runDir, "mcp-performance.json");
+
+const eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
+eventLoopHistogram.enable();
+let eventLoopWindow = null;
+let timerDriftMaxMs = 0;
+let expectedTimerTickMs = Date.now() + 1000;
+const finiteMs = (nanoseconds) => Number.isFinite(nanoseconds) ? Math.round((nanoseconds / 1e6) * 100) / 100 : null;
+const snapshotEventLoopWindow = () => {
+  const snapshot = {
+    sampledAtUtc: new Date().toISOString(),
+    p50Ms: finiteMs(eventLoopHistogram.percentile(50)),
+    p95Ms: finiteMs(eventLoopHistogram.percentile(95)),
+    p99Ms: finiteMs(eventLoopHistogram.percentile(99)),
+    maxMs: finiteMs(eventLoopHistogram.max),
+    timerDriftMaxMs: Math.round(timerDriftMaxMs * 100) / 100,
+  };
+  eventLoopHistogram.reset();
+  timerDriftMaxMs = 0;
+  eventLoopWindow = snapshot;
+  return snapshot;
+};
+const driftTimer = setInterval(() => {
+  const now = Date.now();
+  timerDriftMaxMs = Math.max(timerDriftMaxMs, Math.max(0, now - expectedTimerTickMs));
+  expectedTimerTickMs = now + 1000;
+}, 1000);
+driftTimer.unref?.();
+const eventLoopWindowTimer = setInterval(() => {
+  const snapshot = snapshotEventLoopWindow();
+  writeJsonStateFile(mcpPerformanceStatePath, {
+    EventLoop: snapshot,
+    Process: {
+      Pid: process.pid,
+      UptimeSeconds: Math.round(process.uptime() * 10) / 10,
+      Memory: process.memoryUsage(),
+    },
+  }).catch(() => {});
+}, 10000);
+eventLoopWindowTimer.unref?.();
+const getMcpPerformanceSnapshot = () => ({
+  eventLoop: eventLoopWindow ?? {
+    sampledAtUtc: new Date().toISOString(),
+    p50Ms: finiteMs(eventLoopHistogram.percentile(50)),
+    p95Ms: finiteMs(eventLoopHistogram.percentile(95)),
+    p99Ms: finiteMs(eventLoopHistogram.percentile(99)),
+    maxMs: finiteMs(eventLoopHistogram.max),
+    timerDriftMaxMs: Math.round(timerDriftMaxMs * 100) / 100,
+  },
+  process: {
+    pid: process.pid,
+    uptimeSeconds: Math.round(process.uptime() * 10) / 10,
+    memory: process.memoryUsage(),
+  },
+});
 
 const readStartupStatusSnapshot = async () => {
   try {
@@ -130,6 +191,8 @@ const withInteractiveExecution = async ({ label, signal }, callback) =>
     label,
     maxConcurrent: config.mcpExecMaxConcurrent,
     reservedInteractive: config.mcpExecReservedInteractive,
+    watchMaxConcurrent: config.mcpWatchMaxConcurrent,
+    resourceClass: "light",
     queueTimeoutMs: config.mcpExecQueueTimeoutMs,
     signal,
   }, async (lease) => {
@@ -602,11 +665,26 @@ const errorResult = (error, fallbackSummary = "The command failed.") => {
 };
 
 const fromProcessResult = (summary, result, extra = {}) => {
-  const stdout = trimText(result.stdout, COMMAND_OUTPUT_LIMIT_CHARS);
-  const stderr = trimText(result.stderr, COMMAND_OUTPUT_LIMIT_CHARS);
+  const requestedMaxChars = Math.max(100, Number(extra.output?.maxChars) || COMMAND_OUTPUT_LIMIT_CHARS);
+  const maxChars = Math.min(COMMAND_OUTPUT_LIMIT_CHARS, requestedMaxChars);
+  const outputOptions = {
+    mode: extra.output?.mode || "tail",
+    maxChars,
+    maxLines: Math.max(0, Number(extra.output?.maxLines) || 0),
+  };
+  const stdout = shapeProcessOutput(result.stdout, outputOptions);
+  const stderr = shapeProcessOutput(result.stderr, outputOptions);
+  const outputMetadata = {
+    mode: outputOptions.mode,
+    max_chars: maxChars,
+    max_lines: outputOptions.maxLines,
+    stdout_original_chars: stdout.originalChars,
+    stderr_original_chars: stderr.originalChars,
+  };
+  const baseData = extra.data && typeof extra.data === "object" ? extra.data : {};
 
   return successResult(summary, {
-    data: extra.data,
+    data: { ...baseData, output: outputMetadata },
     stdout: stdout.text || undefined,
     stderr: stderr.text || undefined,
     exitCode: result.exitCode ?? null,
@@ -711,7 +789,9 @@ const buildServer = ({ requestSignal } = {}) => {
           execution: await getExecutionSlotSnapshot({
             maxConcurrent: config.mcpExecMaxConcurrent,
             reservedInteractive: config.mcpExecReservedInteractive,
+            watchMaxConcurrent: config.mcpWatchMaxConcurrent,
           }),
+          performance: getMcpPerformanceSnapshot(),
         };
 
         if (info.running) {
@@ -837,6 +917,9 @@ const buildServer = ({ requestSignal } = {}) => {
           command: z.string().min(1).describe(`Read-only shell command to run inside the ${runtimeLabel}.`),
           working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
           timeout_seconds: syncCommandTimeoutSchema(),
+          output_mode: z.enum(["head", "tail", "summary"]).default("tail").describe("Which part of large stdout/stderr to return. Use tail for logs, head for headers, or summary for both ends."),
+          max_output_chars: z.number().int().min(100).max(COMMAND_OUTPUT_LIMIT_CHARS).default(COMMAND_OUTPUT_LIMIT_CHARS).describe("Maximum returned characters per stdout/stderr stream."),
+          max_output_lines: z.number().int().min(0).max(10000).default(0).describe("Optional maximum returned lines per stream; 0 disables the line limit."),
           user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the disposable read-only container." : `Host user hint for ${runtimeLabel} mode.`),
         },
         outputSchema,
@@ -844,7 +927,7 @@ const buildServer = ({ requestSignal } = {}) => {
       `Running read-only shell command in ${runtimeLabel}`,
       `Read-only ${runtimeLabel} shell command finished`,
     ),
-    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }, extra) => {
+    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines, user }, extra) => {
       try {
         return await withInteractiveExecution({ label: "devbox_exec_readonly", signal: extra?.signal }, async (lease) => {
           const result = await execReadOnlyInDevbox({
@@ -856,6 +939,7 @@ const buildServer = ({ requestSignal } = {}) => {
           });
           return fromProcessResult(`Ran a read-only shell command in the ${runtimeLabel} at ${workingDir}.`, result, {
             data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+            output: { mode: outputMode, maxChars: maxOutputChars, maxLines: maxOutputLines },
           });
         });
       } catch (error) {
@@ -876,6 +960,9 @@ const buildServer = ({ requestSignal } = {}) => {
           command: z.string().min(1).describe(`Shell command to run inside the ${runtimeLabel}.`),
           working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
           timeout_seconds: syncCommandTimeoutSchema(),
+          output_mode: z.enum(["head", "tail", "summary"]).default("tail").describe("Which part of large stdout/stderr to return. Use tail for logs, head for headers, or summary for both ends."),
+          max_output_chars: z.number().int().min(100).max(COMMAND_OUTPUT_LIMIT_CHARS).default(COMMAND_OUTPUT_LIMIT_CHARS).describe("Maximum returned characters per stdout/stderr stream."),
+          max_output_lines: z.number().int().min(0).max(10000).default(0).describe("Optional maximum returned lines per stream; 0 disables the line limit."),
           user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
         },
         outputSchema,
@@ -883,7 +970,7 @@ const buildServer = ({ requestSignal } = {}) => {
       `Running shell command in ${runtimeLabel}`,
       `${runtimeLabel} shell command finished`,
     ),
-    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }, extra) => {
+    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines, user }, extra) => {
       try {
         return await withInteractiveExecution({ label: "devbox_exec", signal: extra?.signal }, async (lease) => {
           const result = await execInDevbox({
@@ -895,6 +982,7 @@ const buildServer = ({ requestSignal } = {}) => {
           });
           return fromProcessResult(`Ran a shell command in the ${runtimeLabel} at ${workingDir}.`, result, {
             data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+            output: { mode: outputMode, maxChars: maxOutputChars, maxLines: maxOutputLines },
           });
         });
       } catch (error) {
@@ -914,6 +1002,9 @@ const buildServer = ({ requestSignal } = {}) => {
           args: z.array(z.string()).default([]).describe("Argument list passed directly to the executable without shell parsing."),
           working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
           timeout_seconds: syncCommandTimeoutSchema(),
+          output_mode: z.enum(["head", "tail", "summary"]).default("tail").describe("Which part of large stdout/stderr to return. Use tail for logs, head for headers, or summary for both ends."),
+          max_output_chars: z.number().int().min(100).max(COMMAND_OUTPUT_LIMIT_CHARS).default(COMMAND_OUTPUT_LIMIT_CHARS).describe("Maximum returned characters per stdout/stderr stream."),
+          max_output_lines: z.number().int().min(0).max(10000).default(0).describe("Optional maximum returned lines per stream; 0 disables the line limit."),
           user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
         },
         outputSchema,
@@ -921,7 +1012,7 @@ const buildServer = ({ requestSignal } = {}) => {
       `Running direct program in ${runtimeLabel}`,
       `${runtimeLabel} direct program finished`,
     ),
-    async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds, user }, extra) => {
+    async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines, user }, extra) => {
       try {
         return await withInteractiveExecution({ label: "devbox_run_program", signal: extra?.signal }, async (lease) => {
           const result = await runProgramInDevbox({
@@ -934,6 +1025,7 @@ const buildServer = ({ requestSignal } = {}) => {
           });
           return fromProcessResult(`Ran ${program} directly in the ${runtimeLabel}.`, result, {
             data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+            output: { mode: outputMode, maxChars: maxOutputChars, maxLines: maxOutputLines },
           });
         });
       } catch (error) {
@@ -954,18 +1046,49 @@ const buildServer = ({ requestSignal } = {}) => {
           timeout_seconds: z.number().int().min(1).max(86400).default(7200).describe("Maximum background job runtime in seconds."),
           user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
           read_only: z.boolean().default(false).describe("When true, use the read-only execution path. Read-only enforcement is advisory in host mode."),
+          resource_class: z.enum(["auto", "watch", "light", "heavy"]).default("auto").describe("Scheduling class. auto detects passive watches and heavy build/browser workloads."),
         },
         outputSchema,
       },
       `Starting background job in ${runtimeLabel}`,
       `${runtimeLabel} background job started`,
     ),
-    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user, read_only: readOnly }) => {
+    async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user, read_only: readOnly, resource_class: resourceClass }) => {
       try {
-        const data = await startDevboxJob({ command, workingDir, timeoutSeconds, user, readOnly });
+        const data = await startDevboxJob({ command, workingDir, timeoutSeconds, user, readOnly, resourceClass });
         return successResult(`Started background ${runtimeLabel} job ${data.id}.`, { data });
       } catch (error) {
         return errorResult(error, `Failed to start the background ${runtimeLabel} job.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_run_program_start",
+    safeActionTool(
+      {
+        title: `Start Background Program Directly In ${runtimeTitle}`,
+        description: `Preferred detached path for one long-running executable. It avoids shell startup/quoting and participates in weighted scheduling. Use resource_class=watch for passive watchers and heavy for builds/browser workloads.`,
+        inputSchema: {
+          program: z.string().min(1).describe("Allowed executable name."),
+          args: z.array(z.string()).default([]).describe("Argument list passed directly without shell parsing."),
+          input: z.string().optional().describe("Optional stdin text for the program."),
+          working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
+          timeout_seconds: z.number().int().min(1).max(86400).default(7200).describe("Maximum background runtime in seconds."),
+          user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
+          resource_class: z.enum(["auto", "watch", "light", "heavy"]).default("auto").describe("Scheduling class. auto detects gh run watch and common heavy build/browser programs."),
+        },
+        outputSchema,
+      },
+      `Starting direct background program in ${runtimeLabel}`,
+      `${runtimeLabel} direct background program started`,
+    ),
+    async ({ program, args, input, working_dir: workingDir, timeout_seconds: timeoutSeconds, user, resource_class: resourceClass }) => {
+      try {
+        const data = await startDevboxProgramJob({ program, args, input, workingDir, timeoutSeconds, user, resourceClass });
+        return successResult(`Started direct background ${runtimeLabel} job ${data.id}.`, { data });
+      } catch (error) {
+        return errorResult(error, `Failed to start direct background program in ${runtimeLabel}.`);
       }
     },
   );
@@ -975,18 +1098,22 @@ const buildServer = ({ requestSignal } = {}) => {
     safeReadOnlyTool(
       {
         title: "Get Devbox Background Job Status",
-        description: "Use this to poll a job started by devbox_exec_start without holding a long MCP request open.",
+        description: "Read background-job status. Prefer wait_seconds instead of Start-Sleep polling; waiting here uses only a Node timer and consumes no execution slot or shell process.",
         inputSchema: {
-          job_id: z.string().min(8).describe("Job id returned by devbox_exec_start."),
+          job_id: z.string().min(8).describe("Job id returned by devbox_exec_start or devbox_run_program_start."),
+          wait_seconds: z.number().int().min(0).max(Math.min(config.mcpWaitMaxSeconds, 85)).default(0).describe("Long-poll for a status change/terminal state without consuming an execution slot."),
+          terminal_only: z.boolean().default(true).describe("When waiting, return early only for a terminal state; false also returns on queued to running transitions."),
         },
         outputSchema,
       },
       "Checking Devbox background job",
       "Devbox background job checked",
     ),
-    async ({ job_id: jobId }) => {
+    async ({ job_id: jobId, wait_seconds: waitSeconds, terminal_only: terminalOnly }, extra) => {
       try {
-        const data = await getDevboxJobStatus(jobId);
+        const data = waitSeconds > 0
+          ? await waitForDevboxJobStatus(jobId, { waitSeconds, terminalOnly, signal: extra?.signal })
+          : await getDevboxJobStatus(jobId);
         return successResult(`Background job ${jobId} is ${data.status}.`, { data });
       } catch (error) {
         return errorResult(error, `Failed to read background job ${jobId}.`);
@@ -1039,6 +1166,62 @@ const buildServer = ({ requestSignal } = {}) => {
         return successResult(`Background job ${jobId} is ${data.status}.`, { data });
       } catch (error) {
         return errorResult(error, `Failed to cancel background job ${jobId}.`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_wait",
+    safeReadOnlyTool(
+      {
+        title: "Wait Without Consuming An Execution Slot",
+        description: "Use this instead of Start-Sleep/sleep when you simply need to wait before the next MCP action. It uses a Node timer only: no PowerShell process and no execution slot.",
+        inputSchema: {
+          seconds: z.number().min(0.05).max(Math.min(config.mcpWaitMaxSeconds, 85)).describe("How long to wait."),
+          reason: z.string().max(200).default("").describe("Optional human-readable reason for telemetry/context."),
+        },
+        outputSchema,
+      },
+      "Waiting without occupying an execution slot",
+      "Wait completed",
+    ),
+    async ({ seconds, reason }, extra) => {
+      const started = Date.now();
+      try {
+        await abortableSleep(Math.round(seconds * 1000), extra?.signal);
+        return successResult(`Waited ${seconds} seconds without an execution process.`, { data: { waited_ms: Date.now() - started, reason: reason || null } });
+      } catch (error) {
+        return errorResult(error, "Wait was cancelled.");
+      }
+    },
+  );
+
+  server.registerTool(
+    "devbox_wait_for_file",
+    safeReadOnlyTool(
+      {
+        title: "Wait For Host File Condition Without A Shell",
+        description: "Host-mode filesystem condition wait using Node fs polling only. Prefer this over Start-Sleep followed by Test-Path/Get-Content. Docker mode should use devbox_wait because container paths are not directly visible to the MCP process.",
+        inputSchema: {
+          path: z.string().min(1).describe("Host filesystem path to watch."),
+          should_exist: z.boolean().default(true).describe("Wait for the path to exist; false waits for removal."),
+          min_bytes: z.number().int().min(0).default(0).describe("When waiting for existence, require at least this file size."),
+          stable_ms: z.number().int().min(0).max(30000).default(0).describe("Require the condition to remain true for this duration."),
+          timeout_seconds: z.number().min(0.1).max(Math.min(config.mcpWaitMaxSeconds, 85)).default(60).describe("Maximum wait duration."),
+          poll_ms: z.number().int().min(50).max(5000).default(250).describe("Filesystem poll interval."),
+        },
+        outputSchema,
+      },
+      "Waiting for host file condition",
+      "Host file wait completed",
+    ),
+    async ({ path: filePath, should_exist: shouldExist, min_bytes: minBytes, stable_ms: stableMs, timeout_seconds: timeoutSeconds, poll_ms: pollMs }, extra) => {
+      try {
+        if (isDockerRuntime) throw new Error("devbox_wait_for_file is a no-subprocess host-mode primitive; use devbox_wait in Docker mode.");
+        const data = await waitForPathCondition({ path: filePath, shouldExist, minBytes, stableMs, timeoutMs: timeoutSeconds * 1000, pollMs, signal: extra?.signal });
+        return successResult(data.conditionMet ? `File condition satisfied for ${filePath}.` : `Timed out waiting for file condition at ${filePath}.`, { data });
+      } catch (error) {
+        return errorResult(error, `Failed while waiting for ${filePath}.`);
       }
     },
   );
@@ -1290,7 +1473,7 @@ const buildServer = ({ requestSignal } = {}) => {
     }
   };
 
-  const hostExecHandler = async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds }, extra) => {
+  const hostExecHandler = async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines }, extra) => {
     try {
       return await withInteractiveExecution({ label: "host_exec", signal: extra?.signal }, async (lease) => {
         const result = await runHostShellCommand({
@@ -1301,6 +1484,7 @@ const buildServer = ({ requestSignal } = {}) => {
         });
         return fromProcessResult(`Ran a ${hostCommandTitle.toLowerCase()} command in ${workingDir}.`, result, {
           data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+          output: { mode: outputMode, maxChars: maxOutputChars, maxLines: maxOutputLines },
         });
       });
     } catch (error) {
@@ -1308,7 +1492,7 @@ const buildServer = ({ requestSignal } = {}) => {
     }
   };
 
-  const hostRunProgramHandler = async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds }, extra) => {
+  const hostRunProgramHandler = async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines }, extra) => {
     try {
       return await withInteractiveExecution({ label: "host_run_program", signal: extra?.signal }, async (lease) => {
         const result = await runAllowedProgram({
@@ -1320,6 +1504,7 @@ const buildServer = ({ requestSignal } = {}) => {
         });
         return fromProcessResult(`Ran ${program} on the ${hostTitle.toLowerCase()}.`, result, {
           data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
+          output: { mode: outputMode, maxChars: maxOutputChars, maxLines: maxOutputLines },
         });
       });
     } catch (error) {
@@ -1355,18 +1540,18 @@ const buildServer = ({ requestSignal } = {}) => {
     hostStatusHandler,
   );
 
-  const captureDisplayHandler = async ({ quality }) => {
+  const captureDisplayHandler = async ({ quality }, extra) => {
     try {
-      const capture = await captureHostDisplay({ quality });
+      const capture = await captureHostDisplay({ quality, signal: extra?.signal });
       return imageCaptureResult(`Captured the ${hostTitle.toLowerCase()} display.`, capture);
     } catch (error) {
       return errorResult(error, `Failed to capture the ${hostTitle.toLowerCase()} display.`);
     }
   };
 
-  const captureWindowHandler = async ({ pid, quality, include_process_tree: includeProcessTree }) => {
+  const captureWindowHandler = async ({ pid, quality, include_process_tree: includeProcessTree }, extra) => {
     try {
-      const capture = await captureHostProgram({ pid, quality, includeProcessTree });
+      const capture = await captureHostProgram({ pid, quality, includeProcessTree, signal: extra?.signal });
       return imageCaptureResult(`Captured ${hostTitle} window for PID ${pid}.`, capture);
     } catch (error) {
       return errorResult(error, `Failed to capture ${hostTitle} window for PID ${pid}.`);
@@ -1449,6 +1634,9 @@ const buildServer = ({ requestSignal } = {}) => {
           command: z.string().min(1).describe(`Command to run on the ${hostTitle.toLowerCase()}.`),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe(`Working directory on the ${hostTitle.toLowerCase()}.`),
           timeout_seconds: syncCommandTimeoutSchema(),
+          output_mode: z.enum(["head", "tail", "summary"]).default("tail").describe("Which part of large stdout/stderr to return."),
+          max_output_chars: z.number().int().min(100).max(COMMAND_OUTPUT_LIMIT_CHARS).default(COMMAND_OUTPUT_LIMIT_CHARS).describe("Maximum returned characters per stdout/stderr stream."),
+          max_output_lines: z.number().int().min(0).max(10000).default(0).describe("Optional maximum returned lines per stream; 0 disables the line limit."),
         },
         outputSchema,
       },
@@ -1580,6 +1768,9 @@ const buildServer = ({ requestSignal } = {}) => {
           command: z.string().min(1).describe(`Command to run on the ${hostTitle.toLowerCase()}.`),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe(`Working directory on the ${hostTitle.toLowerCase()}.`),
           timeout_seconds: syncCommandTimeoutSchema(),
+          output_mode: z.enum(["head", "tail", "summary"]).default("tail").describe("Which part of large stdout/stderr to return."),
+          max_output_chars: z.number().int().min(100).max(COMMAND_OUTPUT_LIMIT_CHARS).default(COMMAND_OUTPUT_LIMIT_CHARS).describe("Maximum returned characters per stdout/stderr stream."),
+          max_output_lines: z.number().int().min(0).max(10000).default(0).describe("Optional maximum returned lines per stream; 0 disables the line limit."),
         },
         outputSchema,
       },
@@ -1600,6 +1791,9 @@ const buildServer = ({ requestSignal } = {}) => {
           args: z.array(z.string()).default([]).describe("Argument list for the program."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe(`Working directory on the ${hostTitle.toLowerCase()}.`),
           timeout_seconds: syncCommandTimeoutSchema(),
+          output_mode: z.enum(["head", "tail", "summary"]).default("tail").describe("Which part of large stdout/stderr to return."),
+          max_output_chars: z.number().int().min(100).max(COMMAND_OUTPUT_LIMIT_CHARS).default(COMMAND_OUTPUT_LIMIT_CHARS).describe("Maximum returned characters per stdout/stderr stream."),
+          max_output_lines: z.number().int().min(0).max(10000).default(0).describe("Optional maximum returned lines per stream; 0 disables the line limit."),
         },
         outputSchema,
       },
@@ -1620,6 +1814,9 @@ const buildServer = ({ requestSignal } = {}) => {
           args: z.array(z.string()).default([]).describe("Argument list for the program."),
           working_dir: z.string().default(config.hostDefaultWorkdir).describe(`Working directory on the ${hostTitle.toLowerCase()}.`),
           timeout_seconds: syncCommandTimeoutSchema(),
+          output_mode: z.enum(["head", "tail", "summary"]).default("tail").describe("Which part of large stdout/stderr to return."),
+          max_output_chars: z.number().int().min(100).max(COMMAND_OUTPUT_LIMIT_CHARS).default(COMMAND_OUTPUT_LIMIT_CHARS).describe("Maximum returned characters per stdout/stderr stream."),
+          max_output_lines: z.number().int().min(0).max(10000).default(0).describe("Optional maximum returned lines per stream; 0 disables the line limit."),
         },
         outputSchema,
       },
@@ -2120,6 +2317,11 @@ export const startServer = () =>
     }
     warmHostExecutionState().catch(() => {});
     getDevboxVersions().catch(() => {});
+    reconcileOrphanedDevboxJobs().catch(() => {});
+    const orphanReconcileTimer = setInterval(() => {
+      reconcileOrphanedDevboxJobs().catch(() => {});
+    }, 60000);
+    orphanReconcileTimer.unref?.();
   });
 
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
