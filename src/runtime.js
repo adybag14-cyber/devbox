@@ -26,6 +26,7 @@ import {
   readLargeFileInDevbox as readLargeFileInDockerDevbox,
   recreateDevbox as recreateDockerDevbox,
   restartDevbox as restartDockerDevbox,
+  runProgramInDevbox as runProgramInDockerDevbox,
   searchFilesInDevbox as searchFilesInDockerDevbox,
   syncGithubAuthToDevbox as syncGithubAuthToDockerDevbox,
   stopDevbox as stopDockerDevbox,
@@ -101,7 +102,39 @@ export const restartDevbox = () => (isDockerRuntime ? restartDockerDevbox() : ho
 export const recreateDevbox = () => (isDockerRuntime ? recreateDockerDevbox() : hostControlInfo("recreate"));
 export const execInDevbox = (options) => (isDockerRuntime ? execInDockerDevbox(options) : execInHostRuntime(options));
 export const execReadOnlyInDevbox = (options) => (isDockerRuntime ? execReadOnlyInDockerDevbox(options) : execReadOnlyInHostRuntime(options));
-export const getDevboxVersions = () => (isDockerRuntime ? getDockerDevboxVersions() : getHostRuntimeVersions());
+
+const normalizeProgramName = (program) => String(program ?? "")
+  .split(/[\\/]/)
+  .pop()
+  ?.replace(/\.exe$/iu, "")
+  .toLowerCase() || "";
+
+export const runProgramInDevbox = (options) => {
+  if (!isDockerRuntime) return runAllowedProgram(options);
+  const normalizedProgram = normalizeProgramName(options?.program);
+  if (!config.devboxProgramAllowlist.includes(normalizedProgram)) {
+    throw new DockerCommandError(
+      `Program "${options?.program}" is not in DEVBOX_PROGRAM_ALLOWLIST: ${config.devboxProgramAllowlist.join(", ")}`,
+    );
+  }
+  return runProgramInDockerDevbox(options);
+};
+
+let versionsCache = null;
+let versionsCachePromise = null;
+export const getDevboxVersions = async ({ force = false } = {}) => {
+  const now = Date.now();
+  if (!force && versionsCache && now < versionsCache.expiresAt) return versionsCache.value;
+  if (!force && versionsCachePromise) return versionsCachePromise;
+  const loader = isDockerRuntime ? getDockerDevboxVersions : getHostRuntimeVersions;
+  versionsCachePromise = Promise.resolve(loader()).then((value) => {
+    versionsCache = { value, expiresAt: Date.now() + Math.max(0, config.devboxVersionCacheMs) };
+    return value;
+  }).finally(() => {
+    versionsCachePromise = null;
+  });
+  return versionsCachePromise;
+};
 export const listFilesInDevbox = (options) => (isDockerRuntime ? listFilesInDockerDevbox(options) : listFilesInHostRuntime(options));
 export const readFileInDevbox = (options) => (isDockerRuntime ? readFileInDockerDevbox(options) : readFileInHostRuntime(options));
 export const readLargeFileInDevbox = (options) => (isDockerRuntime ? readLargeFileInDockerDevbox(options) : readLargeFileInHostRuntime(options));

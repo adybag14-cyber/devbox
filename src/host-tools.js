@@ -128,6 +128,27 @@ export const shouldUsePowerShellScriptFile = (command) => {
   return totalChars >= MAX_POWERSHELL_ENCODED_COMMAND_CHARS_BEFORE_FILE;
 };
 
+let cachedWindowsAdminStatePromise = null;
+
+const getCachedWindowsAdminState = async ({ workingDir = config.hostDefaultWorkdir } = {}) => {
+  if (!platform.isWindows) return false;
+  if (!cachedWindowsAdminStatePromise) {
+    cachedWindowsAdminStatePromise = spawnPowerShellProcess(buildWindowsPowerShellArgs(buildPowerShellAdminCheckCommand()), {
+      cwd: workingDir,
+      timeoutMs: 15000,
+    }).then((result) => Boolean(JSON.parse(result.stdout || "{}").isAdmin)).catch((error) => {
+      cachedWindowsAdminStatePromise = null;
+      throw error;
+    });
+  }
+  return cachedWindowsAdminStatePromise;
+};
+
+export const warmHostExecutionState = async () => {
+  if (!platform.isWindows || !config.enableHostExec) return null;
+  return getCachedWindowsAdminState();
+};
+
 const buildPowerShellAdminCheckCommand = () => `
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -792,13 +813,7 @@ export const runWindowsPowerShell = async ({ command, workingDir = config.hostDe
   assertHostExecEnabled();
 
   try {
-    const adminCheck = await spawnPowerShellProcess(buildWindowsPowerShellArgs(buildPowerShellAdminCheckCommand()), {
-      cwd: workingDir,
-      timeoutMs: Math.min(timeoutMs ?? 15000, 15000),
-      signal,
-    });
-
-    const isAdmin = Boolean(JSON.parse(adminCheck.stdout || "{}").isAdmin);
+    const isAdmin = await getCachedWindowsAdminState({ workingDir });
 
     // Prefer an already-elevated MCP process. Triggering RunAs here pops a full
     // UAC secure-desktop prompt on every host_exec, which breaks unattended

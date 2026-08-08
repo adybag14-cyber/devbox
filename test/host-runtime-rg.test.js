@@ -1,0 +1,63 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { pathToFileURL } from "node:url";
+
+const hasRg = spawnSync("rg", ["--version"], { stdio: "ignore" }).status === 0;
+
+test("host search uses ripgrep fast path when available", { skip: !hasRg }, async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "devbox-rg-search-"));
+  await mkdir(path.join(workspace, "node_modules", "ignored"), { recursive: true });
+  await writeFile(path.join(workspace, "alpha.js"), "first\nneedle alpha\n", "utf8");
+  await writeFile(path.join(workspace, "beta.js"), "needle beta\n", "utf8");
+  await writeFile(path.join(workspace, "node_modules", "ignored", "bad.js"), "needle ignored\n", "utf8");
+  process.env.MCP_AUTH_MODE = "none";
+  process.env.PUBLIC_BASE_URL = "";
+  process.env.DEVBOX_RUNTIME_MODE = "host";
+  process.env.HOST_WORKSPACE_PATH = workspace;
+  process.env.DEVBOX_WORKSPACE_PATH = workspace;
+  process.env.HOST_SEARCH_BACKEND = "rg";
+  const href = pathToFileURL(path.join(process.cwd(), "src/host-runtime.js")).href;
+  const { searchFilesInHostRuntime } = await import(`${href}?rg=${Date.now()}-${Math.random()}`);
+  const result = await searchFilesInHostRuntime({
+    pattern: "needle",
+    path: workspace,
+    glob: "*.js",
+    maxMatches: 10,
+    maxDepth: 8,
+  });
+  assert.match(result.stderr, /search backend ripgrep/u);
+  assert.match(result.stdout, /alpha\.js:2:needle alpha/u);
+  assert.match(result.stdout, /beta\.js:1:needle beta/u);
+  assert.doesNotMatch(result.stdout, /node_modules/u);
+});
+
+
+test("ripgrep host search honors the file scan ceiling", { skip: !hasRg }, async () => {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "devbox-rg-limit-"));
+  for (let index = 0; index < 12; index += 1) {
+    await writeFile(path.join(workspace, `file-${String(index).padStart(2, "0")}.txt`), `line ${index}\n`, "utf8");
+  }
+  process.env.MCP_AUTH_MODE = "none";
+  process.env.PUBLIC_BASE_URL = "";
+  process.env.DEVBOX_RUNTIME_MODE = "host";
+  process.env.HOST_WORKSPACE_PATH = workspace;
+  process.env.DEVBOX_WORKSPACE_PATH = workspace;
+  process.env.HOST_SEARCH_BACKEND = "rg";
+  const href = pathToFileURL(path.join(process.cwd(), "src/host-runtime.js")).href;
+  const { searchFilesInHostRuntime } = await import(`${href}?rg-limit=${Date.now()}-${Math.random()}`);
+  const result = await searchFilesInHostRuntime({
+    pattern: "this-pattern-does-not-exist",
+    path: workspace,
+    glob: "*.txt",
+    maxMatches: 10,
+    maxDepth: 8,
+    maxFiles: 2,
+    timeoutMs: 5000,
+  });
+  assert.match(result.stderr, /search backend ripgrep/u);
+  assert.match(result.stderr, /file scan limit 2 reached/u);
+});

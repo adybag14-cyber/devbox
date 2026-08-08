@@ -88,6 +88,7 @@ const startServer = async (t, {
   maxCommandOutputChars = "65536",
 } = {}) => {
   const port = await getFreePort();
+  const executionSlotRoot = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-mcp-slots-"));
   const stdout = [];
   const stderr = [];
   const child = spawn(process.execPath, ["src/server.js"], {
@@ -103,6 +104,9 @@ const startServer = async (t, {
       DEVBOX_RUNTIME_MODE: "host",
       HOST_WORKSPACE_PATH: projectRoot,
       HOST_DEFAULT_WORKDIR: projectRoot,
+      MCP_EXEC_SLOT_ROOT: executionSlotRoot,
+      MCP_EXEC_MAX_CONCURRENT: "16",
+      MCP_EXEC_RESERVED_INTERACTIVE: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -111,6 +115,7 @@ const startServer = async (t, {
   collectStream(child.stderr, stderr);
   t.after(async () => {
     await terminateChild(child);
+    await rm(executionSlotRoot, { recursive: true, force: true });
   });
 
   await waitForHealth(port);
@@ -467,6 +472,25 @@ test("POST / accepts MCP initialize requests on the canonical root endpoint", as
   assert.equal(typeof payload.result?.serverInfo?.name, "string");
 });
 
+test("devbox_run_program executes a structured program without shell parsing", async (t) => {
+  const { port } = await startServer(t);
+  const client = await connectClient(t, port);
+  const result = await client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "node",
+      args: ["-e", "process.stdout.write('DIRECT_PROGRAM_OK')"],
+      working_dir: projectRoot,
+      timeout_seconds: 15,
+    },
+  });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent?.ok, true);
+  assert.equal(result.structuredContent?.stdout, "DIRECT_PROGRAM_OK");
+  assert.equal(typeof result.structuredContent?.data?.execution?.queue_wait_ms, "number");
+  assert.equal(Number.isInteger(result.structuredContent?.data?.execution?.slot), true);
+});
+
 test("windows_host_run_program returns bridge diagnostics for corrupted host files", async (t) => {
   const { port, stdout, stderr } = await startServer(t);
   const client = await connectClient(t, port);
@@ -715,7 +739,7 @@ test("async MCP jobs survive the request boundary and support status, logs, and 
   for (const name of ["devbox_exec_start", "devbox_job_status", "devbox_job_logs", "devbox_job_cancel"]) {
     assert.ok(names.has(name), `Expected async MCP tool ${name} to be registered.`);
   }
-  for (const name of ["devbox_exec", "devbox_exec_readonly", "host_exec", "windows_host_exec"]) {
+  for (const name of ["devbox_exec", "devbox_exec_readonly", "devbox_run_program", "host_exec", "windows_host_exec"]) {
     const tool = (tools.tools || []).find((entry) => entry.name === name);
     assert.equal(tool?.inputSchema?.properties?.timeout_seconds?.maximum, 90, `${name} should advertise the safe synchronous timeout ceiling.`);
     assert.match(tool?.inputSchema?.properties?.timeout_seconds?.description ?? "", /devbox_exec_start/i);

@@ -124,7 +124,7 @@ export const startDevboxJob = async ({
 export const getDevboxJobStatus = async (jobId) => {
   const paths = jobPaths(jobId);
   const value = await readJson(paths.status);
-  const running = value.status === "running" && processAlive(Number(value.runnerPid));
+  const running = ["queued", "running"].includes(value.status) && processAlive(Number(value.runnerPid));
   return {
     ...value,
     runnerAlive: running,

@@ -34,6 +34,12 @@ test("defaultHostProgramAllowlist includes shell-friendly tools on posix hosts",
   assert.equal(allowlist.includes("powershell"), false);
 });
 
+test("Windows host program allowlist includes direct search and HTTP tools", () => {
+  const allowlist = defaultHostProgramAllowlist(detectPlatform({}, "win32"));
+  assert.equal(allowlist.includes("rg"), true);
+  assert.equal(allowlist.includes("curl"), true);
+});
+
 test("resolveHostShell prefers SHELL on posix and PowerShell on Windows", () => {
   assert.equal(resolveHostShell({ SHELL: "/bin/bash" }, detectPlatform({}, "linux")), "/bin/bash");
   assert.equal(resolveHostShell({}, detectPlatform({}, "linux")), "/bin/sh");

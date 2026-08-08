@@ -108,6 +108,11 @@ const powerShellFallbackExe = platform.isWindows
   : "";
 const hostShell = process.env.HOST_SHELL?.trim() || (platform.isWindows ? powerShellExe : resolveHostShell(process.env, platform));
 const hostProgramAllowlist = parseCsv(process.env.HOST_PROGRAM_ALLOWLIST, defaultHostProgramAllowlist(platform));
+const defaultDevboxProgramAllowlist = runtimeMode === "host"
+  ? hostProgramAllowlist
+  : ["bash", "sh", "git", "gh", "node", "npm", "npx", "python", "python3", "pip", "pip3", "rg", "curl"];
+const devboxProgramAllowlist = parseCsv(process.env.DEVBOX_PROGRAM_ALLOWLIST, defaultDevboxProgramAllowlist);
+const hostSearchBackend = (process.env.HOST_SEARCH_BACKEND?.trim().toLowerCase() || "auto");
 const defaultGatewayBridgeOrigins = "https://chatgpt.com,https://chat.openai.com";
 const gatewayBridgeOrigins = parseCsv(process.env.GATEWAY_BRIDGE_ORIGINS ?? defaultGatewayBridgeOrigins);
 const defaultDevboxUser = runtimeMode === "host" ? process.env.USER?.trim() || process.env.LOGNAME?.trim() || "" : "root";
@@ -132,6 +137,12 @@ export const config = {
   mcpJsonBodyLimit: parseJsonBodyLimit(process.env.MCP_JSON_BODY_LIMIT, "16mb"),
   mcpUsageLogMaxBytes: parseInteger(process.env.MCP_USAGE_LOG_MAX_BYTES, 16 * 1024 * 1024),
   mcpUsageLogRotations: parseInteger(process.env.MCP_USAGE_LOG_ROTATIONS, 3),
+  mcpExecMaxConcurrent: parseInteger(process.env.MCP_EXEC_MAX_CONCURRENT, 6),
+  mcpExecReservedInteractive: parseInteger(process.env.MCP_EXEC_RESERVED_INTERACTIVE, 1),
+  mcpExecQueueTimeoutMs: parseInteger(process.env.MCP_EXEC_QUEUE_TIMEOUT_MS, 15000),
+  mcpBackgroundQueueTimeoutMs: parseInteger(process.env.MCP_BACKGROUND_QUEUE_TIMEOUT_MS, 300000),
+  devboxVersionCacheMs: parseInteger(process.env.DEVBOX_VERSION_CACHE_MS, 120000),
+  hostSearchBackend,
   dockerCommandTimeoutMs: parseInteger(process.env.DOCKER_COMMAND_TIMEOUT_MS, 120000),
   devboxContainerName: defaultDevboxContainerName,
   devboxImageName: process.env.DEVBOX_IMAGE_NAME?.trim() || "chatgpt-devbox-runtime:local",
@@ -147,6 +158,7 @@ export const config = {
   enableWindowsHostExec: enableHostExec,
   hostDefaultWorkdir: defaultHostWorkdir,
   hostProgramAllowlist,
+  devboxProgramAllowlist,
   nodeExe: process.env.NODE_EXE?.trim() || defaultNodeExe,
   oauthStateFilePath: process.env.OAUTH_STATE_FILE_PATH?.trim() || defaultOauthStateFilePath,
   cloudflaredContainerName: process.env.CLOUDFLARED_CONTAINER_NAME?.trim() || "chatgpt-devbox-cloudflared",
@@ -154,6 +166,11 @@ export const config = {
   cloudflareAccessAud: process.env.CLOUDFLARE_ACCESS_AUD?.trim() || "",
   cloudflareAccessJwksUrl: normalizeUrl(process.env.CLOUDFLARE_ACCESS_JWKS_URL),
 };
+
+
+if (!["auto", "rg", "js"].includes(config.hostSearchBackend)) {
+  throw new Error(`Unsupported HOST_SEARCH_BACKEND "${config.hostSearchBackend}". Use "auto", "rg", or "js".`);
+}
 
 if (!["none", "demo-oauth", "cloudflare-access"].includes(config.authMode)) {
   throw new Error(`Unsupported MCP_AUTH_MODE "${config.authMode}". Use "none", "demo-oauth", or "cloudflare-access".`);

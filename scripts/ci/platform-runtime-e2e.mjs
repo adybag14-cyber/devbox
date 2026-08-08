@@ -60,6 +60,7 @@ try {
     "devbox_status",
     "devbox_exec_readonly",
     "devbox_exec",
+    "devbox_run_program",
     "devbox_exec_start",
     "devbox_job_status",
     "devbox_job_logs",
@@ -105,6 +106,20 @@ try {
     }),
   );
   assert.match(readonly.stdout || "", /DEVBOX_E2E_READONLY_OK/u);
+
+  const directProgram = requireSuccess(
+    "devbox_run_program",
+    await client.callTool({
+      name: "devbox_run_program",
+      arguments: {
+        program: "node",
+        args: ["-e", "process.stdout.write('DEVBOX_E2E_DIRECT_OK')"],
+        working_dir: workspace,
+        timeout_seconds: 30,
+      },
+    }),
+  );
+  assert.match(directProgram.stdout || "", /DEVBOX_E2E_DIRECT_OK/u);
 
   requireSuccess(
     "devbox_write_file",

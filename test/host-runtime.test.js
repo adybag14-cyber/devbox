@@ -5,6 +5,8 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 
+process.env.HOST_SEARCH_BACKEND = "js";
+
 const importFresh = async (relativePath) => {
   const href = pathToFileURL(path.join(process.cwd(), relativePath)).href;
   return import(`${href}?t=${Date.now()}-${Math.random()}`);
