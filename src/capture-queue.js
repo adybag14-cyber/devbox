@@ -23,10 +23,12 @@ const dispatch = () => {
       continue;
     }
     active = true;
+    let released = false;
     waiter.resolve({
       queueWaitMs: Date.now() - waiter.startedAt,
       release() {
-        if (!active) return;
+        if (released) return;
+        released = true;
         active = false;
         queueMicrotask(dispatch);
       },

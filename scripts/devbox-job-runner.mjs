@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { access, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -23,7 +24,7 @@ const writeStatus = async (value) => {
 };
 
 const writeHeartbeat = async (state) => {
-  const temp = `${heartbeatPath}.${process.pid}.tmp`;
+  const temp = `${heartbeatPath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temp, `${JSON.stringify({
     pid: process.pid,
     status: state,
@@ -32,7 +33,7 @@ const writeHeartbeat = async (state) => {
   })}\n`, "utf8");
   await rename(temp, heartbeatPath).catch(async (error) => {
     if (!["EEXIST", "EPERM"].includes(error?.code)) throw error;
-    await writeFile(heartbeatPath, `${JSON.stringify({ pid: process.pid, status: state, updatedAtUtc: new Date().toISOString() })}\n`, "utf8");
+    await writeFile(heartbeatPath, `${JSON.stringify({ pid: process.pid, status: state, childPid, updatedAtUtc: new Date().toISOString() })}\n`, "utf8");
   });
 };
 
@@ -182,6 +183,7 @@ try {
   }
   finalStatus = {
     ...base,
+    childPid,
     status: "succeeded",
     completedAtUtc: new Date().toISOString(),
     exitCode: result.exitCode ?? 0,

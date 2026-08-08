@@ -860,6 +860,7 @@ const main = async () => {
   let heartbeatExtra = {};
   let lastHostPressureSampleMs = 0;
   let hostPressureSample = null;
+  let hostPressureSamplePromise = null;
 
   const log = async (level, message) => {
     await appendFile(paths.log, `${new Date().toISOString()} [${level}] ${message}\n`, "utf8");
@@ -892,9 +893,27 @@ const main = async () => {
       readMcpPerformanceState(options.projectRoot, environment),
     ]);
     const pressureIntervalMs = Math.max(10000, Number.parseInt(environment.GUARDIAN_HOST_PRESSURE_SAMPLE_MS ?? "60000", 10) || 60000);
-    if (process.platform === "win32" && (hostPressureSample === null || Date.now() - lastHostPressureSampleMs >= pressureIntervalMs)) {
-      hostPressureSample = await sampleWindowsHostPressure(environment);
+    if (
+      process.platform === "win32"
+      && !hostPressureSamplePromise
+      && (hostPressureSample === null || Date.now() - lastHostPressureSampleMs >= pressureIntervalMs)
+    ) {
       lastHostPressureSampleMs = Date.now();
+      hostPressureSamplePromise = sampleWindowsHostPressure(environment)
+        .then((sample) => {
+          hostPressureSample = sample;
+          return sample;
+        })
+        .catch((error) => {
+          hostPressureSample = {
+            SampledAtUtc: new Date().toISOString(),
+            Error: error instanceof Error ? error.message : String(error),
+          };
+          return hostPressureSample;
+        })
+        .finally(() => {
+          hostPressureSamplePromise = null;
+        });
     }
     const runtimeMode = normalizeRuntimeMode(settings.RuntimeMode || environment.DEVBOX_RUNTIME_MODE || "auto");
     const selectedRuntime = resolveSelectedRuntime({
