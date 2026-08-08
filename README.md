@@ -239,7 +239,7 @@ Important `.env` values:
 - `HOST_SEARCH_BACKEND=auto|rg|js` selects host search acceleration; `auto` prefers ripgrep
 - `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune the light/heavy execution pool
 - `MCP_WATCH_MAX_CONCURRENT` gives passive watchers such as `gh run watch` a separate pool; `MCP_EXEC_HEAVY_WEIGHT` controls how much execution capacity heavy build/browser jobs consume
-- `MCP_JOB_LOG_MAX_BYTES` and `MCP_JOB_LOG_ROTATIONS` bound detached-job stdout/stderr on disk; `MCP_JOB_HEARTBEAT_MS` and `MCP_JOB_ORPHAN_STALE_MS` control orphan detection
+- `MCP_JOB_LOG_MAX_BYTES` and `MCP_JOB_LOG_ROTATIONS` bound detached-job stdout/stderr on disk; `MCP_JOB_HEARTBEAT_MS` and `MCP_JOB_ORPHAN_STALE_MS` control orphan detection; `MCP_JOB_RETENTION_HOURS` bounds persisted terminal-job history
 - `MCP_WAIT_MAX_SECONDS` bounds no-process waits; prefer `devbox_wait`, `devbox_wait_for_file`, or `devbox_job_status(wait_seconds=...)` over shell `sleep`/`Start-Sleep`
 - `SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS`, `SCREEN_CAPTURE_RETRIES`, and `SCREEN_CAPTURE_QUEUE_TIMEOUT_MS` control serialized fail-fast screenshot capture
 - `GUARDIAN_HOST_PRESSURE_SAMPLE_MS` controls diagnostic Windows CPU/memory/commit/pagefile sampling; it does not trigger repair by itself

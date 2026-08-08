@@ -27,16 +27,27 @@ const isTransientCaptureFailure = (error) =>
 const withCapturePolicy = async ({ signal, timeoutMs }, operation) =>
   withCaptureWorker({ timeoutMs: config.screenCaptureQueueTimeoutMs, signal }, async (lease) => {
     const requestedTimeout = Number(timeoutMs);
-    const attemptTimeoutMs = Math.max(
-      1000,
-      Math.min(
-        Number.isFinite(requestedTimeout) && requestedTimeout > 0 ? requestedTimeout : config.screenCaptureAttemptTimeoutMs,
-        config.screenCaptureAttemptTimeoutMs,
-      ),
-    );
     const maxAttempts = Math.max(1, 1 + Math.max(0, config.screenCaptureRetries));
+    const retryBackoffMs = 150;
+    const defaultBudgetMs = (Math.max(1, config.screenCaptureAttemptTimeoutMs) * maxAttempts)
+      + (retryBackoffMs * Math.max(0, maxAttempts - 1));
+    const overallBudgetMs = Number.isFinite(requestedTimeout) && requestedTimeout > 0
+      ? requestedTimeout
+      : defaultBudgetMs;
+    const deadlineMs = Date.now() + Math.max(1, overallBudgetMs);
     let lastError = null;
+    let lastAttemptTimeoutMs = null;
+
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const remainingMs = deadlineMs - Date.now();
+      if (remainingMs <= 0) {
+        if (lastError) throw lastError;
+        throw new HostCommandError(`Screen capture exceeded its ${overallBudgetMs} ms overall timeout budget.`, {
+          timedOut: true,
+        });
+      }
+      const attemptTimeoutMs = Math.max(1, Math.min(config.screenCaptureAttemptTimeoutMs, remainingMs));
+      lastAttemptTimeoutMs = attemptTimeoutMs;
       try {
         const capture = await operation({ attempt, timeoutMs: attemptTimeoutMs });
         capture.metadata = {
@@ -45,15 +56,23 @@ const withCapturePolicy = async ({ signal, timeoutMs }, operation) =>
           capture_retried: attempt > 1,
           capture_queue_wait_ms: lease.queueWaitMs,
           capture_attempt_timeout_ms: attemptTimeoutMs,
+          capture_overall_timeout_ms: overallBudgetMs,
         };
         return capture;
       } catch (error) {
         lastError = error;
         if (attempt >= maxAttempts || !isTransientCaptureFailure(error)) throw error;
-        await abortableSleep(150, signal);
+        const afterAttemptRemainingMs = deadlineMs - Date.now();
+        if (afterAttemptRemainingMs <= 0) throw error;
+        await abortableSleep(Math.min(retryBackoffMs, afterAttemptRemainingMs), signal);
       }
     }
-    throw lastError;
+
+    if (lastError) throw lastError;
+    throw new HostCommandError(`Screen capture exceeded its ${overallBudgetMs} ms overall timeout budget.`, {
+      timedOut: true,
+      data: { last_attempt_timeout_ms: lastAttemptTimeoutMs },
+    });
   });
 
 export const captureHostDisplay = async (options = {}) => {

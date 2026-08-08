@@ -502,6 +502,9 @@ const captureWindowsJpeg = async ({ mode, pid = 0, quality = 85, timeoutMs = 300
       exitCode: error?.exitCode,
       stdout: error?.stdout,
       stderr: error?.stderr,
+      timedOut: error?.timedOut === true,
+      aborted: error?.aborted === true,
+      signal: error?.signal ?? null,
     });
   } finally {
     await rm(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }).catch(() => {});

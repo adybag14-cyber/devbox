@@ -2307,8 +2307,9 @@ app.delete("/mcp", ...legacyProtectedMcpHandlers);
 
 export { app };
 
-export const startServer = () =>
-  app.listen(config.port, config.host, () => {
+export const startServer = () => {
+  let orphanReconcileTimer = null;
+  const httpServer = app.listen(config.port, config.host, () => {
     console.log(`${runtimeServerName} listening on ${config.host}:${config.port}`);
     console.log(`Runtime mode: ${config.runtimeMode} (${config.platform.displayName})`);
     console.log(`Auth mode: ${config.authMode}`);
@@ -2318,11 +2319,17 @@ export const startServer = () =>
     warmHostExecutionState().catch(() => {});
     getDevboxVersions().catch(() => {});
     reconcileOrphanedDevboxJobs().catch(() => {});
-    const orphanReconcileTimer = setInterval(() => {
+    orphanReconcileTimer = setInterval(() => {
       reconcileOrphanedDevboxJobs().catch(() => {});
     }, 60000);
     orphanReconcileTimer.unref?.();
   });
+  httpServer.once("close", () => {
+    if (orphanReconcileTimer) clearInterval(orphanReconcileTimer);
+    orphanReconcileTimer = null;
+  });
+  return httpServer;
+};
 
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 

@@ -42,37 +42,67 @@ export const createRotatingFileSink = (filePath, {
   let totalBytes = 0;
   let rotationsPerformed = 0;
   let closed = false;
+  let failure = null;
+
+  const closeCurrent = () => {
+    if (fd === null) return;
+    const current = fd;
+    fd = null;
+    closeSync(current);
+  };
 
   const reopen = () => {
-    fd = openSync(filePath, "a");
-    currentBytes = fstatSync(fd).size;
+    const nextFd = openSync(filePath, "a");
+    try {
+      currentBytes = fstatSync(nextFd).size;
+      fd = nextFd;
+    } catch (error) {
+      closeSync(nextFd);
+      throw error;
+    }
   };
 
   const rotate = () => {
-    closeSync(fd);
-    rotateFiles(filePath, rotationCount);
-    rotationsPerformed += 1;
-    reopen();
+    closeCurrent();
+    try {
+      rotateFiles(filePath, rotationCount);
+      reopen();
+      rotationsPerformed += 1;
+    } catch (error) {
+      closed = true;
+      failure = error;
+      throw error;
+    }
   };
 
   return {
     write(value) {
+      if (failure) throw failure;
       if (closed || value === undefined || value === null || value === "") return;
+      if (fd === null) throw new Error(`Rotating log sink for ${filePath} has no writable file descriptor.`);
       let buffer = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
       totalBytes += buffer.length;
       while (buffer.length > 0) {
         if (currentBytes >= limit) rotate();
+        if (fd === null) throw new Error(`Rotating log sink for ${filePath} became unavailable during rotation.`);
         const available = Math.max(1, limit - currentBytes);
         const slice = buffer.subarray(0, Math.min(available, buffer.length));
-        writeSync(fd, slice);
+        try {
+          writeSync(fd, slice);
+        } catch (error) {
+          failure = error;
+          closed = true;
+          try { closeCurrent(); } catch {}
+          throw error;
+        }
         currentBytes += slice.length;
         buffer = buffer.subarray(slice.length);
       }
     },
     end() {
-      if (closed) return;
+      if (closed && fd === null) return;
       closed = true;
-      closeSync(fd);
+      closeCurrent();
     },
     snapshot() {
       return {
@@ -80,8 +110,10 @@ export const createRotatingFileSink = (filePath, {
         rotations: rotationCount,
         rotationsPerformed,
         totalBytes,
-        currentBytes: closed ? safeSize(filePath) : currentBytes,
+        currentBytes: fd === null ? safeSize(filePath) : currentBytes,
         truncated: rotationsPerformed > 0,
+        failed: failure !== null,
+        error: failure instanceof Error ? failure.message : failure ? String(failure) : null,
       };
     },
   };

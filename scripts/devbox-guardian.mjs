@@ -533,7 +533,9 @@ const testHealth = async (url, timeoutSeconds = 5) => {
 
 const readMcpPerformanceState = async (projectRoot, environment = process.env) => {
   const configured = String(environment.MCP_PERFORMANCE_STATE_PATH ?? "").trim();
-  const statePath = configured ? path.resolve(configured) : path.join(projectRoot, "run", "mcp-performance.json");
+  const statePath = configured
+    ? (path.isAbsolute(configured) ? configured : path.resolve(projectRoot, configured))
+    : path.join(projectRoot, "run", "mcp-performance.json");
   return readJson(statePath, null);
 };
 

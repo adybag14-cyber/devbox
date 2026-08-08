@@ -95,14 +95,69 @@ const removeStaleSlot = async (filePath) => {
 };
 
 const releaseOwnedFiles = async (owned) => {
+  const errors = [];
   for (const { filePath, token } of owned) {
     try {
       const current = JSON.parse(await readFile(filePath, "utf8"));
       if (current?.token === token) await rm(filePath, { force: true });
     } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      if (error?.code !== "ENOENT") errors.push(error);
     }
   }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, `Failed to release ${errors.length} execution-slot file(s).`);
+  }
+};
+
+const claimLockPath = (pool) => path.join(slotRoot, `${pool}-weighted-claim.json`);
+
+const acquirePoolClaimLock = async (pool, { signal, deadlineMs }) => {
+  const filePath = claimLockPath(pool);
+  while (Date.now() < deadlineMs) {
+    if (signal?.aborted) throw abortError();
+    const token = randomUUID();
+    let handle = null;
+    try {
+      handle = await open(filePath, "wx");
+      await handle.writeFile(`${JSON.stringify({
+        token,
+        pid: process.pid,
+        pool,
+        acquiredAtUtc: new Date().toISOString(),
+      })}
+`, "utf8");
+      await handle.close();
+      handle = null;
+      let released = false;
+      return {
+        async release() {
+          if (released) return;
+          released = true;
+          let lastError = null;
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              const current = JSON.parse(await readFile(filePath, "utf8"));
+              if (current?.token === token) await rm(filePath, { force: true });
+              return;
+            } catch (error) {
+              if (error?.code === "ENOENT") return;
+              lastError = error;
+              if (attempt < 2) await sleep(10 * (attempt + 1));
+            }
+          }
+          throw lastError;
+        },
+      };
+    } catch (error) {
+      try { await handle?.close(); } catch {}
+      if (error?.code !== "EEXIST") throw error;
+      if (await removeStaleSlot(filePath)) continue;
+      const remaining = deadlineMs - Date.now();
+      if (remaining <= 0) break;
+      await sleep(Math.min(remaining, 15 + Math.floor(Math.random() * 20)));
+    }
+  }
+  return null;
 };
 
 export const acquireExecutionSlot = async ({
@@ -140,34 +195,78 @@ export const acquireExecutionSlot = async ({
         throw abortError();
       }
 
-      const owned = [];
-      for (let index = 0; index < usableSlots && owned.length < requestedWeight; index += 1) {
-        const filePath = slotPath(pool, index);
-        const token = randomUUID();
-        let handle = null;
-        try {
-          handle = await open(filePath, "wx");
-          await handle.writeFile(`${JSON.stringify({
-            token,
-            pid: process.pid,
+      const deadlineMs = queuedAt + timeoutMs;
+      const claimLock = requestedWeight > 1
+        ? await acquirePoolClaimLock(pool, { signal, deadlineMs })
+        : null;
+      if (requestedWeight > 1 && !claimLock) {
+        const elapsed = Date.now() - queuedAt;
+        metrics.timedOut += 1;
+        throw new ExecutionQueueTimeoutError(
+          `Execution queue remained saturated for ${elapsed} ms while reserving weighted capacity.`,
+          {
             kind,
-            pool,
-            resourceClass: normalizedClass,
-            weight: requestedWeight,
             label,
-            acquiredAtUtc: new Date().toISOString(),
-          })}\n`, "utf8");
-          await handle.close();
-          handle = null;
-          owned.push({ filePath, token, index });
-        } catch (error) {
-          try { await handle?.close(); } catch {}
-          if (error?.code !== "EEXIST") {
-            await releaseOwnedFiles(owned).catch(() => {});
-            throw error;
+            pool,
+            resource_class: normalizedClass,
+            weight: requestedWeight,
+            queue_wait_ms: elapsed,
+            max_concurrent: total,
+            reserved_interactive: reserved,
+          },
+        );
+      }
+
+      const owned = [];
+      let claimReleaseError = null;
+      try {
+        for (let index = 0; index < usableSlots && owned.length < requestedWeight; index += 1) {
+          const filePath = slotPath(pool, index);
+          const token = randomUUID();
+          let handle = null;
+          try {
+            handle = await open(filePath, "wx");
+            await handle.writeFile(`${JSON.stringify({
+              token,
+              pid: process.pid,
+              kind,
+              pool,
+              resourceClass: normalizedClass,
+              weight: requestedWeight,
+              label,
+              acquiredAtUtc: new Date().toISOString(),
+            })}
+`, "utf8");
+            await handle.close();
+            handle = null;
+            owned.push({ filePath, token, index });
+          } catch (error) {
+            try { await handle?.close(); } catch {}
+            if (error?.code !== "EEXIST") {
+              await releaseOwnedFiles(owned).catch(() => {});
+              throw error;
+            }
+            if (await removeStaleSlot(filePath)) index -= 1;
           }
-          if (await removeStaleSlot(filePath)) index -= 1;
         }
+      } finally {
+        try {
+          await claimLock?.release();
+        } catch (error) {
+          claimReleaseError = error;
+        }
+      }
+      if (claimReleaseError) {
+        const releaseErrors = [];
+        try {
+          await releaseOwnedFiles(owned);
+        } catch (error) {
+          releaseErrors.push(error);
+        }
+        if (releaseErrors.length > 0) {
+          throw new AggregateError([claimReleaseError, ...releaseErrors], "Weighted execution claim cleanup failed.");
+        }
+        throw claimReleaseError;
       }
 
       if (owned.length === requestedWeight) {

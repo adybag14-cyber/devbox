@@ -23,21 +23,33 @@ const byLines = (text, maxLines, mode) => {
   const value = String(text ?? "");
   const limit = Math.max(0, Number(maxLines) || 0);
   if (limit <= 0) return { text: value, truncated: false, originalLines: null };
-  const lines = value.split(/\r?\n/u);
-  if (lines.length <= limit) return { text: value, truncated: false, originalLines: lines.length };
+  const trailingNewline = /\r?\n$/u.test(value);
+  const content = trailingNewline ? value.replace(/\r?\n$/u, "") : value;
+  const lines = content.split(/\r?\n/u);
+  const originalLines = lines.length;
+  if (originalLines <= limit) return { text: value, truncated: false, originalLines };
+  const suffix = trailingNewline ? "\n" : "";
   if (mode === "head") {
-    return { text: `${lines.slice(0, limit).join("\n")}\n... tail lines omitted ...`, truncated: true, originalLines: lines.length };
+    return {
+      text: `${lines.slice(0, limit).join("\n")}\n... tail lines omitted ...${suffix}`,
+      truncated: true,
+      originalLines,
+    };
   }
   if (mode === "summary") {
     const head = Math.floor(limit / 2);
     const tail = limit - head;
     return {
-      text: `${lines.slice(0, head).join("\n")}\n... middle lines omitted ...\n${lines.slice(lines.length - tail).join("\n")}`,
+      text: `${lines.slice(0, head).join("\n")}\n... middle lines omitted ...\n${lines.slice(lines.length - tail).join("\n")}${suffix}`,
       truncated: true,
-      originalLines: lines.length,
+      originalLines,
     };
   }
-  return { text: `... head lines omitted ...\n${lines.slice(lines.length - limit).join("\n")}`, truncated: true, originalLines: lines.length };
+  return {
+    text: `... head lines omitted ...\n${lines.slice(lines.length - limit).join("\n")}${suffix}`,
+    truncated: true,
+    originalLines,
+  };
 };
 
 export const shapeProcessOutput = (text, {

@@ -1106,7 +1106,7 @@ function Start-CloudflaredNamedTunnel {
             throw "CLOUDFLARED_EDGE_BIND_ADDRESS must be 'auto' or a valid local IP address."
         }
         try {
-            $localBind = Get-NetIPAddress -IPAddress $requestedEdgeBindAddress -ErrorAction SilentlyContinue | Select-Object -First 1
+            $localBind = Get-NetIPAddress -IPAddress $requestedEdgeBindAddress -ErrorAction Stop | Select-Object -First 1
             if ($localBind) {
                 $effectiveEdgeBindAddress = $requestedEdgeBindAddress
                 $bindResolution = 'configured-local-address'

@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { open, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { open, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -166,6 +166,7 @@ const startJobRequest = async (request) => {
     ...request,
     timeoutMs: Math.max(1000, Math.min(86400000, Number(request.timeoutMs) || 7200000)),
     resourceClass: inferJobResourceClass(request),
+    runtimeMode: config.runtimeMode,
     createdAtUtc: now,
   };
   await Promise.all([
@@ -183,6 +184,7 @@ const startJobRequest = async (request) => {
       exitCode: null,
       readOnly: normalized.readOnly === true,
       resourceClass: normalized.resourceClass,
+      runtimeMode: normalized.runtimeMode,
     }),
   ]);
 
@@ -237,13 +239,22 @@ export const startDevboxProgramJob = async ({
 });
 
 const reconcileStatus = async (paths, value) => {
-  const cancelRequested = await cancellationRequested(paths);
-  if (cancelRequested && !TERMINAL_STATUSES.has(value.status)) {
-    return { ...value, status: "cancelled", cancelRequested: true, runnerAlive: false, jobDir: paths.dir };
-  }
-
   if (TERMINAL_STATUSES.has(value.status)) {
     return { ...value, runnerAlive: false, jobDir: paths.dir };
+  }
+
+  const cancelRequested = await cancellationRequested(paths);
+  if (cancelRequested) {
+    const runnerPid = Number(value.runnerPid);
+    const runnerAlive = processAlive(runnerPid);
+    const cancelled = {
+      ...value,
+      status: "cancelled",
+      cancelRequested: true,
+      completedAtUtc: value.completedAtUtc ?? new Date().toISOString(),
+    };
+    if (!runnerAlive) await writeJsonAtomic(paths.status, cancelled).catch(() => {});
+    return { ...cancelled, runnerAlive, jobDir: paths.dir };
   }
 
   const runnerPid = Number(value.runnerPid);
@@ -257,11 +268,17 @@ const reconcileStatus = async (paths, value) => {
 
   if (!runnerAlive && heartbeatStale) {
     const childPid = Number(heartbeat.value?.childPid ?? value.childPid);
+    const runtimeMode = String(value.runtimeMode ?? heartbeat.value?.runtimeMode ?? config.runtimeMode ?? "host");
     let orphanChildTerminated = false;
+    let orphanDockerClientTerminated = false;
     let orphanChildCleanupSkipped = null;
     const childAppearsAlive = Number.isInteger(childPid) && childPid > 0 && processAlive(childPid);
     const childIdentityFreshEnough = heartbeatAgeMs !== null && heartbeatAgeMs <= 60000;
-    if (childAppearsAlive && childIdentityFreshEnough) {
+    if (childAppearsAlive && childIdentityFreshEnough && runtimeMode === "docker") {
+      await killDetachedTree(childPid);
+      orphanDockerClientTerminated = !processAlive(childPid);
+      orphanChildCleanupSkipped = "docker-container-exec-not-force-killed-shared-container";
+    } else if (childAppearsAlive && childIdentityFreshEnough) {
       await killDetachedTree(childPid);
       orphanChildTerminated = !processAlive(childPid);
     } else if (childAppearsAlive) {
@@ -274,7 +291,9 @@ const reconcileStatus = async (paths, value) => {
       runnerPid: Number.isInteger(runnerPid) && runnerPid > 0 ? runnerPid : value.runnerPid ?? null,
       interrupted: true,
       childPid: Number.isInteger(childPid) && childPid > 0 ? childPid : value.childPid ?? null,
+      runtimeMode,
       orphanChildTerminated,
+      orphanDockerClientTerminated,
       orphanChildCleanupSkipped,
       error: value.error || "Detached job runner disappeared before recording a terminal status.",
       heartbeatAgeMs,
@@ -295,24 +314,52 @@ export const getDevboxJobStatus = async (jobId) => {
 export const reconcileOrphanedDevboxJobs = async () => {
   await mkdir(jobsRoot, { recursive: true });
   const names = await readdir(jobsRoot).catch(() => []);
-  const summary = { scanned: 0, interrupted: 0, active: 0, terminal: 0, errors: 0 };
+  const summary = {
+    scanned: 0,
+    interrupted: 0,
+    active: 0,
+    terminal: 0,
+    maintained: 0,
+    compactedLogs: 0,
+    deleted: 0,
+    errors: 0,
+  };
+  const retentionHours = Math.max(0, Number(config.mcpJobRetentionHours) || 0);
+  const retentionMs = retentionHours > 0 ? retentionHours * 60 * 60 * 1000 : 0;
   for (const name of names) {
     if (!JOB_ID_RE.test(name)) continue;
     summary.scanned += 1;
+    const paths = jobPaths(name);
     try {
       const status = await getDevboxJobStatus(name);
       if (status.status === "interrupted") summary.interrupted += 1;
       else if (TERMINAL_STATUSES.has(status.status)) summary.terminal += 1;
-      else summary.active += 1;
-      if (TERMINAL_STATUSES.has(status.status)) {
-        const [stdoutCompaction, stderrCompaction] = await Promise.all([
-          compactLegacyLogFile(jobPaths(name).stdout),
-          compactLegacyLogFile(jobPaths(name).stderr),
-        ]);
-        if (stdoutCompaction.compacted || stderrCompaction.compacted) {
-          summary.compactedLogs = (summary.compactedLogs || 0) + 1;
-        }
+      else {
+        summary.active += 1;
+        continue;
       }
+
+      const terminalAtMs = Date.parse(status.completedAtUtc ?? status.createdAtUtc ?? "");
+      if (retentionMs > 0 && Number.isFinite(terminalAtMs) && Date.now() - terminalAtMs >= retentionMs) {
+        await rm(paths.dir, { recursive: true, force: true });
+        summary.deleted += 1;
+        continue;
+      }
+
+      const rawStatus = await readJson(paths.status);
+      if (rawStatus.maintenanceReconciledAtUtc) continue;
+      const [stdoutCompaction, stderrCompaction] = await Promise.all([
+        compactLegacyLogFile(paths.stdout),
+        compactLegacyLogFile(paths.stderr),
+      ]);
+      const compacted = stdoutCompaction.compacted || stderrCompaction.compacted;
+      if (compacted) summary.compactedLogs += 1;
+      await writeJsonAtomic(paths.status, {
+        ...rawStatus,
+        maintenanceReconciledAtUtc: new Date().toISOString(),
+        legacyLogsCompacted: compacted,
+      });
+      summary.maintained += 1;
     } catch {
       summary.errors += 1;
     }
@@ -388,7 +435,9 @@ const killDetachedTree = async (pid) => {
 export const cancelDevboxJob = async (jobId) => {
   const paths = jobPaths(jobId);
   const statusValue = await getDevboxJobStatus(jobId);
-  if (TERMINAL_STATUSES.has(statusValue.status)) return statusValue;
+  if (TERMINAL_STATUSES.has(statusValue.status) && !(statusValue.status === "cancelled" && statusValue.runnerAlive)) {
+    return statusValue;
+  }
   const cancelled = {
     ...statusValue,
     status: "cancelled",

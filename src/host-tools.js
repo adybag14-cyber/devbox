@@ -16,6 +16,9 @@ export class HostCommandError extends Error {
     this.stdout = details.stdout ?? "";
     this.stderr = details.stderr ?? "";
     this.data = details.data;
+    this.timedOut = details.timedOut === true;
+    this.aborted = details.aborted === true;
+    this.signal = details.signal ?? null;
   }
 }
 
@@ -29,6 +32,9 @@ const wrapHostError = (error, fallbackMessage) => {
       stdout,
       stderr,
       data: error.data,
+      timedOut: error.timedOut === true,
+      aborted: error.aborted === true,
+      signal: error.signal ?? null,
     });
   }
 

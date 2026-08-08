@@ -826,13 +826,16 @@ test("round-two wait, output shaping, and structured async tools work end to end
   const fileDir = await mkdtemp(path.join(os.tmpdir(), "devbox-round2-mcp-file-"));
   const readyFile = path.join(fileDir, "ready.txt");
   t.after(() => rm(fileDir, { recursive: true, force: true }));
-  setTimeout(() => writeFile(readyFile, "ready", "utf8"), 100);
+  const deferredWrite = new Promise((resolve, reject) => {
+    setTimeout(() => writeFile(readyFile, "ready", "utf8").then(resolve, reject), 100);
+  });
   const fileWait = await client.callTool({
     name: "devbox_wait_for_file",
     arguments: { path: readyFile, min_bytes: 5, timeout_seconds: 3, poll_ms: 50 },
   });
   assert.equal(fileWait.structuredContent?.ok, true);
   assert.equal(fileWait.structuredContent?.data?.conditionMet, true);
+  await deferredWrite;
 
   const shaped = await client.callTool({
     name: "devbox_run_program",

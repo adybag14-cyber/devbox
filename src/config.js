@@ -147,6 +147,7 @@ export const config = {
   mcpJobLogRotations: parseInteger(process.env.MCP_JOB_LOG_ROTATIONS, 2),
   mcpJobHeartbeatMs: parseInteger(process.env.MCP_JOB_HEARTBEAT_MS, 5000),
   mcpJobOrphanStaleMs: parseInteger(process.env.MCP_JOB_ORPHAN_STALE_MS, 15000),
+  mcpJobRetentionHours: parseInteger(process.env.MCP_JOB_RETENTION_HOURS, 168),
   mcpWaitMaxSeconds: parseInteger(process.env.MCP_WAIT_MAX_SECONDS, 300),
   screenCaptureAttemptTimeoutMs: parseInteger(process.env.SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS, 8000),
   screenCaptureRetries: parseInteger(process.env.SCREEN_CAPTURE_RETRIES, 1),

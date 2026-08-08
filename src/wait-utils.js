@@ -43,6 +43,9 @@ const pathState = async (filePath) => {
     };
   } catch (error) {
     if (error?.code === "ENOENT") return { exists: false };
+    if (["EPERM", "EBUSY", "ENOTDIR"].includes(error?.code)) {
+      return { exists: null, transientError: error.code };
+    }
     throw error;
   }
 };

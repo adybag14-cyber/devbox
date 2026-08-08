@@ -96,7 +96,7 @@ try {
     ? "[Console]::Out.Write('DEVBOX_E2E_READONLY_OK')"
     : "printf '%s' 'DEVBOX_E2E_READONLY_OK'";
   const mutatingShellCommand = isWindowsHost
-    ? `Set-Content -LiteralPath ${psLiteral(execFile)} -Value ${psLiteral(`${marker}_EXEC`)} -NoNewline`
+    ? `New-Item -ItemType Directory -Force -Path ${psLiteral(testDir)} | Out-Null; Set-Content -LiteralPath ${psLiteral(execFile)} -Value ${psLiteral(`${marker}_EXEC`)} -NoNewline`
     : `mkdir -p ${shellQuote(testDir)} && printf '%s' '${marker}_EXEC' > ${shellQuote(execFile)}`;
   const asyncShellCommand = isWindowsHost
     ? "Write-Output 'ASYNC_JOB_START'; Start-Sleep -Seconds 1; Write-Output 'ASYNC_JOB_DONE'"

@@ -234,7 +234,10 @@ test("orphan reconciliation terminates a surviving detached child process tree",
     assert.equal(status.status, "interrupted");
     assert.equal(status.childPid, childPid);
     assert.equal(status.orphanChildTerminated, true);
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    const reapDeadline = Date.now() + 3000;
+    while (Date.now() < reapDeadline && jobs.asyncJobsInternals.processAlive(childPid)) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
     assert.equal(jobs.asyncJobsInternals.processAlive(childPid), false);
   } finally {
     if (jobs.asyncJobsInternals.processAlive(childPid)) {
@@ -275,4 +278,125 @@ test("old orphan heartbeats never kill a live PID that may have been reused", as
     }
     await rm(jobsRoot, { recursive: true, force: true });
   }
+});
+
+
+test("concurrent weighted jobs serialize claims instead of livelocking on partial slots", async () => {
+  const slots = await importIsolatedSlots();
+  const acquired = [];
+  const runHeavy = async (label) => {
+    const lease = await slots.acquireExecutionSlot({
+      kind: "background",
+      resourceClass: "heavy",
+      weight: 2,
+      maxConcurrent: 3,
+      reservedInteractive: 0,
+      queueTimeoutMs: 3000,
+      label,
+    });
+    acquired.push({ label, slots: lease.slots, at: Date.now() });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    await lease.release();
+  };
+  await Promise.all([runHeavy("heavy-a"), runHeavy("heavy-b")]);
+  assert.equal(acquired.length, 2);
+  assert.equal(acquired[0].slots.length, 2);
+  assert.equal(acquired[1].slots.length, 2);
+  assert.ok(Math.abs(acquired[1].at - acquired[0].at) >= 80);
+});
+
+test("terminal job retention removes directories older than the configured default window", async () => {
+  const jobsRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-round2-retention-"));
+  process.env.MCP_JOBS_ROOT = jobsRoot;
+  const href = pathToFileURL(path.join(projectRoot, "src/async-jobs.js")).href;
+  const jobs = await import(`${href}?retention=${Date.now()}-${Math.random()}`);
+  const id = `job-test-${Date.now().toString(36)}-retained`;
+  const paths = jobs.asyncJobsInternals.jobPaths(id);
+  await mkdir(paths.dir, { recursive: true });
+  const old = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+  await writeFile(paths.status, `${JSON.stringify({ id, status: "succeeded", createdAtUtc: old, completedAtUtc: old, exitCode: 0 })}\n`, "utf8");
+  await writeFile(paths.stdout, "old stdout", "utf8");
+  await writeFile(paths.stderr, "old stderr", "utf8");
+  const summary = await jobs.reconcileOrphanedDevboxJobs();
+  assert.equal(summary.deleted, 1);
+  assert.equal(await readFile(paths.status, "utf8").then(() => true).catch(() => false), false);
+  await rm(jobsRoot, { recursive: true, force: true });
+});
+
+test("Docker orphan cleanup terminates only the local docker client identity and never claims the shared container was killed", async () => {
+  const jobsRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-round2-docker-orphan-"));
+  process.env.MCP_JOBS_ROOT = jobsRoot;
+  const href = pathToFileURL(path.join(projectRoot, "src/async-jobs.js")).href;
+  const jobs = await import(`${href}?docker-orphan=${Date.now()}-${Math.random()}`);
+  const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: projectRoot, stdio: "ignore", windowsHide: true });
+  const childPid = child.pid;
+  const id = `job-test-${Date.now().toString(36)}-docker12`;
+  const paths = jobs.asyncJobsInternals.jobPaths(id);
+  await mkdir(paths.dir, { recursive: true });
+  const old = new Date(Date.now() - 20000);
+  await writeFile(paths.status, `${JSON.stringify({ id, status: "running", runtimeMode: "docker", runnerPid: 99999999, childPid, createdAtUtc: old.toISOString(), startedAtUtc: old.toISOString() })}\n`, "utf8");
+  await writeFile(paths.heartbeat, `${JSON.stringify({ pid: 99999999, status: "running", runtimeMode: "docker", childPid, updatedAtUtc: old.toISOString() })}\n`, "utf8");
+  await utimes(paths.heartbeat, old, old);
+  try {
+    const status = await jobs.getDevboxJobStatus(id);
+    assert.equal(status.status, "interrupted");
+    assert.equal(status.runtimeMode, "docker");
+    assert.equal(status.orphanDockerClientTerminated, true);
+    assert.equal(status.orphanChildTerminated, false);
+    assert.equal(status.orphanChildCleanupSkipped, "docker-container-exec-not-force-killed-shared-container");
+  } finally {
+    if (jobs.asyncJobsInternals.processAlive(childPid)) {
+      try { child.kill("SIGKILL"); } catch {}
+    }
+    await rm(jobsRoot, { recursive: true, force: true });
+  }
+});
+
+test("screen capture retries remain inside one caller timeout budget", async () => {
+  const href = pathToFileURL(path.join(projectRoot, "src/screen-capture.js")).href;
+  const { screenCaptureInternals } = await import(`${href}?capture-budget=${Date.now()}-${Math.random()}`);
+  let calls = 0;
+  const started = Date.now();
+  await assert.rejects(
+    screenCaptureInternals.withCapturePolicy({ timeoutMs: 120 }, async () => {
+      calls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      const error = new Error("Command timed out after the attempt budget.");
+      error.timedOut = true;
+      throw error;
+    }),
+    /timed out/iu,
+  );
+  const elapsed = Date.now() - started;
+  assert.equal(calls, 1);
+  assert.ok(elapsed < 350, `capture budget took ${elapsed} ms`);
+});
+
+test("line shaping preserves a terminal newline without counting it as an extra content line", () => {
+  const shaped = shapeProcessOutput("one\ntwo\nthree\n", { mode: "tail", maxChars: 1000, maxLines: 2 });
+  assert.equal(shaped.originalLines, 3);
+  assert.match(shaped.text, /two\nthree\n$/u);
+  assert.doesNotMatch(shaped.text, /one/u);
+});
+
+
+test("terminal job maintenance is marked and not repeated on every periodic reconciliation", async () => {
+  const jobsRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-round2-maintenance-once-"));
+  process.env.MCP_JOBS_ROOT = jobsRoot;
+  const href = pathToFileURL(path.join(projectRoot, "src/async-jobs.js")).href;
+  const jobs = await import(`${href}?maintenance-once=${Date.now()}-${Math.random()}`);
+  const id = `job-test-${Date.now().toString(36)}-maintain`;
+  const paths = jobs.asyncJobsInternals.jobPaths(id);
+  await mkdir(paths.dir, { recursive: true });
+  const now = new Date().toISOString();
+  await writeFile(paths.status, `${JSON.stringify({ id, status: "succeeded", createdAtUtc: now, completedAtUtc: now, exitCode: 0 })}\n`, "utf8");
+  await writeFile(paths.stdout, "small stdout", "utf8");
+  await writeFile(paths.stderr, "small stderr", "utf8");
+  const first = await jobs.reconcileOrphanedDevboxJobs();
+  const persisted = JSON.parse(await readFile(paths.status, "utf8"));
+  const second = await jobs.reconcileOrphanedDevboxJobs();
+  assert.equal(first.maintained, 1);
+  assert.ok(persisted.maintenanceReconciledAtUtc);
+  assert.equal(second.maintained, 0);
+  await rm(jobsRoot, { recursive: true, force: true });
 });

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { access, readFile, rename, writeFile } from "node:fs/promises";
+import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -25,16 +25,25 @@ const writeStatus = async (value) => {
 
 const writeHeartbeat = async (state) => {
   const temp = `${heartbeatPath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temp, `${JSON.stringify({
+  const payload = `${JSON.stringify({
     pid: process.pid,
     status: state,
     childPid,
+    runtimeMode: request.runtimeMode || config.runtimeMode,
     updatedAtUtc: new Date().toISOString(),
-  })}\n`, "utf8");
-  await rename(temp, heartbeatPath).catch(async (error) => {
+  })}
+`;
+  await writeFile(temp, payload, "utf8");
+  try {
+    await rename(temp, heartbeatPath);
+  } catch (error) {
     if (!["EEXIST", "EPERM"].includes(error?.code)) throw error;
-    await writeFile(heartbeatPath, `${JSON.stringify({ pid: process.pid, status: state, childPid, updatedAtUtc: new Date().toISOString() })}\n`, "utf8");
-  });
+    try {
+      await writeFile(heartbeatPath, payload, "utf8");
+    } finally {
+      await rm(temp, { force: true }).catch(() => {});
+    }
+  }
 };
 
 const readStatus = () => readFile(statusPath, "utf8").then(JSON.parse).catch(() => null);
@@ -74,7 +83,7 @@ const cancellationPoll = setInterval(() => {
   isCancellationRequested().then((requested) => {
     if (requested) controller.abort();
   }).catch(() => {});
-}, 50);
+}, 250);
 cancellationPoll.unref?.();
 
 const queuedAtUtc = new Date().toISOString();
@@ -90,6 +99,7 @@ await writeStatus({
   exitCode: null,
   readOnly: request.readOnly === true,
   resourceClass: request.resourceClass || "light",
+  runtimeMode: request.runtimeMode || config.runtimeMode,
 });
 await throwIfCancellationRequested();
 
@@ -136,6 +146,7 @@ try {
     exitCode: null,
     readOnly: request.readOnly === true,
     resourceClass,
+    runtimeMode: request.runtimeMode || config.runtimeMode,
     queueWaitMs: lease.queueWaitMs,
     executionSlot: lease.slot,
     executionSlots: lease.slots,
@@ -205,6 +216,7 @@ try {
     exitCode: error?.exitCode ?? null,
     readOnly: request.readOnly === true,
     resourceClass,
+    runtimeMode: request.runtimeMode || config.runtimeMode,
     queueWaitMs: lease?.queueWaitMs ?? null,
     executionSlot: lease?.slot ?? null,
     executionSlots: lease?.slots ?? null,
@@ -213,8 +225,6 @@ try {
     childPid,
     error: error instanceof Error ? error.message : String(error),
   };
-  if (error?.stdout) stdout.write(String(error.stdout));
-  if (error?.stderr) stderr.write(String(error.stderr));
 } finally {
   clearInterval(cancellationPoll);
   clearInterval(heartbeatTimer);
