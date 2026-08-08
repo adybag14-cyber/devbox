@@ -124,13 +124,9 @@ export const startDevboxJob = async ({
   child.on("error", () => {});
   child.unref();
   const runnerPid = child.pid ?? null;
-  if (runnerPid) {
-    const queued = await readJson(paths.status);
-    if (queued.status === "queued") {
-      await writeJsonAtomic(paths.status, { ...queued, runnerPid });
-    }
-  }
 
+  // The runner is the sole status.json writer after spawn. This avoids a
+  // Windows rename/replace race between the MCP server and detached runner.
   return { id, status: "queued", runnerPid, jobDir: paths.dir };
 };
 
@@ -195,7 +191,9 @@ export const cancelDevboxJob = async (jobId) => {
   await writeFile(paths.cancel, `${cancelled.completedAtUtc}\n`, { encoding: "utf8", flag: "wx" }).catch((error) => {
     if (error?.code !== "EEXIST") throw error;
   });
-  await writeJsonAtomic(paths.status, cancelled);
+  // The cancellation marker is authoritative. Do not race the detached runner
+  // by replacing status.json from this process; status/log reads overlay the
+  // marker immediately and the runner writes a final cancelled state if alive.
   await killDetachedTree(Number(statusValue.runnerPid));
   return cancelled;
 };
