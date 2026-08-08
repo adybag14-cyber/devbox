@@ -515,6 +515,9 @@ const listRipgrepCandidateFiles = async ({
     }
     if (!(limitReached && error?.aborted)) {
       if (error?.timedOut) throw error;
+      if (error instanceof SpawnProcessError && error.exitCode === 1) {
+        return { files: [], limitReached: false };
+      }
       return null;
     }
   } finally {
@@ -547,6 +550,7 @@ const searchRipgrepBatch = async ({
   files,
   pattern,
   caseSensitive,
+  fixedStrings,
   maxBytesPerFile,
   remainingMatches,
   timeoutMs,
@@ -561,6 +565,7 @@ const searchRipgrepBatch = async ({
     "--max-filesize", String(Math.max(1, maxBytesPerFile)),
   ];
   if (includeIgnored) args.push("--hidden", "--no-ignore");
+  if (fixedStrings) args.push("--fixed-strings");
   if (!caseSensitive) args.push("--ignore-case");
   args.push("--regexp", String(pattern), ...files);
 
@@ -627,6 +632,7 @@ const searchFilesWithRipgrep = async ({
   rootPath,
   glob,
   caseSensitive,
+  fixedStrings,
   maxMatches,
   maxDepth,
   maxFiles,
@@ -665,6 +671,7 @@ const searchFilesWithRipgrep = async ({
       files,
       pattern,
       caseSensitive,
+      fixedStrings,
       maxBytesPerFile,
       remainingMatches: Math.max(1, maxMatches - matches.length),
       timeoutMs: remainingTimeoutMs,
@@ -707,12 +714,19 @@ export const searchFilesInHostRuntime = async ({
   const info = await ensureHostRuntimeReady();
   const rootPath = searchPath || info.workspacePath;
   const normalizedExcludedDirectories = [...normalizePrunedDirectories(excludeDirectories)];
+  let fixedStrings = false;
+  try {
+    new RegExp(pattern, caseSensitive ? "" : "i");
+  } catch {
+    fixedStrings = true;
+  }
   if (config.hostSearchBackend !== "js") {
     const fastResult = await searchFilesWithRipgrep({
       pattern,
       rootPath,
       glob,
       caseSensitive,
+      fixedStrings,
       maxMatches: Math.max(1, maxMatches),
       maxDepth: Math.max(0, maxDepth),
       maxFiles: Math.max(1, maxFiles),

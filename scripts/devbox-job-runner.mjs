@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { access, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -13,6 +13,7 @@ const dir = path.dirname(requestPath);
 const statusPath = path.join(dir, "status.json");
 const stdoutPath = path.join(dir, "stdout.log");
 const stderrPath = path.join(dir, "stderr.log");
+const cancelPath = path.join(dir, "cancel.requested");
 
 const writeStatus = async (value) => {
   const temp = `${statusPath}.${process.pid}.tmp`;
@@ -27,8 +28,33 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
   process.once(signal, () => controller.abort());
 }
 
+const isCancellationRequested = async () => {
+  try {
+    await access(cancelPath);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+};
+
+const throwIfCancellationRequested = async () => {
+  if (!(await isCancellationRequested())) return;
+  controller.abort();
+  const error = new Error("Background job cancellation was requested.");
+  error.name = "AbortError";
+  throw error;
+};
+
+const cancellationPoll = setInterval(() => {
+  isCancellationRequested().then((requested) => {
+    if (requested) controller.abort();
+  }).catch(() => {});
+}, 50);
+cancellationPoll.unref?.();
+
 const initial = await readStatus();
-if (initial?.status === "cancelled") process.exit(0);
+if (initial?.status === "cancelled" || await isCancellationRequested()) process.exit(0);
 
 const queuedAtUtc = new Date().toISOString();
 await writeStatus({
@@ -42,6 +68,7 @@ await writeStatus({
   exitCode: null,
   readOnly: request.readOnly === true,
 });
+await throwIfCancellationRequested();
 
 const stdout = createWriteStream(stdoutPath, { flags: "a" });
 const stderr = createWriteStream(stderrPath, { flags: "a" });
@@ -58,6 +85,7 @@ try {
     signal: controller.signal,
   });
 
+  await throwIfCancellationRequested();
   const startedAtUtc = new Date().toISOString();
   const base = {
     id: request.id,
@@ -80,6 +108,7 @@ try {
     throw error;
   }
   await writeStatus(base);
+  await throwIfCancellationRequested();
 
   const execute = request.readOnly ? execReadOnlyInDevbox : execInDevbox;
   const result = await execute({
@@ -120,6 +149,7 @@ try {
   if (error?.stdout) stdout.write(String(error.stdout));
   if (error?.stderr) stderr.write(String(error.stderr));
 } finally {
+  clearInterval(cancellationPoll);
   await lease?.release().catch(() => {});
 }
 

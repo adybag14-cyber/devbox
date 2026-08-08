@@ -149,6 +149,29 @@ export const warmHostExecutionState = async () => {
   return getCachedWindowsAdminState();
 };
 
+const awaitSharedPromiseWithSignal = async (promise, signal) => {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    const error = new Error("Command cancelled by the MCP client.");
+    error.name = "AbortError";
+    throw error;
+  }
+  let listener = null;
+  const aborted = new Promise((_resolve, reject) => {
+    listener = () => {
+      const error = new Error("Command cancelled by the MCP client.");
+      error.name = "AbortError";
+      reject(error);
+    };
+    signal.addEventListener("abort", listener, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    if (listener) signal.removeEventListener("abort", listener);
+  }
+};
+
 const buildPowerShellAdminCheckCommand = () => `
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -813,7 +836,7 @@ export const runWindowsPowerShell = async ({ command, workingDir = config.hostDe
   assertHostExecEnabled();
 
   try {
-    const isAdmin = await getCachedWindowsAdminState({ workingDir });
+    const isAdmin = await awaitSharedPromiseWithSignal(getCachedWindowsAdminState({ workingDir }), signal);
 
     // Prefer an already-elevated MCP process. Triggering RunAs here pops a full
     // UAC secure-desktop prompt on every host_exec, which breaks unattended

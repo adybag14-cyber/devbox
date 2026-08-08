@@ -110,14 +110,15 @@ const normalizeProgramName = (program) => String(program ?? "")
   .toLowerCase() || "";
 
 export const runProgramInDevbox = (options) => {
-  if (!isDockerRuntime) return runAllowedProgram(options);
   const normalizedProgram = normalizeProgramName(options?.program);
-  if (!config.devboxProgramAllowlist.includes(normalizedProgram)) {
-    throw new DockerCommandError(
+  if (!normalizedProgram || !config.devboxProgramAllowlist.includes(normalizedProgram)) {
+    const ErrorType = isDockerRuntime ? DockerCommandError : HostCommandError;
+    throw new ErrorType(
       `Program "${options?.program}" is not in DEVBOX_PROGRAM_ALLOWLIST: ${config.devboxProgramAllowlist.join(", ")}`,
     );
   }
-  return runProgramInDockerDevbox(options);
+  const normalizedOptions = { ...options, program: normalizedProgram };
+  return isDockerRuntime ? runProgramInDockerDevbox(normalizedOptions) : runAllowedProgram(normalizedOptions);
 };
 
 let versionsCache = null;

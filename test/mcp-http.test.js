@@ -86,9 +86,12 @@ const terminateChild = async (child) => {
 const startServer = async (t, {
   maxTextOutputChars = "20000",
   maxCommandOutputChars = "65536",
+  execMaxConcurrent = "16",
+  execReservedInteractive = "1",
 } = {}) => {
   const port = await getFreePort();
   const executionSlotRoot = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-mcp-slots-"));
+  const jobsRoot = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-mcp-jobs-"));
   const stdout = [];
   const stderr = [];
   const child = spawn(process.execPath, ["src/server.js"], {
@@ -104,9 +107,12 @@ const startServer = async (t, {
       DEVBOX_RUNTIME_MODE: "host",
       HOST_WORKSPACE_PATH: projectRoot,
       HOST_DEFAULT_WORKDIR: projectRoot,
+      HOST_PROGRAM_ALLOWLIST: "powershell,pwsh,cmd,git,gh,docker,node,npm,npx,python,py,pip,rg,curl,winget",
+      DEVBOX_PROGRAM_ALLOWLIST: "powershell,pwsh,cmd,git,gh,docker,node,npm,npx,python,py,pip,rg,curl,winget",
       MCP_EXEC_SLOT_ROOT: executionSlotRoot,
-      MCP_EXEC_MAX_CONCURRENT: "16",
-      MCP_EXEC_RESERVED_INTERACTIVE: "1",
+      MCP_JOBS_ROOT: jobsRoot,
+      MCP_EXEC_MAX_CONCURRENT: execMaxConcurrent,
+      MCP_EXEC_RESERVED_INTERACTIVE: execReservedInteractive,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -116,6 +122,7 @@ const startServer = async (t, {
   t.after(async () => {
     await terminateChild(child);
     await rm(executionSlotRoot, { recursive: true, force: true });
+    await rm(jobsRoot, { recursive: true, force: true });
   });
 
   await waitForHealth(port);

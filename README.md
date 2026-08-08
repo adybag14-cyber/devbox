@@ -235,7 +235,7 @@ Important `.env` values:
 - `POWERSHELL_FALLBACK_EXE` (optional Windows fallback override; defaults to Windows PowerShell 5.1)
 - `HOST_SHELL`
 - `HOST_PROGRAM_ALLOWLIST`
-- `DEVBOX_PROGRAM_ALLOWLIST` controls the structured `devbox_run_program` fast path
+- `DEVBOX_PROGRAM_ALLOWLIST` controls the structured `devbox_run_program` fast path; in host mode the executable must also be allowed by `HOST_PROGRAM_ALLOWLIST`
 - `HOST_SEARCH_BACKEND=auto|rg|js` selects host search acceleration; `auto` prefers ripgrep
 - `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune process admission control
 - `DEVBOX_VERSION_CACHE_MS` controls the short-lived `devbox_status` toolchain-version cache
