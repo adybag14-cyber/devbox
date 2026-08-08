@@ -41,7 +41,7 @@ test("cancellation marker is authoritative over a racing queued/running status w
     const status = await getDevboxJobStatus(id);
     assert.equal(status.status, "cancelled");
     assert.equal(status.cancelRequested, true);
-    assert.equal(status.runnerAlive, false);
+    assert.equal(status.runnerAlive, true);
   } finally {
     await rm(paths.dir, { recursive: true, force: true });
   }

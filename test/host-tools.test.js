@@ -291,3 +291,10 @@ test("host large-file helpers preserve exact bytes for repair workflows", async 
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("HostCommandError preserves timeout and cancellation metadata", () => {
+  const error = new HostCommandError("timed out", { timedOut: true, aborted: true, signal: "SIGTERM" });
+  assert.equal(error.timedOut, true);
+  assert.equal(error.aborted, true);
+  assert.equal(error.signal, "SIGTERM");
+});

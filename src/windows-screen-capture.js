@@ -431,7 +431,7 @@ export const isJpegBuffer = (buffer) =>
   buffer.subarray(0, JPEG_START.length).equals(JPEG_START) &&
   buffer.subarray(buffer.length - JPEG_END.length).equals(JPEG_END);
 
-const captureWindowsJpeg = async ({ mode, pid = 0, quality = 85, timeoutMs = 30000, includeProcessTree = true }) => {
+const captureWindowsJpeg = async ({ mode, pid = 0, quality = 85, timeoutMs = 30000, includeProcessTree = true, signal }) => {
   assertHostExecEnabled();
   if (!config.platform.isWindows || process.platform !== "win32") {
     throw new HostCommandError("Windows display capture is available only on a Windows host.");
@@ -460,6 +460,7 @@ const captureWindowsJpeg = async ({ mode, pid = 0, quality = 85, timeoutMs = 300
       {
         cwd: tempDir,
         timeoutMs,
+        signal,
       },
     );
 
@@ -501,18 +502,21 @@ const captureWindowsJpeg = async ({ mode, pid = 0, quality = 85, timeoutMs = 300
       exitCode: error?.exitCode,
       stdout: error?.stdout,
       stderr: error?.stderr,
+      timedOut: error?.timedOut === true,
+      aborted: error?.aborted === true,
+      signal: error?.signal ?? null,
     });
   } finally {
     await rm(tempDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 }).catch(() => {});
   }
 };
 
-export const captureFullDisplayJpeg = ({ quality = 85, timeoutMs = 30000 } = {}) =>
-  captureWindowsJpeg({ mode: "display", quality, timeoutMs });
+export const captureFullDisplayJpeg = ({ quality = 85, timeoutMs = 30000, signal } = {}) =>
+  captureWindowsJpeg({ mode: "display", quality, timeoutMs, signal });
 
-export const captureProgramWindowJpeg = ({ pid, quality = 85, timeoutMs = 30000, includeProcessTree = true }) => {
+export const captureProgramWindowJpeg = ({ pid, quality = 85, timeoutMs = 30000, includeProcessTree = true, signal }) => {
   if (!Number.isInteger(pid) || pid <= 0) {
     throw new HostCommandError("pid must be a positive Windows process ID.");
   }
-  return captureWindowsJpeg({ mode: "pid", pid, quality, timeoutMs, includeProcessTree });
+  return captureWindowsJpeg({ mode: "pid", pid, quality, timeoutMs, includeProcessTree, signal });
 };
