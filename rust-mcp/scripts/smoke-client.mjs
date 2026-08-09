@@ -83,7 +83,7 @@ try {
   const shellStarted = await client.callTool({
     name: "devbox_exec_start",
     arguments: {
-      command: "node -e "console.log('RUST_SHELL_ASYNC_SMOKE')"",
+      command: "node -e \"console.log('RUST_SHELL_ASYNC_SMOKE')\"",
       timeout_seconds: 30,
       resource_class: "light",
     },
