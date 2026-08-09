@@ -32,6 +32,9 @@ The first vertical slice contains:
 - cancellation-aware `devbox_wait_for_file`
 - initial `devbox_status`
 - `host_status` and `windows_host_status`
+- exact-byte `windows_host_read_large_file` and `windows_host_write_large_file` with SHA-256 verification
+- configurable MCP transfer ceilings matching the JavaScript service
 - explicit parity report for the 37-tool target contract
+- live JavaScript MCP SDK smoke coverage enforced in the Windows/Linux/macOS CI matrix
 
 No production launcher points at this binary yet.

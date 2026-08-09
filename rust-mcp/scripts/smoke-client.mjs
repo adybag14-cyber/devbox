@@ -7,15 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const baseUrl = new URL(process.env.RUST_MCP_URL || "http://127.0.0.1:18182/");
-const expectedTools = [
-  "devbox_status",
-  "devbox_wait",
-  "devbox_wait_for_file",
-  "host_status",
-  "windows_host_status",
-  "windows_host_read_large_file",
-  "windows_host_write_large_file",
-].sort();
+
 
 const healthResponse = await fetch(new URL("healthz", baseUrl));
 assert.equal(healthResponse.status, 200);
@@ -27,7 +19,19 @@ const metadata = await metadataResponse.json();
 assert.equal(metadata.implementation, "rust");
 assert.equal(metadata.rust_replacement?.draft, true);
 assert.equal(metadata.rust_replacement?.parity?.target_count, 37);
+const expectedTools = [...(metadata.rust_replacement?.parity?.implemented || [])].sort();
 assert.equal(metadata.rust_replacement?.parity?.implemented_count, expectedTools.length);
+for (const requiredTool of [
+  "devbox_status",
+  "devbox_wait",
+  "devbox_wait_for_file",
+  "host_status",
+  "windows_host_status",
+  "windows_host_read_large_file",
+  "windows_host_write_large_file",
+]) {
+  assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
+}
 
 const transport = new StreamableHTTPClientTransport(baseUrl);
 const client = new Client({ name: "rust-parity-smoke", version: "0.1.0" });
