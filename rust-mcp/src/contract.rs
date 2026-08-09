@@ -71,6 +71,8 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "devbox_stop",
     "devbox_restart",
     "devbox_recreate",
+    "devbox_github_auth_status",
+    "devbox_sync_github_auth_from_host",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

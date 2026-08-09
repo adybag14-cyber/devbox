@@ -52,6 +52,8 @@ for (const requiredTool of [
   "devbox_stop",
   "devbox_restart",
   "devbox_recreate",
+  "devbox_github_auth_status",
+  "devbox_sync_github_auth_from_host",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -77,6 +79,19 @@ try {
   assert.equal(status.isError, false);
   assert.equal(status.structuredContent?.ok, true);
   assert.equal(status.structuredContent?.data?.rustReplacement?.implemented_count, expectedTools.length);
+
+  if (process.env.RUST_MCP_SMOKE_GITHUB_AUTH === "1") {
+    const githubAuth = await client.callTool({
+      name: "devbox_github_auth_status",
+      arguments: {},
+    });
+    assert.equal(githubAuth.isError, false);
+    assert.equal(githubAuth.structuredContent?.ok, true);
+    const authData = githubAuth.structuredContent?.data || {};
+    assert.ok((authData.statusSummary || "").length > 0);
+    assert.equal(Object.prototype.hasOwnProperty.call(authData, "token"), false);
+    assert.ok(!JSON.stringify(githubAuth.structuredContent).includes('"token"'));
+  }
 
   for (const [toolName, readOnly] of [
     ["devbox_exec", false],

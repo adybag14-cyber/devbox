@@ -25,7 +25,7 @@ use rmcp::{
     },
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
@@ -35,6 +35,7 @@ use crate::{
     docker_files::{DockerFileBackend, DockerListOptions},
     execution::{AcquireRequest, ExecutionScheduler, SchedulerConfig},
     files::{FileService, LargeReadResult, LargeWriteResult, ListOptions, ProcessResult},
+    github_auth::GithubAuthService,
     host_inspect::{InspectFileRequest, inspect_host_file},
     job_manager::{JobManager, StartProgramJob},
     lifecycle::{LifecycleAction, LifecycleService},
@@ -54,6 +55,7 @@ pub struct DevboxMcp {
     jobs: Arc<JobManager>,
     search: Arc<SearchService>,
     lifecycle: Arc<LifecycleService>,
+    github_auth: Arc<GithubAuthService>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -68,11 +70,19 @@ impl DevboxMcp {
             queue_timeout: Duration::from_millis(config.exec_queue_timeout_ms),
             heavy_weight: config.exec_heavy_weight,
         }));
+        let runtime = Arc::new(RuntimeExecutor::new(config.clone()));
+        let lifecycle = Arc::new(LifecycleService::new(config.clone()));
+        let github_auth = Arc::new(GithubAuthService::new(
+            config.clone(),
+            runtime.clone(),
+            lifecycle.clone(),
+        ));
         Self {
-            runtime: Arc::new(RuntimeExecutor::new(config.clone())),
+            runtime,
             jobs: Arc::new(JobManager::new(config.clone())),
             search: Arc::new(SearchService::new(config.clone())),
-            lifecycle: Arc::new(LifecycleService::new(config.clone())),
+            lifecycle,
+            github_auth,
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -495,6 +505,63 @@ const fn default_search_timeout() -> u64 {
 
 #[tool_router(router = tool_router)]
 impl DevboxMcp {
+    #[tool(
+        name = "devbox_github_auth_status",
+        description = "Confirm whether the selected Devbox runtime is authenticated to GitHub and which global git identity is configured.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_github_auth_status(&self, cancellation: CancellationToken) -> CallToolResult {
+        match self.github_auth.status(cancellation).await {
+            Ok(data) => ToolEnvelope::success(
+                format!(
+                    "Fetched {} GitHub auth status.",
+                    self.config.runtime_label()
+                ),
+                serde_json::to_value(data).ok(),
+            ),
+            Err(error) => ToolEnvelope::error(
+                format!(
+                    "Failed to fetch {} GitHub auth status: {error}",
+                    self.config.runtime_label()
+                ),
+                None,
+            ),
+        }
+    }
+
+    #[tool(
+        name = "devbox_sync_github_auth_from_host",
+        description = "Copy the existing host GitHub CLI login and global git identity into the selected Devbox runtime without exposing the token in MCP output.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_sync_github_auth_from_host(
+        &self,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        match self.github_auth.sync_from_host(cancellation).await {
+            Ok(result) => ToolEnvelope::success(
+                format!(
+                    "Synced the host GitHub CLI authentication into the {}.",
+                    self.config.runtime_label()
+                ),
+                Some(json!({
+                    "statusSummary": result.status.status_summary,
+                    "userName": result.status.user_name,
+                    "userEmail": result.status.user_email,
+                    "hostUserName": if result.host_user_name.is_empty() { Value::Null } else { Value::String(result.host_user_name) },
+                    "hostUserEmail": if result.host_user_email.is_empty() { Value::Null } else { Value::String(result.host_user_email) },
+                })),
+            ),
+            Err(error) => ToolEnvelope::error(
+                format!(
+                    "Failed to sync host GitHub authentication into the {}: {error}",
+                    self.config.runtime_label()
+                ),
+                None,
+            ),
+        }
+    }
+
     #[tool(
         name = "devbox_status",
         description = "Use this when you need the current state of the selected Devbox runtime.",
