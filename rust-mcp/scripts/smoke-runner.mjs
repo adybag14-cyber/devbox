@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { access } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
@@ -73,6 +74,7 @@ const runNode = (args, env) =>
 await access(binaryPath);
 const port = await reserveLoopbackPort();
 const baseUrl = new URL(`http://127.0.0.1:${port}/`);
+const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "devbox-rust-mcp-runtime-"));
 const serverEnv = {
   ...process.env,
   DEVBOX_PROJECT_ROOT: projectRoot,
@@ -82,6 +84,8 @@ const serverEnv = {
   DEVBOX_RUNTIME_MODE: "host",
   ENABLE_HOST_EXEC: "true",
   HOST_DEFAULT_WORKDIR: projectRoot,
+  MCP_JOBS_ROOT: path.join(runtimeDir, "jobs"),
+  MCP_EXEC_SLOT_ROOT: path.join(runtimeDir, "execution-slots"),
 };
 
 let stdout = "";
@@ -114,4 +118,5 @@ try {
     await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
     if (server.exitCode === null && server.signalCode === null) server.kill("SIGKILL");
   }
+  await rm(runtimeDir, { recursive: true, force: true });
 }

@@ -48,6 +48,11 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "windows_host_status",
     "windows_host_read_large_file",
     "windows_host_write_large_file",
+    "devbox_run_program",
+    "devbox_run_program_start",
+    "devbox_job_status",
+    "devbox_job_logs",
+    "devbox_job_cancel",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

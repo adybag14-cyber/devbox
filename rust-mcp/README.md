@@ -35,6 +35,11 @@ The first vertical slice contains:
 - exact-byte `windows_host_read_large_file` and `windows_host_write_large_file` with SHA-256 verification
 - configurable MCP transfer ceilings matching the JavaScript service
 - explicit parity report for the 37-tool target contract
-- live JavaScript MCP SDK smoke coverage enforced in the Windows/Linux/macOS CI matrix
+- weighted execution scheduling with reserved interactive capacity and a separate passive-watch pool
+- persistent detached-job state, orphan reconciliation, PID-reuse-safe cleanup, retention, and rotating logs
+- structured host/Docker runtime execution with PowerShell 7 preference on Windows
+- `devbox_run_program` direct allowlisted execution
+- `devbox_run_program_start`, `devbox_job_status`, `devbox_job_logs`, and `devbox_job_cancel`
+- live JavaScript MCP SDK smoke coverage, including detached success/cancellation lifecycle, enforced in the Windows/Linux/macOS CI matrix
 
-No production launcher points at this binary yet.
+The Rust shadow currently advertises **12 of the 37** target tools. No production launcher points at this binary yet.

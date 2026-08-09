@@ -29,6 +29,11 @@ for (const requiredTool of [
   "windows_host_status",
   "windows_host_read_large_file",
   "windows_host_write_large_file",
+  "devbox_run_program",
+  "devbox_run_program_start",
+  "devbox_job_status",
+  "devbox_job_logs",
+  "devbox_job_cancel",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -54,6 +59,75 @@ try {
   assert.equal(status.isError, false);
   assert.equal(status.structuredContent?.ok, true);
   assert.equal(status.structuredContent?.data?.rustReplacement?.implemented_count, expectedTools.length);
+
+  const direct = await client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "git",
+      args: ["--version"],
+      output_mode: "head",
+      max_output_chars: 2_000,
+    },
+  });
+  assert.equal(direct.isError, false);
+  assert.equal(direct.structuredContent?.ok, true);
+  assert.match(direct.structuredContent?.stdout || "", /^git version /);
+  assert.equal(direct.structuredContent?.data?.execution?.pool, "execution");
+
+  const started = await client.callTool({
+    name: "devbox_run_program_start",
+    arguments: {
+      program: "node",
+      args: ["-e", "console.log('RUST_ASYNC_SMOKE')"],
+      timeout_seconds: 30,
+      resource_class: "light",
+    },
+  });
+  assert.equal(started.isError, false);
+  const asyncJobId = started.structuredContent?.data?.id;
+  assert.match(asyncJobId || "", /^job-/);
+  const asyncDone = await client.callTool({
+    name: "devbox_job_status",
+    arguments: { job_id: asyncJobId, wait_seconds: 10, terminal_only: true },
+  });
+  assert.equal(asyncDone.isError, false);
+  assert.equal(asyncDone.structuredContent?.data?.status, "succeeded");
+  const asyncLogs = await client.callTool({
+    name: "devbox_job_logs",
+    arguments: { job_id: asyncJobId, max_chars: 5_000 },
+  });
+  assert.equal(asyncLogs.isError, false);
+  assert.match(asyncLogs.structuredContent?.data?.stdout || "", /RUST_ASYNC_SMOKE/);
+
+  const cancellable = await client.callTool({
+    name: "devbox_run_program_start",
+    arguments: {
+      program: "node",
+      args: ["-e", "setTimeout(()=>{},60000)"],
+      timeout_seconds: 60,
+      resource_class: "light",
+    },
+  });
+  assert.equal(cancellable.isError, false);
+  const cancelJobId = cancellable.structuredContent?.data?.id;
+  const running = await client.callTool({
+    name: "devbox_job_status",
+    arguments: { job_id: cancelJobId, wait_seconds: 5, terminal_only: false },
+  });
+  assert.equal(running.isError, false);
+  assert.equal(running.structuredContent?.data?.status, "running");
+  const cancel = await client.callTool({
+    name: "devbox_job_cancel",
+    arguments: { job_id: cancelJobId },
+  });
+  assert.equal(cancel.isError, false);
+  assert.equal(cancel.structuredContent?.data?.status, "cancelled");
+  const cancelled = await client.callTool({
+    name: "devbox_job_status",
+    arguments: { job_id: cancelJobId, wait_seconds: 10, terminal_only: true },
+  });
+  assert.equal(cancelled.isError, false);
+  assert.equal(cancelled.structuredContent?.data?.status, "cancelled");
 
   const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "devbox-rust-mcp-smoke-"));
   const fixturePath = path.join(fixtureDir, "exact-bytes.bin");
