@@ -2188,6 +2188,29 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
     tokio::spawn(async move {
         let _ = warm_runtime.get_versions(false, warm_cancellation).await;
     });
+    let maintenance_store = handler.jobs.store().clone();
+    let maintenance_cancellation = cancellation.child_token();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                () = maintenance_cancellation.cancelled() => return,
+                _ = interval.tick() => {
+                    match maintenance_store.reconcile_all().await {
+                        Ok(summary) => tracing::debug!(
+                            scanned = summary.scanned,
+                            interrupted = summary.interrupted,
+                            terminal = summary.terminal,
+                            deleted = summary.deleted,
+                            errors = summary.errors,
+                            "Rust MCP job maintenance pass completed"
+                        ),
+                        Err(error) => tracing::warn!(%error, "Rust MCP job maintenance pass failed"),
+                    }
+                }
+            }
+        }
+    });
     let service_handler = handler.clone();
     let transport_config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
