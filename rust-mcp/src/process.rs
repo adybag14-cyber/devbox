@@ -37,6 +37,7 @@ pub struct ProcessOptions {
     pub max_capture_chars: Option<usize>,
     pub input: Option<Vec<u8>>,
     pub output_tx: Option<UnboundedSender<OutputChunk>>,
+    pub pid_tx: Option<UnboundedSender<u32>>,
 }
 
 impl Default for ProcessOptions {
@@ -49,6 +50,7 @@ impl Default for ProcessOptions {
             max_capture_chars: None,
             input: None,
             output_tx: None,
+            pid_tx: None,
         }
     }
 }
@@ -172,6 +174,11 @@ fn start_process(
         .spawn()
         .map_err(|error| launch_error(file, args, error.to_string(), started))?;
     let pid = child.id().unwrap_or(0);
+    if pid > 0
+        && let Some(pid_tx) = options.pid_tx.as_ref()
+    {
+        let _ = pid_tx.send(pid);
+    }
     start_stdin_writer(child.stdin.take(), options.input.clone());
     let stdout = child.stdout.take().ok_or_else(|| {
         launch_error(

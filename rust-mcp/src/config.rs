@@ -130,9 +130,32 @@ pub struct Config {
     pub devbox_default_user: String,
     pub host_default_workdir: PathBuf,
     pub host_shell: String,
+    pub node_exe: String,
+    pub host_program_allowlist: Vec<String>,
+    pub devbox_program_allowlist: Vec<String>,
     pub host_exec_enabled: bool,
+    pub execution_slot_root: PathBuf,
+    pub jobs_root: PathBuf,
+    pub exec_max_concurrent: usize,
+    pub exec_reserved_interactive: usize,
+    pub exec_queue_timeout_ms: u64,
+    pub background_queue_timeout_ms: u64,
+    pub watch_max_concurrent: usize,
+    pub exec_heavy_weight: usize,
+    pub job_log_max_bytes: u64,
+    pub job_log_rotations: usize,
+    pub job_heartbeat_ms: u64,
+    pub job_orphan_stale_ms: u64,
+    pub job_retention_hours: u64,
     pub max_wait_seconds: f64,
     pub max_mcp_transfer_chars: usize,
+}
+
+struct ProgramConfiguration {
+    host_shell: String,
+    node_exe: String,
+    host_program_allowlist: Vec<String>,
+    devbox_program_allowlist: Vec<String>,
 }
 
 impl Config {
@@ -185,10 +208,11 @@ impl Config {
                         .unwrap_or_default()
                 }
             });
-        let host_shell = env::var("HOST_SHELL")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| default_host_shell(&platform));
+        let program = load_program_configuration(&platform, runtime_mode);
+        let execution_slot_root = env_path("MCP_EXEC_SLOT_ROOT")
+            .unwrap_or_else(|| project_root.join("run").join("execution-slots"));
+        let jobs_root =
+            env_path("MCP_JOBS_ROOT").unwrap_or_else(|| project_root.join("run").join("jobs"));
 
         Ok(Self {
             project_root,
@@ -203,8 +227,24 @@ impl Config {
             devbox_container_name,
             devbox_default_user,
             host_default_workdir,
-            host_shell,
+            host_shell: program.host_shell,
+            node_exe: program.node_exe,
+            host_program_allowlist: program.host_program_allowlist,
+            devbox_program_allowlist: program.devbox_program_allowlist,
             host_exec_enabled: parse_bool_env("ENABLE_HOST_EXEC", true),
+            execution_slot_root,
+            jobs_root,
+            exec_max_concurrent: parse_env("MCP_EXEC_MAX_CONCURRENT", 6_usize),
+            exec_reserved_interactive: parse_env("MCP_EXEC_RESERVED_INTERACTIVE", 1_usize),
+            exec_queue_timeout_ms: parse_env("MCP_EXEC_QUEUE_TIMEOUT_MS", 15_000_u64),
+            background_queue_timeout_ms: parse_env("MCP_BACKGROUND_QUEUE_TIMEOUT_MS", 300_000_u64),
+            watch_max_concurrent: parse_env("MCP_WATCH_MAX_CONCURRENT", 4_usize),
+            exec_heavy_weight: parse_env("MCP_EXEC_HEAVY_WEIGHT", 2_usize),
+            job_log_max_bytes: parse_env("MCP_JOB_LOG_MAX_BYTES", 32_u64 * 1024 * 1024),
+            job_log_rotations: parse_env("MCP_JOB_LOG_ROTATIONS", 2_usize),
+            job_heartbeat_ms: parse_env("MCP_JOB_HEARTBEAT_MS", 5_000_u64),
+            job_orphan_stale_ms: parse_env("MCP_JOB_ORPHAN_STALE_MS", 15_000_u64),
+            job_retention_hours: parse_env("MCP_JOB_RETENTION_HOURS", 168_u64),
             max_wait_seconds: f64::from(parse_env("MCP_WAIT_MAX_SECONDS", 300_u16)),
             max_mcp_transfer_chars: parse_transfer_limit(),
         })
@@ -262,12 +302,127 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
     })
 }
 
-fn default_host_shell(platform: &Platform) -> String {
-    if platform.is_windows {
-        env::var("POWERSHELL_EXE").unwrap_or_else(|_| "powershell.exe".to_owned())
-    } else {
-        env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned())
+fn load_program_configuration(
+    platform: &Platform,
+    runtime_mode: RuntimeMode,
+) -> ProgramConfiguration {
+    let host_shell = env::var("HOST_SHELL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| default_host_shell(platform));
+    let host_program_allowlist = parse_csv_env(
+        "HOST_PROGRAM_ALLOWLIST",
+        default_host_program_allowlist(platform),
+    );
+    let devbox_program_allowlist = parse_csv_env(
+        "DEVBOX_PROGRAM_ALLOWLIST",
+        if runtime_mode == RuntimeMode::Host {
+            host_program_allowlist.clone()
+        } else {
+            default_docker_program_allowlist()
+        },
+    );
+    let node_exe = env::var("NODE_EXE")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "node".to_owned());
+    ProgramConfiguration {
+        host_shell,
+        node_exe,
+        host_program_allowlist,
+        devbox_program_allowlist,
     }
+}
+
+fn default_host_shell(platform: &Platform) -> String {
+    if !platform.is_windows {
+        return env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_owned());
+    }
+
+    let configured = env::var("POWERSHELL_EXE").unwrap_or_default();
+    let program_files = env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".to_owned());
+    let system_root = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+    let candidates = [
+        configured,
+        PathBuf::from(program_files)
+            .join("PowerShell")
+            .join("7")
+            .join("pwsh.exe")
+            .to_string_lossy()
+            .into_owned(),
+        PathBuf::from(system_root)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe")
+            .to_string_lossy()
+            .into_owned(),
+    ];
+    candidates
+        .into_iter()
+        .find(|candidate| usable_executable_candidate(candidate))
+        .unwrap_or_else(|| "powershell.exe".to_owned())
+}
+
+fn usable_executable_candidate(candidate: &str) -> bool {
+    let candidate = candidate.trim();
+    !candidate.is_empty() && (!Path::new(candidate).is_absolute() || Path::new(candidate).is_file())
+}
+
+fn default_host_program_allowlist(platform: &Platform) -> Vec<String> {
+    let values: &[&str] = if platform.is_windows {
+        &[
+            "powershell",
+            "pwsh",
+            "cmd",
+            "git",
+            "gh",
+            "docker",
+            "node",
+            "npm",
+            "npx",
+            "python",
+            "py",
+            "pip",
+            "rg",
+            "curl",
+            "winget",
+        ]
+    } else {
+        &[
+            "bash", "sh", "git", "gh", "node", "npm", "npx", "python", "python3", "pip", "pip3",
+            "rg", "curl",
+        ]
+    };
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+fn default_docker_program_allowlist() -> Vec<String> {
+    [
+        "bash", "sh", "git", "gh", "node", "npm", "npx", "python", "python3", "pip", "pip3", "rg",
+        "curl",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn parse_csv_env(name: &str, fallback: Vec<String>) -> Vec<String> {
+    let raw = env::var(name).unwrap_or_default();
+    let source = if raw.trim().is_empty() {
+        fallback
+    } else {
+        raw.split(',').map(str::to_owned).collect()
+    };
+    let mut values = Vec::new();
+    for value in source {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() && !values.iter().any(|existing| existing == trimmed) {
+            values.push(trimmed.to_owned());
+        }
+    }
+    values
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {

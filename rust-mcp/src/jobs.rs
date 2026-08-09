@@ -124,6 +124,73 @@ impl JobStore {
         &self.config
     }
 
+    /// Create a new persisted job request/status directory and empty log files.
+    ///
+    /// # Errors
+    /// Returns invalid-ID, serialization, or filesystem errors.
+    pub async fn create_job(
+        &self,
+        job_id: &str,
+        request: &Value,
+        status: &Value,
+    ) -> Result<JobPaths> {
+        let paths = self.paths(job_id)?;
+        fs::create_dir_all(&paths.dir).await?;
+        let create = async {
+            write_json_atomic(&paths.request, request).await?;
+            write_json_atomic(&paths.status, status).await?;
+            fs::write(&paths.stdout, []).await?;
+            fs::write(&paths.stderr, []).await?;
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        if let Err(error) = create {
+            fs::remove_dir_all(&paths.dir).await.ok();
+            return Err(error);
+        }
+        Ok(paths)
+    }
+
+    /// Read the persisted request JSON without status reconciliation.
+    ///
+    /// # Errors
+    /// Returns invalid-ID, filesystem, or JSON errors.
+    pub async fn read_request(&self, job_id: &str) -> Result<Value> {
+        read_json(&self.paths(job_id)?.request).await
+    }
+
+    /// Read raw status JSON without reconciliation.
+    ///
+    /// # Errors
+    /// Returns invalid-ID, filesystem, or JSON errors.
+    pub async fn read_status_raw(&self, job_id: &str) -> Result<Value> {
+        read_json(&self.paths(job_id)?.status).await
+    }
+
+    /// Atomically persist raw job status JSON.
+    ///
+    /// # Errors
+    /// Returns invalid-ID, serialization, or filesystem errors.
+    pub async fn write_status(&self, job_id: &str, status: &Value) -> Result<()> {
+        write_json_atomic(&self.paths(job_id)?.status, status).await
+    }
+
+    /// Atomically persist the current runner heartbeat.
+    ///
+    /// # Errors
+    /// Returns invalid-ID, serialization, or filesystem errors.
+    pub async fn write_heartbeat(&self, job_id: &str, heartbeat: &Value) -> Result<()> {
+        write_json_atomic(&self.paths(job_id)?.heartbeat, heartbeat).await
+    }
+
+    /// Return whether cancellation has been requested for a job.
+    ///
+    /// # Errors
+    /// Returns invalid-ID or filesystem errors.
+    pub async fn cancellation_requested(&self, job_id: &str) -> Result<bool> {
+        marker_exists(&self.paths(job_id)?.cancel).await
+    }
+
     /// Resolve validated job paths below the configured job root.
     ///
     /// # Errors
@@ -515,10 +582,29 @@ fn validate_job_id(job_id: &str) -> Result<String> {
 }
 
 async fn read_json(path: &Path) -> Result<Value> {
-    let bytes = fs::read(path)
-        .await
-        .with_context(|| format!("read job JSON {}", path.display()))?;
-    serde_json::from_slice(&bytes).with_context(|| format!("parse job JSON {}", path.display()))
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match fs::read(path).await {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(value) => return Ok(value),
+                Err(error) => {
+                    last_error = Some(
+                        anyhow::Error::new(error)
+                            .context(format!("parse job JSON {}", path.display())),
+                    );
+                }
+            },
+            Err(error) => {
+                last_error = Some(
+                    anyhow::Error::new(error).context(format!("read job JSON {}", path.display())),
+                );
+            }
+        }
+        if attempt < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("failed to read job JSON {}", path.display())))
 }
 
 async fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {

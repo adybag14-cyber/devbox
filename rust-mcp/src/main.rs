@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
 use devbox_mcp::{AuthMode, Config, contract::ParityReport};
@@ -24,6 +24,9 @@ async fn main() -> Result<()> {
     }
 
     let config = Arc::new(Config::load()?);
+    if let Some(request_path) = job_runner_request()? {
+        return devbox_mcp::job_runner::run_job_request(config, &request_path).await;
+    }
     if config.auth_mode != AuthMode::None {
         anyhow::bail!(
             "Rust MCP authentication parity is not implemented yet; refusing to start with MCP_AUTH_MODE={}",
@@ -41,4 +44,21 @@ async fn main() -> Result<()> {
     }
     cancellation.cancel();
     Ok(())
+}
+
+fn job_runner_request() -> anyhow::Result<Option<PathBuf>> {
+    let mut args = std::env::args_os().skip(1);
+    let Some(first) = args.next() else {
+        return Ok(None);
+    };
+    if first != "--job-runner" {
+        return Ok(None);
+    }
+    let request = args
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("--job-runner requires a request.json path"))?;
+    if args.next().is_some() {
+        anyhow::bail!("--job-runner accepts exactly one request.json path");
+    }
+    Ok(Some(PathBuf::from(request)))
 }
