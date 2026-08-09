@@ -582,6 +582,11 @@ mod tests {
             execution_slot_root: root.join("slots"),
             jobs_root: root.join("jobs"),
             mcp_performance_state_path: root.join("mcp-performance.json"),
+            usage_log: crate::config::UsageLogConfig {
+                max_bytes: 16 * 1024 * 1024,
+                rotations: 3,
+            },
+            mcp_json_body_limit_bytes: 16 * 1024 * 1024,
             exec_max_concurrent: 6,
             exec_reserved_interactive: 1,
             exec_queue_timeout_ms: 15_000,

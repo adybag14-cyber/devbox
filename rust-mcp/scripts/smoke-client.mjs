@@ -115,6 +115,7 @@ const transport = new StreamableHTTPClientTransport(baseUrl);
 const client = new Client({ name: "rust-parity-smoke", version: "0.1.0" });
 try {
   await client.connect(transport);
+  assert.deepEqual(client.getServerCapabilities()?.logging, {});
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name).sort();
   assert.deepEqual(names, expectedTools);
@@ -127,6 +128,48 @@ try {
   assert.equal(wait.structuredContent?.ok, true);
   assert.equal(wait.structuredContent?.data?.reason, "rust-shadow-smoke");
   assert.ok(wait.structuredContent?.data?.waited_ms >= 40);
+
+  const cancellationRequestId = client._requestMessageId;
+  const cancelStarted = Date.now();
+  const cancellableWait = client.callTool({
+    name: "devbox_wait",
+    arguments: { seconds: 10, reason: "rust-cancellation-smoke" },
+  });
+  setTimeout(() => {
+    void client.notification({
+      method: "notifications/cancelled",
+      params: { requestId: cancellationRequestId, reason: "rust-cancellation-smoke" },
+    });
+  }, 150);
+  const cancelledWait = await cancellableWait;
+  assert.equal(cancelledWait.isError, true);
+  assert.match(cancelledWait.content?.[0]?.text || "", /Wait was cancelled/i);
+  assert.ok(Date.now() - cancelStarted < 3_000, "cancellation notification should stop the Rust handler promptly");
+
+  const processCancellationRequestId = client._requestMessageId;
+  const processCancelStarted = Date.now();
+  const cancellableProcess = client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "node",
+      args: ["-e", "setTimeout(() => {}, 10000)"],
+      timeout_seconds: 20,
+      max_output_chars: 2_000,
+    },
+  });
+  setTimeout(() => {
+    void client.notification({
+      method: "notifications/cancelled",
+      params: { requestId: processCancellationRequestId, reason: "rust-process-cancellation-smoke" },
+    });
+  }, 250);
+  const cancelledProcess = await cancellableProcess;
+  assert.equal(cancelledProcess.isError, true);
+  assert.match(
+    `${cancelledProcess.structuredContent?.summary || ""} ${cancelledProcess.structuredContent?.stderr || ""}`,
+    /cancel|abort/i,
+  );
+  assert.ok(Date.now() - processCancelStarted < 4_000, "cancelled child process should terminate promptly");
 
   const status = await client.callTool({ name: "devbox_status", arguments: {} });
   assert.equal(status.isError, false);
@@ -498,12 +541,52 @@ try {
     await rm(fixtureDir, { recursive: true, force: true });
   }
 
+  assert.ok(stateRoot, "RUST_MCP_STATE_ROOT is required for usage telemetry assertions");
+  const toolUsageText = await readFile(path.join(stateRoot, "run", "tool-usage.jsonl"), "utf8");
+  assert.ok(!toolUsageText.includes("AP9hbHBoYQo="), "sensitive content_base64 must be redacted from tool telemetry");
+  const toolUsage = toolUsageText.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  const waitStart = toolUsage.find((event) => event.type === "tool_start" && event.tool === "devbox_wait");
+  const waitFinish = toolUsage.find((event) => event.type === "tool_finish" && event.tool === "devbox_wait");
+  assert.ok(waitStart?.invocation_id);
+  assert.equal(waitFinish?.invocation_id, waitStart.invocation_id);
+  assert.equal(waitStart.arguments?.reason?.preview, "rust-shadow-smoke");
+  assert.ok(waitStart.context?.request_id !== undefined);
+  assert.equal(waitFinish.ok, true);
+  assert.equal(waitFinish.is_error, false);
+  assert.ok(waitFinish.duration_ms >= 0);
+  const cancelStart = toolUsage.find((event) => event.type === "tool_start" && event.tool === "devbox_wait" && event.arguments?.reason?.preview === "rust-cancellation-smoke");
+  const cancelFinish = toolUsage.find((event) => event.type === "tool_finish" && event.invocation_id === cancelStart?.invocation_id);
+  assert.ok(cancelStart?.invocation_id, "cancelled wait must reach the Rust tool handler");
+  assert.ok(cancelFinish, "cancellation notification must finish the Rust handler");
+  assert.equal(cancelFinish.is_error, true);
+  assert.ok(cancelFinish.duration_ms < 3_000);
+  const processCancelCandidates = toolUsage.filter((event) => event.type === "tool_start" && event.tool === "devbox_run_program");
+  const processCancelEvent = processCancelCandidates.find((event) =>
+    JSON.stringify(event.arguments || {}).includes("setTimeout(() => {}, 10000)"),
+  );
+  const processCancelFinish = toolUsage.find((event) => event.type === "tool_finish" && event.invocation_id === processCancelEvent?.invocation_id);
+  assert.ok(processCancelEvent?.invocation_id, "cancelled process must reach Rust tool handler");
+  assert.ok(processCancelFinish, "cancelled process must produce a finish telemetry event");
+  assert.equal(processCancelFinish.is_error, true);
+  assert.ok(processCancelFinish.duration_ms < 4_000);
+
+  const httpUsageText = await readFile(path.join(stateRoot, "run", "http-usage.jsonl"), "utf8");
+  const httpUsage = httpUsageText.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  const rootGet = httpUsage.find((event) => event.type === "http_request" && event.method === "GET" && event.path === "/" && event.outcome === "finished");
+  const mcpPost = httpUsage.find((event) => event.type === "http_request" && event.method === "POST" && event.path === "/" && event.outcome === "finished");
+  assert.equal(rootGet?.status_code, 200);
+  assert.ok(rootGet?.request_id);
+  assert.equal(rootGet?.client_aborted, false);
+  assert.ok(mcpPost?.status_code >= 200 && mcpPost?.status_code < 300);
+  assert.match(mcpPost?.user_agent || "", /modelcontextprotocol|node|undici/i);
+
   console.log(JSON.stringify({
     ok: true,
     baseUrl: baseUrl.toString(),
     tools: names,
     toolCount: names.length,
     waitMs: wait.structuredContent.data.waited_ms,
+    cancellationHandlerFinished: true,
   }, null, 2));
 } finally {
   await client.close();

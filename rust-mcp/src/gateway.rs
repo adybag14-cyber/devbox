@@ -6,7 +6,7 @@ use std::{
 
 use axum::{
     Json,
-    body::Body,
+    body::{Body, to_bytes},
     extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, header},
     middleware::Next,
@@ -15,7 +15,11 @@ use axum::{
 use serde_json::{Value, json};
 use url::Url;
 
-use crate::{AuthMode, Config};
+use crate::{
+    AuthMode, Config,
+    request_control::{ActiveRequestRegistry, CancellationNotification, McpRequestIdentity},
+    usage::{HttpUsageGuard, UsageLogger},
+};
 
 const DEFAULT_ALLOW_HEADERS: &str =
     "authorization, content-type, last-event-id, mcp-protocol-version, mcp-session-id";
@@ -33,11 +37,17 @@ pub struct GatewayState {
     config: Arc<Config>,
     allowed_hosts: HashSet<String>,
     allowed_origins: Vec<String>,
+    http_usage: Arc<UsageLogger>,
+    active_requests: Arc<ActiveRequestRegistry>,
 }
 
 impl GatewayState {
     #[must_use]
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(
+        config: Arc<Config>,
+        http_usage: Arc<UsageLogger>,
+        active_requests: Arc<ActiveRequestRegistry>,
+    ) -> Self {
         let mut allowed_hosts = ["127.0.0.1", "localhost", "[::1]"]
             .into_iter()
             .map(str::to_owned)
@@ -63,6 +73,8 @@ impl GatewayState {
             config,
             allowed_hosts,
             allowed_origins,
+            http_usage,
+            active_requests,
         }
     }
 
@@ -83,6 +95,50 @@ impl GatewayState {
     }
 }
 
+/// Apply the same bounded JSON parsing policy as the JavaScript Express server.
+pub async fn json_body_limit(
+    State(limit): State<usize>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let is_json = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"));
+    if !is_json {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    match to_bytes(body, limit).await {
+        Ok(bytes) => {
+            let mut request = Request::from_parts(parts, Body::from(bytes.clone()));
+            if let Ok(value) = serde_json::from_slice::<Value>(&bytes) {
+                if let Some(request_id) = value.get("id").cloned()
+                    && matches!(request_id, Value::Number(_) | Value::String(_))
+                {
+                    request
+                        .extensions_mut()
+                        .insert(McpRequestIdentity { request_id });
+                }
+                if value.get("method").and_then(Value::as_str) == Some("notifications/cancelled")
+                    && let Some(request_id) = value.pointer("/params/requestId").cloned()
+                {
+                    request
+                        .extensions_mut()
+                        .insert(CancellationNotification { request_id });
+                }
+            }
+            next.run(request).await
+        }
+        Err(_) => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({ "error": "request entity too large" })),
+        )
+            .into_response(),
+    }
+}
+
 /// Enforce the JS server's Host-header validation and local `ChatGPT` gateway bridge policy.
 pub async fn guard_and_bridge(
     State(state): State<Arc<GatewayState>>,
@@ -92,11 +148,29 @@ pub async fn guard_and_bridge(
     if let Some(response) = validate_host(request.headers(), &state.allowed_hosts) {
         return response;
     }
-
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|value| value.0);
+    let peer_text = peer.map(|value| value.ip().to_string());
+    let disconnect = request
+        .extensions()
+        .get::<McpRequestIdentity>()
+        .and_then(|identity| {
+            state.active_requests.disconnect_cancellation(
+                request.headers(),
+                peer_text.as_deref(),
+                &identity.request_id,
+            )
+        });
+    let usage = HttpUsageGuard::new(
+        state.http_usage.clone(),
+        request.method(),
+        request.uri(),
+        request.headers(),
+        disconnect,
+    );
+
     let is_local = request_is_local(request.headers(), peer);
     request
         .extensions_mut()
@@ -115,14 +189,16 @@ pub async fn guard_and_bridge(
 
     if request.method() == Method::OPTIONS && origin.is_some() {
         if !expose {
-            return (StatusCode::METHOD_NOT_ALLOWED, "").into_response();
+            let response = (StatusCode::METHOD_NOT_ALLOWED, "").into_response();
+            return usage.wrap_response(response);
         }
         if !origin_allowed {
-            return (
+            let response = (
                 StatusCode::FORBIDDEN,
                 Json(json!({ "error": "Origin is not allowed for the local ChatGPT gateway bridge." })),
             )
                 .into_response();
+            return usage.wrap_response(response);
         }
         let mut response = StatusCode::NO_CONTENT.into_response();
         apply_bridge_headers(
@@ -130,7 +206,7 @@ pub async fn guard_and_bridge(
             &mut response,
             origin.as_deref().unwrap_or_default(),
         );
-        return response;
+        return usage.wrap_response(response);
     }
 
     let bridge_headers = (expose && origin_allowed).then(|| {
@@ -143,7 +219,7 @@ pub async fn guard_and_bridge(
     if let Some((headers, origin)) = bridge_headers {
         apply_bridge_headers(&headers, &mut response, &origin);
     }
-    response
+    usage.wrap_response(response)
 }
 
 fn validate_host(headers: &HeaderMap, allowed_hosts: &HashSet<String>) -> Option<Response> {

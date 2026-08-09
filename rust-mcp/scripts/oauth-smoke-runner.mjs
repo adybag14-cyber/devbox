@@ -35,7 +35,7 @@ const server = spawn(binaryPath, [], {
   cwd: projectRoot,
   env: {
     ...process.env,
-    DEVBOX_PROJECT_ROOT: projectRoot,
+    DEVBOX_PROJECT_ROOT: runtimeDir,
     HOST: "127.0.0.1",
     PORT: String(port),
     MCP_AUTH_MODE: "demo-oauth",
@@ -194,6 +194,19 @@ try {
   await client.connect(transport);
   const tools = await client.listTools();
   assert.equal(tools.tools.length, 37);
+  const oauthWait = await client.callTool({
+    name: "devbox_wait",
+    arguments: { seconds: 0.05, reason: "oauth-context-smoke" },
+  });
+  assert.equal(oauthWait.isError, false);
+  const toolUsageText = await readFile(path.join(runtimeDir, "run", "tool-usage.jsonl"), "utf8");
+  const toolUsage = toolUsageText.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  const oauthStart = toolUsage.find((event) =>
+    event.type === "tool_start"
+      && event.tool === "devbox_wait"
+      && event.arguments?.reason?.preview === "oauth-context-smoke",
+  );
+  assert.equal(oauthStart?.context?.client_id, registered.client_id);
   await client.close();
   client = undefined;
 

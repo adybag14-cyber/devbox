@@ -123,6 +123,12 @@ pub struct GatewayBridgeConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct UsageLogConfig {
+    pub max_bytes: u64,
+    pub rotations: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub project_root: PathBuf,
     pub host: String,
@@ -157,6 +163,8 @@ pub struct Config {
     pub execution_slot_root: PathBuf,
     pub jobs_root: PathBuf,
     pub mcp_performance_state_path: PathBuf,
+    pub usage_log: UsageLogConfig,
+    pub mcp_json_body_limit_bytes: usize,
     pub exec_max_concurrent: usize,
     pub exec_reserved_interactive: usize,
     pub exec_queue_timeout_ms: u64,
@@ -237,11 +245,8 @@ impl Config {
             .unwrap_or_else(|| project_root.join("run").join("execution-slots"));
         let jobs_root =
             env_path("MCP_JOBS_ROOT").unwrap_or_else(|| project_root.join("run").join("jobs"));
-        let mcp_performance_state_path = env_path("MCP_PERFORMANCE_STATE_PATH")
-            .unwrap_or_else(|| project_root.join("run").join("mcp-performance.json"));
-
         Ok(Self {
-            project_root,
+            project_root: project_root.clone(),
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_owned()),
             port: parse_env("PORT", 8100_u16),
             auth_mode,
@@ -276,7 +281,9 @@ impl Config {
             allow_windows_host_exec_uac: parse_bool_env("ALLOW_WINDOWS_HOST_EXEC_UAC", false),
             execution_slot_root,
             jobs_root,
-            mcp_performance_state_path,
+            mcp_performance_state_path: load_performance_state_path(&project_root),
+            usage_log: load_usage_log_configuration(),
+            mcp_json_body_limit_bytes: parse_json_body_limit(),
             exec_max_concurrent: parse_env("MCP_EXEC_MAX_CONCURRENT", 6_usize),
             exec_reserved_interactive: parse_env("MCP_EXEC_RESERVED_INTERACTIVE", 1_usize),
             exec_queue_timeout_ms: parse_env("MCP_EXEC_QUEUE_TIMEOUT_MS", 15_000_u64),
@@ -526,6 +533,18 @@ fn parse_csv_env(name: &str, fallback: Vec<String>) -> Vec<String> {
     values
 }
 
+fn load_performance_state_path(project_root: &Path) -> PathBuf {
+    env_path("MCP_PERFORMANCE_STATE_PATH")
+        .unwrap_or_else(|| project_root.join("run").join("mcp-performance.json"))
+}
+
+fn load_usage_log_configuration() -> UsageLogConfig {
+    UsageLogConfig {
+        max_bytes: parse_env("MCP_USAGE_LOG_MAX_BYTES", 16_u64 * 1024 * 1024),
+        rotations: parse_env("MCP_USAGE_LOG_ROTATIONS", 3_usize),
+    }
+}
+
 fn load_gateway_bridge_configuration() -> GatewayBridgeConfig {
     GatewayBridgeConfig {
         enabled: parse_bool_env("ENABLE_GATEWAY_BRIDGE", true),
@@ -654,6 +673,46 @@ where
         .unwrap_or(fallback)
 }
 
+fn parse_json_body_limit() -> usize {
+    let raw = env::var("MCP_JSON_BODY_LIMIT").unwrap_or_else(|_| "16mb".to_owned());
+    let normalized = raw.trim().to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "0" | "-1" | "none" | "off" | "disabled" | "unlimited" | "infinite" | "infinity"
+    ) {
+        return usize::MAX;
+    }
+    let (number, multiplier) = if let Some(value) = normalized.strip_suffix("kb") {
+        (value, 1024_usize)
+    } else if let Some(value) = normalized.strip_suffix("mb") {
+        (value, 1024_usize * 1024)
+    } else if let Some(value) = normalized.strip_suffix("gb") {
+        (value, 1024_usize * 1024 * 1024)
+    } else if let Some(value) = normalized.strip_suffix('b') {
+        (value, 1_usize)
+    } else {
+        (normalized.as_str(), 1_usize)
+    };
+    parse_scaled_size(number.trim(), multiplier).unwrap_or(16 * 1024 * 1024)
+}
+
+fn parse_scaled_size(value: &str, multiplier: usize) -> Option<usize> {
+    let (whole, fraction) = value.split_once('.').map_or((value, ""), |parts| parts);
+    let whole = whole.parse::<usize>().ok()?;
+    let whole_bytes = whole.checked_mul(multiplier)?;
+    if fraction.is_empty() {
+        return (whole > 0).then_some(whole_bytes);
+    }
+    if !fraction.bytes().all(|value| value.is_ascii_digit()) || fraction.len() > 9 {
+        return None;
+    }
+    let denominator = 10_usize.checked_pow(u32::try_from(fraction.len()).ok()?)?;
+    let fraction = fraction.parse::<usize>().ok()?;
+    let fraction_bytes = fraction.checked_mul(multiplier)?.checked_div(denominator)?;
+    let total = whole_bytes.checked_add(fraction_bytes)?;
+    (total > 0).then_some(total)
+}
+
 fn parse_transfer_limit() -> usize {
     let raw = env::var("MAX_MCP_TRANSFER_CHARS").unwrap_or_default();
     let normalized = raw.trim().to_ascii_lowercase();
@@ -684,6 +743,14 @@ fn parse_bool_env(name: &str, fallback: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_body_scaled_sizes_match_express_style_units() {
+        assert_eq!(parse_scaled_size("1", 1024), Some(1024));
+        assert_eq!(parse_scaled_size("1.5", 1024), Some(1536));
+        assert_eq!(parse_scaled_size("0.5", 1024), Some(512));
+        assert_eq!(parse_scaled_size("bad", 1024), None);
+    }
 
     #[test]
     fn oauth_issuer_security_matches_installed_sdk() {

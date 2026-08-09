@@ -210,6 +210,11 @@ pub struct VerifiedAccessToken {
 }
 
 #[derive(Debug, Clone)]
+pub struct OAuthRequestInfo {
+    pub client_id: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct OAuthFailure {
     pub code: &'static str,
     pub message: String,
@@ -867,13 +872,10 @@ pub async fn mcp_bearer_guard(
     };
     match service.verify_access_token(token).await {
         Ok(info) => {
-            let _ = (
-                &info.client_id,
-                &info.scopes,
-                info.expires_at,
-                &info.resource,
-                &info.identity,
-            );
+            let mut request = request;
+            request.extensions_mut().insert(OAuthRequestInfo {
+                client_id: info.client_id.clone(),
+            });
             next.run(request).await
         }
         Err(failure) => bearer_failure_response(&failure, &metadata_url),

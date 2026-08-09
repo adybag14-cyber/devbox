@@ -17,11 +17,16 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rmcp::{
-    ServerHandler,
-    handler::server::router::tool::ToolRouter,
+    RoleServer, ServerHandler,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Implementation, ServerCapabilities, ServerInfo},
-    schemars, tool, tool_handler, tool_router,
+    handler::server::{router::tool::ToolRouter, tool::ToolCallContext},
+    model::{
+        CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
+        ServerCapabilities, ServerInfo,
+    },
+    schemars,
+    service::RequestContext,
+    tool, tool_handler, tool_router,
     transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     },
@@ -45,9 +50,11 @@ use crate::{
     oauth::OAuthService,
     output::{OutputMode, shape_process_output},
     performance::PerformanceMonitor,
+    request_control::ActiveRequestRegistry,
     result::ToolEnvelope,
     runtime::{ProgramRequest, RuntimeExecError, RuntimeExecutor, ShellRequest},
     search::{SearchRequest, SearchService},
+    usage::{ToolUsageDropGuard, ToolUsageInvocation, UsageService},
 };
 
 #[derive(Debug, Clone)]
@@ -63,6 +70,8 @@ pub struct DevboxMcp {
     github_auth: Arc<GithubAuthService>,
     capture: Arc<CaptureService>,
     performance: Arc<PerformanceMonitor>,
+    usage: Arc<UsageService>,
+    active_requests: Arc<ActiveRequestRegistry>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -88,6 +97,12 @@ impl DevboxMcp {
         let performance = Arc::new(PerformanceMonitor::new(
             config.mcp_performance_state_path.clone(),
         ));
+        let usage = Arc::new(UsageService::new(
+            &config.project_root,
+            config.usage_log.max_bytes,
+            config.usage_log.rotations,
+        ));
+        let active_requests = Arc::new(ActiveRequestRegistry::new());
         Self {
             runtime,
             jobs: Arc::new(JobManager::new(config.clone())),
@@ -96,6 +111,8 @@ impl DevboxMcp {
             github_auth,
             capture,
             performance,
+            usage,
+            active_requests,
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -2164,14 +2181,38 @@ impl DevboxMcp {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DevboxMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                self.config.server_name(),
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_instructions(
-                "Native Rust replacement for the Devbox MCP. Draft migration: only tools listed by this server are implemented; missing parity is reported at GET /.",
-            )
+        let mut capabilities = ServerCapabilities::builder().enable_tools().build();
+        capabilities.logging = Some(serde_json::Map::default());
+        ServerInfo::new(capabilities).with_server_info(
+            Implementation::new(self.config.server_name(), env!("CARGO_PKG_VERSION"))
+                .with_website_url("https://github.com/adybag14-cyber/devbox"),
+        )
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        let invocation =
+            ToolUsageInvocation::new(request.name.as_ref(), request.arguments.as_ref(), &context);
+        let logger = self.usage.tool_logger();
+        logger.append(&invocation.start_event()).await.ok();
+        let mut usage_guard = ToolUsageDropGuard::new(logger.clone(), invocation.clone());
+        let _active_request = self.active_requests.register_context(&context);
+        let result = self
+            .tool_router
+            .call(ToolCallContext::new(self, request, context))
+            .await;
+        match &result {
+            Ok(response) => logger.append(&invocation.finish_event(response)).await.ok(),
+            Err(error) => logger
+                .append(&invocation.throw_event(&error.to_string()))
+                .await
+                .ok(),
+        };
+        usage_guard.complete();
+        result
     }
 }
 
@@ -2235,7 +2276,13 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
     );
 
     let oauth = OAuthService::new(&config).map(Arc::new);
-    let gateway = Arc::new(GatewayState::new(config.clone()));
+    let active_requests = handler.active_requests.clone();
+    let body_limit = config.mcp_json_body_limit_bytes;
+    let gateway = Arc::new(GatewayState::new(
+        config.clone(),
+        handler.usage.http_logger(),
+        active_requests.clone(),
+    ));
     let state = HttpState {
         config,
         oauth: oauth.clone(),
@@ -2260,12 +2307,20 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
     }
     router
         .layer(middleware::from_fn_with_state(
+            active_requests,
+            crate::request_control::apply_cancellation_notification,
+        ))
+        .layer(middleware::from_fn_with_state(
             oauth,
             crate::oauth::mcp_bearer_guard,
         ))
         .layer(middleware::from_fn_with_state(
             gateway,
             crate::gateway::guard_and_bridge,
+        ))
+        .layer(middleware::from_fn_with_state(
+            body_limit,
+            crate::gateway::json_body_limit,
         ))
         .layer(TraceLayer::new_for_http())
 }
@@ -2981,6 +3036,11 @@ mod tests {
             execution_slot_root: temp.path().join("execution-slots"),
             jobs_root: temp.path().join("jobs"),
             mcp_performance_state_path: temp.path().join("mcp-performance.json"),
+            usage_log: crate::config::UsageLogConfig {
+                max_bytes: 16 * 1024 * 1024,
+                rotations: 3,
+            },
+            mcp_json_body_limit_bytes: 16 * 1024 * 1024,
             exec_max_concurrent: 6,
             exec_reserved_interactive: 1,
             exec_queue_timeout_ms: 15_000,

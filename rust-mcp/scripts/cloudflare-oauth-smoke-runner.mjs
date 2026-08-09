@@ -75,7 +75,7 @@ const server = spawn(binaryPath, [], {
   cwd: projectRoot,
   env: {
     ...process.env,
-    DEVBOX_PROJECT_ROOT: projectRoot,
+    DEVBOX_PROJECT_ROOT: runtimeDir,
     HOST: "127.0.0.1",
     PORT: String(mcpPort),
     MCP_AUTH_MODE: "cloudflare-access",

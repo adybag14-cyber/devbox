@@ -28,7 +28,7 @@ const reservePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const rawRequest = ({ port, method = "GET", pathname = "/", headers = {} }) => new Promise((resolve, reject) => {
+const rawRequest = ({ port, method = "GET", pathname = "/", headers = {}, body = "" }) => new Promise((resolve, reject) => {
   const request = http.request({ hostname: "127.0.0.1", port, method, path: pathname, headers }, (response) => {
     const chunks = [];
     response.on("data", (chunk) => chunks.push(chunk));
@@ -39,10 +39,10 @@ const rawRequest = ({ port, method = "GET", pathname = "/", headers = {} }) => n
     }));
   });
   request.once("error", reject);
-  request.end();
+  request.end(body);
 });
 
-const startServer = async ({ authMode }) => {
+const startServer = async ({ authMode, jsonBodyLimit = "16mb" }) => {
   const port = await reservePort();
   const runtimeDir = await mkdtemp(path.join(os.tmpdir(), `devbox-rust-gateway-${authMode}-`));
   const publicBaseUrl = "https://devbox.example";
@@ -57,6 +57,7 @@ const startServer = async ({ authMode }) => {
       HOST: "127.0.0.1",
       PORT: String(port),
       MCP_AUTH_MODE: authMode,
+      MCP_JSON_BODY_LIMIT: jsonBodyLimit,
       PUBLIC_BASE_URL: publicBaseUrl,
       OAUTH_STATE_FILE_PATH: path.join(runtimeDir, "oauth-state.json"),
       DEVBOX_RUNTIME_MODE: "host",
@@ -248,4 +249,23 @@ try {
   await stopServer(oauth);
 }
 
-console.log(JSON.stringify({ ok: true, hostValidation: true, bridgeCors: true, privateNetworkAccess: true, remoteOauthRedaction: true }, null, 2));
+const limited = await startServer({ authMode: "none", jsonBodyLimit: "1kb" });
+try {
+  const oversizedBody = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", padding: "x".repeat(2_000) });
+  const oversized = await rawRequest({
+    port: limited.port,
+    method: "POST",
+    headers: {
+      Host: `127.0.0.1:${limited.port}`,
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(oversizedBody),
+    },
+    body: oversizedBody,
+  });
+  assert.equal(oversized.status, 413);
+  assert.equal(JSON.parse(oversized.body).error, "request entity too large");
+} finally {
+  await stopServer(limited);
+}
+
+console.log(JSON.stringify({ ok: true, hostValidation: true, bridgeCors: true, privateNetworkAccess: true, remoteOauthRedaction: true, jsonBodyLimit: true }, null, 2));

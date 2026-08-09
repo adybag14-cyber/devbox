@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use rmcp::model::{CallToolResult, ContentBlock};
 use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::{Deserialize, Serialize};
@@ -8,7 +10,7 @@ pub struct ToolEnvelope {
     pub ok: bool,
     pub summary: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(schema_with = "any_json_schema")]
+    #[schemars(with = "Option<UnconstrainedJson>")]
     pub data: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdout: Option<String>,
@@ -20,12 +22,20 @@ pub struct ToolEnvelope {
     pub truncated: Option<bool>,
 }
 
-fn any_json_schema(_: &mut SchemaGenerator) -> Schema {
-    // schemars represents serde_json::Value as the boolean schema `true`.
-    // The current JavaScript MCP SDK validator rejects boolean schemas inside
-    // Tool.outputSchema. An empty object is the equivalent unconstrained JSON
-    // Schema and matches the existing JS server's z.any() contract.
-    schemars::json_schema!({})
+struct UnconstrainedJson;
+
+impl JsonSchema for UnconstrainedJson {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("UnconstrainedJson")
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({})
+    }
 }
 
 impl ToolEnvelope {
@@ -177,10 +187,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn arbitrary_data_uses_object_form_unconstrained_schema() {
+    fn arbitrary_data_is_optional_and_uses_object_form_unconstrained_schema() {
         let schema = schemars::schema_for!(ToolEnvelope);
         let value = serde_json::to_value(schema).expect("serialize schema");
-        assert_eq!(value["properties"]["data"], serde_json::json!({}));
+        let required = value["required"].as_array().expect("required array");
+        assert!(!required.iter().any(|item| item == "data"));
+        let data = &value["properties"]["data"];
+        assert!(data.is_object());
+        assert!(!data.to_string().contains("true"));
     }
 
     #[test]

@@ -16,10 +16,12 @@ pub mod oauth;
 pub mod output;
 pub mod performance;
 pub mod process;
+pub mod request_control;
 pub mod result;
 pub mod runtime;
 pub mod search;
 pub mod server;
+pub mod usage;
 
 pub use config::{AuthMode, Config, Platform, RuntimeMode};
 pub use contract::{IMPLEMENTED_TOOL_NAMES, ParityReport, TARGET_TOOL_NAMES};

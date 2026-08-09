@@ -106,6 +106,32 @@ enum ForcedFailure {
     TimedOut(Duration),
 }
 
+struct ProcessTreeDropGuard {
+    pid: u32,
+    armed: bool,
+}
+
+impl ProcessTreeDropGuard {
+    const fn new(pid: u32) -> Self {
+        Self {
+            pid,
+            armed: pid > 0,
+        }
+    }
+
+    const fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ProcessTreeDropGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            terminate_process_tree_on_drop(self.pid);
+        }
+    }
+}
+
 /// Spawn one executable without shell parsing and capture bounded stdout/stderr tails.
 ///
 /// The child is placed in its own process group on Unix. Cancellation and timeout
@@ -122,6 +148,7 @@ pub async fn spawn_process(
 ) -> Result<ProcessOutput, ProcessError> {
     let started = Instant::now();
     let mut spawned = start_process(file, args, &options, started)?;
+    let mut drop_guard = ProcessTreeDropGuard::new(spawned.pid);
     let (status, forced_failure) = wait_for_process(
         &mut spawned.child,
         spawned.pid,
@@ -130,6 +157,7 @@ pub async fn spawn_process(
         cancellation,
     )
     .await;
+    drop_guard.disarm();
 
     if status.is_none() {
         spawned.stdout_task.abort();
@@ -160,7 +188,7 @@ fn start_process(
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
-    command.kill_on_drop(false);
+    command.kill_on_drop(true);
     if let Some(cwd) = options.cwd.as_ref() {
         command.current_dir(cwd);
     }
@@ -481,6 +509,37 @@ fn configure_process_group(command: &mut Command) {
 fn configure_process_group(_command: &mut Command) {}
 
 #[cfg(windows)]
+fn terminate_process_tree_on_drop(pid: u32) {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    if pid == 0 {
+        return;
+    }
+    let mut command = std::process::Command::new("taskkill.exe");
+    command
+        .args(["/pid", &pid.to_string(), "/t", "/f"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW);
+    let _ = command.spawn();
+}
+
+#[cfg(unix)]
+fn terminate_process_tree_on_drop(pid: u32) {
+    use nix::{
+        sys::signal::{Signal, killpg},
+        unistd::Pid,
+    };
+    if let Ok(raw_pid) = i32::try_from(pid) {
+        let _ = killpg(Pid::from_raw(raw_pid), Signal::SIGKILL);
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
+fn terminate_process_tree_on_drop(_pid: u32) {}
+
+#[cfg(windows)]
 pub(crate) async fn terminate_process_tree(pid: u32) {
     if pid == 0 {
         return;
@@ -601,6 +660,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_spawn_future_terminates_the_child_process() {
+        let (file, args) = sleeping_command();
+        let (pid_tx, mut pid_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async move {
+            spawn_process(
+                file,
+                &args,
+                ProcessOptions {
+                    timeout: Some(Duration::from_secs(30)),
+                    pid_tx: Some(pid_tx),
+                    ..ProcessOptions::default()
+                },
+                CancellationToken::new(),
+            )
+            .await
+        });
+        let pid = tokio::time::timeout(Duration::from_secs(5), pid_rx.recv())
+            .await
+            .expect("pid timeout")
+            .expect("pid");
+        task.abort();
+        let _ = task.await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && process_is_alive(pid).await {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !process_is_alive(pid).await,
+            "dropped process future left PID {pid} alive"
+        );
+    }
+
+    #[tokio::test]
     async fn timeout_terminates_a_running_process_promptly() {
         let (file, args) = sleeping_command();
         let error = spawn_process(
@@ -643,5 +735,36 @@ mod tests {
         let summary = summarize_process_failure("tool", 9, "", &stderr);
         assert!(summary.chars().count() <= MAX_PROCESS_ERROR_MESSAGE_CHARS);
         assert!(summary.contains("error summary truncated"));
+    }
+
+    #[cfg(windows)]
+    async fn process_is_alive(pid: u32) -> bool {
+        let filter = format!("PID eq {pid}");
+        let Ok(output) = Command::new("tasklist.exe")
+            .args(["/fi", &filter, "/fo", "csv", "/nh"])
+            .output()
+            .await
+        else {
+            return false;
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout
+            .lines()
+            .filter_map(|line| line.split(',').nth(1))
+            .map(|value| value.trim().trim_matches('"'))
+            .any(|value| value == pid.to_string())
+    }
+
+    #[cfg(unix)]
+    async fn process_is_alive(pid: u32) -> bool {
+        use nix::{sys::signal::kill, unistd::Pid};
+        i32::try_from(pid)
+            .ok()
+            .is_some_and(|value| kill(Pid::from_raw(value), None).is_ok())
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    async fn process_is_alive(_pid: u32) -> bool {
+        false
     }
 }
