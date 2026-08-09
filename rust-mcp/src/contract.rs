@@ -46,6 +46,8 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "devbox_wait_for_file",
     "host_status",
     "windows_host_status",
+    "windows_host_read_large_file",
+    "windows_host_write_large_file",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

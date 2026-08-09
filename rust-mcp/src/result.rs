@@ -30,14 +30,27 @@ fn any_json_schema(_: &mut SchemaGenerator) -> Schema {
 
 impl ToolEnvelope {
     pub fn success(summary: impl Into<String>, data: Option<Value>) -> CallToolResult {
-        Self::into_result(false, summary.into(), data)
+        Self::into_result(false, summary.into(), data, None)
     }
 
     pub fn error(summary: impl Into<String>, data: Option<Value>) -> CallToolResult {
-        Self::into_result(true, summary.into(), data)
+        Self::into_result(true, summary.into(), data, None)
     }
 
-    fn into_result(is_error: bool, summary: String, data: Option<Value>) -> CallToolResult {
+    pub fn success_with_text(
+        summary: impl Into<String>,
+        data: Option<Value>,
+        text: impl Into<String>,
+    ) -> CallToolResult {
+        Self::into_result(false, summary.into(), data, Some(text.into()))
+    }
+
+    fn into_result(
+        is_error: bool,
+        summary: String,
+        data: Option<Value>,
+        explicit_text: Option<String>,
+    ) -> CallToolResult {
         let envelope = Self {
             ok: !is_error,
             summary: summary.clone(),
@@ -48,13 +61,13 @@ impl ToolEnvelope {
             truncated: Some(false),
         };
         let structured = serde_json::to_value(&envelope).expect("ToolEnvelope is serializable");
-        let text = match data {
+        let text = explicit_text.unwrap_or_else(|| match data {
             Some(value) => format!(
                 "{summary}\n\n{}",
                 serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
             ),
             None => summary,
-        };
+        });
         let mut result = if is_error {
             CallToolResult::error(vec![ContentBlock::text(text)])
         } else {

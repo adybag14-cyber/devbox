@@ -13,6 +13,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rmcp::{
     ServerHandler,
     handler::server::router::tool::ToolRouter,
@@ -28,11 +29,17 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
-use crate::{Config, RuntimeMode, contract::ParityReport, result::ToolEnvelope};
+use crate::{
+    Config, RuntimeMode,
+    contract::ParityReport,
+    files::{FileService, LargeReadResult, LargeWriteResult},
+    result::ToolEnvelope,
+};
 
 #[derive(Debug, Clone)]
 pub struct DevboxMcp {
     config: Arc<Config>,
+    files: Arc<FileService>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -41,6 +48,7 @@ impl DevboxMcp {
     pub fn new(config: Arc<Config>) -> Self {
         Self {
             config,
+            files: Arc::new(FileService::new()),
             tool_router: Self::tool_router(),
         }
     }
@@ -81,6 +89,55 @@ struct WaitForFileRequest {
     poll_ms: u64,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct HostLargeReadRequest {
+    #[schemars(description = "File path on the Windows host.")]
+    path: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Working directory used to resolve relative Windows host paths. Defaults to the configured host working directory."
+    )]
+    working_dir: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Starting byte offset within the file.")]
+    offset_bytes: u64,
+    #[serde(default = "default_large_read_bytes")]
+    #[schemars(description = "Maximum raw bytes to return from that offset.")]
+    max_bytes: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct HostLargeWriteRequest {
+    #[schemars(description = "File path on the Windows host.")]
+    path: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Working directory used to resolve relative Windows host paths. Defaults to the configured host working directory."
+    )]
+    working_dir: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional UTF-8 text payload to write. Provide either content or content_base64."
+    )]
+    content: Option<String>,
+    #[serde(default)]
+    #[schemars(
+        description = "Base64-encoded raw bytes to write exactly as provided. Provide either content or content_base64."
+    )]
+    content_base64: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Append to the file instead of overwriting it.")]
+    append: bool,
+    #[serde(default = "default_true")]
+    #[schemars(description = "Create parent directories if they do not exist.")]
+    create_dirs: bool,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional expected SHA-256 of the decoded payload for end-to-end verification."
+    )]
+    expected_sha256: Option<String>,
+}
+
 const fn default_true() -> bool {
     true
 }
@@ -89,6 +146,9 @@ const fn default_wait_timeout() -> f64 {
 }
 const fn default_poll_ms() -> u64 {
     250
+}
+const fn default_large_read_bytes() -> usize {
+    262_144
 }
 
 #[tool_router(router = tool_router)]
@@ -182,6 +242,121 @@ impl DevboxMcp {
                 ToolEnvelope::success(summary, Some(data))
             }
             Err(message) => ToolEnvelope::error(message, None),
+        }
+    }
+
+    #[tool(
+        name = "windows_host_read_large_file",
+        description = "Read an exact byte range from a Windows host file without lossy UTF-8 conversion.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn windows_host_read_large_file(
+        &self,
+        Parameters(request): Parameters<HostLargeReadRequest>,
+    ) -> CallToolResult {
+        if !self.config.host_exec_enabled {
+            return ToolEnvelope::error("Windows host execution is disabled.", None);
+        }
+        if request.max_bytes == 0 || request.max_bytes > self.config.max_mcp_transfer_chars {
+            return ToolEnvelope::error(
+                format!(
+                    "max_bytes must be between 1 and {}",
+                    self.config.max_mcp_transfer_chars
+                ),
+                None,
+            );
+        }
+        let path = match resolve_host_file_path(
+            &request.path,
+            request.working_dir.as_deref(),
+            &self.config.host_default_workdir,
+        ) {
+            Ok(path) => path,
+            Err(message) => return ToolEnvelope::error(message, None),
+        };
+        match self
+            .files
+            .read_large(&path, request.offset_bytes, request.max_bytes)
+            .await
+        {
+            Ok(data) => {
+                let summary = format!(
+                    "Read {} from byte {} on the Windows host.",
+                    request.path, request.offset_bytes
+                );
+                let text = large_read_text(&summary, &data);
+                ToolEnvelope::success_with_text(summary, serde_json::to_value(data).ok(), text)
+            }
+            Err(error) => ToolEnvelope::error(
+                format!(
+                    "Failed to read {} from byte {} on the Windows host: {error}",
+                    request.path, request.offset_bytes
+                ),
+                None,
+            ),
+        }
+    }
+
+    #[tool(
+        name = "windows_host_write_large_file",
+        description = "Create, overwrite, or append exact bytes to a Windows host file with post-write verification.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn windows_host_write_large_file(
+        &self,
+        Parameters(request): Parameters<HostLargeWriteRequest>,
+    ) -> CallToolResult {
+        if !self.config.host_exec_enabled {
+            return ToolEnvelope::error("Windows host execution is disabled.", None);
+        }
+        let content_base64 = match normalize_large_write_payload(
+            request.content.as_deref(),
+            request.content_base64.as_deref(),
+        ) {
+            Ok(value) => value,
+            Err(message) => return ToolEnvelope::error(message, None),
+        };
+        let path = match resolve_host_file_path(
+            &request.path,
+            request.working_dir.as_deref(),
+            &self.config.host_default_workdir,
+        ) {
+            Ok(path) => path,
+            Err(message) => return ToolEnvelope::error(message, None),
+        };
+        match self
+            .files
+            .write_large(
+                &path,
+                &content_base64,
+                request.append,
+                request.create_dirs,
+                request.expected_sha256.as_deref(),
+            )
+            .await
+        {
+            Ok(data) => {
+                let summary = if request.append {
+                    format!(
+                        "Appended large payload to {} on the Windows host and verified the exact bytes.",
+                        request.path
+                    )
+                } else {
+                    format!(
+                        "Wrote large payload to {} on the Windows host and verified the exact bytes.",
+                        request.path
+                    )
+                };
+                let text = large_write_text(&summary, &data);
+                ToolEnvelope::success_with_text(summary, serde_json::to_value(data).ok(), text)
+            }
+            Err(error) => ToolEnvelope::error(
+                format!(
+                    "Failed to write large payload to {} on the Windows host: {error}",
+                    request.path
+                ),
+                None,
+            ),
         }
     }
 
@@ -322,6 +497,90 @@ async fn root_metadata(State(state): State<HttpState>, headers: HeaderMap) -> im
         },
     });
     (StatusCode::OK, Json(body))
+}
+
+fn resolve_host_file_path(
+    requested: &str,
+    working_dir: Option<&str>,
+    default_working_dir: &std::path::Path,
+) -> Result<PathBuf, String> {
+    let raw = requested.trim();
+    if raw.is_empty() {
+        return Err("path must not be empty".to_owned());
+    }
+    if raw.contains("://") || raw.starts_with('$') {
+        return Err(format!(
+            "Could not resolve a Windows host path from \"{requested}\"."
+        ));
+    }
+    let base = working_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(|| default_working_dir.to_path_buf(), PathBuf::from);
+    let path = if let Some(rest) = raw.strip_prefix('~') {
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .ok_or_else(|| "Could not resolve the host home directory.".to_owned())?;
+        home.join(rest.trim_start_matches(['/', '\\']))
+    } else {
+        PathBuf::from(raw)
+    };
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        base.join(path)
+    })
+}
+
+fn normalize_large_write_payload(
+    content: Option<&str>,
+    content_base64: Option<&str>,
+) -> Result<String, String> {
+    match (content, content_base64) {
+        (Some(_), Some(_)) => Err("Provide either content or content_base64, not both.".to_owned()),
+        (None, None) => Err("Either content or content_base64 is required.".to_owned()),
+        (Some(text), None) => Ok(STANDARD.encode(text.as_bytes())),
+        (None, Some(encoded)) => Ok(encoded.to_owned()),
+    }
+}
+
+fn large_read_text(summary: &str, data: &LargeReadResult) -> String {
+    let metadata = json!({
+        "path": data.path,
+        "file_size": data.file_size,
+        "offset_bytes_requested": data.offset_bytes_requested,
+        "offset_bytes": data.offset_bytes,
+        "bytes_requested": data.bytes_requested,
+        "bytes_returned": data.bytes_returned,
+        "next_offset_bytes": data.next_offset_bytes,
+        "eof": data.eof,
+        "content_sha256": data.content_sha256,
+        "content_base64_chars": data.content_base64.len(),
+    });
+    format!(
+        "{summary}\n\n{}",
+        serde_json::to_string_pretty(&metadata).unwrap_or_else(|_| metadata.to_string())
+    )
+}
+
+fn large_write_text(summary: &str, data: &LargeWriteResult) -> String {
+    let metadata = json!({
+        "path": data.path,
+        "append": data.append,
+        "previous_file_size": data.previous_file_size,
+        "final_file_size": data.final_file_size,
+        "bytes_written": data.bytes_written,
+        "content_sha256": data.content_sha256,
+        "verification_mode": data.verification_mode,
+        "verified": data.verified,
+        "expected_sha256_verified": data.expected_sha256_verified,
+        "target_existed": data.target_existed,
+    });
+    format!(
+        "{summary}\n\n{}",
+        serde_json::to_string_pretty(&metadata).unwrap_or_else(|_| metadata.to_string())
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -466,6 +725,59 @@ fn path_state_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn host_large_file_tools_keep_base64_out_of_text_content() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(Config {
+            project_root: temp.path().to_path_buf(),
+            host: "127.0.0.1".to_owned(),
+            port: 0,
+            auth_mode: crate::AuthMode::None,
+            runtime_mode: RuntimeMode::Host,
+            platform: crate::Platform::detect(),
+            public_base_url: None,
+            host_workspace_path: temp.path().to_path_buf(),
+            devbox_workspace_path: temp.path().to_path_buf(),
+            host_default_workdir: temp.path().to_path_buf(),
+            host_shell: "unused".to_owned(),
+            host_exec_enabled: true,
+            max_wait_seconds: 85.0,
+            max_mcp_transfer_chars: 4_000_000,
+        });
+        let server = DevboxMcp::new(config);
+        let write = server
+            .windows_host_write_large_file(Parameters(HostLargeWriteRequest {
+                path: "fixture.bin".to_owned(),
+                working_dir: None,
+                content: Some("alpha".to_owned()),
+                content_base64: None,
+                append: false,
+                create_dirs: true,
+                expected_sha256: None,
+            }))
+            .await;
+        assert!(!write.is_error.unwrap_or(false));
+
+        let read = server
+            .windows_host_read_large_file(Parameters(HostLargeReadRequest {
+                path: "fixture.bin".to_owned(),
+                working_dir: None,
+                offset_bytes: 0,
+                max_bytes: 262_144,
+            }))
+            .await;
+        assert!(!read.is_error.unwrap_or(false));
+        let structured = read.structured_content.expect("structured content");
+        assert_eq!(structured["data"]["content_base64"], "YWxwaGE=");
+        let text = read.content[0]
+            .as_text()
+            .expect("text content")
+            .text
+            .clone();
+        assert!(!text.contains("YWxwaGE="));
+        assert!(text.contains("content_base64_chars"));
+    }
 
     #[tokio::test]
     async fn file_wait_observes_creation_without_a_subprocess() {

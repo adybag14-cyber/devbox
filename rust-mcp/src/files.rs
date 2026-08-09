@@ -205,9 +205,16 @@ impl FileService {
         create_dirs: bool,
         expected_sha256: Option<&str>,
     ) -> Result<LargeWriteResult> {
+        let normalized_base64 = content_base64
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
         let payload = STANDARD
-            .decode(content_base64)
+            .decode(&normalized_base64)
             .context("content_base64 is not valid base64")?;
+        if STANDARD.encode(&payload) != normalized_base64 {
+            bail!("content_base64 is not canonical base64");
+        }
         let content_sha256 = sha256_bytes(&payload);
         let expected = normalize_expected_sha256(expected_sha256)?;
         if let Some(value) = expected.as_deref()
@@ -557,6 +564,24 @@ mod tests {
         assert!(append.verified);
         assert_eq!(append.verification_mode, "suffix-bytes");
         assert_eq!(fs::read(&path).await.unwrap(), b"alpha-beta");
+    }
+
+    #[tokio::test]
+    async fn exact_write_accepts_whitespace_but_rejects_noncanonical_base64() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("base64.bin");
+        let files = FileService::new();
+        files
+            .write_large(&path, "YWxw\naGE=", false, true, None)
+            .await
+            .expect("whitespace is normalized like the JS implementation");
+        assert_eq!(fs::read(&path).await.unwrap(), b"alpha");
+
+        let error = files
+            .write_large(&path, "YWxwaGE", false, true, None)
+            .await
+            .expect_err("missing padding is noncanonical");
+        assert!(error.to_string().contains("base64"));
     }
 
     #[tokio::test]

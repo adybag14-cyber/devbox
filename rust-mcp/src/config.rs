@@ -130,6 +130,7 @@ pub struct Config {
     pub host_shell: String,
     pub host_exec_enabled: bool,
     pub max_wait_seconds: f64,
+    pub max_mcp_transfer_chars: usize,
 }
 
 impl Config {
@@ -184,6 +185,7 @@ impl Config {
             host_shell,
             host_exec_enabled: parse_bool_env("ENABLE_HOST_EXEC", true),
             max_wait_seconds: f64::from(parse_env("MCP_WAIT_MAX_SECONDS", 300_u16)),
+            max_mcp_transfer_chars: parse_transfer_limit(),
         })
     }
 
@@ -263,6 +265,22 @@ where
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(fallback)
+}
+
+fn parse_transfer_limit() -> usize {
+    let raw = env::var("MAX_MCP_TRANSFER_CHARS").unwrap_or_default();
+    let normalized = raw.trim().to_ascii_lowercase();
+    if matches!(
+        normalized.as_str(),
+        "0" | "-1" | "none" | "off" | "disabled" | "unlimited" | "infinite" | "infinity"
+    ) {
+        return usize::MAX;
+    }
+    normalized
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .unwrap_or(4_000_000)
 }
 
 fn parse_bool_env(name: &str, fallback: bool) -> bool {
