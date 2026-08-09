@@ -2155,7 +2155,7 @@ impl DevboxMcp {
                 "powerShellFallbackEnabled": !self.config.power_shell_fallback_exe.is_empty()
                     && self.config.power_shell_fallback_exe != self.config.power_shell_exe,
                 "windowsHostExecDefaultsToAdmin": self.config.platform.is_windows,
-                "allowWindowsHostExecUac": env_flag_enabled("ALLOW_WINDOWS_HOST_EXEC_UAC"),
+                "allowWindowsHostExecUac": self.config.allow_windows_host_exec_uac,
             })),
         )
     }
@@ -2187,6 +2187,16 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
     let warm_cancellation = cancellation.child_token();
     tokio::spawn(async move {
         let _ = warm_runtime.get_versions(false, warm_cancellation).await;
+    });
+    let warm_host_runtime = handler.runtime.clone();
+    let warm_host_cancellation = cancellation.child_token();
+    tokio::spawn(async move {
+        if let Err(error) = warm_host_runtime
+            .warm_host_execution_state(warm_host_cancellation)
+            .await
+        {
+            tracing::warn!(%error, "Failed to warm Rust host execution state");
+        }
     });
     let maintenance_store = handler.jobs.store().clone();
     let maintenance_cancellation = cancellation.child_token();
@@ -2274,15 +2284,6 @@ pub async fn serve(config: Arc<Config>, cancellation: CancellationToken) -> Resu
         }
     });
     Ok(local)
-}
-
-fn env_flag_enabled(name: &str) -> bool {
-    std::env::var(name).ok().is_some_and(|value| {
-        matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes" | "on"
-        )
-    })
 }
 
 fn resolved_program_path(program: &str, windows: bool) -> String {
@@ -2490,6 +2491,27 @@ fn render_shell_result(
                 truncated,
             )
         }
+        Err(error @ RuntimeExecError::WindowsElevationRequired) => ToolEnvelope::process_error(
+            error.to_string(),
+            Some(json!({
+                "read_only": context.read_only,
+                "execution": execution,
+                "bridge_diagnostics": {
+                    "suspected_elevation_gap": true,
+                    "windows_host_exec_defaults_to_admin": true,
+                    "allow_windows_host_exec_uac": false,
+                    "hints": [
+                        "Keep MCP started only by elevated Guardian / ChatGptDevboxMcp-ElevatedStart (RunLevel Highest).",
+                        "Do not start MCP from a normal (non-admin) terminal if you want silent elevated host_exec.",
+                        "Set ALLOW_WINDOWS_HOST_EXEC_UAC=true only if you intentionally want per-command UAC prompts."
+                    ]
+                }
+            })),
+            "",
+            "",
+            Some(740),
+            false,
+        ),
         Err(RuntimeExecError::Process(error)) => {
             let stdout =
                 shape_process_output(&error.stdout, mode, context.max_chars, context.max_lines);
@@ -2855,6 +2877,7 @@ mod tests {
             host_program_allowlist: vec!["node".to_owned()],
             devbox_program_allowlist: vec!["node".to_owned()],
             host_exec_enabled: true,
+            allow_windows_host_exec_uac: false,
             execution_slot_root: temp.path().join("execution-slots"),
             jobs_root: temp.path().join("jobs"),
             mcp_performance_state_path: temp.path().join("mcp-performance.json"),
@@ -2907,6 +2930,53 @@ mod tests {
             .clone();
         assert!(!text.contains("YWxwaGE="));
         assert!(text.contains("content_base64_chars"));
+    }
+
+    #[test]
+    fn windows_elevation_refusal_renders_exit_740_and_bridge_diagnostics() {
+        let context = ShellRenderContext {
+            read_only: false,
+            output_mode: "tail".to_owned(),
+            max_chars: 2_000,
+            max_lines: 0,
+            queue_wait_ms: 7,
+            slot: Some(2),
+            slots: vec![2],
+            pool: "execution".to_owned(),
+            weight: 1,
+        };
+        let result = render_shell_result(
+            "Windows host",
+            &context,
+            Err(RuntimeExecError::WindowsElevationRequired),
+        );
+        assert!(result.is_error.unwrap_or(false));
+        let structured = result.structured_content.expect("structured content");
+        assert_eq!(structured["exitCode"], 740);
+        assert_eq!(
+            structured["data"]["bridge_diagnostics"]["suspected_elevation_gap"],
+            true
+        );
+        assert_eq!(
+            structured["data"]["bridge_diagnostics"]["windows_host_exec_defaults_to_admin"],
+            true
+        );
+        assert_eq!(
+            structured["data"]["bridge_diagnostics"]["allow_windows_host_exec_uac"],
+            false
+        );
+        assert_eq!(structured["data"]["execution"]["queue_wait_ms"], 7);
+        assert_eq!(
+            structured["data"]["bridge_diagnostics"]["hints"]
+                .as_array()
+                .map(Vec::len),
+            Some(3)
+        );
+        assert!(
+            structured["summary"]
+                .as_str()
+                .is_some_and(|value| value.contains("medium-integrity"))
+        );
     }
 
     #[tokio::test]

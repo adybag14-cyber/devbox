@@ -4,7 +4,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, "..", "..");
@@ -17,6 +17,28 @@ const binaryPath = path.join(
 );
 const smokeClientPath = path.join(scriptDir, "smoke-client.mjs");
 const maxLogChars = 32_000;
+
+const detectWindowsAdmin = () => {
+  if (process.platform !== "win32") return null;
+  const command = "[Console]::Out.Write(([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator).ToString().ToLowerInvariant())";
+  const candidates = [
+    process.env.POWERSHELL_EXE,
+    "pwsh.exe",
+    "powershell.exe",
+  ].filter(Boolean);
+  for (const executable of [...new Set(candidates)]) {
+    const result = spawnSync(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 15_000,
+    });
+    if (result.status === 0) {
+      const value = (result.stdout || "").trim().toLowerCase();
+      if (value === "true" || value === "false") return value === "true";
+    }
+  }
+  throw new Error("Unable to determine Windows administrator state for Rust MCP smoke.");
+};
 
 const appendTail = (current, chunk) => {
   const combined = `${current}${chunk}`;
@@ -75,6 +97,7 @@ await access(binaryPath);
 const port = await reserveLoopbackPort();
 const baseUrl = new URL(`http://127.0.0.1:${port}/`);
 const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "devbox-rust-mcp-runtime-"));
+const windowsAdmin = detectWindowsAdmin();
 const serverEnv = {
   ...process.env,
   DEVBOX_PROJECT_ROOT: runtimeDir,
@@ -112,6 +135,7 @@ try {
     ...process.env,
     RUST_MCP_URL: baseUrl.toString(),
     RUST_MCP_STATE_ROOT: runtimeDir,
+    RUST_MCP_EXPECT_WINDOWS_ADMIN: windowsAdmin === null ? "" : windowsAdmin ? "1" : "0",
   });
 } catch (error) {
   if (stdout.trim()) console.error(`\n--- Rust MCP stdout ---\n${stdout}`);

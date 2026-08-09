@@ -1,3 +1,6 @@
+#[cfg(windows)]
+mod windows_host_shell;
+
 use std::{
     path::PathBuf,
     sync::Arc,
@@ -5,7 +8,7 @@ use std::{
 };
 
 use futures::future::join_all;
-use tokio::sync::{Mutex, mpsc::UnboundedSender};
+use tokio::sync::{Mutex, OnceCell, mpsc::UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -48,6 +51,8 @@ pub enum RuntimeExecError {
         program: String,
         allowlist: Vec<String>,
     },
+    WindowsElevationRequired,
+    WindowsAdminProbe(String),
     Process(ProcessError),
 }
 
@@ -65,6 +70,10 @@ impl std::fmt::Display for RuntimeExecError {
                 "Program \"{program}\" is not in HOST_PROGRAM_ALLOWLIST: {}",
                 allowlist.join(", ")
             ),
+            Self::WindowsElevationRequired => formatter.write_str(
+                "Windows host PowerShell requires the Devbox MCP process to already be elevated. This MCP process is medium-integrity, so host_exec refused to call Start-Process -Verb RunAs (that would spam UAC). Guardian treats unelevated MCP as unhealthy and restarts it via the Highest scheduled-task path. Retry after repair.",
+            ),
+            Self::WindowsAdminProbe(message) => formatter.write_str(message),
             Self::Process(error) => std::fmt::Display::fmt(error, formatter),
         }
     }
@@ -95,6 +104,7 @@ struct VersionCacheEntry {
 pub struct RuntimeExecutor {
     config: Arc<Config>,
     versions_cache: Arc<Mutex<Option<VersionCacheEntry>>>,
+    windows_admin_state: Arc<OnceCell<bool>>,
 }
 
 impl RuntimeExecutor {
@@ -103,12 +113,35 @@ impl RuntimeExecutor {
         Self {
             config,
             versions_cache: Arc::new(Mutex::new(None)),
+            windows_admin_state: Arc::new(OnceCell::new()),
         }
     }
 
     #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Warm and return the cached Windows administrator state used by host shell execution.
+    ///
+    /// # Errors
+    /// Returns `PowerShell` launch or parse failures while probing the current process identity.
+    pub async fn warm_host_execution_state(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<Option<bool>, RuntimeExecError> {
+        if !self.config.host_exec_enabled || !self.config.platform.is_windows {
+            return Ok(None);
+        }
+        #[cfg(windows)]
+        {
+            return self.windows_admin_state(cancellation).await.map(Some);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = cancellation;
+            Ok(None)
+        }
     }
 
     /// Read cached toolchain versions from the selected runtime, refreshing at the JS-configured TTL.
@@ -389,26 +422,33 @@ impl RuntimeExecutor {
         if !self.config.host_exec_enabled {
             return Err(RuntimeExecError::HostExecDisabled);
         }
-        let args = host_shell_args(
-            &self.config.host_shell,
-            &request.command,
-            self.config.platform.is_windows,
-        );
-        spawn_process(
-            &self.config.host_shell,
-            &args,
-            ProcessOptions {
-                cwd: Some(request.working_dir),
-                timeout: Some(request.timeout),
-                max_capture_chars: request.max_capture_chars,
-                output_tx: request.output_tx,
-                pid_tx: request.pid_tx,
-                ..ProcessOptions::default()
-            },
-            cancellation,
-        )
-        .await
-        .map_err(Into::into)
+        #[cfg(windows)]
+        {
+            return self.run_windows_host_shell(request, cancellation).await;
+        }
+        #[cfg(not(windows))]
+        {
+            let args = host_shell_args(
+                &self.config.host_shell,
+                &request.command,
+                self.config.platform.is_windows,
+            );
+            spawn_process(
+                &self.config.host_shell,
+                &args,
+                ProcessOptions {
+                    cwd: Some(request.working_dir),
+                    timeout: Some(request.timeout),
+                    max_capture_chars: request.max_capture_chars,
+                    output_tx: request.output_tx,
+                    pid_tx: request.pid_tx,
+                    ..ProcessOptions::default()
+                },
+                cancellation,
+            )
+            .await
+            .map_err(Into::into)
+        }
     }
 
     async fn run_docker_shell(
@@ -456,6 +496,7 @@ pub fn normalize_program(program: &str) -> String {
         .to_owned()
 }
 
+#[cfg(any(not(windows), test))]
 fn host_shell_args(shell: &str, command: &str, is_windows: bool) -> Vec<String> {
     let name = normalize_program(shell);
     if is_windows && matches!(name.as_str(), "powershell" | "pwsh") {
@@ -522,6 +563,7 @@ mod tests {
             host_program_allowlist: vec!["rustc".to_owned()],
             devbox_program_allowlist: vec!["rustc".to_owned()],
             host_exec_enabled: true,
+            allow_windows_host_exec_uac: false,
             execution_slot_root: root.join("execution-slots"),
             jobs_root: root.join("jobs"),
             mcp_performance_state_path: root.join("mcp-performance.json"),

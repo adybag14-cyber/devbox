@@ -571,6 +571,7 @@ mod tests {
             host_program_allowlist: vec![],
             devbox_program_allowlist: vec![],
             host_exec_enabled: true,
+            allow_windows_host_exec_uac: false,
             execution_slot_root: root.join("slots"),
             jobs_root: root.join("jobs"),
             mcp_performance_state_path: root.join("mcp-performance.json"),

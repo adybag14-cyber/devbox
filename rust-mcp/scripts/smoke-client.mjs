@@ -7,6 +7,25 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const baseUrl = new URL(process.env.RUST_MCP_URL || "http://127.0.0.1:18182/");
+const expectedWindowsAdmin = process.platform === "win32"
+  ? process.env.RUST_MCP_EXPECT_WINDOWS_ADMIN === "1"
+  : null;
+
+const assertShellResult = (result, { readOnly } = {}) => {
+  if (process.platform === "win32" && !expectedWindowsAdmin) {
+    assert.equal(result.isError, true);
+    assert.equal(result.structuredContent?.exitCode, 740);
+    assert.equal(result.structuredContent?.data?.bridge_diagnostics?.suspected_elevation_gap, true);
+    assert.equal(result.structuredContent?.data?.bridge_diagnostics?.windows_host_exec_defaults_to_admin, true);
+    assert.equal(result.structuredContent?.data?.bridge_diagnostics?.allow_windows_host_exec_uac, false);
+    assert.equal(result.structuredContent?.data?.bridge_diagnostics?.hints?.length, 3);
+    return;
+  }
+  assert.equal(result.isError, false);
+  assert.match(result.structuredContent?.stdout || "", /^git version /);
+  if (readOnly !== undefined) assert.equal(result.structuredContent?.data?.read_only, readOnly);
+  assert.equal(result.structuredContent?.data?.execution?.pool, "execution");
+};
 
 
 const healthResponse = await fetch(new URL("healthz", baseUrl));
@@ -196,9 +215,7 @@ try {
         max_output_chars: 2_000,
       },
     });
-    assert.equal(shell.isError, false);
-    assert.match(shell.structuredContent?.stdout || "", /^git version /);
-    assert.equal(shell.structuredContent?.data?.read_only, readOnly);
+    assertShellResult(shell, { readOnly });
   }
 
   for (const toolName of ["host_exec", "windows_host_exec"]) {
@@ -206,9 +223,19 @@ try {
       name: toolName,
       arguments: { command: "git --version", max_output_chars: 2_000 },
     });
-    assert.equal(hostShell.isError, false);
-    assert.match(hostShell.structuredContent?.stdout || "", /^git version /);
-    assert.equal(hostShell.structuredContent?.data?.execution?.pool, "execution");
+    assertShellResult(hostShell);
+  }
+
+  if (process.platform === "win32" && expectedWindowsAdmin) {
+    const largePowerShell = await client.callTool({
+      name: "host_exec",
+      arguments: {
+        command: `${"#"}${"x".repeat(20_000)}\nWrite-Output 'large-powershell-ok'`,
+        max_output_chars: 2_000,
+      },
+    });
+    assert.equal(largePowerShell.isError, false);
+    assert.match(largePowerShell.structuredContent?.stdout || "", /large-powershell-ok/);
   }
 
   for (const toolName of ["host_run_program", "windows_host_run_program"]) {

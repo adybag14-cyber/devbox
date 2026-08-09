@@ -26,6 +26,7 @@ pub use server::{DevboxMcp, build_router};
 
 #[cfg(windows)]
 pub mod windows_capture;
+pub mod windows_shell;
 
 #[cfg(any(not(windows), test))]
 pub mod posix_capture;
