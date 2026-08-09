@@ -62,6 +62,10 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "devbox_write_file",
     "devbox_write_large_file",
     "devbox_search_files",
+    "host_exec",
+    "windows_host_exec",
+    "host_run_program",
+    "windows_host_run_program",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

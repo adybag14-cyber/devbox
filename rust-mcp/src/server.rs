@@ -295,6 +295,38 @@ struct RunShellRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct HostShellToolRequest {
+    command: String,
+    #[serde(default)]
+    working_dir: String,
+    #[serde(default = "default_sync_timeout")]
+    timeout_seconds: u64,
+    #[serde(default = "default_output_mode")]
+    output_mode: String,
+    #[serde(default = "default_output_chars")]
+    max_output_chars: usize,
+    #[serde(default)]
+    max_output_lines: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct HostProgramToolRequest {
+    program: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    working_dir: String,
+    #[serde(default = "default_sync_timeout")]
+    timeout_seconds: u64,
+    #[serde(default = "default_output_mode")]
+    output_mode: String,
+    #[serde(default = "default_output_chars")]
+    max_output_chars: usize,
+    #[serde(default)]
+    max_output_lines: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct StartShellRequest {
     #[schemars(description = "Shell command to run as a detached Devbox job.")]
     command: String,
@@ -544,6 +576,151 @@ impl DevboxMcp {
             &self.config.runtime_label(),
             &ShellRenderContext {
                 read_only,
+                output_mode: request.output_mode,
+                max_chars: request.max_output_chars,
+                max_lines: request.max_output_lines,
+                queue_wait_ms: lease.queue_wait_ms,
+                slot: lease.slot,
+                slots: lease.slots.clone(),
+                pool: lease.pool.clone(),
+                weight: lease.weight,
+            },
+            result,
+        )
+    }
+
+    async fn run_host_shell_internal(
+        &self,
+        request: HostShellToolRequest,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if !self.config.host_exec_enabled {
+            return ToolEnvelope::error("Host execution is disabled.", None);
+        }
+        if request.command.trim().is_empty() {
+            return ToolEnvelope::error("command must not be empty", None);
+        }
+        if !(1..=90).contains(&request.timeout_seconds) {
+            return ToolEnvelope::error("timeout_seconds must be between 1 and 90", None);
+        }
+        if request.max_output_chars < 100
+            || request.max_output_chars > self.config.max_mcp_transfer_chars
+            || request.max_output_lines > 10_000
+        {
+            return ToolEnvelope::error("Invalid host output bounds.", None);
+        }
+        let mut acquire = AcquireRequest::interactive("host_exec");
+        acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
+        let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
+            Ok(lease) => lease,
+            Err(error) => return ToolEnvelope::error(error.to_string(), None),
+        };
+        let working_dir = if request.working_dir.trim().is_empty() {
+            self.config.host_default_workdir.clone()
+        } else {
+            PathBuf::from(request.working_dir.trim())
+        };
+        let result = self
+            .runtime
+            .run_host_shell_only(
+                ShellRequest {
+                    command: request.command,
+                    working_dir,
+                    timeout: Duration::from_secs(request.timeout_seconds.saturating_add(5)),
+                    user: String::new(),
+                    max_capture_chars: Some(self.config.max_mcp_transfer_chars),
+                    output_tx: None,
+                    pid_tx: None,
+                },
+                cancellation,
+            )
+            .await;
+        if let Err(error) = lease.release().await {
+            return ToolEnvelope::error(
+                format!(
+                    "Host command completed but its execution slot could not be released: {error}"
+                ),
+                None,
+            );
+        }
+        render_shell_result(
+            &format!("{} host", self.config.platform.display_name),
+            &ShellRenderContext {
+                read_only: false,
+                output_mode: request.output_mode,
+                max_chars: request.max_output_chars,
+                max_lines: request.max_output_lines,
+                queue_wait_ms: lease.queue_wait_ms,
+                slot: lease.slot,
+                slots: lease.slots.clone(),
+                pool: lease.pool.clone(),
+                weight: lease.weight,
+            },
+            result,
+        )
+    }
+
+    async fn run_host_program_internal(
+        &self,
+        request: HostProgramToolRequest,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if !self.config.host_exec_enabled {
+            return ToolEnvelope::error("Host execution is disabled.", None);
+        }
+        if request.program.trim().is_empty() {
+            return ToolEnvelope::error("program must not be empty", None);
+        }
+        if !(1..=90).contains(&request.timeout_seconds) {
+            return ToolEnvelope::error("timeout_seconds must be between 1 and 90", None);
+        }
+        if request.max_output_chars < 100
+            || request.max_output_chars > self.config.max_mcp_transfer_chars
+            || request.max_output_lines > 10_000
+        {
+            return ToolEnvelope::error("Invalid host output bounds.", None);
+        }
+        let mut acquire =
+            AcquireRequest::interactive(format!("host_run_program:{}", request.program.trim()));
+        acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
+        let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
+            Ok(lease) => lease,
+            Err(error) => return ToolEnvelope::error(error.to_string(), None),
+        };
+        let working_dir = if request.working_dir.trim().is_empty() {
+            self.config.host_default_workdir.clone()
+        } else {
+            PathBuf::from(request.working_dir.trim())
+        };
+        let result = self
+            .runtime
+            .run_host_program_only(
+                ProgramRequest {
+                    program: request.program.trim().to_owned(),
+                    args: request.args,
+                    input: None,
+                    working_dir,
+                    timeout: Duration::from_secs(request.timeout_seconds.saturating_add(5)),
+                    user: String::new(),
+                    max_capture_chars: Some(self.config.max_mcp_transfer_chars),
+                    output_tx: None,
+                    pid_tx: None,
+                },
+                cancellation,
+            )
+            .await;
+        if let Err(error) = lease.release().await {
+            return ToolEnvelope::error(
+                format!(
+                    "Host program completed but its execution slot could not be released: {error}"
+                ),
+                None,
+            );
+        }
+        render_program_result(
+            &format!("{} host", self.config.platform.display_name),
+            &ProgramRenderContext {
+                program: request.program,
                 output_mode: request.output_mode,
                 max_chars: request.max_output_chars,
                 max_lines: request.max_output_lines,
@@ -1422,6 +1599,58 @@ impl DevboxMcp {
                 None,
             ),
         }
+    }
+
+    #[tool(
+        name = "host_exec",
+        description = "Run a native host shell command. Prefer host_run_program when shell parsing is unnecessary.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn host_exec(
+        &self,
+        Parameters(request): Parameters<HostShellToolRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.run_host_shell_internal(request, cancellation).await
+    }
+
+    #[tool(
+        name = "windows_host_exec",
+        description = "Compatibility alias for host_exec.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn windows_host_exec(
+        &self,
+        Parameters(request): Parameters<HostShellToolRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.run_host_shell_internal(request, cancellation).await
+    }
+
+    #[tool(
+        name = "host_run_program",
+        description = "Run one HOST_PROGRAM_ALLOWLIST executable directly on the native host without shell parsing.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn host_run_program(
+        &self,
+        Parameters(request): Parameters<HostProgramToolRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.run_host_program_internal(request, cancellation).await
+    }
+
+    #[tool(
+        name = "windows_host_run_program",
+        description = "Compatibility alias for host_run_program.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn windows_host_run_program(
+        &self,
+        Parameters(request): Parameters<HostProgramToolRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.run_host_program_internal(request, cancellation).await
     }
 
     #[tool(

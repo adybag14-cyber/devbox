@@ -43,6 +43,10 @@ for (const requiredTool of [
   "devbox_write_file",
   "devbox_write_large_file",
   "devbox_search_files",
+  "host_exec",
+  "windows_host_exec",
+  "host_run_program",
+  "windows_host_run_program",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -84,6 +88,26 @@ try {
     assert.equal(shell.isError, false);
     assert.match(shell.structuredContent?.stdout || "", /^git version /);
     assert.equal(shell.structuredContent?.data?.read_only, readOnly);
+  }
+
+  for (const toolName of ["host_exec", "windows_host_exec"]) {
+    const hostShell = await client.callTool({
+      name: toolName,
+      arguments: { command: "git --version", max_output_chars: 2_000 },
+    });
+    assert.equal(hostShell.isError, false);
+    assert.match(hostShell.structuredContent?.stdout || "", /^git version /);
+    assert.equal(hostShell.structuredContent?.data?.execution?.pool, "execution");
+  }
+
+  for (const toolName of ["host_run_program", "windows_host_run_program"]) {
+    const hostProgram = await client.callTool({
+      name: toolName,
+      arguments: { program: "git", args: ["--version"], max_output_chars: 2_000 },
+    });
+    assert.equal(hostProgram.isError, false);
+    assert.match(hostProgram.structuredContent?.stdout || "", /^git version /);
+    assert.equal(hostProgram.structuredContent?.data?.execution?.pool, "execution");
   }
 
   const shellStarted = await client.callTool({

@@ -39,6 +39,10 @@ pub enum RuntimeExecError {
         program: String,
         allowlist: Vec<String>,
     },
+    HostProgramNotAllowed {
+        program: String,
+        allowlist: Vec<String>,
+    },
     Process(ProcessError),
 }
 
@@ -49,6 +53,11 @@ impl std::fmt::Display for RuntimeExecError {
             Self::ProgramNotAllowed { program, allowlist } => write!(
                 formatter,
                 "Program \"{program}\" is not in DEVBOX_PROGRAM_ALLOWLIST: {}",
+                allowlist.join(", ")
+            ),
+            Self::HostProgramNotAllowed { program, allowlist } => write!(
+                formatter,
+                "Program \"{program}\" is not in HOST_PROGRAM_ALLOWLIST: {}",
                 allowlist.join(", ")
             ),
             Self::Process(error) => std::fmt::Display::fmt(error, formatter),
@@ -109,6 +118,27 @@ impl RuntimeExecutor {
             RuntimeMode::Host => self.run_host_program(request, cancellation).await,
             RuntimeMode::Docker => self.run_docker_program(request, cancellation).await,
         }
+    }
+
+    /// Run one allowlisted executable directly on the host regardless of the selected Devbox runtime.
+    ///
+    /// # Errors
+    /// Returns an error when host execution is disabled, the program is outside
+    /// `HOST_PROGRAM_ALLOWLIST`, or the child process fails.
+    pub async fn run_host_program_only(
+        &self,
+        mut request: ProgramRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ProcessOutput, RuntimeExecError> {
+        let normalized = normalize_program(&request.program);
+        if normalized.is_empty() || !self.config.host_program_allowlist.contains(&normalized) {
+            return Err(RuntimeExecError::HostProgramNotAllowed {
+                program: request.program,
+                allowlist: self.config.host_program_allowlist.clone(),
+            });
+        }
+        request.program = normalized;
+        self.run_host_program(request, cancellation).await
     }
 
     async fn run_host_program(
@@ -190,6 +220,18 @@ impl RuntimeExecutor {
             RuntimeMode::Host => self.run_host_shell(request, cancellation).await,
             RuntimeMode::Docker => self.run_docker_shell(request, cancellation).await,
         }
+    }
+
+    /// Run one shell command directly on the host regardless of the selected Devbox runtime.
+    ///
+    /// # Errors
+    /// Returns an error when host execution is disabled or the shell process fails.
+    pub async fn run_host_shell_only(
+        &self,
+        request: ShellRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ProcessOutput, RuntimeExecError> {
+        self.run_host_shell(request, cancellation).await
     }
 
     async fn run_host_shell(
@@ -338,6 +380,32 @@ mod tests {
             max_wait_seconds: 85.0,
             max_mcp_transfer_chars: 4_000_000,
         })
+    }
+
+    #[tokio::test]
+    async fn host_only_program_ignores_selected_docker_runtime() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = (*test_config(temp.path())).clone();
+        config.runtime_mode = RuntimeMode::Docker;
+        let runtime = RuntimeExecutor::new(Arc::new(config));
+        let output = runtime
+            .run_host_program_only(
+                ProgramRequest {
+                    program: "rustc".to_owned(),
+                    args: vec!["--version".to_owned()],
+                    input: None,
+                    working_dir: temp.path().to_path_buf(),
+                    timeout: Duration::from_secs(10),
+                    user: String::new(),
+                    max_capture_chars: Some(4_096),
+                    output_tx: None,
+                    pid_tx: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("host-only direct program");
+        assert!(output.stdout.starts_with("rustc "));
     }
 
     #[tokio::test]
