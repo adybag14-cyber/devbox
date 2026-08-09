@@ -16,6 +16,31 @@ assert.equal(await healthResponse.text(), "ok");
 const metadataResponse = await fetch(baseUrl);
 assert.equal(metadataResponse.status, 200);
 const metadata = await metadataResponse.json();
+
+for (const probeUrl of [baseUrl, new URL("mcp", baseUrl)]) {
+  const rejectedProbe = await fetch(probeUrl, { headers: { Accept: "application/json" } });
+  if (probeUrl.pathname.endsWith("/mcp")) {
+    assert.equal(rejectedProbe.status, 406);
+    assert.match((await rejectedProbe.json()).error?.message || "", /text\/event-stream/);
+  } else {
+    assert.equal(rejectedProbe.status, 200);
+  }
+
+  const sseProbe = await fetch(probeUrl, { headers: { Accept: "text/event-stream" } });
+  assert.equal(sseProbe.status, 200);
+  assert.match(sseProbe.headers.get("content-type") || "", /^text\/event-stream/);
+  assert.equal(sseProbe.headers.get("cache-control"), "no-cache, no-transform");
+  assert.match(await sseProbe.text(), /mcp-sse-probe/);
+}
+
+for (const endpoint of [baseUrl, new URL("mcp", baseUrl)]) {
+  const deletion = await fetch(endpoint, {
+    method: "DELETE",
+    headers: { Accept: "application/json, text/event-stream" },
+  });
+  assert.equal(deletion.status, 200, `${endpoint.pathname} should match the stateless JS DELETE response`);
+  assert.equal(await deletion.text(), "");
+}
 assert.equal(metadata.implementation, "rust");
 assert.equal(metadata.rust_replacement?.draft, true);
 assert.equal(metadata.rust_replacement?.parity?.target_count, 37);

@@ -8,9 +8,10 @@ use std::{
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
+    body::Body,
     extract::State,
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Response},
     routing::get,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -2103,9 +2104,17 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
     );
 
     Router::new()
-        .route("/", get(root_metadata).post_service(mcp.clone()))
+        .route(
+            "/",
+            get(root_metadata)
+                .post_service(mcp.clone())
+                .delete(mcp_delete),
+        )
         .route("/healthz", get(healthz))
-        .nest_service("/mcp", mcp)
+        .route(
+            "/mcp",
+            get(mcp_sse_probe).post_service(mcp).delete(mcp_delete),
+        )
         .with_state(HttpState { config })
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
@@ -2139,7 +2148,10 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn root_metadata(State(state): State<HttpState>, headers: HeaderMap) -> impl IntoResponse {
+async fn root_metadata(State(state): State<HttpState>, headers: HeaderMap) -> Response {
+    if accepts_event_stream(&headers) {
+        return mcp_sse_probe(headers).await;
+    }
     let host = headers
         .get("host")
         .and_then(|value| value.to_str().ok())
@@ -2171,7 +2183,44 @@ async fn root_metadata(State(state): State<HttpState>, headers: HeaderMap) -> im
             "parity": parity,
         },
     });
-    (StatusCode::OK, Json(body))
+    (StatusCode::OK, Json(body)).into_response()
+}
+
+async fn mcp_delete() -> impl IntoResponse {
+    (StatusCode::OK, "")
+}
+
+async fn mcp_sse_probe(headers: HeaderMap) -> Response {
+    if !accepts_event_stream(&headers) {
+        return (
+            StatusCode::NOT_ACCEPTABLE,
+            Json(json!({
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32000,
+                    "message": "Not Acceptable: Client must accept text/event-stream",
+                },
+                "id": Value::Null,
+            })),
+        )
+            .into_response();
+    }
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache, no-transform")
+        .header(header::CONNECTION, "keep-alive")
+        .header("x-accel-buffering", "no")
+        .body(Body::from(": mcp-sse-probe\n\n"))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+fn accepts_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"))
 }
 
 fn render_file_process_result(
