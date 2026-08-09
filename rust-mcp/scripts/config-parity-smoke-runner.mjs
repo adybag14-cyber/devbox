@@ -98,6 +98,7 @@ const configured = await startServer({
   ENABLE_WINDOWS_HOST_EXEC: "true",
   MAX_TEXT_OUTPUT_CHARS: "20000",
   MAX_COMMAND_OUTPUT_CHARS: "65536",
+  MAX_MCP_TRANSFER_CHARS: "1000",
   HOST_SEARCH_BACKEND: "js",
 });
 try {
@@ -128,6 +129,24 @@ try {
     arguments: { program: "node", args: ["--version"], max_output_chars: 20_001 },
   });
   assert.equal(rejected.isError, true);
+
+  const captureParity = await client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "node",
+      args: [
+        "-e",
+        "process.stdout.write('HEAD-MARKER-' + 'x'.repeat(5000) + '-TAIL-MARKER')",
+      ],
+      output_mode: "head",
+      max_output_chars: 500,
+    },
+  });
+  assert.equal(captureParity.isError, false);
+  assert.match(captureParity.structuredContent?.stdout || "", /^HEAD-MARKER-/);
+  assert.doesNotMatch(captureParity.structuredContent?.stdout || "", /TAIL-MARKER$/);
+  assert.equal(captureParity.structuredContent?.data?.output?.stdout_original_chars, 5024);
+  assert.equal(captureParity.structuredContent?.truncated, true);
 
   const search = await client.callTool({
     name: "devbox_search_files",

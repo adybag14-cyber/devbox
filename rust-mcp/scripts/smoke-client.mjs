@@ -217,6 +217,16 @@ try {
     assert.ok(!JSON.stringify(githubAuth.structuredContent).includes('"token"'));
   }
 
+  const oversizedCapturePid = await client.callTool({
+    name: "host_capture_window",
+    arguments: { pid: Number.MAX_SAFE_INTEGER, quality: 80, include_process_tree: false },
+  });
+  assert.equal(oversizedCapturePid.isError, true);
+  assert.match(
+    oversizedCapturePid.content?.find((entry) => entry.type === "text")?.text || "",
+    /pid exceeds .*process ID range/i,
+  );
+
   if (process.env.RUST_MCP_SMOKE_CAPTURE_PID) {
     const capturePid = Number.parseInt(process.env.RUST_MCP_SMOKE_CAPTURE_PID, 10);
     assert.ok(Number.isInteger(capturePid) && capturePid > 0, "RUST_MCP_SMOKE_CAPTURE_PID must be a positive integer");
@@ -330,6 +340,7 @@ try {
     arguments: {
       command: "node -e \"console.log('RUST_SHELL_ASYNC_SMOKE')\"",
       timeout_seconds: 30,
+      read_only: true,
       resource_class: "light",
     },
   });
@@ -342,6 +353,7 @@ try {
   });
   assert.equal(shellDone.isError, false);
   assert.equal(shellDone.structuredContent?.data?.status, "succeeded");
+  assert.equal(shellDone.structuredContent?.data?.readOnly, true);
   const shellLogs = await client.callTool({
     name: "devbox_job_logs",
     arguments: { job_id: shellJobId, max_chars: 5_000 },

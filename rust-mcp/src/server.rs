@@ -159,10 +159,28 @@ impl DevboxMcp {
         if request.pid == 0 {
             return ToolEnvelope::error("pid must be a positive process ID.", None);
         }
+        let Ok(pid) = u32::try_from(request.pid) else {
+            return ToolEnvelope::error(
+                format!(
+                    "Failed to capture {} host window for PID {}: pid exceeds the native process ID range.",
+                    self.config.platform.display_name, request.pid
+                ),
+                None,
+            );
+        };
+        if self.config.platform.is_windows && request.pid > i32::MAX as u64 {
+            return ToolEnvelope::error(
+                format!(
+                    "Failed to capture {} host window for PID {}: pid exceeds the Windows capture backend process ID range.",
+                    self.config.platform.display_name, request.pid
+                ),
+                None,
+            );
+        }
         match self
             .capture
             .program(
-                request.pid,
+                pid,
                 request.quality,
                 request.include_process_tree,
                 cancellation,
@@ -367,9 +385,6 @@ struct RunProgramRequest {
     #[schemars(description = "Argument vector passed directly to the executable.")]
     args: Vec<String>,
     #[serde(default)]
-    #[schemars(description = "Optional UTF-8 stdin payload.")]
-    input: Option<String>,
-    #[serde(default)]
     #[schemars(description = "Working directory; defaults to the selected Devbox workspace.")]
     working_dir: String,
     #[serde(default = "default_sync_timeout")]
@@ -455,7 +470,7 @@ struct CaptureWindowRequest {
     #[schemars(
         description = "Host process ID whose visible application window should be captured."
     )]
-    pid: u32,
+    pid: u64,
     #[serde(default = "default_capture_quality")]
     #[schemars(description = "Requested image quality from 1 through 100.")]
     quality: u8,
@@ -476,6 +491,8 @@ struct StartShellRequest {
     timeout_seconds: u64,
     #[serde(default)]
     user: String,
+    #[serde(default)]
+    read_only: bool,
     #[serde(default = "default_resource_class")]
     resource_class: String,
 }
@@ -681,31 +698,14 @@ impl DevboxMcp {
 
     fn configured_tool(&self, mut tool: rmcp::model::Tool) -> rmcp::model::Tool {
         let mut schema = (*tool.input_schema).clone();
-        if let Some(Value::Object(properties)) = schema.get_mut("properties")
-            && let Some(property) = properties.get_mut("max_output_chars")
-        {
-            let description = property
-                .get("description")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            let mut configured = serde_json::Map::from_iter([
-                ("type".to_owned(), json!("integer")),
-                ("minimum".to_owned(), json!(100)),
-                (
-                    "maximum".to_owned(),
-                    json!(self.config.command_output_limit_chars),
-                ),
-                (
-                    "default".to_owned(),
-                    json!(self.config.command_output_limit_chars),
-                ),
-            ]);
-            if let Some(description) = description {
-                configured.insert("description".to_owned(), json!(description));
-            }
-            *property = Value::Object(configured);
-        }
+        crate::schema_parity::configure_tool_input_schema(
+            tool.name.as_ref(),
+            &mut schema,
+            &self.config,
+        );
         tool.input_schema = Arc::new(schema);
+        crate::schema_parity::configure_tool_output_schema(&mut tool);
+        crate::schema_parity::configure_tool_metadata(&mut tool, &self.config);
         tool
     }
 
@@ -836,7 +836,7 @@ impl DevboxMcp {
                     working_dir,
                     timeout: Duration::from_secs(request.timeout_seconds),
                     user: request.user,
-                    max_capture_chars: Some(self.config.max_mcp_transfer_chars),
+                    max_capture_chars: None,
                     output_tx: None,
                     pid_tx: None,
                 },
@@ -908,7 +908,7 @@ impl DevboxMcp {
                     working_dir,
                     timeout: Duration::from_secs(request.timeout_seconds.saturating_add(5)),
                     user: String::new(),
-                    max_capture_chars: Some(self.config.max_mcp_transfer_chars),
+                    max_capture_chars: None,
                     output_tx: None,
                     pid_tx: None,
                 },
@@ -983,7 +983,7 @@ impl DevboxMcp {
                     working_dir,
                     timeout: Duration::from_secs(request.timeout_seconds.saturating_add(5)),
                     user: String::new(),
-                    max_capture_chars: Some(self.config.max_mcp_transfer_chars),
+                    max_capture_chars: None,
                     output_tx: None,
                     pid_tx: None,
                 },
@@ -1237,7 +1237,7 @@ impl DevboxMcp {
                 working_dir: request.working_dir,
                 timeout: Duration::from_secs(request.timeout_seconds),
                 user: request.user,
-                read_only: false,
+                read_only: request.read_only,
                 resource_class: request.resource_class,
             })
             .await
@@ -1300,11 +1300,11 @@ impl DevboxMcp {
                 ProgramRequest {
                     program: request.program.trim().to_owned(),
                     args: request.args,
-                    input: request.input.map(String::into_bytes),
+                    input: None,
                     working_dir,
                     timeout: Duration::from_secs(request.timeout_seconds),
                     user: request.user,
-                    max_capture_chars: Some(self.config.max_mcp_transfer_chars),
+                    max_capture_chars: None,
                     output_tx: None,
                     pid_tx: None,
                 },

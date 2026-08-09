@@ -19,6 +19,7 @@ pub mod process;
 pub mod request_control;
 pub mod result;
 pub mod runtime;
+pub mod schema_parity;
 pub mod search;
 pub mod server;
 pub mod usage;
