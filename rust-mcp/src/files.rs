@@ -92,15 +92,17 @@ impl FileService {
     pub async fn read_text(&self, path: &Path, max_bytes: usize) -> Result<ProcessResult> {
         let lock = self.lock_for(path);
         let _guard = lock.read().await;
-        let metadata = fs::metadata(path)
-            .await
-            .with_context(|| format!("read metadata for {}", path.display()))?;
+        let metadata = match fs::metadata(path).await {
+            Ok(metadata) => metadata,
+            Err(error) => return Err(anyhow::anyhow!(javascript_open_error(path, &error))),
+        };
         if !metadata.is_file() {
             bail!("Not a regular file.");
         }
-        let bytes = fs::read(path)
-            .await
-            .with_context(|| format!("read {}", path.display()))?;
+        let bytes = match fs::read(path).await {
+            Ok(bytes) => bytes,
+            Err(error) => return Err(anyhow::anyhow!(javascript_open_error(path, &error))),
+        };
         let end = bytes.len().min(max_bytes.max(1));
         Ok(ProcessResult::success(
             String::from_utf8_lossy(&bytes[..end]).into_owned(),
@@ -333,7 +335,7 @@ impl FileService {
                     return Err(error).with_context(|| format!("inspect {}", path.display()));
                 }
             };
-            if depth > 0 || !metadata.is_dir() {
+            if depth > 0 || !metadata.is_dir() || (options.recursive && depth == 0) {
                 collected.push(format!("{}\t{}", entry_type(&metadata), path.display()));
                 if collected.len() >= max_entries {
                     truncated = true;
@@ -442,6 +444,19 @@ fn absolute_lexical_path(path: &Path) -> PathBuf {
     }
 }
 
+fn javascript_open_error(path: &Path, error: &std::io::Error) -> String {
+    let path = path.to_string_lossy();
+    match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!("ENOENT: no such file or directory, open '{path}'")
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            format!("EACCES: permission denied, open '{path}'")
+        }
+        _ => error.to_string(),
+    }
+}
+
 async fn ensure_parent(path: &Path, create_dirs: bool) -> Result<()> {
     if create_dirs
         && let Some(parent) = path.parent()
@@ -541,6 +556,23 @@ mod tests {
         assert_eq!(result.next_offset_bytes, 10);
         assert!(result.eof);
         assert_eq!(STANDARD.decode(result.content_base64).unwrap(), b"789");
+    }
+
+    #[tokio::test]
+    async fn missing_text_read_uses_node_fs_style_open_error() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("missing.txt");
+        let error = FileService::new()
+            .read_text(&path, 64)
+            .await
+            .expect_err("missing read must fail");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "ENOENT: no such file or directory, open '{}'",
+                path.to_string_lossy()
+            )
+        );
     }
 
     #[tokio::test]
@@ -650,9 +682,14 @@ mod tests {
             .await
             .expect("list");
         let lines = result.stdout.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].ends_with("a.txt"));
-        assert!(lines[1].ends_with("z.txt"));
+        assert_eq!(lines.len(), 3);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.ends_with(&temp.path().to_string_lossy().to_string()))
+        );
+        assert!(lines.iter().any(|line| line.ends_with("a.txt")));
+        assert!(lines.iter().any(|line| line.ends_with("z.txt")));
         assert!(result.stderr.contains("pruned 1 excluded directories"));
     }
 }

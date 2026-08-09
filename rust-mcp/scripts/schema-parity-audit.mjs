@@ -145,7 +145,8 @@ const flattenOptionalNullable = (schema) => {
   return Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, flattenOptionalNullable(value)]));
 };
 
-const normalize = (schema) => simplify(flattenOptionalNullable(schema));
+const normalizeInput = (schema) => simplify(flattenOptionalNullable(schema));
+const normalizeOutput = (schema) => simplify(schema);
 
 const jsTools = await listJsTools();
 const rustTools = await listRustTools();
@@ -165,14 +166,14 @@ const metadataDifferences = [];
 for (const name of [...jsByName.keys()].sort()) {
   const jsTool = jsByName.get(name);
   const rustTool = rustByName.get(name);
-  const jsInput = normalize(jsTool.inputSchema);
-  const rustInput = normalize(rustTool.inputSchema);
+  const jsInput = normalizeInput(jsTool.inputSchema);
+  const rustInput = normalizeInput(rustTool.inputSchema);
   if (JSON.stringify(jsInput) !== JSON.stringify(rustInput)) {
     inputDifferences.push({ name, js: jsInput, rust: rustInput });
   }
 
-  const jsOutput = normalize(jsTool.outputSchema);
-  const rustOutput = normalize(rustTool.outputSchema);
+  const jsOutput = normalizeOutput(jsTool.outputSchema);
+  const rustOutput = normalizeOutput(rustTool.outputSchema);
   if (JSON.stringify(jsOutput) !== JSON.stringify(rustOutput)) {
     outputDifferences.push({ name, js: jsOutput, rust: rustOutput });
   }

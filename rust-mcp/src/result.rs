@@ -16,10 +16,14 @@ pub struct ToolEnvelope {
     pub stdout: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
-    #[serde(rename = "exitCode", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "exitCode")]
     pub exit_code: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+}
+
+fn non_empty_text(value: String) -> Option<String> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
 struct UnconstrainedJson;
@@ -121,8 +125,8 @@ impl ToolEnvelope {
                 ok: true,
                 summary,
                 data,
-                stdout: Some(stdout.into()),
-                stderr: Some(stderr.into()),
+                stdout: non_empty_text(stdout.into()),
+                stderr: non_empty_text(stderr.into()),
                 exit_code: Some(exit_code),
                 truncated: Some(truncated),
             },
@@ -228,5 +232,28 @@ mod tests {
         let text = result.content[0].as_text().expect("text content");
         assert!(text.text.contains("stdout:\nhello"));
         assert!(text.text.contains("stderr:\nwarning"));
+    }
+
+    #[test]
+    fn process_success_omits_empty_streams_but_command_error_keeps_them() {
+        let success = ToolEnvelope::process_success("done", None, "", "", 0, false);
+        let success = success.structured_content.expect("success structured");
+        assert!(success.get("stdout").is_none());
+        assert!(success.get("stderr").is_none());
+        assert_eq!(success["exitCode"], 0);
+
+        let error = ToolEnvelope::process_error("failed", None, "", "", None, false);
+        let error = error.structured_content.expect("error structured");
+        assert_eq!(error["stdout"], "");
+        assert_eq!(error["stderr"], "");
+        assert!(error["exitCode"].is_null());
+    }
+
+    #[test]
+    fn generic_results_serialize_null_exit_code() {
+        let result = ToolEnvelope::success("ok", None);
+        let structured = result.structured_content.expect("structured");
+        assert!(structured.get("exitCode").is_some());
+        assert!(structured["exitCode"].is_null());
     }
 }

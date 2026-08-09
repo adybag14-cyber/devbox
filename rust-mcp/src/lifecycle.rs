@@ -430,8 +430,21 @@ fn host_runtime_info(config: &Config) -> Value {
         "platform": config.platform.id,
         "hostDefaultWorkdir": config.host_default_workdir,
         "hostShell": config.host_shell,
-        "hostShellFallback": null,
+        "hostShellFallback": host_shell_fallback(config),
     })
+}
+
+fn host_shell_fallback(config: &Config) -> Option<&str> {
+    if !config.platform.is_windows
+        || std::env::var("HOST_SHELL")
+            .ok()
+            .is_some_and(|value| !value.trim().is_empty())
+        || config.power_shell_fallback_exe.trim().is_empty()
+    {
+        None
+    } else {
+        Some(config.power_shell_fallback_exe.as_str())
+    }
 }
 
 fn create_container_args(config: &Config) -> Vec<String> {

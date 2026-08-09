@@ -11,6 +11,16 @@ const expectedWindowsAdmin = process.platform === "win32"
   ? process.env.RUST_MCP_EXPECT_WINDOWS_ADMIN === "1"
   : null;
 
+const assertExecutionMetadata = (result) => {
+  const execution = result.structuredContent?.data?.execution;
+  assert.ok(execution && typeof execution === "object");
+  assert.ok(Number.isFinite(execution.queue_wait_ms));
+  assert.ok(execution.slot === null || Number.isInteger(execution.slot));
+  assert.equal(Object.hasOwn(execution, "pool"), false);
+  assert.equal(Object.hasOwn(execution, "weight"), false);
+  assert.equal(Object.hasOwn(execution, "slots"), false);
+};
+
 const assertShellResult = (result, { readOnly } = {}) => {
   if (process.platform === "win32" && !expectedWindowsAdmin) {
     assert.equal(result.isError, true);
@@ -23,8 +33,8 @@ const assertShellResult = (result, { readOnly } = {}) => {
   }
   assert.equal(result.isError, false);
   assert.match(result.structuredContent?.stdout || "", /^git version /);
-  if (readOnly !== undefined) assert.equal(result.structuredContent?.data?.read_only, readOnly);
-  assert.equal(result.structuredContent?.data?.execution?.pool, "execution");
+  if (readOnly !== undefined) assert.equal(Object.hasOwn(result.structuredContent?.data || {}, "read_only"), false);
+  assertExecutionMetadata(result);
 };
 
 
@@ -302,7 +312,7 @@ try {
     });
     assert.equal(hostProgram.isError, false);
     assert.match(hostProgram.structuredContent?.stdout || "", /^git version /);
-    assert.equal(hostProgram.structuredContent?.data?.execution?.pool, "execution");
+    assertExecutionMetadata(hostProgram);
   }
 
   const stateRoot = process.env.RUST_MCP_STATE_ROOT;
@@ -372,7 +382,7 @@ try {
   assert.equal(direct.isError, false);
   assert.equal(direct.structuredContent?.ok, true);
   assert.match(direct.structuredContent?.stdout || "", /^git version /);
-  assert.equal(direct.structuredContent?.data?.execution?.pool, "execution");
+  assertExecutionMetadata(direct);
 
   const started = await client.callTool({
     name: "devbox_run_program_start",
@@ -504,7 +514,7 @@ try {
     assert.equal(devboxSearch.isError, false);
     assert.match(devboxSearch.structuredContent?.stdout || "", /devbox-text\.txt:2:beta/);
     assert.match(devboxSearch.structuredContent?.stderr || "", /search backend (?:ripgrep|rust fallback)/);
-    assert.equal(devboxSearch.structuredContent?.data?.execution?.pool, "execution");
+    assertExecutionMetadata(devboxSearch);
 
     const devboxLargeWrite = await client.callTool({
       name: "devbox_write_large_file",

@@ -542,27 +542,21 @@ struct JobCancelRequest {
 }
 
 struct ShellRenderContext {
-    read_only: bool,
     output_mode: String,
     max_chars: usize,
     max_lines: usize,
+    error_max_chars: usize,
     queue_wait_ms: u64,
     slot: Option<usize>,
-    slots: Vec<usize>,
-    pool: String,
-    weight: usize,
 }
 
 struct ProgramRenderContext {
-    program: String,
     output_mode: String,
     max_chars: usize,
     max_lines: usize,
+    error_max_chars: usize,
     queue_wait_ms: u64,
     slot: Option<usize>,
-    slots: Vec<usize>,
-    pool: String,
-    weight: usize,
 }
 
 const fn default_sync_timeout() -> u64 {
@@ -828,6 +822,7 @@ impl DevboxMcp {
         } else {
             PathBuf::from(request.working_dir.trim())
         };
+        let working_dir_display = working_dir.to_string_lossy().into_owned();
         let result = self
             .runtime
             .run_shell(
@@ -851,18 +846,26 @@ impl DevboxMcp {
                 None,
             );
         }
+        let summary = if read_only {
+            format!(
+                "Ran a read-only shell command in the {} at {working_dir_display}.",
+                self.config.runtime_label()
+            )
+        } else {
+            format!(
+                "Ran a shell command in the {} at {working_dir_display}.",
+                self.config.runtime_label()
+            )
+        };
         render_shell_result(
-            &self.config.runtime_label(),
+            summary,
             &ShellRenderContext {
-                read_only,
                 output_mode: request.output_mode,
                 max_chars: max_output_chars,
                 max_lines: request.max_output_lines,
+                error_max_chars: self.config.command_output_limit_chars,
                 queue_wait_ms: lease.queue_wait_ms,
                 slot: lease.slot,
-                slots: lease.slots.clone(),
-                pool: lease.pool.clone(),
-                weight: lease.weight,
             },
             result,
         )
@@ -900,6 +903,7 @@ impl DevboxMcp {
         } else {
             PathBuf::from(request.working_dir.trim())
         };
+        let working_dir_display = working_dir.to_string_lossy().into_owned();
         let result = self
             .runtime
             .run_host_shell_only(
@@ -924,17 +928,17 @@ impl DevboxMcp {
             );
         }
         render_shell_result(
-            &format!("{} host", self.config.platform.display_name),
+            format!(
+                "Ran a {} command in {working_dir_display}.",
+                host_command_title(&self.config).to_lowercase()
+            ),
             &ShellRenderContext {
-                read_only: false,
                 output_mode: request.output_mode,
                 max_chars: max_output_chars,
                 max_lines: request.max_output_lines,
+                error_max_chars: self.config.command_output_limit_chars,
                 queue_wait_ms: lease.queue_wait_ms,
                 slot: lease.slot,
-                slots: lease.slots.clone(),
-                pool: lease.pool.clone(),
-                weight: lease.weight,
             },
             result,
         )
@@ -999,17 +1003,18 @@ impl DevboxMcp {
             );
         }
         render_program_result(
-            &format!("{} host", self.config.platform.display_name),
+            format!(
+                "Ran {} on the {}.",
+                request.program,
+                host_title(&self.config).to_lowercase()
+            ),
             &ProgramRenderContext {
-                program: request.program,
                 output_mode: request.output_mode,
                 max_chars: max_output_chars,
                 max_lines: request.max_output_lines,
+                error_max_chars: self.config.command_output_limit_chars,
                 queue_wait_ms: lease.queue_wait_ms,
                 slot: lease.slot,
-                slots: lease.slots.clone(),
-                pool: lease.pool.clone(),
-                weight: lease.weight,
             },
             result,
         )
@@ -1058,6 +1063,7 @@ impl DevboxMcp {
                 None,
             );
         }
+        let requested_path = request.path.clone();
         match wait_for_path(
             request,
             self.config.max_wait_seconds.min(85.0),
@@ -1066,11 +1072,10 @@ impl DevboxMcp {
         .await
         {
             Ok(data) => {
-                let path = data["path"].as_str().unwrap_or("file");
                 let summary = if data["conditionMet"].as_bool().unwrap_or(false) {
-                    format!("File condition satisfied for {path}.")
+                    format!("File condition satisfied for {requested_path}.")
                 } else {
-                    format!("Timed out waiting for file condition at {path}.")
+                    format!("Timed out waiting for file condition at {requested_path}.")
                 };
                 ToolEnvelope::success(summary, Some(data))
             }
@@ -1244,9 +1249,9 @@ impl DevboxMcp {
         {
             Ok(job) => ToolEnvelope::success(
                 format!(
-                    "Started detached shell job {} in {}.",
-                    job.id,
-                    self.config.runtime_label()
+                    "Started background {} job {}.",
+                    self.config.runtime_label(),
+                    job.id
                 ),
                 serde_json::to_value(job).ok(),
             ),
@@ -1318,17 +1323,18 @@ impl DevboxMcp {
             );
         }
         render_program_result(
-            &self.config.runtime_label(),
+            format!(
+                "Ran {} directly in the {}.",
+                request.program,
+                self.config.runtime_label()
+            ),
             &ProgramRenderContext {
-                program: request.program,
                 output_mode: request.output_mode,
                 max_chars: max_output_chars,
                 max_lines: request.max_output_lines,
+                error_max_chars: self.config.command_output_limit_chars,
                 queue_wait_ms: lease.queue_wait_ms,
                 slot: lease.slot,
-                slots: lease.slots.clone(),
-                pool: lease.pool.clone(),
-                weight: lease.weight,
             },
             result,
         )
@@ -1364,10 +1370,9 @@ impl DevboxMcp {
         {
             Ok(job) => ToolEnvelope::success(
                 format!(
-                    "Started {} as detached job {} in {}.",
-                    request.program.trim(),
-                    job.id,
-                    self.config.runtime_label()
+                    "Started direct background {} job {}.",
+                    self.config.runtime_label(),
+                    job.id
                 ),
                 serde_json::to_value(job).ok(),
             ),
@@ -1410,10 +1415,16 @@ impl DevboxMcp {
                 .await
         };
         match result {
-            Ok(status) => ToolEnvelope::success(
-                format!("Fetched status for detached job {}.", request.job_id),
-                Some(status),
-            ),
+            Ok(status) => {
+                let status_name = status
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                ToolEnvelope::success(
+                    format!("Background job {} is {status_name}.", request.job_id),
+                    Some(status),
+                )
+            }
             Err(error) => ToolEnvelope::error(
                 format!("Failed to fetch detached job {}: {error}", request.job_id),
                 None,
@@ -1440,7 +1451,7 @@ impl DevboxMcp {
             .await
         {
             Ok(logs) => ToolEnvelope::success(
-                format!("Fetched logs for detached job {}.", request.job_id),
+                format!("Read logs for background job {}.", request.job_id),
                 serde_json::to_value(logs).ok(),
             ),
             Err(error) => ToolEnvelope::error(
@@ -1463,13 +1474,16 @@ impl DevboxMcp {
         Parameters(request): Parameters<JobCancelRequest>,
     ) -> CallToolResult {
         match self.jobs.store().cancel(&request.job_id).await {
-            Ok(status) => ToolEnvelope::success(
-                format!(
-                    "Cancellation requested for detached job {}.",
-                    request.job_id
-                ),
-                Some(status),
-            ),
+            Ok(status) => {
+                let status_name = status
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                ToolEnvelope::success(
+                    format!("Background job {} is {status_name}.", request.job_id),
+                    Some(status),
+                )
+            }
             Err(error) => ToolEnvelope::error(
                 format!("Failed to cancel detached job {}: {error}", request.job_id),
                 None,
@@ -1535,7 +1549,11 @@ impl DevboxMcp {
                 .await
                 .map_err(|error| error.to_string()),
         };
-        render_file_process_result(format!("Listed files in {path}."), result)
+        render_file_process_result(
+            format!("Listed files in {path}."),
+            result,
+            self.config.command_output_limit_chars,
+        )
     }
 
     #[tool(
@@ -1579,6 +1597,7 @@ impl DevboxMcp {
                 self.config.runtime_label()
             ),
             result,
+            self.config.command_output_limit_chars,
         )
     }
 
@@ -1693,7 +1712,7 @@ impl DevboxMcp {
                 self.config.runtime_label()
             )
         };
-        render_file_process_result(summary, result)
+        render_file_process_result(summary, result, self.config.command_output_limit_chars)
     }
 
     #[tool(
@@ -1841,9 +1860,6 @@ impl DevboxMcp {
                         "execution": {
                             "queue_wait_ms": lease.queue_wait_ms,
                             "slot": lease.slot,
-                            "slots": lease.slots,
-                            "pool": lease.pool,
-                            "weight": lease.weight,
                         },
                         "output": {
                             "mode": "tail",
@@ -1868,9 +1884,6 @@ impl DevboxMcp {
                     "execution": {
                         "queue_wait_ms": lease.queue_wait_ms,
                         "slot": lease.slot,
-                        "slots": lease.slots,
-                        "pool": lease.pool,
-                        "weight": lease.weight,
                     }
                 })),
             ),
@@ -1920,11 +1933,14 @@ impl DevboxMcp {
         .await
         {
             Ok(data) => ToolEnvelope::success(
-                format!("Inspected {} on the host.", request.path),
+                format!("Inspected {} on the Windows host.", request.path),
                 Some(data),
             ),
             Err(error) => ToolEnvelope::error(
-                format!("Failed to inspect {} on the host: {error}", request.path),
+                format!(
+                    "Failed to inspect {} on the Windows host: {error}",
+                    request.path
+                ),
                 None,
             ),
         }
@@ -2183,8 +2199,8 @@ impl DevboxMcp {
     fn host_status_result(&self) -> CallToolResult {
         ToolEnvelope::success(
             format!(
-                "Fetched {} host tool status.",
-                self.config.platform.display_name
+                "Fetched {} tool status.",
+                host_title(&self.config).to_lowercase()
             ),
             Some(json!({
                 "enabled": self.config.host_exec_enabled,
@@ -2635,25 +2651,89 @@ fn accepts_event_stream(headers: &HeaderMap) -> bool {
         .is_some_and(|value| value.contains("text/event-stream"))
 }
 
-fn render_file_process_result(
-    summary: String,
-    result: Result<ProcessResult, String>,
-) -> CallToolResult {
-    match result {
-        Ok(result) => ToolEnvelope::process_success(
-            summary,
-            Some(json!({})),
-            result.stdout,
-            result.stderr,
-            result.exit_code,
-            false,
-        ),
-        Err(error) => ToolEnvelope::error(error, None),
+fn host_title(config: &Config) -> String {
+    if config.platform.is_windows {
+        "Windows Host".to_owned()
+    } else {
+        format!("{} Host", config.platform.display_name)
     }
 }
 
+fn host_command_title(config: &Config) -> String {
+    if config.platform.is_windows {
+        "Windows PowerShell".to_owned()
+    } else {
+        format!("{} Host Shell", config.platform.display_name)
+    }
+}
+
+fn render_file_process_result(
+    summary: String,
+    result: Result<ProcessResult, String>,
+    max_chars: usize,
+) -> CallToolResult {
+    match result {
+        Ok(result) => {
+            let stdout = shape_process_output(&result.stdout, OutputMode::Tail, max_chars, 0);
+            let stderr = shape_process_output(&result.stderr, OutputMode::Tail, max_chars, 0);
+            ToolEnvelope::process_success(
+                summary,
+                Some(json!({
+                    "output": {
+                        "mode": "tail",
+                        "max_chars": max_chars,
+                        "max_lines": 0,
+                        "stdout_original_chars": stdout.original_chars,
+                        "stderr_original_chars": stderr.original_chars,
+                    }
+                })),
+                stdout.text,
+                stderr.text,
+                result.exit_code,
+                stdout.truncated || stderr.truncated,
+            )
+        }
+        Err(error) => ToolEnvelope::process_error(error, None, "", "", None, false),
+    }
+}
+
+fn render_command_style_error(
+    summary: String,
+    data: Option<Value>,
+    stdout: &str,
+    stderr: &str,
+    exit_code: Option<i32>,
+    max_chars: usize,
+) -> CallToolResult {
+    let (stdout, stdout_truncated) = trim_javascript_text(stdout, max_chars);
+    let (stderr, stderr_truncated) = trim_javascript_text(stderr, max_chars);
+    ToolEnvelope::process_error(
+        summary,
+        data,
+        stdout,
+        stderr,
+        exit_code,
+        stdout_truncated || stderr_truncated,
+    )
+}
+
+fn trim_javascript_text(text: &str, max_chars: usize) -> (String, bool) {
+    if text.is_empty() {
+        return (String::new(), false);
+    }
+    let units = text.encode_utf16().collect::<Vec<_>>();
+    if units.len() <= max_chars {
+        return (text.to_owned(), false);
+    }
+    let suffix = format!("\n... truncated to {max_chars} characters ...");
+    let suffix_len = suffix.encode_utf16().count();
+    let keep = max_chars.saturating_sub(suffix_len);
+    let head = String::from_utf16_lossy(&units[..keep.min(units.len())]);
+    (format!("{head}{suffix}"), true)
+}
+
 fn render_shell_result(
-    runtime_label: &str,
+    summary: String,
     context: &ShellRenderContext,
     result: Result<crate::process::ProcessOutput, RuntimeExecError>,
 ) -> CallToolResult {
@@ -2661,15 +2741,7 @@ fn render_shell_result(
     let execution = json!({
         "queue_wait_ms": context.queue_wait_ms,
         "slot": context.slot,
-        "slots": context.slots,
-        "pool": context.pool,
-        "weight": context.weight,
     });
-    let summary = if context.read_only {
-        format!("Ran read-only inspection in {runtime_label}.")
-    } else {
-        format!("Ran shell command in {runtime_label}.")
-    };
     match result {
         Ok(output) => {
             let stdout =
@@ -2680,7 +2752,6 @@ fn render_shell_result(
             ToolEnvelope::process_success(
                 summary,
                 Some(json!({
-                    "read_only": context.read_only,
                     "execution": execution,
                     "output": {
                         "mode": mode.as_str(),
@@ -2699,7 +2770,6 @@ fn render_shell_result(
         Err(error @ RuntimeExecError::WindowsElevationRequired) => ToolEnvelope::process_error(
             error.to_string(),
             Some(json!({
-                "read_only": context.read_only,
                 "execution": execution,
                 "bridge_diagnostics": {
                     "suspected_elevation_gap": true,
@@ -2717,42 +2787,27 @@ fn render_shell_result(
             Some(740),
             false,
         ),
-        Err(RuntimeExecError::Process(error)) => {
-            let stdout =
-                shape_process_output(&error.stdout, mode, context.max_chars, context.max_lines);
-            let stderr =
-                shape_process_output(&error.stderr, mode, context.max_chars, context.max_lines);
-            let truncated = stdout.truncated || stderr.truncated;
-            ToolEnvelope::process_error(
-                error.message,
-                Some(json!({
-                    "read_only": context.read_only,
-                    "execution": execution,
-                    "output": {
-                        "mode": mode.as_str(),
-                        "max_chars": context.max_chars,
-                        "max_lines": context.max_lines,
-                        "stdout_original_chars": stdout.original_chars,
-                        "stderr_original_chars": stderr.original_chars,
-                    },
-                    "timed_out": error.timed_out,
-                    "aborted": error.aborted,
-                })),
-                stdout.text,
-                stderr.text,
-                error.exit_code,
-                truncated,
-            )
-        }
-        Err(error) => ToolEnvelope::error(
+        Err(RuntimeExecError::Process(error)) => render_command_style_error(
+            error.message,
+            Some(json!({ "execution": execution })),
+            &error.stdout,
+            &error.stderr,
+            error.exit_code,
+            context.error_max_chars,
+        ),
+        Err(error) => render_command_style_error(
             error.to_string(),
-            Some(json!({ "read_only": context.read_only, "execution": execution })),
+            Some(json!({ "execution": execution })),
+            "",
+            "",
+            None,
+            context.error_max_chars,
         ),
     }
 }
 
 fn render_program_result(
-    runtime_label: &str,
+    summary: String,
     context: &ProgramRenderContext,
     result: Result<crate::process::ProcessOutput, RuntimeExecError>,
 ) -> CallToolResult {
@@ -2760,9 +2815,6 @@ fn render_program_result(
     let execution = json!({
         "queue_wait_ms": context.queue_wait_ms,
         "slot": context.slot,
-        "slots": context.slots,
-        "pool": context.pool,
-        "weight": context.weight,
     });
     match result {
         Ok(output) => {
@@ -2782,7 +2834,7 @@ fn render_program_result(
                 }
             });
             ToolEnvelope::process_success(
-                format!("Ran {} directly in {runtime_label}.", context.program),
+                summary,
                 Some(data),
                 stdout.text,
                 stderr.text,
@@ -2790,36 +2842,22 @@ fn render_program_result(
                 truncated,
             )
         }
-        Err(RuntimeExecError::Process(error)) => {
-            let stdout =
-                shape_process_output(&error.stdout, mode, context.max_chars, context.max_lines);
-            let stderr =
-                shape_process_output(&error.stderr, mode, context.max_chars, context.max_lines);
-            let truncated = stdout.truncated || stderr.truncated;
-            let data = json!({
-                "execution": execution,
-                "output": {
-                    "mode": mode.as_str(),
-                    "max_chars": context.max_chars,
-                    "max_lines": context.max_lines,
-                    "stdout_original_chars": stdout.original_chars,
-                    "stderr_original_chars": stderr.original_chars,
-                },
-                "timed_out": error.timed_out,
-                "aborted": error.aborted,
-            });
-            ToolEnvelope::process_error(
-                error.message,
-                Some(data),
-                stdout.text,
-                stderr.text,
-                error.exit_code,
-                truncated,
-            )
-        }
-        Err(error) => {
-            ToolEnvelope::error(error.to_string(), Some(json!({ "execution": execution })))
-        }
+        Err(RuntimeExecError::Process(error)) => render_command_style_error(
+            error.message,
+            Some(json!({ "execution": execution })),
+            &error.stdout,
+            &error.stderr,
+            error.exit_code,
+            context.error_max_chars,
+        ),
+        Err(error) => render_command_style_error(
+            error.to_string(),
+            Some(json!({ "execution": execution })),
+            "",
+            "",
+            None,
+            context.error_max_chars,
+        ),
     }
 }
 
@@ -2909,21 +2947,37 @@ fn large_write_text(summary: &str, data: &LargeWriteResult) -> String {
 
 #[derive(Debug, Clone)]
 struct PathState {
-    exists: bool,
-    is_file: bool,
-    is_directory: bool,
-    size: u64,
-    mtime_ms: Option<u128>,
+    exists: Option<bool>,
+    is_file: Option<bool>,
+    is_directory: Option<bool>,
+    size: Option<u64>,
+    mtime_ms: Option<f64>,
+    mtime_utc: Option<String>,
+    transient_error: Option<String>,
 }
 
 impl PathState {
     const fn missing() -> Self {
         Self {
-            exists: false,
-            is_file: false,
-            is_directory: false,
-            size: 0,
+            exists: Some(false),
+            is_file: None,
+            is_directory: None,
+            size: None,
             mtime_ms: None,
+            mtime_utc: None,
+            transient_error: None,
+        }
+    }
+
+    fn transient(code: &str) -> Self {
+        Self {
+            exists: None,
+            is_file: None,
+            is_directory: None,
+            size: None,
+            mtime_ms: None,
+            mtime_utc: None,
+            transient_error: Some(code.to_owned()),
         }
     }
 }
@@ -2961,9 +3015,9 @@ async fn wait_for_path(
             .await
             .map_err(|error| format!("Failed while waiting for {}: {error}", request.path))?;
         let condition = if request.should_exist {
-            state.exists && (!state.is_file || state.size >= request.min_bytes)
+            state.exists == Some(true) && state.size.unwrap_or(0) >= request.min_bytes
         } else {
-            !state.exists
+            state.exists == Some(false)
         };
         let now = Instant::now();
         if condition {
@@ -2973,6 +3027,11 @@ async fn wait_for_path(
                     &request.path,
                     &state,
                     true,
+                    if request.stable_ms > 0 {
+                        Some(request.stable_ms)
+                    } else {
+                        None
+                    },
                     started.elapsed(),
                     false,
                 ));
@@ -2985,6 +3044,7 @@ async fn wait_for_path(
                 &request.path,
                 &state,
                 false,
+                None,
                 started.elapsed(),
                 true,
             ));
@@ -3003,47 +3063,94 @@ async fn wait_for_path(
 
 async fn path_state(path: &std::path::Path) -> std::io::Result<PathState> {
     match tokio::fs::metadata(path).await {
-        Ok(metadata) => Ok(PathState {
-            exists: true,
-            is_file: metadata.is_file(),
-            is_directory: metadata.is_dir(),
-            size: metadata.len(),
-            mtime_ms: metadata
-                .modified()
-                .ok()
+        Ok(metadata) => {
+            let modified = metadata.modified().ok();
+            let mtime_ms = modified
                 .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
-                .map(|value| value.as_millis()),
-        }),
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            Ok(PathState::missing())
+                .map(|value| {
+                    u64_as_javascript_number(value.as_secs()) * 1000.0
+                        + f64::from(value.subsec_nanos()) / 1_000_000.0
+                });
+            let mtime_utc = modified.and_then(format_javascript_timeclip_utc);
+            Ok(PathState {
+                exists: Some(true),
+                is_file: Some(metadata.is_file()),
+                is_directory: Some(metadata.is_dir()),
+                size: Some(metadata.len()),
+                mtime_ms,
+                mtime_utc,
+                transient_error: None,
+            })
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PathState::missing()),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            Ok(PathState::transient("EPERM"))
         }
         Err(error) => Err(error),
     }
 }
 
+fn u64_as_javascript_number(value: u64) -> f64 {
+    let high = u32::try_from(value >> 32).unwrap_or(u32::MAX);
+    let low = u32::try_from(value & u64::from(u32::MAX)).unwrap_or(u32::MAX);
+    f64::from(high) * 4_294_967_296.0 + f64::from(low)
+}
+
+fn format_javascript_timeclip_utc(value: std::time::SystemTime) -> Option<String> {
+    let duration = value.duration_since(UNIX_EPOCH).ok()?;
+    let millis = duration.as_millis();
+    let nanos = i128::try_from(millis).ok()?.saturating_mul(1_000_000);
+    let value = time::OffsetDateTime::from_unix_timestamp_nanos(nanos).ok()?;
+    Some(format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        value.year(),
+        value.month() as u8,
+        value.day(),
+        value.hour(),
+        value.minute(),
+        value.second(),
+        value.nanosecond() / 1_000_000,
+    ))
+}
+
 fn path_state_json(
-    path: &str,
+    _path: &str,
     state: &PathState,
     condition_met: bool,
+    stable_ms: Option<u64>,
     elapsed: Duration,
     timed_out: bool,
 ) -> serde_json::Value {
-    json!({
-        "path": path,
-        "exists": state.exists,
-        "isFile": state.is_file,
-        "isDirectory": state.is_directory,
-        "size": state.size,
-        "mtimeMs": state.mtime_ms,
-        "conditionMet": condition_met,
-        "waitedMs": u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX),
-        "timedOut": timed_out,
-    })
+    let mut data = serde_json::Map::new();
+    data.insert("exists".to_owned(), json!(state.exists));
+    if let Some(value) = state.is_file {
+        data.insert("isFile".to_owned(), json!(value));
+    }
+    if let Some(value) = state.is_directory {
+        data.insert("isDirectory".to_owned(), json!(value));
+    }
+    if let Some(value) = state.size {
+        data.insert("size".to_owned(), json!(value));
+    }
+    if let Some(value) = state.mtime_ms {
+        data.insert("mtimeMs".to_owned(), json!(value));
+    }
+    if let Some(value) = state.mtime_utc.as_ref() {
+        data.insert("mtimeUtc".to_owned(), json!(value));
+    }
+    if let Some(value) = state.transient_error.as_ref() {
+        data.insert("transientError".to_owned(), json!(value));
+    }
+    data.insert("conditionMet".to_owned(), json!(condition_met));
+    if let Some(value) = stable_ms {
+        data.insert("stableMs".to_owned(), json!(value));
+    }
+    data.insert(
+        "waitedMs".to_owned(),
+        json!(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)),
+    );
+    data.insert("timedOut".to_owned(), json!(timed_out));
+    serde_json::Value::Object(data)
 }
 
 #[cfg(test)]
@@ -3155,18 +3262,15 @@ mod tests {
     #[test]
     fn windows_elevation_refusal_renders_exit_740_and_bridge_diagnostics() {
         let context = ShellRenderContext {
-            read_only: false,
             output_mode: "tail".to_owned(),
             max_chars: 2_000,
             max_lines: 0,
+            error_max_chars: 65_536,
             queue_wait_ms: 7,
             slot: Some(2),
-            slots: vec![2],
-            pool: "execution".to_owned(),
-            weight: 1,
         };
         let result = render_shell_result(
-            "Windows host",
+            "Windows host".to_owned(),
             &context,
             Err(RuntimeExecError::WindowsElevationRequired),
         );
@@ -3197,6 +3301,16 @@ mod tests {
                 .as_str()
                 .is_some_and(|value| value.contains("medium-integrity"))
         );
+    }
+
+    #[test]
+    fn command_error_trimming_uses_javascript_utf16_units_and_marker() {
+        let input = format!("{}END", "😀".repeat(80));
+        let (trimmed, truncated) = trim_javascript_text(&input, 100);
+        assert!(truncated);
+        assert!(trimmed.encode_utf16().count() <= 100);
+        assert!(trimmed.contains("... truncated to 100 characters ..."));
+        assert!(!trimmed.ends_with("END"));
     }
 
     #[tokio::test]

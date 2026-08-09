@@ -269,9 +269,9 @@ impl JobStore {
         };
         object.insert("status".to_owned(), json!("cancelled"));
         object.insert("cancelRequested".to_owned(), json!(true));
-        object
-            .entry("completedAtUtc")
-            .or_insert_with(|| json!(utc_now()));
+        if object.get("completedAtUtc").is_none_or(Value::is_null) {
+            object.insert("completedAtUtc".to_owned(), json!(utc_now()));
+        }
         if !runner_alive {
             write_json_atomic(&paths.status, &Value::Object(object.clone())).await?;
         }
@@ -305,9 +305,9 @@ impl JobStore {
         let cleanup = cleanup_orphan_child(child_pid, heartbeat_age, &runtime_mode).await;
 
         object.insert("status".to_owned(), json!("interrupted"));
-        object
-            .entry("completedAtUtc")
-            .or_insert_with(|| json!(utc_now()));
+        if object.get("completedAtUtc").is_none_or(Value::is_null) {
+            object.insert("completedAtUtc".to_owned(), json!(utc_now()));
+        }
         object.insert("interrupted".to_owned(), json!(true));
         object.insert("runtimeMode".to_owned(), json!(runtime_mode));
         object.insert(
@@ -801,10 +801,10 @@ fn decorate_status(
     heartbeat_age: Option<Duration>,
 ) {
     object.insert("runnerAlive".to_owned(), json!(runner_alive));
-    object.insert("jobDir".to_owned(), json!(path_text(&paths.dir)));
     if let Some(age) = heartbeat_age {
         object.insert("heartbeatAgeMs".to_owned(), json!(duration_ms(age)));
     }
+    object.insert("jobDir".to_owned(), json!(path_text(&paths.dir)));
 }
 
 fn status_age(object: &Map<String, Value>) -> Duration {
@@ -1112,8 +1112,11 @@ mod tests {
         .await;
         let first = store.cancel(id).await.unwrap();
         let second = store.cancel(id).await.unwrap();
+        let reconciled = store.get_status(id).await.unwrap();
         assert_eq!(first["status"], "cancelled");
         assert_eq!(second["status"], "cancelled");
+        assert_eq!(reconciled["status"], "cancelled");
+        assert!(reconciled["completedAtUtc"].as_str().is_some());
         assert!(paths.cancel.exists());
     }
 }

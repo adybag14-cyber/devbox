@@ -80,18 +80,14 @@ impl SearchService {
             Err(RipgrepAttemptError::Unavailable(error))
                 if self.config.runtime_mode == RuntimeMode::Host =>
             {
-                let mut result = search_host_fallback(
+                let _ = error;
+                search_host_fallback(
                     resolve_host_root(&self.config, &request.path),
                     &request,
                     &line_regex,
                     cancellation,
                 )
-                .await?;
-                result.stderr = format!(
-                    "search backend rust fallback; ripgrep unavailable: {error}; {}",
-                    result.stderr
-                );
-                Ok(result)
+                .await
             }
             Err(RipgrepAttemptError::Unavailable(error)) => {
                 bail!("ripgrep is unavailable in the selected Devbox runtime: {error}")
@@ -277,7 +273,12 @@ fn build_rg_result(
     } else {
         format!("{}\n", parser.matches.join("\n"))
     };
-    ProcessResult::success(stdout, format!("{}\n", notices.join("; ")))
+    let stderr = if notices.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", notices.join("; "))
+    };
+    ProcessResult::success(stdout, stderr)
 }
 
 #[derive(Debug, Default)]
@@ -571,7 +572,7 @@ async fn search_fallback_file(
 }
 
 fn build_fallback_result(request: &SearchRequest, state: &FallbackState) -> ProcessResult {
-    let mut notices = vec!["search backend rust fallback".to_owned()];
+    let mut notices = Vec::new();
     if state.timed_out {
         notices.push(format!(
             "search stopped after {} ms",
@@ -593,16 +594,17 @@ fn build_fallback_result(request: &SearchRequest, state: &FallbackState) -> Proc
     if state.skipped_large > 0 {
         notices.push(format!("skipped {} oversized files", state.skipped_large));
     }
-    if state.skipped_binary > 0 {
-        notices.push(format!("skipped {} binary files", state.skipped_binary));
-    }
-    notices.push(format!("candidate files {}", state.files_scanned));
     let stdout = if state.matches.is_empty() {
         String::new()
     } else {
         format!("{}\n", state.matches.join("\n"))
     };
-    ProcessResult::success(stdout, format!("{}\n", notices.join("; ")))
+    let stderr = if notices.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", notices.join("; "))
+    };
+    ProcessResult::success(stdout, stderr)
 }
 
 fn is_skippable_search_error(error: &std::io::Error) -> bool {

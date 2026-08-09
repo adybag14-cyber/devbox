@@ -27,7 +27,7 @@ pub fn configure_tool_output_schema(tool: &mut Tool) {
                 "data": {},
                 "stdout": { "type": "string" },
                 "stderr": { "type": "string" },
-                "exitCode": { "type": "number" },
+                "exitCode": { "anyOf": [{ "type": "number" }, { "type": "null" }] },
                 "truncated": { "type": "boolean" }
             }),
         ),

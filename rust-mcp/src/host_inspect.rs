@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
 use tokio::{fs, io::AsyncReadExt};
 use tokio_util::sync::CancellationToken;
 
@@ -113,8 +113,30 @@ fn apply_metadata(info: &mut Value, metadata: &std::fs::Metadata) {
     info["last_modified_utc"] = metadata
         .modified()
         .ok()
-        .and_then(|value| OffsetDateTime::from(value).format(&Rfc3339).ok())
+        .map(OffsetDateTime::from)
+        .map(format_javascript_iso_utc)
         .map_or(Value::Null, Value::String);
+}
+
+fn format_javascript_iso_utc(value: OffsetDateTime) -> String {
+    let nanos = value.unix_timestamp_nanos();
+    let rounded_millis = if nanos >= 0 {
+        (nanos + 500_000) / 1_000_000
+    } else {
+        (nanos - 500_000) / 1_000_000
+    };
+    let rounded =
+        OffsetDateTime::from_unix_timestamp_nanos(rounded_millis * 1_000_000).unwrap_or(value);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        rounded.year(),
+        rounded.month() as u8,
+        rounded.day(),
+        rounded.hour(),
+        rounded.minute(),
+        rounded.second(),
+        rounded.nanosecond() / 1_000_000,
+    )
 }
 
 async fn inspect_regular_file(
@@ -436,6 +458,15 @@ mod tests {
         assert_eq!(detect_line_endings("a\r\nb\r\n"), "crlf");
         assert_eq!(detect_line_endings("a\nb\n"), "lf");
         assert_eq!(detect_line_endings("a\r\nb\n"), "mixed");
+    }
+
+    #[test]
+    fn javascript_iso_rounds_native_submillisecond_timestamp() {
+        let value = OffsetDateTime::from_unix_timestamp(0)
+            .unwrap()
+            .replace_nanosecond(735_970_000)
+            .unwrap();
+        assert_eq!(format_javascript_iso_utc(value), "1970-01-01T00:00:00.736Z");
     }
 
     #[test]
