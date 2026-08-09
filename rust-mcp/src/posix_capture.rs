@@ -1,5 +1,6 @@
+#[cfg(not(target_os = "macos"))]
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -10,7 +11,9 @@ use serde_json::{Value, json};
 use tokio::fs;
 use tokio_util::sync::CancellationToken;
 
-use crate::process::{ProcessError, ProcessOptions, ProcessOutput, spawn_process};
+#[cfg(not(target_os = "macos"))]
+use crate::process::ProcessError;
+use crate::process::{ProcessOptions, ProcessOutput, spawn_process};
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
@@ -24,6 +27,7 @@ pub struct NativeCapture {
     pub metadata: Value,
 }
 
+#[cfg(not(target_os = "macos"))]
 #[derive(Debug, Clone)]
 struct WindowCandidate {
     window_id: String,
@@ -34,25 +38,29 @@ struct WindowCandidate {
     height: u32,
 }
 
-/// Capture the full host display on Linux/macOS using the same native-command backends as JS.
+/// Capture the full macOS host display using the native screenshot backend.
+///
+/// # Errors
+/// Returns when capture fails or PNG output is invalid.
+#[cfg(target_os = "macos")]
+pub async fn capture_display(quality: u8) -> Result<NativeCapture> {
+    capture_macos_display(quality).await
+}
+
+/// Capture the full Linux host display using the configured native screenshot backend.
 ///
 /// # Errors
 /// Returns when no graphical session/capture utility exists, the command fails, or PNG output is invalid.
+#[cfg(not(target_os = "macos"))]
 pub async fn capture_display(quality: u8) -> Result<NativeCapture> {
-    #[cfg(target_os = "macos")]
-    {
-        return capture_macos_display(quality).await;
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        capture_linux_display(quality).await
-    }
+    capture_linux_display(quality).await
 }
 
-/// Capture the best visible window for a PID/process tree on Linux/macOS.
+/// Capture the best visible macOS window for a PID/process tree.
 ///
 /// # Errors
 /// Returns for missing processes/windows/utilities, capture failures, or invalid PNG output.
+#[cfg(target_os = "macos")]
 pub async fn capture_program(
     pid: u32,
     quality: u8,
@@ -61,14 +69,23 @@ pub async fn capture_program(
     if pid == 0 {
         bail!("pid must be a positive process ID.");
     }
-    #[cfg(target_os = "macos")]
-    {
-        return capture_macos_program(pid, quality, include_process_tree).await;
+    capture_macos_program(pid, quality, include_process_tree).await
+}
+
+/// Capture the best visible Linux window for a PID/process tree.
+///
+/// # Errors
+/// Returns for missing processes/windows/utilities, capture failures, or invalid PNG output.
+#[cfg(not(target_os = "macos"))]
+pub async fn capture_program(
+    pid: u32,
+    quality: u8,
+    include_process_tree: bool,
+) -> Result<NativeCapture> {
+    if pid == 0 {
+        bail!("pid must be a positive process ID.");
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        capture_linux_program(pid, quality, include_process_tree).await
-    }
+    capture_linux_program(pid, quality, include_process_tree).await
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -458,7 +475,7 @@ async fn macos_process_name(pid: u32) -> Result<String> {
 
 #[cfg(target_os = "macos")]
 async fn macos_window_metadata(pid: u32, include_process_tree: bool) -> Result<Value> {
-    let script = r#"import json, subprocess, sys
+    let script = r"import json, subprocess, sys
 try:
     from Quartz import CGWindowListCopyWindowInfo, kCGWindowListOptionOnScreenOnly, kCGNullWindowID
 except Exception as exc:
@@ -492,7 +509,7 @@ for item in CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullW
                 'candidate_pid_count': len(pids)}
 if best is None:
     print(json.dumps({'error': 'No visible Quartz window found for the requested process tree.'})); sys.exit(3)
-best.pop('area', None); print(json.dumps(best))"#;
+best.pop('area', None); print(json.dumps(best))";
     let output = run_command(
         "python3",
         vec![
@@ -507,6 +524,7 @@ best.pop('area', None); print(json.dumps(best))"#;
     serde_json::from_str(output.stdout.trim()).context("parse macOS Quartz window metadata")
 }
 
+#[cfg(not(target_os = "macos"))]
 async fn command_available(program: &str) -> bool {
     match run_command(
         program,
@@ -520,6 +538,7 @@ async fn command_available(program: &str) -> bool {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn version_probe_args(program: &str) -> Vec<String> {
     match program {
         "gnome-screenshot" | "grim" | "scrot" | "xdotool" | "wmctrl" | "xwininfo" => {
@@ -549,6 +568,7 @@ async fn run_command(
     .map_err(anyhow::Error::new)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn is_missing_program_error(error: &anyhow::Error) -> bool {
     let text = process_error_text(error).to_ascii_lowercase();
     text.contains("no such file") || text.contains("not found") || text.contains("cannot find")
@@ -562,6 +582,7 @@ fn is_no_match_error(error: &anyhow::Error) -> bool {
         == Some(1)
 }
 
+#[cfg(not(target_os = "macos"))]
 fn process_error_text(error: &anyhow::Error) -> String {
     if let Some(process) = error.downcast_ref::<ProcessError>() {
         format!("{} {} {}", process.message, process.stdout, process.stderr)
@@ -595,11 +616,10 @@ fn path_text(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "macos")))]
 mod tests {
     use super::*;
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn proc_stat_parser_handles_spaces_in_process_name() {
         let parsed = parse_proc_stat("123 (my process) S 42 0 0 0").expect("parse stat");
@@ -607,7 +627,6 @@ mod tests {
         assert_eq!(parsed.1, "my process");
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn wmctrl_parser_filters_candidate_pids() {
         let pids = HashSet::from([100_u32]);
@@ -616,7 +635,6 @@ mod tests {
         assert_eq!(result, [("0x01".to_owned(), 100)]);
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn xwininfo_parser_extracts_geometry() {
         let parsed = parse_xwininfo(

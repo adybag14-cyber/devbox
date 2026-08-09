@@ -432,10 +432,7 @@ async fn search_host_fallback(
         .filter(|name| !name.is_empty())
         .collect::<HashSet<_>>();
     let glob_regex = glob_regex(&request.glob)?;
-    let root_is_file = fs::metadata(&root)
-        .await
-        .map(|value| value.is_file())
-        .unwrap_or(false);
+    let root_is_file = fs::metadata(&root).await.is_ok_and(|value| value.is_file());
     let context = FallbackContext {
         root: &root,
         root_is_file,

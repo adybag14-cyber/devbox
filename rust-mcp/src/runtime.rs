@@ -8,7 +8,9 @@ use std::{
 };
 
 use futures::future::join_all;
-use tokio::sync::{Mutex, OnceCell, mpsc::UnboundedSender};
+#[cfg(windows)]
+use tokio::sync::OnceCell;
+use tokio::sync::{Mutex, mpsc::UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -104,6 +106,7 @@ struct VersionCacheEntry {
 pub struct RuntimeExecutor {
     config: Arc<Config>,
     versions_cache: Arc<Mutex<Option<VersionCacheEntry>>>,
+    #[cfg(windows)]
     windows_admin_state: Arc<OnceCell<bool>>,
 }
 
@@ -113,6 +116,7 @@ impl RuntimeExecutor {
         Self {
             config,
             versions_cache: Arc::new(Mutex::new(None)),
+            #[cfg(windows)]
             windows_admin_state: Arc::new(OnceCell::new()),
         }
     }
@@ -126,6 +130,7 @@ impl RuntimeExecutor {
     ///
     /// # Errors
     /// Returns `PowerShell` launch or parse failures while probing the current process identity.
+    #[cfg(windows)]
     pub async fn warm_host_execution_state(
         &self,
         cancellation: CancellationToken,
@@ -133,15 +138,16 @@ impl RuntimeExecutor {
         if !self.config.host_exec_enabled || !self.config.platform.is_windows {
             return Ok(None);
         }
-        #[cfg(windows)]
-        {
-            return self.windows_admin_state(cancellation).await.map(Some);
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = cancellation;
-            Ok(None)
-        }
+        self.windows_admin_state(cancellation).await.map(Some)
+    }
+
+    /// Non-Windows hosts have no Windows administrator state to warm.
+    #[cfg(not(windows))]
+    pub fn warm_host_execution_state(
+        &self,
+        _cancellation: CancellationToken,
+    ) -> std::future::Ready<Result<Option<bool>, RuntimeExecError>> {
+        std::future::ready(Ok(None))
     }
 
     /// Read cached toolchain versions from the selected runtime, refreshing at the JS-configured TTL.

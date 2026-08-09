@@ -308,7 +308,6 @@ fn configure_detached(command: &mut Command) {
 
 #[cfg(unix)]
 fn configure_detached(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
     command.process_group(0);
 }
 

@@ -756,15 +756,16 @@ mod tests {
     }
 
     #[cfg(unix)]
-    async fn process_is_alive(pid: u32) -> bool {
+    fn process_is_alive(pid: u32) -> std::future::Ready<bool> {
         use nix::{sys::signal::kill, unistd::Pid};
-        i32::try_from(pid)
+        let alive = i32::try_from(pid)
             .ok()
-            .is_some_and(|value| kill(Pid::from_raw(value), None).is_ok())
+            .is_some_and(|value| kill(Pid::from_raw(value), None).is_ok());
+        std::future::ready(alive)
     }
 
     #[cfg(not(any(windows, unix)))]
-    async fn process_is_alive(_pid: u32) -> bool {
-        false
+    fn process_is_alive(_pid: u32) -> std::future::Ready<bool> {
+        std::future::ready(false)
     }
 }
