@@ -3,6 +3,7 @@ pub mod contract;
 pub mod docker_files;
 pub mod execution;
 pub mod files;
+pub mod host_inspect;
 pub mod job_logs;
 pub mod job_manager;
 pub mod job_runner;

@@ -66,6 +66,7 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "windows_host_exec",
     "host_run_program",
     "windows_host_run_program",
+    "windows_host_inspect_file",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

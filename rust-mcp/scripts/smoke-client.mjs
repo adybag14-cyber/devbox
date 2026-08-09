@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -47,6 +47,7 @@ for (const requiredTool of [
   "windows_host_exec",
   "host_run_program",
   "windows_host_run_program",
+  "windows_host_inspect_file",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -220,6 +221,42 @@ try {
     });
     assert.equal(devboxRead.isError, false);
     assert.equal(devboxRead.structuredContent?.stdout, "alpha\nbeta\n");
+
+    const inspected = await client.callTool({
+      name: "windows_host_inspect_file",
+      arguments: { path: devboxTextPath, max_bytes: 1_024 },
+    });
+    assert.equal(inspected.isError, false);
+    assert.equal(inspected.structuredContent?.data?.exists, true);
+    assert.equal(inspected.structuredContent?.data?.is_file, true);
+    assert.equal(inspected.structuredContent?.data?.utf8_valid, true);
+    assert.equal(inspected.structuredContent?.data?.line_endings, "lf");
+    assert.equal(inspected.structuredContent?.data?.likely_corrupted_on_disk, false);
+    assert.match(inspected.structuredContent?.data?.preview || "", /^alpha\nbeta/);
+
+    if (process.platform === "win32") {
+      const validPs1 = path.join(fixtureDir, "valid.ps1");
+      const invalidPs1 = path.join(fixtureDir, "invalid.ps1");
+      await writeFile(validPs1, "Write-Output 'ok'\n", "utf8");
+      await writeFile(invalidPs1, "function Broken {\n", "utf8");
+
+      const validPowerShell = await client.callTool({
+        name: "windows_host_inspect_file",
+        arguments: { path: validPs1, max_bytes: 4_096 },
+      });
+      assert.equal(validPowerShell.isError, false);
+      assert.equal(validPowerShell.structuredContent?.data?.powershell_syntax?.parse_ok, true);
+      assert.equal(validPowerShell.structuredContent?.data?.syntax_invalid, false);
+
+      const invalidPowerShell = await client.callTool({
+        name: "windows_host_inspect_file",
+        arguments: { path: invalidPs1, max_bytes: 4_096 },
+      });
+      assert.equal(invalidPowerShell.isError, false);
+      assert.equal(invalidPowerShell.structuredContent?.data?.powershell_syntax?.parse_ok, false);
+      assert.ok((invalidPowerShell.structuredContent?.data?.powershell_syntax?.error_count || 0) > 0);
+      assert.equal(invalidPowerShell.structuredContent?.data?.syntax_invalid, true);
+    }
 
     const devboxList = await client.callTool({
       name: "devbox_list_files",

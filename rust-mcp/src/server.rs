@@ -35,6 +35,7 @@ use crate::{
     docker_files::{DockerFileBackend, DockerListOptions},
     execution::{AcquireRequest, ExecutionScheduler, SchedulerConfig},
     files::{FileService, LargeReadResult, LargeWriteResult, ListOptions, ProcessResult},
+    host_inspect::{InspectFileRequest, inspect_host_file},
     job_manager::{JobManager, StartProgramJob},
     output::{OutputMode, shape_process_output},
     result::ToolEnvelope,
@@ -191,6 +192,15 @@ struct SearchFilesRequest {
     exclude_directories: Vec<String>,
     #[serde(default)]
     include_ignored: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct HostInspectFileRequest {
+    path: String,
+    #[serde(default)]
+    working_dir: Option<String>,
+    #[serde(default = "default_large_read_bytes")]
+    max_bytes: usize,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1482,6 +1492,59 @@ impl DevboxMcp {
                         "weight": lease.weight,
                     }
                 })),
+            ),
+        }
+    }
+
+    #[tool(
+        name = "windows_host_inspect_file",
+        description = "Inspect exact host-file bytes, encoding/corruption signals, binary magic, and PowerShell syntax where relevant.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn windows_host_inspect_file(
+        &self,
+        Parameters(request): Parameters<HostInspectFileRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if !self.config.host_exec_enabled {
+            return ToolEnvelope::error("Host execution is disabled.", None);
+        }
+        if request.path.trim().is_empty() {
+            return ToolEnvelope::error("path must not be empty", None);
+        }
+        if request.max_bytes == 0 || request.max_bytes > self.config.max_mcp_transfer_chars {
+            return ToolEnvelope::error(
+                format!(
+                    "max_bytes must be between 1 and {}",
+                    self.config.max_mcp_transfer_chars
+                ),
+                None,
+            );
+        }
+        let working_dir = request
+            .working_dir
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(|| self.config.host_default_workdir.clone(), PathBuf::from);
+        match inspect_host_file(
+            self.config.clone(),
+            self.runtime.clone(),
+            InspectFileRequest {
+                path: request.path.clone(),
+                working_dir,
+                max_bytes: request.max_bytes,
+            },
+            cancellation,
+        )
+        .await
+        {
+            Ok(data) => ToolEnvelope::success(
+                format!("Inspected {} on the host.", request.path),
+                Some(data),
+            ),
+            Err(error) => ToolEnvelope::error(
+                format!("Failed to inspect {} on the host: {error}", request.path),
+                None,
             ),
         }
     }
