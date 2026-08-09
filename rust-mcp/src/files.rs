@@ -304,9 +304,9 @@ impl FileService {
             .collect::<HashSet<_>>();
         let max_entries = options.max_entries.max(1);
         let max_depth = if options.recursive {
-            options.max_depth
+            options.max_depth.max(1)
         } else {
-            0
+            1
         };
         let mut stack = vec![(options.path.clone(), 0_usize)];
         let mut collected = Vec::new();
@@ -333,12 +333,14 @@ impl FileService {
                     return Err(error).with_context(|| format!("inspect {}", path.display()));
                 }
             };
-            collected.push(format!("{}\t{}", entry_type(&metadata), path.display()));
-            if collected.len() >= max_entries {
-                truncated = true;
-                break;
+            if depth > 0 || !metadata.is_dir() {
+                collected.push(format!("{}\t{}", entry_type(&metadata), path.display()));
+                if collected.len() >= max_entries {
+                    truncated = true;
+                    break;
+                }
             }
-            if !metadata.is_dir() || !options.recursive || depth >= max_depth {
+            if !metadata.is_dir() || depth >= max_depth {
                 continue;
             }
 
@@ -585,6 +587,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn non_recursive_listing_returns_immediate_children_only() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        fs::create_dir_all(temp.path().join("nested"))
+            .await
+            .unwrap();
+        fs::write(temp.path().join("a.txt"), b"a").await.unwrap();
+        fs::write(temp.path().join("nested").join("deep.txt"), b"deep")
+            .await
+            .unwrap();
+        let files = FileService::new();
+        let result = files
+            .list(
+                &ListOptions {
+                    path: temp.path().to_path_buf(),
+                    recursive: false,
+                    max_depth: 4,
+                    max_entries: 20,
+                    timeout: Duration::from_secs(1),
+                    exclude_directories: Vec::new(),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("list");
+        let lines = result.stdout.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 2);
+        assert!(lines.iter().any(|line| line.ends_with("a.txt")));
+        assert!(lines.iter().any(|line| line.ends_with("nested")));
+        assert!(!result.stdout.contains("deep.txt"));
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.ends_with(&temp.path().to_string_lossy().to_string()))
+        );
+    }
+
+    #[tokio::test]
     async fn listing_is_sorted_pruned_and_bounded() {
         let temp = tempfile::tempdir().expect("temp dir");
         fs::create_dir_all(temp.path().join("node_modules"))
@@ -611,9 +650,9 @@ mod tests {
             .await
             .expect("list");
         let lines = result.stdout.lines().collect::<Vec<_>>();
-        assert_eq!(lines.len(), 3);
-        assert!(lines[1].ends_with("a.txt"));
-        assert!(lines[2].ends_with("z.txt"));
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].ends_with("a.txt"));
+        assert!(lines[1].ends_with("z.txt"));
         assert!(result.stderr.contains("pruned 1 excluded directories"));
     }
 }

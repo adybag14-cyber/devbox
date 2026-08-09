@@ -37,6 +37,11 @@ for (const requiredTool of [
   "devbox_exec",
   "devbox_exec_readonly",
   "devbox_exec_start",
+  "devbox_list_files",
+  "devbox_read_file",
+  "devbox_read_large_file",
+  "devbox_write_file",
+  "devbox_write_large_file",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -174,7 +179,49 @@ try {
 
   const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "devbox-rust-mcp-smoke-"));
   const fixturePath = path.join(fixtureDir, "exact-bytes.bin");
+  const devboxTextPath = path.join(fixtureDir, "devbox-text.txt");
+  const devboxExactPath = path.join(fixtureDir, "devbox-exact.bin");
   try {
+    const devboxWrite = await client.callTool({
+      name: "devbox_write_file",
+      arguments: { path: devboxTextPath, content: "alpha\nbeta\n" },
+    });
+    assert.equal(devboxWrite.isError, false);
+    assert.equal(devboxWrite.structuredContent?.ok, true);
+
+    const devboxRead = await client.callTool({
+      name: "devbox_read_file",
+      arguments: { path: devboxTextPath, max_bytes: 64 },
+    });
+    assert.equal(devboxRead.isError, false);
+    assert.equal(devboxRead.structuredContent?.stdout, "alpha\nbeta\n");
+
+    const devboxList = await client.callTool({
+      name: "devbox_list_files",
+      arguments: { path: fixtureDir, recursive: false, max_entries: 20 },
+    });
+    assert.equal(devboxList.isError, false);
+    assert.match(devboxList.structuredContent?.stdout || "", /devbox-text\.txt/);
+
+    const devboxLargeWrite = await client.callTool({
+      name: "devbox_write_large_file",
+      arguments: {
+        path: devboxExactPath,
+        content_base64: "AP9hbHBoYQo=",
+        expected_sha256: "5cd13e70af539c9471799a5cf52bc04af6ee4a13bd866523861a1fc51fa6acb5",
+      },
+    });
+    assert.equal(devboxLargeWrite.isError, false);
+    assert.equal(devboxLargeWrite.structuredContent?.data?.verified, true);
+
+    const devboxLargeRead = await client.callTool({
+      name: "devbox_read_large_file",
+      arguments: { path: devboxExactPath, offset_bytes: 1, max_bytes: 4 },
+    });
+    assert.equal(devboxLargeRead.isError, false);
+    assert.equal(devboxLargeRead.structuredContent?.data?.content_base64, "/2FscA==");
+    assert.ok(!devboxLargeRead.content?.[0]?.text?.includes("/2FscA=="), "devbox large read must keep raw base64 out of text content");
+
     const write = await client.callTool({
       name: "windows_host_write_large_file",
       arguments: {

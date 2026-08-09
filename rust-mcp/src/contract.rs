@@ -56,6 +56,11 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "devbox_exec",
     "devbox_exec_readonly",
     "devbox_exec_start",
+    "devbox_list_files",
+    "devbox_read_file",
+    "devbox_read_large_file",
+    "devbox_write_file",
+    "devbox_write_large_file",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

@@ -32,8 +32,9 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use crate::{
     Config, RuntimeMode,
     contract::ParityReport,
+    docker_files::{DockerFileBackend, DockerListOptions},
     execution::{AcquireRequest, ExecutionScheduler, SchedulerConfig},
-    files::{FileService, LargeReadResult, LargeWriteResult},
+    files::{FileService, LargeReadResult, LargeWriteResult, ListOptions, ProcessResult},
     job_manager::{JobManager, StartProgramJob},
     output::{OutputMode, shape_process_output},
     result::ToolEnvelope,
@@ -44,6 +45,7 @@ use crate::{
 pub struct DevboxMcp {
     config: Arc<Config>,
     files: Arc<FileService>,
+    docker_files: Arc<DockerFileBackend>,
     scheduler: Arc<ExecutionScheduler>,
     runtime: Arc<RuntimeExecutor>,
     jobs: Arc<JobManager>,
@@ -66,6 +68,7 @@ impl DevboxMcp {
             jobs: Arc::new(JobManager::new(config.clone())),
             config,
             files: Arc::new(FileService::new()),
+            docker_files: Arc::new(DockerFileBackend::new()),
             scheduler,
             tool_router: Self::tool_router(),
         }
@@ -105,6 +108,63 @@ struct WaitForFileRequest {
     #[serde(default = "default_poll_ms")]
     #[schemars(description = "Filesystem poll interval in milliseconds.")]
     poll_ms: u64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DevboxListFilesRequest {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    recursive: bool,
+    #[serde(default = "default_list_depth")]
+    max_depth: usize,
+    #[serde(default = "default_list_entries")]
+    max_entries: usize,
+    #[serde(default = "default_list_timeout")]
+    timeout_seconds: u64,
+    #[serde(default = "default_excluded_directories")]
+    exclude_directories: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DevboxReadFileRequest {
+    path: String,
+    #[serde(default = "default_read_bytes")]
+    max_bytes: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DevboxLargeReadRequest {
+    path: String,
+    #[serde(default)]
+    offset_bytes: u64,
+    #[serde(default = "default_large_read_bytes")]
+    max_bytes: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DevboxWriteFileRequest {
+    path: String,
+    content: String,
+    #[serde(default)]
+    append: bool,
+    #[serde(default = "default_true")]
+    create_dirs: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DevboxLargeWriteRequest {
+    path: String,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    content_base64: Option<String>,
+    #[serde(default)]
+    append: bool,
+    #[serde(default = "default_true")]
+    create_dirs: bool,
+    #[serde(default)]
+    expected_sha256: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -320,6 +380,31 @@ const fn default_poll_ms() -> u64 {
 }
 const fn default_large_read_bytes() -> usize {
     262_144
+}
+const fn default_read_bytes() -> usize {
+    65_536
+}
+const fn default_list_depth() -> usize {
+    4
+}
+const fn default_list_entries() -> usize {
+    5_000
+}
+const fn default_list_timeout() -> u64 {
+    30
+}
+fn default_excluded_directories() -> Vec<String> {
+    [
+        ".git",
+        "node_modules",
+        ".cache",
+        ".venv",
+        "venv",
+        "__pycache__",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
 }
 
 #[tool_router(router = tool_router)]
@@ -784,6 +869,296 @@ impl DevboxMcp {
     }
 
     #[tool(
+        name = "devbox_list_files",
+        description = "List files inside the selected Devbox runtime with bounded recursion and pruning.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_list_files(
+        &self,
+        Parameters(request): Parameters<DevboxListFilesRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if !(1..=20).contains(&request.max_depth)
+            || !(1..=50_000).contains(&request.max_entries)
+            || !(1..=300).contains(&request.timeout_seconds)
+            || request.exclude_directories.len() > 32
+        {
+            return ToolEnvelope::error("Invalid file-list bounds.", None);
+        }
+        let path = if request.path.trim().is_empty() {
+            self.config
+                .devbox_workspace_path
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            request.path
+        };
+        let result = match self.config.runtime_mode {
+            RuntimeMode::Host => self
+                .files
+                .list(
+                    &ListOptions {
+                        path: PathBuf::from(&path),
+                        recursive: request.recursive,
+                        max_depth: request.max_depth,
+                        max_entries: request.max_entries,
+                        timeout: Duration::from_secs(request.timeout_seconds),
+                        exclude_directories: request.exclude_directories,
+                    },
+                    &cancellation,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+            RuntimeMode::Docker => self
+                .docker_files
+                .list(
+                    &self.config,
+                    &DockerListOptions {
+                        path: path.clone(),
+                        recursive: request.recursive,
+                        max_depth: request.max_depth,
+                        max_entries: request.max_entries,
+                        timeout: Duration::from_secs(request.timeout_seconds),
+                        exclude_directories: request.exclude_directories,
+                    },
+                    cancellation,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+        };
+        render_file_process_result(format!("Listed files in {path}."), result)
+    }
+
+    #[tool(
+        name = "devbox_read_file",
+        description = "Read bounded UTF-8 text content from a regular file inside the selected Devbox runtime.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_read_file(
+        &self,
+        Parameters(request): Parameters<DevboxReadFileRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if request.path.trim().is_empty() {
+            return ToolEnvelope::error("path must not be empty", None);
+        }
+        if request.max_bytes == 0 || request.max_bytes > self.config.max_mcp_transfer_chars {
+            return ToolEnvelope::error(
+                format!(
+                    "max_bytes must be between 1 and {}",
+                    self.config.max_mcp_transfer_chars
+                ),
+                None,
+            );
+        }
+        let result = match self.config.runtime_mode {
+            RuntimeMode::Host => self
+                .files
+                .read_text(PathBuf::from(&request.path).as_path(), request.max_bytes)
+                .await
+                .map_err(|error| error.to_string()),
+            RuntimeMode::Docker => self
+                .docker_files
+                .read_text(&self.config, &request.path, request.max_bytes, cancellation)
+                .await
+                .map_err(|error| error.to_string()),
+        };
+        render_file_process_result(
+            format!(
+                "Read {} from the {}.",
+                request.path,
+                self.config.runtime_label()
+            ),
+            result,
+        )
+    }
+
+    #[tool(
+        name = "devbox_read_large_file",
+        description = "Read an exact byte range from a larger file inside the selected Devbox runtime.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_read_large_file(
+        &self,
+        Parameters(request): Parameters<DevboxLargeReadRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if request.path.trim().is_empty() {
+            return ToolEnvelope::error("path must not be empty", None);
+        }
+        if request.max_bytes == 0 || request.max_bytes > self.config.max_mcp_transfer_chars {
+            return ToolEnvelope::error(
+                format!(
+                    "max_bytes must be between 1 and {}",
+                    self.config.max_mcp_transfer_chars
+                ),
+                None,
+            );
+        }
+        let result = match self.config.runtime_mode {
+            RuntimeMode::Host => self
+                .files
+                .read_large(
+                    PathBuf::from(&request.path).as_path(),
+                    request.offset_bytes,
+                    request.max_bytes,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+            RuntimeMode::Docker => self
+                .docker_files
+                .read_large(
+                    &self.config,
+                    &request.path,
+                    request.offset_bytes,
+                    request.max_bytes,
+                    cancellation,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+        };
+        match result {
+            Ok(data) => {
+                let summary = format!(
+                    "Read {} from byte {} in the {}.",
+                    request.path,
+                    request.offset_bytes,
+                    self.config.runtime_label()
+                );
+                let text = large_read_text(&summary, &data);
+                ToolEnvelope::success_with_text(summary, serde_json::to_value(data).ok(), text)
+            }
+            Err(error) => {
+                ToolEnvelope::error(format!("Failed to read {}: {error}", request.path), None)
+            }
+        }
+    }
+
+    #[tool(
+        name = "devbox_write_file",
+        description = "Create, overwrite, or append UTF-8 text inside the selected Devbox runtime.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_write_file(
+        &self,
+        Parameters(request): Parameters<DevboxWriteFileRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if request.path.trim().is_empty() {
+            return ToolEnvelope::error("path must not be empty", None);
+        }
+        let result = match self.config.runtime_mode {
+            RuntimeMode::Host => self
+                .files
+                .write_text(
+                    PathBuf::from(&request.path).as_path(),
+                    &request.content,
+                    request.append,
+                    request.create_dirs,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+            RuntimeMode::Docker => self
+                .docker_files
+                .write_text(
+                    &self.config,
+                    &request.path,
+                    &request.content,
+                    request.append,
+                    request.create_dirs,
+                    cancellation,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+        };
+        let summary = if request.append {
+            format!(
+                "Appended text to {} in the {}.",
+                request.path,
+                self.config.runtime_label()
+            )
+        } else {
+            format!(
+                "Wrote {} in the {}.",
+                request.path,
+                self.config.runtime_label()
+            )
+        };
+        render_file_process_result(summary, result)
+    }
+
+    #[tool(
+        name = "devbox_write_large_file",
+        description = "Create, overwrite, or append exact bytes inside the selected Devbox runtime with post-write verification.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_write_large_file(
+        &self,
+        Parameters(request): Parameters<DevboxLargeWriteRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if request.path.trim().is_empty() {
+            return ToolEnvelope::error("path must not be empty", None);
+        }
+        let content_base64 = match normalize_large_write_payload(
+            request.content.as_deref(),
+            request.content_base64.as_deref(),
+        ) {
+            Ok(value) => value,
+            Err(message) => return ToolEnvelope::error(message, None),
+        };
+        let result = match self.config.runtime_mode {
+            RuntimeMode::Host => self
+                .files
+                .write_large(
+                    PathBuf::from(&request.path).as_path(),
+                    &content_base64,
+                    request.append,
+                    request.create_dirs,
+                    request.expected_sha256.as_deref(),
+                )
+                .await
+                .map_err(|error| error.to_string()),
+            RuntimeMode::Docker => self
+                .docker_files
+                .write_large(
+                    &self.config,
+                    &request.path,
+                    &content_base64,
+                    request.append,
+                    request.create_dirs,
+                    request.expected_sha256.as_deref(),
+                    cancellation,
+                )
+                .await
+                .map_err(|error| error.to_string()),
+        };
+        match result {
+            Ok(data) => {
+                let summary = if request.append {
+                    format!(
+                        "Appended large payload to {} in the {} and verified the exact bytes.",
+                        request.path,
+                        self.config.runtime_label()
+                    )
+                } else {
+                    format!(
+                        "Wrote large payload to {} in the {} and verified the exact bytes.",
+                        request.path,
+                        self.config.runtime_label()
+                    )
+                };
+                let text = large_write_text(&summary, &data);
+                ToolEnvelope::success_with_text(summary, serde_json::to_value(data).ok(), text)
+            }
+            Err(error) => ToolEnvelope::error(
+                format!("Failed to write large payload to {}: {error}", request.path),
+                None,
+            ),
+        }
+    }
+
+    #[tool(
         name = "windows_host_read_large_file",
         description = "Read an exact byte range from a Windows host file without lossy UTF-8 conversion.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
@@ -1035,6 +1410,23 @@ async fn root_metadata(State(state): State<HttpState>, headers: HeaderMap) -> im
         },
     });
     (StatusCode::OK, Json(body))
+}
+
+fn render_file_process_result(
+    summary: String,
+    result: Result<ProcessResult, String>,
+) -> CallToolResult {
+    match result {
+        Ok(result) => ToolEnvelope::process_success(
+            summary,
+            Some(json!({})),
+            result.stdout,
+            result.stderr,
+            result.exit_code,
+            false,
+        ),
+        Err(error) => ToolEnvelope::error(error, None),
+    }
 }
 
 fn render_shell_result(
