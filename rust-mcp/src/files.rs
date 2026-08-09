@@ -7,7 +7,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
     fs::{self, File, OpenOptions},
@@ -35,7 +35,7 @@ impl ProcessResult {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LargeReadResult {
     pub path: String,
     pub file_size: u64,
@@ -49,7 +49,7 @@ pub struct LargeReadResult {
     pub content_base64: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LargeWriteResult {
     pub path: String,
     pub append: bool,

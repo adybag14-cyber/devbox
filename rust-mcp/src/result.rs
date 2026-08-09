@@ -30,11 +30,37 @@ fn any_json_schema(_: &mut SchemaGenerator) -> Schema {
 
 impl ToolEnvelope {
     pub fn success(summary: impl Into<String>, data: Option<Value>) -> CallToolResult {
-        Self::into_result(false, summary.into(), data, None)
+        let summary = summary.into();
+        Self::render(
+            &Self {
+                ok: true,
+                summary,
+                data,
+                stdout: None,
+                stderr: None,
+                exit_code: None,
+                truncated: Some(false),
+            },
+            false,
+            None,
+        )
     }
 
     pub fn error(summary: impl Into<String>, data: Option<Value>) -> CallToolResult {
-        Self::into_result(true, summary.into(), data, None)
+        let summary = summary.into();
+        Self::render(
+            &Self {
+                ok: false,
+                summary,
+                data,
+                stdout: None,
+                stderr: None,
+                exit_code: None,
+                truncated: Some(false),
+            },
+            true,
+            None,
+        )
     }
 
     pub fn success_with_text(
@@ -42,32 +68,73 @@ impl ToolEnvelope {
         data: Option<Value>,
         text: impl Into<String>,
     ) -> CallToolResult {
-        Self::into_result(false, summary.into(), data, Some(text.into()))
+        let summary = summary.into();
+        Self::render(
+            &Self {
+                ok: true,
+                summary,
+                data,
+                stdout: None,
+                stderr: None,
+                exit_code: None,
+                truncated: Some(false),
+            },
+            false,
+            Some(text.into()),
+        )
     }
 
-    fn into_result(
-        is_error: bool,
-        summary: String,
+    pub fn process_success(
+        summary: impl Into<String>,
         data: Option<Value>,
-        explicit_text: Option<String>,
+        stdout: impl Into<String>,
+        stderr: impl Into<String>,
+        exit_code: i32,
+        truncated: bool,
     ) -> CallToolResult {
-        let envelope = Self {
-            ok: !is_error,
-            summary: summary.clone(),
-            data: data.clone(),
-            stdout: None,
-            stderr: None,
-            exit_code: None,
-            truncated: Some(false),
-        };
-        let structured = serde_json::to_value(&envelope).expect("ToolEnvelope is serializable");
-        let text = explicit_text.unwrap_or_else(|| match data {
-            Some(value) => format!(
-                "{summary}\n\n{}",
-                serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string())
-            ),
-            None => summary,
-        });
+        let summary = summary.into();
+        Self::render(
+            &Self {
+                ok: true,
+                summary,
+                data,
+                stdout: Some(stdout.into()),
+                stderr: Some(stderr.into()),
+                exit_code: Some(exit_code),
+                truncated: Some(truncated),
+            },
+            false,
+            None,
+        )
+    }
+
+    pub fn process_error(
+        summary: impl Into<String>,
+        data: Option<Value>,
+        stdout: impl Into<String>,
+        stderr: impl Into<String>,
+        exit_code: Option<i32>,
+        truncated: bool,
+    ) -> CallToolResult {
+        let summary = summary.into();
+        Self::render(
+            &Self {
+                ok: false,
+                summary,
+                data,
+                stdout: Some(stdout.into()),
+                stderr: Some(stderr.into()),
+                exit_code,
+                truncated: Some(truncated),
+            },
+            true,
+            None,
+        )
+    }
+
+    fn render(envelope: &Self, is_error: bool, explicit_text: Option<String>) -> CallToolResult {
+        let text = explicit_text.unwrap_or_else(|| envelope.text_content());
+        let structured = serde_json::to_value(envelope).expect("ToolEnvelope is serializable");
         let mut result = if is_error {
             CallToolResult::error(vec![ContentBlock::text(text)])
         } else {
@@ -75,6 +142,20 @@ impl ToolEnvelope {
         };
         result.structured_content = Some(structured);
         result
+    }
+
+    fn text_content(&self) -> String {
+        let mut parts = vec![self.summary.clone()];
+        if let Some(value) = self.data.as_ref() {
+            parts.push(serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()));
+        }
+        if let Some(stdout) = self.stdout.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(format!("stdout:\n{stdout}"));
+        }
+        if let Some(stderr) = self.stderr.as_deref().filter(|value| !value.is_empty()) {
+            parts.push(format!("stderr:\n{stderr}"));
+        }
+        parts.join("\n\n")
     }
 }
 
@@ -87,5 +168,24 @@ mod tests {
         let schema = schemars::schema_for!(ToolEnvelope);
         let value = serde_json::to_value(schema).expect("serialize schema");
         assert_eq!(value["properties"]["data"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn process_result_preserves_stream_fields_and_text_sections() {
+        let result = ToolEnvelope::process_success(
+            "done",
+            Some(serde_json::json!({"x": 1})),
+            "hello",
+            "warning",
+            0,
+            false,
+        );
+        let structured = result.structured_content.expect("structured content");
+        assert_eq!(structured["stdout"], "hello");
+        assert_eq!(structured["stderr"], "warning");
+        assert_eq!(structured["exitCode"], 0);
+        let text = result.content[0].as_text().expect("text content");
+        assert!(text.text.contains("stdout:\nhello"));
+        assert!(text.text.contains("stderr:\nwarning"));
     }
 }

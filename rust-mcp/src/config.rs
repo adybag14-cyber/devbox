@@ -126,6 +126,8 @@ pub struct Config {
     pub public_base_url: Option<String>,
     pub host_workspace_path: PathBuf,
     pub devbox_workspace_path: PathBuf,
+    pub devbox_container_name: String,
+    pub devbox_default_user: String,
     pub host_default_workdir: PathBuf,
     pub host_shell: String,
     pub host_exec_enabled: bool,
@@ -166,6 +168,23 @@ impl Config {
         });
         let host_default_workdir =
             env_path("HOST_DEFAULT_WORKDIR").unwrap_or_else(|| host_workspace_path.clone());
+        let devbox_container_name = env::var("DEVBOX_CONTAINER_NAME")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "chatgpt-devbox-runtime".to_owned());
+        let devbox_default_user = env::var("DEVBOX_DEFAULT_USER")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| {
+                if runtime_mode == RuntimeMode::Docker {
+                    "root".to_owned()
+                } else {
+                    env::var("USERNAME")
+                        .or_else(|_| env::var("USER"))
+                        .unwrap_or_default()
+                }
+            });
         let host_shell = env::var("HOST_SHELL")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -181,6 +200,8 @@ impl Config {
             public_base_url,
             host_workspace_path,
             devbox_workspace_path,
+            devbox_container_name,
+            devbox_default_user,
             host_default_workdir,
             host_shell,
             host_exec_enabled: parse_bool_env("ENABLE_HOST_EXEC", true),

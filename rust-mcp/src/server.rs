@@ -739,6 +739,8 @@ mod tests {
             public_base_url: None,
             host_workspace_path: temp.path().to_path_buf(),
             devbox_workspace_path: temp.path().to_path_buf(),
+            devbox_container_name: "chatgpt-devbox-runtime".to_owned(),
+            devbox_default_user: "root".to_owned(),
             host_default_workdir: temp.path().to_path_buf(),
             host_shell: "unused".to_owned(),
             host_exec_enabled: true,
