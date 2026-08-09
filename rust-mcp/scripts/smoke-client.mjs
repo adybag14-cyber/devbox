@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -10,6 +13,8 @@ const expectedTools = [
   "devbox_wait_for_file",
   "host_status",
   "windows_host_status",
+  "windows_host_read_large_file",
+  "windows_host_write_large_file",
 ].sort();
 
 const healthResponse = await fetch(new URL("healthz", baseUrl));
@@ -45,6 +50,37 @@ try {
   assert.equal(status.isError, false);
   assert.equal(status.structuredContent?.ok, true);
   assert.equal(status.structuredContent?.data?.rustReplacement?.implemented_count, expectedTools.length);
+
+  const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "devbox-rust-mcp-smoke-"));
+  const fixturePath = path.join(fixtureDir, "exact-bytes.bin");
+  try {
+    const write = await client.callTool({
+      name: "windows_host_write_large_file",
+      arguments: {
+        path: fixturePath,
+        content_base64: "AP9hbHBoYQo=",
+        expected_sha256: "5cd13e70af539c9471799a5cf52bc04af6ee4a13bd866523861a1fc51fa6acb5",
+      },
+    });
+    assert.equal(write.isError, false);
+    assert.equal(write.structuredContent?.ok, true);
+    assert.equal(write.structuredContent?.data?.bytes_written, 8);
+    assert.equal(write.structuredContent?.data?.verified, true);
+    assert.deepEqual(await readFile(fixturePath), Buffer.from([0x00, 0xff, 0x61, 0x6c, 0x70, 0x68, 0x61, 0x0a]));
+
+    const read = await client.callTool({
+      name: "windows_host_read_large_file",
+      arguments: { path: fixturePath, offset_bytes: 1, max_bytes: 4 },
+    });
+    assert.equal(read.isError, false);
+    assert.equal(read.structuredContent?.ok, true);
+    assert.equal(read.structuredContent?.data?.content_base64, "/2FscA==");
+    assert.equal(read.structuredContent?.data?.bytes_returned, 4);
+    assert.equal(read.structuredContent?.data?.next_offset_bytes, 5);
+    assert.ok(!read.content?.[0]?.text?.includes("/2FscA=="), "raw base64 must not be duplicated into MCP text content");
+  } finally {
+    await rm(fixtureDir, { recursive: true, force: true });
+  }
 
   console.log(JSON.stringify({
     ok: true,
