@@ -34,6 +34,9 @@ for (const requiredTool of [
   "devbox_job_status",
   "devbox_job_logs",
   "devbox_job_cancel",
+  "devbox_exec",
+  "devbox_exec_readonly",
+  "devbox_exec_start",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -59,6 +62,46 @@ try {
   assert.equal(status.isError, false);
   assert.equal(status.structuredContent?.ok, true);
   assert.equal(status.structuredContent?.data?.rustReplacement?.implemented_count, expectedTools.length);
+
+  for (const [toolName, readOnly] of [
+    ["devbox_exec", false],
+    ["devbox_exec_readonly", true],
+  ]) {
+    const shell = await client.callTool({
+      name: toolName,
+      arguments: {
+        command: "git --version",
+        output_mode: "head",
+        max_output_chars: 2_000,
+      },
+    });
+    assert.equal(shell.isError, false);
+    assert.match(shell.structuredContent?.stdout || "", /^git version /);
+    assert.equal(shell.structuredContent?.data?.read_only, readOnly);
+  }
+
+  const shellStarted = await client.callTool({
+    name: "devbox_exec_start",
+    arguments: {
+      command: "node -e "console.log('RUST_SHELL_ASYNC_SMOKE')"",
+      timeout_seconds: 30,
+      resource_class: "light",
+    },
+  });
+  assert.equal(shellStarted.isError, false);
+  const shellJobId = shellStarted.structuredContent?.data?.id;
+  assert.match(shellJobId || "", /^job-/);
+  const shellDone = await client.callTool({
+    name: "devbox_job_status",
+    arguments: { job_id: shellJobId, wait_seconds: 10, terminal_only: true },
+  });
+  assert.equal(shellDone.isError, false);
+  assert.equal(shellDone.structuredContent?.data?.status, "succeeded");
+  const shellLogs = await client.callTool({
+    name: "devbox_job_logs",
+    arguments: { job_id: shellJobId, max_chars: 5_000 },
+  });
+  assert.match(shellLogs.structuredContent?.data?.stdout || "", /RUST_SHELL_ASYNC_SMOKE/);
 
   const direct = await client.callTool({
     name: "devbox_run_program",

@@ -53,6 +53,9 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "devbox_job_status",
     "devbox_job_logs",
     "devbox_job_cancel",
+    "devbox_exec",
+    "devbox_exec_readonly",
+    "devbox_exec_start",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

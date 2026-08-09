@@ -40,6 +40,7 @@ The first vertical slice contains:
 - structured host/Docker runtime execution with PowerShell 7 preference on Windows
 - `devbox_run_program` direct allowlisted execution
 - `devbox_run_program_start`, `devbox_job_status`, `devbox_job_logs`, and `devbox_job_cancel`
+- synchronous `devbox_exec` / `devbox_exec_readonly` plus detached `devbox_exec_start`
 - live JavaScript MCP SDK smoke coverage, including detached success/cancellation lifecycle, enforced in the Windows/Linux/macOS CI matrix
 
-The Rust shadow currently advertises **12 of the 37** target tools. No production launcher points at this binary yet.
+The Rust shadow currently advertises **15 of the 37** target tools. No production launcher points at this binary yet.

@@ -37,7 +37,7 @@ use crate::{
     job_manager::{JobManager, StartProgramJob},
     output::{OutputMode, shape_process_output},
     result::ToolEnvelope,
-    runtime::{ProgramRequest, RuntimeExecError, RuntimeExecutor},
+    runtime::{ProgramRequest, RuntimeExecError, RuntimeExecutor, ShellRequest},
 };
 
 #[derive(Debug, Clone)]
@@ -191,6 +191,38 @@ struct RunProgramRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct RunShellRequest {
+    #[schemars(description = "Shell command to execute in the selected Devbox runtime.")]
+    command: String,
+    #[serde(default)]
+    working_dir: String,
+    #[serde(default = "default_sync_timeout")]
+    timeout_seconds: u64,
+    #[serde(default)]
+    user: String,
+    #[serde(default = "default_output_mode")]
+    output_mode: String,
+    #[serde(default = "default_output_chars")]
+    max_output_chars: usize,
+    #[serde(default)]
+    max_output_lines: usize,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct StartShellRequest {
+    #[schemars(description = "Shell command to run as a detached Devbox job.")]
+    command: String,
+    #[serde(default)]
+    working_dir: String,
+    #[serde(default = "default_async_timeout")]
+    timeout_seconds: u64,
+    #[serde(default)]
+    user: String,
+    #[serde(default = "default_resource_class")]
+    resource_class: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct StartProgramRequest {
     #[schemars(
         description = "Executable name from DEVBOX_PROGRAM_ALLOWLIST; no shell syntax is interpreted."
@@ -232,6 +264,18 @@ struct JobLogsRequest {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct JobCancelRequest {
     job_id: String,
+}
+
+struct ShellRenderContext {
+    read_only: bool,
+    output_mode: String,
+    max_chars: usize,
+    max_lines: usize,
+    queue_wait_ms: u64,
+    slot: Option<usize>,
+    slots: Vec<usize>,
+    pool: String,
+    weight: usize,
 }
 
 struct ProgramRenderContext {
@@ -309,6 +353,84 @@ impl DevboxMcp {
         )
     }
 
+    async fn run_shell_internal(
+        &self,
+        request: RunShellRequest,
+        read_only: bool,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if request.command.trim().is_empty() {
+            return ToolEnvelope::error("command must not be empty", None);
+        }
+        if !(1..=90).contains(&request.timeout_seconds) {
+            return ToolEnvelope::error("timeout_seconds must be between 1 and 90", None);
+        }
+        if request.max_output_chars < 100
+            || request.max_output_chars > self.config.max_mcp_transfer_chars
+        {
+            return ToolEnvelope::error(
+                format!(
+                    "max_output_chars must be between 100 and {}",
+                    self.config.max_mcp_transfer_chars
+                ),
+                None,
+            );
+        }
+        let mut acquire = AcquireRequest::interactive(if read_only {
+            "devbox_exec_readonly"
+        } else {
+            "devbox_exec"
+        });
+        acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
+        let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
+            Ok(lease) => lease,
+            Err(error) => return ToolEnvelope::error(error.to_string(), None),
+        };
+        let working_dir = if request.working_dir.trim().is_empty() {
+            self.config.devbox_workspace_path.clone()
+        } else {
+            PathBuf::from(request.working_dir.trim())
+        };
+        let result = self
+            .runtime
+            .run_shell(
+                ShellRequest {
+                    command: request.command,
+                    working_dir,
+                    timeout: Duration::from_secs(request.timeout_seconds),
+                    user: request.user,
+                    max_capture_chars: Some(self.config.max_mcp_transfer_chars),
+                    output_tx: None,
+                    pid_tx: None,
+                },
+                cancellation,
+            )
+            .await;
+        if let Err(error) = lease.release().await {
+            return ToolEnvelope::error(
+                format!(
+                    "Shell command completed but its execution slot could not be released: {error}"
+                ),
+                None,
+            );
+        }
+        render_shell_result(
+            &self.config.runtime_label(),
+            &ShellRenderContext {
+                read_only,
+                output_mode: request.output_mode,
+                max_chars: request.max_output_chars,
+                max_lines: request.max_output_lines,
+                queue_wait_ms: lease.queue_wait_ms,
+                slot: lease.slot,
+                slots: lease.slots.clone(),
+                pool: lease.pool.clone(),
+                weight: lease.weight,
+            },
+            result,
+        )
+    }
+
     #[tool(
         name = "devbox_wait",
         description = "Wait without consuming an execution process or slot.",
@@ -369,6 +491,73 @@ impl DevboxMcp {
                 ToolEnvelope::success(summary, Some(data))
             }
             Err(message) => ToolEnvelope::error(message, None),
+        }
+    }
+
+    #[tool(
+        name = "devbox_exec_readonly",
+        description = "Run an inspection-only shell command in the selected Devbox runtime. This is an advisory read-only surface; prefer direct structured tools when possible.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_exec_readonly(
+        &self,
+        Parameters(request): Parameters<RunShellRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.run_shell_internal(request, true, cancellation).await
+    }
+
+    #[tool(
+        name = "devbox_exec",
+        description = "Run a shell command in the selected Devbox runtime. Prefer devbox_run_program when shell parsing is unnecessary.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_exec(
+        &self,
+        Parameters(request): Parameters<RunShellRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.run_shell_internal(request, false, cancellation).await
+    }
+
+    #[tool(
+        name = "devbox_exec_start",
+        description = "Start a shell command as a detached Devbox job and return immediately with a job id.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_exec_start(
+        &self,
+        Parameters(request): Parameters<StartShellRequest>,
+    ) -> CallToolResult {
+        if request.command.trim().is_empty() {
+            return ToolEnvelope::error("command must not be empty", None);
+        }
+        if !(1..=86_400).contains(&request.timeout_seconds) {
+            return ToolEnvelope::error("timeout_seconds must be between 1 and 86400", None);
+        }
+        match self
+            .jobs
+            .start_shell(crate::job_manager::StartShellJob {
+                command: request.command,
+                working_dir: request.working_dir,
+                timeout: Duration::from_secs(request.timeout_seconds),
+                user: request.user,
+                read_only: false,
+                resource_class: request.resource_class,
+            })
+            .await
+        {
+            Ok(job) => ToolEnvelope::success(
+                format!(
+                    "Started detached shell job {} in {}.",
+                    job.id,
+                    self.config.runtime_label()
+                ),
+                serde_json::to_value(job).ok(),
+            ),
+            Err(error) => {
+                ToolEnvelope::error(format!("Failed to start detached shell job: {error}"), None)
+            }
         }
     }
 
@@ -846,6 +1035,84 @@ async fn root_metadata(State(state): State<HttpState>, headers: HeaderMap) -> im
         },
     });
     (StatusCode::OK, Json(body))
+}
+
+fn render_shell_result(
+    runtime_label: &str,
+    context: &ShellRenderContext,
+    result: Result<crate::process::ProcessOutput, RuntimeExecError>,
+) -> CallToolResult {
+    let mode = OutputMode::parse(&context.output_mode);
+    let execution = json!({
+        "queue_wait_ms": context.queue_wait_ms,
+        "slot": context.slot,
+        "slots": context.slots,
+        "pool": context.pool,
+        "weight": context.weight,
+    });
+    let summary = if context.read_only {
+        format!("Ran read-only inspection in {runtime_label}.")
+    } else {
+        format!("Ran shell command in {runtime_label}.")
+    };
+    match result {
+        Ok(output) => {
+            let stdout =
+                shape_process_output(&output.stdout, mode, context.max_chars, context.max_lines);
+            let stderr =
+                shape_process_output(&output.stderr, mode, context.max_chars, context.max_lines);
+            let truncated = stdout.truncated || stderr.truncated;
+            ToolEnvelope::process_success(
+                summary,
+                Some(json!({
+                    "read_only": context.read_only,
+                    "execution": execution,
+                    "output": {
+                        "mode": mode.as_str(),
+                        "max_chars": context.max_chars,
+                        "max_lines": context.max_lines,
+                        "stdout_original_chars": stdout.original_chars,
+                        "stderr_original_chars": stderr.original_chars,
+                    }
+                })),
+                stdout.text,
+                stderr.text,
+                output.exit_code,
+                truncated,
+            )
+        }
+        Err(RuntimeExecError::Process(error)) => {
+            let stdout =
+                shape_process_output(&error.stdout, mode, context.max_chars, context.max_lines);
+            let stderr =
+                shape_process_output(&error.stderr, mode, context.max_chars, context.max_lines);
+            let truncated = stdout.truncated || stderr.truncated;
+            ToolEnvelope::process_error(
+                error.message,
+                Some(json!({
+                    "read_only": context.read_only,
+                    "execution": execution,
+                    "output": {
+                        "mode": mode.as_str(),
+                        "max_chars": context.max_chars,
+                        "max_lines": context.max_lines,
+                        "stdout_original_chars": stdout.original_chars,
+                        "stderr_original_chars": stderr.original_chars,
+                    },
+                    "timed_out": error.timed_out,
+                    "aborted": error.aborted,
+                })),
+                stdout.text,
+                stderr.text,
+                error.exit_code,
+                truncated,
+            )
+        }
+        Err(error) => ToolEnvelope::error(
+            error.to_string(),
+            Some(json!({ "read_only": context.read_only, "execution": execution })),
+        ),
+    }
 }
 
 fn render_program_result(
