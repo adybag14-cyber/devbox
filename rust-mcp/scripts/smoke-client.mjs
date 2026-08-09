@@ -42,6 +42,7 @@ for (const requiredTool of [
   "devbox_read_large_file",
   "devbox_write_file",
   "devbox_write_large_file",
+  "devbox_search_files",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -202,6 +203,21 @@ try {
     });
     assert.equal(devboxList.isError, false);
     assert.match(devboxList.structuredContent?.stdout || "", /devbox-text\.txt/);
+
+    const devboxSearch = await client.callTool({
+      name: "devbox_search_files",
+      arguments: {
+        pattern: "beta",
+        path: fixtureDir,
+        glob: "*.txt",
+        max_matches: 10,
+        max_depth: 4,
+      },
+    });
+    assert.equal(devboxSearch.isError, false);
+    assert.match(devboxSearch.structuredContent?.stdout || "", /devbox-text\.txt:2:beta/);
+    assert.match(devboxSearch.structuredContent?.stderr || "", /search backend (?:ripgrep|rust fallback)/);
+    assert.equal(devboxSearch.structuredContent?.data?.execution?.pool, "execution");
 
     const devboxLargeWrite = await client.callTool({
       name: "devbox_write_large_file",

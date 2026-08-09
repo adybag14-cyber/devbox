@@ -39,6 +39,7 @@ use crate::{
     output::{OutputMode, shape_process_output},
     result::ToolEnvelope,
     runtime::{ProgramRequest, RuntimeExecError, RuntimeExecutor, ShellRequest},
+    search::{SearchRequest, SearchService},
 };
 
 #[derive(Debug, Clone)]
@@ -49,6 +50,7 @@ pub struct DevboxMcp {
     scheduler: Arc<ExecutionScheduler>,
     runtime: Arc<RuntimeExecutor>,
     jobs: Arc<JobManager>,
+    search: Arc<SearchService>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -66,6 +68,7 @@ impl DevboxMcp {
         Self {
             runtime: Arc::new(RuntimeExecutor::new(config.clone())),
             jobs: Arc::new(JobManager::new(config.clone())),
+            search: Arc::new(SearchService::new(config.clone())),
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -165,6 +168,29 @@ struct DevboxLargeWriteRequest {
     create_dirs: bool,
     #[serde(default)]
     expected_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct SearchFilesRequest {
+    pattern: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default = "default_search_glob")]
+    glob: String,
+    #[serde(default)]
+    case_sensitive: bool,
+    #[serde(default = "default_search_matches")]
+    max_matches: usize,
+    #[serde(default = "default_search_depth")]
+    max_depth: usize,
+    #[serde(default = "default_search_file_bytes")]
+    max_file_bytes: u64,
+    #[serde(default = "default_search_timeout")]
+    timeout_seconds: u64,
+    #[serde(default = "default_excluded_directories")]
+    exclude_directories: Vec<String>,
+    #[serde(default)]
+    include_ignored: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -405,6 +431,21 @@ fn default_excluded_directories() -> Vec<String> {
     .into_iter()
     .map(str::to_owned)
     .collect()
+}
+fn default_search_glob() -> String {
+    "*".to_owned()
+}
+const fn default_search_matches() -> usize {
+    200
+}
+const fn default_search_depth() -> usize {
+    12
+}
+const fn default_search_file_bytes() -> u64 {
+    2 * 1024 * 1024
+}
+const fn default_search_timeout() -> u64 {
+    30
 }
 
 #[tool_router(router = tool_router)]
@@ -1154,6 +1195,116 @@ impl DevboxMcp {
             Err(error) => ToolEnvelope::error(
                 format!("Failed to write large payload to {}: {error}", request.path),
                 None,
+            ),
+        }
+    }
+
+    #[tool(
+        name = "devbox_search_files",
+        description = "Search text inside the selected Devbox runtime with bounded ripgrep-style semantics and a native host fallback.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_search_files(
+        &self,
+        Parameters(request): Parameters<SearchFilesRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if request.pattern.is_empty() {
+            return ToolEnvelope::error("pattern must not be empty", None);
+        }
+        if !(1..=5_000).contains(&request.max_matches)
+            || !(1..=50).contains(&request.max_depth)
+            || !(1..=64 * 1024 * 1024).contains(&request.max_file_bytes)
+            || !(1..=300).contains(&request.timeout_seconds)
+            || request.exclude_directories.len() > 32
+        {
+            return ToolEnvelope::error("Invalid search bounds.", None);
+        }
+        let path = if request.path.trim().is_empty() {
+            self.config
+                .devbox_workspace_path
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            request.path
+        };
+        let mut acquire = AcquireRequest::interactive("devbox_search_files");
+        acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
+        let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
+            Ok(lease) => lease,
+            Err(error) => return ToolEnvelope::error(error.to_string(), None),
+        };
+        let result = self
+            .search
+            .search(
+                SearchRequest {
+                    pattern: request.pattern.clone(),
+                    path: path.clone(),
+                    glob: request.glob,
+                    case_sensitive: request.case_sensitive,
+                    max_matches: request.max_matches,
+                    max_depth: request.max_depth,
+                    max_file_bytes: request.max_file_bytes,
+                    timeout: Duration::from_secs(request.timeout_seconds),
+                    exclude_directories: request.exclude_directories,
+                    include_ignored: request.include_ignored,
+                },
+                cancellation,
+            )
+            .await;
+        if let Err(error) = lease.release().await {
+            return ToolEnvelope::error(
+                format!("Search completed but its execution slot could not be released: {error}"),
+                None,
+            );
+        }
+        match result {
+            Ok(result) => {
+                let max_chars = self.config.max_mcp_transfer_chars.clamp(100, 65_536);
+                let stdout = shape_process_output(&result.stdout, OutputMode::Tail, max_chars, 0);
+                let stderr = shape_process_output(&result.stderr, OutputMode::Tail, max_chars, 0);
+                ToolEnvelope::process_success(
+                    format!(
+                        "Searched {path} for \"{}\" inside the {}.",
+                        request.pattern,
+                        self.config.runtime_label()
+                    ),
+                    Some(json!({
+                        "execution": {
+                            "queue_wait_ms": lease.queue_wait_ms,
+                            "slot": lease.slot,
+                            "slots": lease.slots,
+                            "pool": lease.pool,
+                            "weight": lease.weight,
+                        },
+                        "output": {
+                            "mode": "tail",
+                            "max_chars": max_chars,
+                            "max_lines": 0,
+                            "stdout_original_chars": stdout.original_chars,
+                            "stderr_original_chars": stderr.original_chars,
+                        }
+                    })),
+                    stdout.text,
+                    stderr.text,
+                    result.exit_code,
+                    stdout.truncated || stderr.truncated,
+                )
+            }
+            Err(error) => ToolEnvelope::error(
+                format!(
+                    "Failed to search {path} inside the {}: {error}",
+                    self.config.runtime_label()
+                ),
+                Some(json!({
+                    "execution": {
+                        "queue_wait_ms": lease.queue_wait_ms,
+                        "slot": lease.slot,
+                        "slots": lease.slots,
+                        "pool": lease.pool,
+                        "weight": lease.weight,
+                    }
+                })),
             ),
         }
     }

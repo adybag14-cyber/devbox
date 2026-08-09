@@ -12,6 +12,7 @@ anyhow = "1.0"
 axum = "0.8"
 base64 = "0.22"
 dotenvy = "0.15"
+regex = "1.12"
 rmcp = { version = "3.1.2", features = ["transport-streamable-http-server"] }
 schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }

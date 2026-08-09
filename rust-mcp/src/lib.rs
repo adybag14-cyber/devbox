@@ -11,6 +11,7 @@ pub mod output;
 pub mod process;
 pub mod result;
 pub mod runtime;
+pub mod search;
 pub mod server;
 
 pub use config::{AuthMode, Config, Platform, RuntimeMode};
