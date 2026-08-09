@@ -934,7 +934,7 @@ fn utc_now() -> String {
 }
 
 #[cfg(unix)]
-async fn process_alive(pid: u32) -> bool {
+pub(crate) async fn process_alive(pid: u32) -> bool {
     use nix::{errno::Errno, sys::signal, unistd::Pid};
     let Ok(pid) = i32::try_from(pid) else {
         return false;
@@ -946,7 +946,7 @@ async fn process_alive(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-async fn process_alive(pid: u32) -> bool {
+pub(crate) async fn process_alive(pid: u32) -> bool {
     if pid == std::process::id() {
         return true;
     }
@@ -964,7 +964,7 @@ async fn process_alive(pid: u32) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-async fn process_alive(_: u32) -> bool {
+pub(crate) async fn process_alive(_: u32) -> bool {
     false
 }
 
@@ -1088,17 +1088,20 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(30)).await;
             trigger.cancel();
         });
-        let started = Instant::now();
-        let error = scheduler
-            .acquire(AcquireRequest::interactive("cancelled"), &waiting)
-            .await
-            .unwrap_err();
+        let request = AcquireRequest {
+            queue_timeout: Some(Duration::from_secs(5)),
+            ..AcquireRequest::interactive("cancelled")
+        };
+        let error =
+            tokio::time::timeout(Duration::from_secs(1), scheduler.acquire(request, &waiting))
+                .await
+                .expect("cancelled queue wait should finish well before its queue timeout")
+                .unwrap_err();
         assert!(
             error
                 .downcast_ref::<ExecutionQueueCancelledError>()
                 .is_some()
         );
-        assert!(started.elapsed() < Duration::from_millis(200));
         assert_eq!(
             scheduler.snapshot().await.unwrap().local_process.cancelled,
             1

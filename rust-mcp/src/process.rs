@@ -474,7 +474,7 @@ fn configure_process_group(command: &mut Command) {
 fn configure_process_group(_command: &mut Command) {}
 
 #[cfg(windows)]
-async fn terminate_process_tree(pid: u32) {
+pub(crate) async fn terminate_process_tree(pid: u32) {
     if pid == 0 {
         return;
     }
@@ -488,7 +488,7 @@ async fn terminate_process_tree(pid: u32) {
 }
 
 #[cfg(unix)]
-async fn terminate_process_tree(pid: u32) {
+pub(crate) async fn terminate_process_tree(pid: u32) {
     use nix::{
         sys::signal::{Signal, killpg},
         unistd::Pid,
