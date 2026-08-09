@@ -108,7 +108,35 @@ try {
   const status = await client.callTool({ name: "devbox_status", arguments: {} });
   assert.equal(status.isError, false);
   assert.equal(status.structuredContent?.ok, true);
-  assert.equal(status.structuredContent?.data?.rustReplacement?.implemented_count, expectedTools.length);
+  const statusData = status.structuredContent?.data || {};
+  assert.equal(statusData.mode, "host");
+  assert.equal(statusData.running, true);
+  assert.equal(statusData.execution?.max_concurrent > 0, true);
+  assert.equal(statusData.execution?.local_process?.acquired >= 0, true);
+  assert.ok(Object.prototype.hasOwnProperty.call(statusData, "guardian"));
+  assert.ok(Object.prototype.hasOwnProperty.call(statusData, "startup"));
+  assert.equal(statusData.performance?.process?.pid > 0, true);
+  assert.equal(statusData.performance?.process?.uptimeSeconds >= 0, true);
+  assert.equal(statusData.performance?.process?.memory?.rss >= 0, true);
+  assert.equal(statusData.performance?.eventLoop?.p95Ms >= 0, true);
+  assert.match(statusData.performance?.eventLoop?.sampledAtUtc || "", /^\d{4}-\d{2}-\d{2}T/);
+  assert.ok(Array.isArray(statusData.versions));
+  for (const program of process.platform === "win32" ? ["node", "npm", "git", "gh", "python"] : ["node", "npm", "git", "gh", "python3", "rg"]) {
+    assert.ok(statusData.versions.some((line) => line.startsWith(`${program}=`)), `missing version status for ${program}`);
+  }
+
+  for (const toolName of ["host_status", "windows_host_status"]) {
+    const hostStatus = await client.callTool({ name: toolName, arguments: {} });
+    assert.equal(hostStatus.isError, false);
+    const hostData = hostStatus.structuredContent?.data || {};
+    assert.equal(hostData.enabled, true);
+    assert.equal(hostData.platform, metadata.platform);
+    assert.ok(Array.isArray(hostData.allowlist));
+    assert.ok((hostData.resolvedNodeExe || "").length > 0);
+    assert.equal(typeof hostData.powerShellFallbackEnabled, "boolean");
+    assert.equal(hostData.windowsHostExecDefaultsToAdmin, process.platform === "win32");
+    assert.equal(typeof hostData.allowWindowsHostExecUac, "boolean");
+  }
 
   if (process.env.RUST_MCP_SMOKE_GITHUB_AUTH === "1") {
     const githubAuth = await client.callTool({
@@ -193,21 +221,34 @@ try {
     assert.equal(hostProgram.structuredContent?.data?.execution?.pool, "execution");
   }
 
+  const stateRoot = process.env.RUST_MCP_STATE_ROOT;
+  const readGuardianDesired = async () => {
+    assert.ok(stateRoot, "RUST_MCP_STATE_ROOT is required for lifecycle smoke assertions");
+    return JSON.parse(await readFile(path.join(stateRoot, "run", "guardian.desired-state.json"), "utf8"));
+  };
+
   const startedRuntime = await client.callTool({ name: "devbox_start", arguments: {} });
   assert.equal(startedRuntime.isError, false);
   assert.equal(startedRuntime.structuredContent?.data?.mode, "host");
   assert.equal(startedRuntime.structuredContent?.data?.running, true);
+  const startDesired = await readGuardianDesired();
+  assert.equal(startDesired.ShouldRun, true);
+  assert.equal(startDesired.Source, "src/server.js:devbox_start");
+  assert.match(startDesired.UpdatedAtUtc || "", /^\d{4}-\d{2}-\d{2}T/);
 
-  for (const [toolName, action] of [
-    ["devbox_stop", "stop"],
-    ["devbox_restart", "restart"],
-    ["devbox_recreate", "recreate"],
+  for (const [toolName, action, shouldRun] of [
+    ["devbox_stop", "stop", false],
+    ["devbox_restart", "restart", true],
+    ["devbox_recreate", "recreate", true],
   ]) {
     const lifecycle = await client.callTool({ name: toolName, arguments: {} });
     assert.equal(lifecycle.isError, false);
     assert.equal(lifecycle.structuredContent?.data?.controlAction, action);
     assert.match(lifecycle.structuredContent?.data?.controlMessage || "", /launcher command/);
     assert.equal(lifecycle.structuredContent?.data?.running, true);
+    const desired = await readGuardianDesired();
+    assert.equal(desired.ShouldRun, shouldRun);
+    assert.equal(desired.Source, `src/server.js:devbox_${action}`);
   }
 
   const shellStarted = await client.callTool({

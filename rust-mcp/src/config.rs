@@ -136,15 +136,19 @@ pub struct Config {
     pub devbox_tmp_volume_name: String,
     pub devbox_retired_container_grace_ms: u64,
     pub devbox_auto_start: bool,
+    pub devbox_version_cache_ms: u64,
     pub devbox_default_user: String,
     pub host_default_workdir: PathBuf,
     pub host_shell: String,
+    pub power_shell_exe: String,
+    pub power_shell_fallback_exe: String,
     pub node_exe: String,
     pub host_program_allowlist: Vec<String>,
     pub devbox_program_allowlist: Vec<String>,
     pub host_exec_enabled: bool,
     pub execution_slot_root: PathBuf,
     pub jobs_root: PathBuf,
+    pub mcp_performance_state_path: PathBuf,
     pub exec_max_concurrent: usize,
     pub exec_reserved_interactive: usize,
     pub exec_queue_timeout_ms: u64,
@@ -172,6 +176,8 @@ struct OauthConfiguration {
 
 struct ProgramConfiguration {
     host_shell: String,
+    power_shell_exe: String,
+    power_shell_fallback_exe: String,
     node_exe: String,
     host_program_allowlist: Vec<String>,
     devbox_program_allowlist: Vec<String>,
@@ -223,6 +229,8 @@ impl Config {
             .unwrap_or_else(|| project_root.join("run").join("execution-slots"));
         let jobs_root =
             env_path("MCP_JOBS_ROOT").unwrap_or_else(|| project_root.join("run").join("jobs"));
+        let mcp_performance_state_path = env_path("MCP_PERFORMANCE_STATE_PATH")
+            .unwrap_or_else(|| project_root.join("run").join("mcp-performance.json"));
 
         Ok(Self {
             project_root,
@@ -246,15 +254,19 @@ impl Config {
                 300_000_u64,
             ),
             devbox_auto_start: parse_bool_env("DEVBOX_AUTO_START", true),
+            devbox_version_cache_ms: parse_env("DEVBOX_VERSION_CACHE_MS", 120_000_u64),
             devbox_default_user,
             host_default_workdir,
             host_shell: program.host_shell,
+            power_shell_exe: program.power_shell_exe,
+            power_shell_fallback_exe: program.power_shell_fallback_exe,
             node_exe: program.node_exe,
             host_program_allowlist: program.host_program_allowlist,
             devbox_program_allowlist: program.devbox_program_allowlist,
             host_exec_enabled: parse_bool_env("ENABLE_HOST_EXEC", true),
             execution_slot_root,
             jobs_root,
+            mcp_performance_state_path,
             exec_max_concurrent: parse_env("MCP_EXEC_MAX_CONCURRENT", 6_usize),
             exec_reserved_interactive: parse_env("MCP_EXEC_RESERVED_INTERACTIVE", 1_usize),
             exec_queue_timeout_ms: parse_env("MCP_EXEC_QUEUE_TIMEOUT_MS", 15_000_u64),
@@ -352,10 +364,22 @@ fn load_program_configuration(
     platform: &Platform,
     runtime_mode: RuntimeMode,
 ) -> ProgramConfiguration {
+    let power_shell_exe = if platform.is_windows {
+        default_host_shell(platform)
+    } else {
+        String::new()
+    };
+    let power_shell_fallback_exe = default_power_shell_fallback(platform);
     let host_shell = env::var("HOST_SHELL")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| default_host_shell(platform));
+        .unwrap_or_else(|| {
+            if platform.is_windows {
+                power_shell_exe.clone()
+            } else {
+                default_host_shell(platform)
+            }
+        });
     let host_program_allowlist = parse_csv_env(
         "HOST_PROGRAM_ALLOWLIST",
         default_host_program_allowlist(platform),
@@ -375,6 +399,8 @@ fn load_program_configuration(
         .unwrap_or_else(|| "node".to_owned());
     ProgramConfiguration {
         host_shell,
+        power_shell_exe,
+        power_shell_fallback_exe,
         node_exe,
         host_program_allowlist,
         devbox_program_allowlist,
@@ -406,6 +432,25 @@ fn default_host_shell(platform: &Platform) -> String {
             .into_owned(),
     ];
     candidates
+        .into_iter()
+        .find(|candidate| usable_executable_candidate(candidate))
+        .unwrap_or_else(|| "powershell.exe".to_owned())
+}
+
+fn default_power_shell_fallback(platform: &Platform) -> String {
+    if !platform.is_windows {
+        return String::new();
+    }
+    let configured = env::var("POWERSHELL_FALLBACK_EXE").unwrap_or_default();
+    let system_root = env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+    let legacy = PathBuf::from(system_root)
+        .join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+        .to_string_lossy()
+        .into_owned();
+    [configured, legacy]
         .into_iter()
         .find(|candidate| usable_executable_candidate(candidate))
         .unwrap_or_else(|| "powershell.exe".to_owned())

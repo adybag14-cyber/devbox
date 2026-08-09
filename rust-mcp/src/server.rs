@@ -44,6 +44,7 @@ use crate::{
     lifecycle::{LifecycleAction, LifecycleService},
     oauth::OAuthService,
     output::{OutputMode, shape_process_output},
+    performance::PerformanceMonitor,
     result::ToolEnvelope,
     runtime::{ProgramRequest, RuntimeExecError, RuntimeExecutor, ShellRequest},
     search::{SearchRequest, SearchService},
@@ -61,6 +62,7 @@ pub struct DevboxMcp {
     lifecycle: Arc<LifecycleService>,
     github_auth: Arc<GithubAuthService>,
     capture: Arc<CaptureService>,
+    performance: Arc<PerformanceMonitor>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -83,6 +85,9 @@ impl DevboxMcp {
             lifecycle.clone(),
         ));
         let capture = Arc::new(CaptureService::new(config.clone()));
+        let performance = Arc::new(PerformanceMonitor::new(
+            config.mcp_performance_state_path.clone(),
+        ));
         Self {
             runtime,
             jobs: Arc::new(JobManager::new(config.clone())),
@@ -90,6 +95,7 @@ impl DevboxMcp {
             lifecycle,
             github_auth,
             capture,
+            performance,
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -664,27 +670,80 @@ impl DevboxMcp {
         description = "Use this when you need the current state of the selected Devbox runtime.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
     )]
-    async fn devbox_status(&self) -> CallToolResult {
-        ToolEnvelope::success(
-            format!(
-                "Fetched {} status from the Rust MCP replacement.",
-                self.config.runtime_label()
+    async fn devbox_status(&self, cancellation: CancellationToken) -> CallToolResult {
+        let info = match self.lifecycle.status(cancellation.child_token()).await {
+            Ok(info) => info,
+            Err(error) => {
+                return ToolEnvelope::error(
+                    format!(
+                        "Failed to fetch {} status: {error}",
+                        self.config.runtime_label()
+                    ),
+                    None,
+                );
+            }
+        };
+        let execution = match self.scheduler.snapshot().await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return ToolEnvelope::error(
+                    format!(
+                        "Failed to fetch {} status: {error}",
+                        self.config.runtime_label()
+                    ),
+                    None,
+                );
+            }
+        };
+        let (guardian, startup) = tokio::join!(
+            read_guardian_status_snapshot(&self.config),
+            read_json_snapshot(
+                self.config
+                    .project_root
+                    .join("run")
+                    .join("startup-state.json")
             ),
-            Some(json!({
-                "mode": self.config.runtime_mode.as_str(),
-                "exists": true,
-                "running": true,
-                "status": "ready",
-                "name": if self.config.runtime_mode == RuntimeMode::Host { "host-runtime" } else { "docker-runtime" },
-                "workspacePath": self.config.host_workspace_path,
-                "platform": self.config.platform.id,
-                "hostDefaultWorkdir": self.config.host_default_workdir,
-                "hostShell": self.config.host_shell,
-                "hostWorkspacePath": self.config.host_workspace_path,
-                "devboxWorkspacePath": self.config.devbox_workspace_path,
-                "hostExecEnabled": self.config.host_exec_enabled,
-                "rustReplacement": ParityReport::current(),
-            })),
+        );
+        let mut data = info.as_object().cloned().unwrap_or_default();
+        data.insert(
+            "hostWorkspacePath".to_owned(),
+            json!(self.config.host_workspace_path),
+        );
+        data.insert(
+            "devboxWorkspacePath".to_owned(),
+            json!(self.config.devbox_workspace_path),
+        );
+        data.insert(
+            "hostExecEnabled".to_owned(),
+            json!(self.config.host_exec_enabled),
+        );
+        data.insert("guardian".to_owned(), guardian.unwrap_or(Value::Null));
+        data.insert("startup".to_owned(), startup.unwrap_or(Value::Null));
+        data.insert("execution".to_owned(), json!(execution));
+        data.insert("performance".to_owned(), self.performance.snapshot());
+        if info.get("running").and_then(Value::as_bool) == Some(true) {
+            match self
+                .runtime
+                .get_versions(false, cancellation.child_token())
+                .await
+            {
+                Ok(versions) => {
+                    data.insert("versions".to_owned(), json!(versions));
+                }
+                Err(error) => {
+                    return ToolEnvelope::error(
+                        format!(
+                            "Failed to fetch {} status: {error}",
+                            self.config.runtime_label()
+                        ),
+                        None,
+                    );
+                }
+            }
+        }
+        ToolEnvelope::success(
+            format!("Fetched {} status.", self.config.runtime_label()),
+            Some(Value::Object(data)),
         )
     }
 
@@ -1019,6 +1078,27 @@ impl DevboxMcp {
         action: LifecycleAction,
         cancellation: CancellationToken,
     ) -> CallToolResult {
+        let should_run = action != LifecycleAction::Stop;
+        let source = match action {
+            LifecycleAction::Start => "src/server.js:devbox_start",
+            LifecycleAction::Stop => "src/server.js:devbox_stop",
+            LifecycleAction::Restart => "src/server.js:devbox_restart",
+            LifecycleAction::Recreate => "src/server.js:devbox_recreate",
+        };
+        if let Err(error) = self
+            .lifecycle
+            .set_guardian_desired_state(should_run, source)
+            .await
+        {
+            return ToolEnvelope::error(
+                format!(
+                    "Failed to {} the {}: {error}",
+                    action.as_str(),
+                    self.config.runtime_label()
+                ),
+                None,
+            );
+        }
         match self.lifecycle.control(action, cancellation).await {
             Ok(data) => {
                 let docker = self.config.runtime_mode == RuntimeMode::Docker;
@@ -2068,7 +2148,14 @@ impl DevboxMcp {
                 "platformDisplayName": self.config.platform.display_name,
                 "shell": self.config.host_shell,
                 "defaultWorkdir": self.config.host_default_workdir,
-                "rustReplacement": true,
+                "allowlist": self.config.host_program_allowlist,
+                "resolvedNodeExe": resolved_program_path(&self.config.node_exe, self.config.platform.is_windows),
+                "powerShellExe": self.config.power_shell_exe,
+                "powerShellFallbackExe": self.config.power_shell_fallback_exe,
+                "powerShellFallbackEnabled": !self.config.power_shell_fallback_exe.is_empty()
+                    && self.config.power_shell_fallback_exe != self.config.power_shell_exe,
+                "windowsHostExecDefaultsToAdmin": self.config.platform.is_windows,
+                "allowWindowsHostExecUac": env_flag_enabled("ALLOW_WINDOWS_HOST_EXEC_UAC"),
             })),
         )
     }
@@ -2095,13 +2182,19 @@ struct HttpState {
 }
 
 pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Router {
-    let service_config = config.clone();
+    let handler = DevboxMcp::new(config.clone());
+    let warm_runtime = handler.runtime.clone();
+    let warm_cancellation = cancellation.child_token();
+    tokio::spawn(async move {
+        let _ = warm_runtime.get_versions(false, warm_cancellation).await;
+    });
+    let service_handler = handler.clone();
     let transport_config = StreamableHttpServerConfig::default()
         .with_legacy_session_mode(false)
         .with_json_response(false)
         .with_cancellation_token(cancellation);
     let mcp: StreamableHttpService<DevboxMcp, LocalSessionManager> = StreamableHttpService::new(
-        move || Ok(DevboxMcp::new(service_config.clone())),
+        move || Ok(service_handler.clone()),
         Arc::default(),
         transport_config,
     );
@@ -2158,6 +2251,79 @@ pub async fn serve(config: Arc<Config>, cancellation: CancellationToken) -> Resu
         }
     });
     Ok(local)
+}
+
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+fn resolved_program_path(program: &str, windows: bool) -> String {
+    let path = std::path::Path::new(program);
+    if path.is_absolute() || path.components().count() > 1 {
+        return path.to_string_lossy().into_owned();
+    }
+    let extensions = if windows {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned())
+            .split(';')
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_owned())
+            .collect::<Vec<_>>()
+    } else {
+        vec![String::new()]
+    };
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return program.to_owned();
+    };
+    for directory in std::env::split_paths(&path_var) {
+        for extension in &extensions {
+            let candidate = if windows && std::path::Path::new(program).extension().is_none() {
+                directory.join(format!("{program}{extension}"))
+            } else {
+                directory.join(program)
+            };
+            if candidate.is_file() {
+                return candidate.to_string_lossy().into_owned();
+            }
+        }
+    }
+    program.to_owned()
+}
+
+async fn read_json_snapshot(path: PathBuf) -> Option<Value> {
+    let raw = tokio::fs::read_to_string(path).await.ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+async fn read_guardian_status_snapshot(config: &Config) -> Option<Value> {
+    let state = read_json_snapshot(
+        config
+            .project_root
+            .join("run")
+            .join("guardian")
+            .join("state.json"),
+    )
+    .await?;
+    Some(json!({
+        "observedAtUtc": state.get("ObservedAtUtc").cloned().unwrap_or(Value::Null),
+        "isHealthy": state.get("IsHealthy").cloned().unwrap_or(Value::Null),
+        "needsRepair": state.get("NeedsRepair").cloned().unwrap_or(Value::Null),
+        "mcpElevated": state.get("McpElevated").cloned().unwrap_or(Value::Null),
+        "publicTunnelHealthy": state.get("PublicTunnelHealthy").cloned().unwrap_or(Value::Null),
+        "cloudflaredRunning": state.get("CloudflaredRunning").cloned().unwrap_or(Value::Null),
+        "cloudflaredMetrics": state.get("CloudflaredMetrics").cloned().unwrap_or(Value::Null),
+        "cloudflaredMetricsDelta": state.get("CloudflaredMetricsDelta").cloned().unwrap_or(Value::Null),
+        "tunnelTransportHealthy": state.get("TunnelTransportHealthy").cloned().unwrap_or(Value::Null),
+        "tunnelTransportDegraded": state.get("TunnelTransportDegraded").cloned().unwrap_or(json!(false)),
+        "tunnelTransportReasons": state.get("TunnelTransportReasons").cloned().unwrap_or_else(|| json!([])),
+        "readiness": state.get("Readiness").cloned().unwrap_or(Value::Null),
+        "reasons": state.get("Reasons").cloned().unwrap_or_else(|| json!([])),
+    }))
 }
 
 async fn healthz() -> &'static str {
@@ -2656,15 +2822,19 @@ mod tests {
             devbox_tmp_volume_name: "chatgpt-devbox-runtime-tmp".to_owned(),
             devbox_retired_container_grace_ms: 300_000,
             devbox_auto_start: true,
+            devbox_version_cache_ms: 120_000,
             devbox_default_user: "root".to_owned(),
             host_default_workdir: temp.path().to_path_buf(),
             host_shell: "unused".to_owned(),
+            power_shell_exe: "pwsh".to_owned(),
+            power_shell_fallback_exe: "powershell.exe".to_owned(),
             node_exe: "node".to_owned(),
             host_program_allowlist: vec!["node".to_owned()],
             devbox_program_allowlist: vec!["node".to_owned()],
             host_exec_enabled: true,
             execution_slot_root: temp.path().join("execution-slots"),
             jobs_root: temp.path().join("jobs"),
+            mcp_performance_state_path: temp.path().join("mcp-performance.json"),
             exec_max_concurrent: 6,
             exec_reserved_interactive: 1,
             exec_queue_timeout_ms: 15_000,

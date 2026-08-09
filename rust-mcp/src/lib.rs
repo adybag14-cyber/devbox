@@ -13,6 +13,7 @@ pub mod jobs;
 pub mod lifecycle;
 pub mod oauth;
 pub mod output;
+pub mod performance;
 pub mod process;
 pub mod result;
 pub mod runtime;

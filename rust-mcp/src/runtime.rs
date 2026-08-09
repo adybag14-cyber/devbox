@@ -1,6 +1,11 @@
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
-use tokio::sync::mpsc::UnboundedSender;
+use futures::future::join_all;
+use tokio::sync::{Mutex, mpsc::UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -81,19 +86,161 @@ impl From<ProcessError> for RuntimeExecError {
 }
 
 #[derive(Debug, Clone)]
+struct VersionCacheEntry {
+    value: Vec<String>,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Clone)]
 pub struct RuntimeExecutor {
     config: Arc<Config>,
+    versions_cache: Arc<Mutex<Option<VersionCacheEntry>>>,
 }
 
 impl RuntimeExecutor {
     #[must_use]
     pub fn new(config: Arc<Config>) -> Self {
-        Self { config }
+        Self {
+            config,
+            versions_cache: Arc::new(Mutex::new(None)),
+        }
     }
 
     #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Read cached toolchain versions from the selected runtime, refreshing at the JS-configured TTL.
+    ///
+    /// # Errors
+    /// Docker mode returns an error if the version probe command cannot run. Host mode mirrors the
+    /// JavaScript implementation by reporting individual unavailable programs without failing status.
+    pub async fn get_versions(
+        &self,
+        force: bool,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<String>, RuntimeExecError> {
+        let mut cache = self.versions_cache.lock().await;
+        if !force
+            && let Some(entry) = cache.as_ref()
+            && Instant::now() < entry.expires_at
+        {
+            return Ok(entry.value.clone());
+        }
+        let value = match self.config.runtime_mode {
+            RuntimeMode::Host => self.load_host_versions(cancellation).await,
+            RuntimeMode::Docker => self.load_docker_versions(cancellation).await?,
+        };
+        *cache = Some(VersionCacheEntry {
+            value: value.clone(),
+            expires_at: Instant::now() + Duration::from_millis(self.config.devbox_version_cache_ms),
+        });
+        Ok(value)
+    }
+
+    async fn load_host_versions(&self, cancellation: CancellationToken) -> Vec<String> {
+        let candidates: Vec<(&str, &[&str])> = if self.config.platform.is_windows {
+            vec![
+                ("node", &["--version"]),
+                ("npm", &["--version"]),
+                ("git", &["--version"]),
+                ("gh", &["--version"]),
+                ("python", &["--version"]),
+            ]
+        } else {
+            vec![
+                ("node", &["--version"]),
+                ("npm", &["--version"]),
+                ("git", &["--version"]),
+                ("gh", &["--version"]),
+                ("python3", &["--version"]),
+                ("rg", &["--version"]),
+            ]
+        };
+        let probes = candidates.into_iter().map(|(program, args)| {
+            let executable = if program == "node" {
+                self.config.node_exe.clone()
+            } else {
+                program.to_owned()
+            };
+            let arguments = args
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>();
+            let cwd = self.config.host_default_workdir.clone();
+            let cancellation = cancellation.child_token();
+            async move {
+                match spawn_process(
+                    &executable,
+                    &arguments,
+                    ProcessOptions {
+                        cwd: Some(cwd),
+                        timeout: Some(Duration::from_secs(15)),
+                        max_capture_chars: Some(16_384),
+                        ..ProcessOptions::default()
+                    },
+                    cancellation,
+                )
+                .await
+                {
+                    Ok(output) => {
+                        let combined = format!("{}{}", output.stdout, output.stderr);
+                        let value = combined
+                            .lines()
+                            .find(|line| !line.trim().is_empty())
+                            .unwrap_or("available");
+                        format!("{program}={}", value.trim())
+                    }
+                    Err(_) => format!("{program}=unavailable"),
+                }
+            }
+        });
+        join_all(probes).await
+    }
+
+    async fn load_docker_versions(
+        &self,
+        cancellation: CancellationToken,
+    ) -> Result<Vec<String>, RuntimeExecError> {
+        let command = [
+            "printf 'gh='; if command -v gh >/dev/null 2>&1; then printf 'installed\\n'; else printf 'missing\\n'; fi",
+            "printf 'node='; node --version",
+            "printf 'npm='; if command -v npm >/dev/null 2>&1; then printf 'installed\\n'; else printf 'missing\\n'; fi",
+            "printf 'python='; python3 --version",
+            "printf 'git='; git --version",
+            "printf 'rg='; rg --version | head -n 1",
+        ]
+        .join(" && ");
+        let output = spawn_process(
+            "docker",
+            &[
+                "exec".to_owned(),
+                "-w".to_owned(),
+                self.config
+                    .devbox_workspace_path
+                    .to_string_lossy()
+                    .into_owned(),
+                self.config.devbox_container_name.clone(),
+                "bash".to_owned(),
+                "-lc".to_owned(),
+                command,
+            ],
+            ProcessOptions {
+                timeout: Some(Duration::from_secs(20)),
+                max_capture_chars: Some(32_768),
+                ..ProcessOptions::default()
+            },
+            cancellation,
+        )
+        .await?;
+        Ok(output
+            .stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect())
     }
 
     /// Run one allowlisted executable directly in the selected Devbox runtime.
@@ -365,15 +512,19 @@ mod tests {
             devbox_tmp_volume_name: "chatgpt-devbox-runtime-tmp".to_owned(),
             devbox_retired_container_grace_ms: 300_000,
             devbox_auto_start: true,
+            devbox_version_cache_ms: 120_000,
             devbox_default_user: String::new(),
             host_default_workdir: root.to_path_buf(),
             host_shell: if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }.to_owned(),
+            power_shell_exe: if cfg!(windows) { "pwsh.exe" } else { "" }.to_owned(),
+            power_shell_fallback_exe: if cfg!(windows) { "powershell.exe" } else { "" }.to_owned(),
             node_exe: "node".to_owned(),
             host_program_allowlist: vec!["rustc".to_owned()],
             devbox_program_allowlist: vec!["rustc".to_owned()],
             host_exec_enabled: true,
             execution_slot_root: root.join("execution-slots"),
             jobs_root: root.join("jobs"),
+            mcp_performance_state_path: root.join("mcp-performance.json"),
             exec_max_concurrent: 6,
             exec_reserved_interactive: 1,
             exec_queue_timeout_ms: 15_000,

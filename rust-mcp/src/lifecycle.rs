@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
 use tokio::{fs, sync::Mutex};
 use tokio_util::sync::CancellationToken;
@@ -63,6 +64,57 @@ impl LifecycleService {
     ///
     /// # Errors
     /// Returns filesystem, Docker, cancellation, JSON parsing, or rollback errors.
+    /// Inspect the current selected runtime without mutating it.
+    ///
+    /// # Errors
+    /// Returns Docker inspection or cancellation failures.
+    pub async fn status(&self, cancellation: CancellationToken) -> Result<Value> {
+        match self.config.runtime_mode {
+            RuntimeMode::Host => Ok(host_runtime_info(&self.config)),
+            RuntimeMode::Docker => self.inspect(cancellation).await,
+        }
+    }
+
+    /// Persist the Guardian desired-running state using the same file contract as the JS server.
+    ///
+    /// # Errors
+    /// Returns filesystem errors while creating or atomically replacing the state file.
+    pub async fn set_guardian_desired_state(&self, should_run: bool, source: &str) -> Result<()> {
+        let path = self
+            .config
+            .project_root
+            .join("run")
+            .join("guardian.desired-state.json");
+        let parent = path
+            .parent()
+            .context("Guardian desired-state path has no parent")?;
+        fs::create_dir_all(parent).await?;
+        let temporary = path.with_extension(format!("{}.tmp", unique_suffix()));
+        let value = json!({
+            "ShouldRun": should_run,
+            "UpdatedAtUtc": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            "Source": source,
+        });
+        fs::write(
+            &temporary,
+            format!(
+                "{}
+",
+                serde_json::to_string_pretty(&value)?
+            ),
+        )
+        .await?;
+        if fs::rename(&temporary, &path).await.is_err() {
+            fs::remove_file(&path).await.ok();
+            fs::rename(&temporary, &path).await?;
+        }
+        Ok(())
+    }
+
+    /// Apply one start/stop/restart/recreate mutation under the shared lifecycle gate.
+    ///
+    /// # Errors
+    /// Returns host filesystem, Docker process, cancellation, or recreation failures.
     pub async fn control(
         &self,
         action: LifecycleAction,
@@ -509,15 +561,19 @@ mod tests {
             devbox_tmp_volume_name: "box-tmp".to_owned(),
             devbox_retired_container_grace_ms: 300_000,
             devbox_auto_start: true,
+            devbox_version_cache_ms: 120_000,
             devbox_default_user: "root".to_owned(),
             host_default_workdir: root.clone(),
             host_shell: "pwsh".to_owned(),
+            power_shell_exe: "pwsh".to_owned(),
+            power_shell_fallback_exe: "powershell.exe".to_owned(),
             node_exe: "node".to_owned(),
             host_program_allowlist: vec![],
             devbox_program_allowlist: vec![],
             host_exec_enabled: true,
             execution_slot_root: root.join("slots"),
             jobs_root: root.join("jobs"),
+            mcp_performance_state_path: root.join("mcp-performance.json"),
             exec_max_concurrent: 6,
             exec_reserved_interactive: 1,
             exec_queue_timeout_ms: 15_000,

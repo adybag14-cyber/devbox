@@ -77,7 +77,8 @@ const baseUrl = new URL(`http://127.0.0.1:${port}/`);
 const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "devbox-rust-mcp-runtime-"));
 const serverEnv = {
   ...process.env,
-  DEVBOX_PROJECT_ROOT: projectRoot,
+  DEVBOX_PROJECT_ROOT: runtimeDir,
+  HOST_WORKSPACE_PATH: projectRoot,
   HOST: "127.0.0.1",
   PORT: String(port),
   MCP_AUTH_MODE: "none",
@@ -107,7 +108,11 @@ const exited = new Promise((resolve, reject) => {
 
 try {
   await waitForHealth({ baseUrl, exited });
-  await runNode([smokeClientPath], { ...process.env, RUST_MCP_URL: baseUrl.toString() });
+  await runNode([smokeClientPath], {
+    ...process.env,
+    RUST_MCP_URL: baseUrl.toString(),
+    RUST_MCP_STATE_ROOT: runtimeDir,
+  });
 } catch (error) {
   if (stdout.trim()) console.error(`\n--- Rust MCP stdout ---\n${stdout}`);
   if (stderr.trim()) console.error(`\n--- Rust MCP stderr ---\n${stderr}`);
