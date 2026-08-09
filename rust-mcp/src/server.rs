@@ -11,6 +11,7 @@ use axum::{
     body::Body,
     extract::State,
     http::{HeaderMap, StatusCode, header},
+    middleware,
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -41,6 +42,7 @@ use crate::{
     host_inspect::{InspectFileRequest, inspect_host_file},
     job_manager::{JobManager, StartProgramJob},
     lifecycle::{LifecycleAction, LifecycleService},
+    oauth::OAuthService,
     output::{OutputMode, shape_process_output},
     result::ToolEnvelope,
     runtime::{ProgramRequest, RuntimeExecError, RuntimeExecutor, ShellRequest},
@@ -2089,6 +2091,7 @@ impl ServerHandler for DevboxMcp {
 #[derive(Debug, Clone)]
 struct HttpState {
     config: Arc<Config>,
+    oauth: Option<Arc<OAuthService>>,
 }
 
 pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Router {
@@ -2103,7 +2106,12 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
         transport_config,
     );
 
-    Router::new()
+    let oauth = OAuthService::new(&config).map(Arc::new);
+    let state = HttpState {
+        config,
+        oauth: oauth.clone(),
+    };
+    let mut router = Router::new()
         .route(
             "/",
             get(root_metadata)
@@ -2115,7 +2123,15 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
             "/mcp",
             get(mcp_sse_probe).post_service(mcp).delete(mcp_delete),
         )
-        .with_state(HttpState { config })
+        .with_state(state);
+    if let Some(service) = oauth.clone() {
+        router = router.merge(crate::oauth::router(service));
+    }
+    router
+        .layer(middleware::from_fn_with_state(
+            oauth,
+            crate::oauth::mcp_bearer_guard,
+        ))
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
 }
@@ -2178,6 +2194,7 @@ async fn root_metadata(State(state): State<HttpState>, headers: HeaderMap) -> Re
         "local_base_url": local_base,
         "mcp_url": format!("{connector_base}/mcp"),
         "root_mcp_url": connector_base,
+        "oauth": state.oauth.as_ref().map(|service| service.oauth_info()),
         "rust_replacement": {
             "draft": true,
             "parity": parity,
@@ -2628,6 +2645,10 @@ mod tests {
             runtime_mode: RuntimeMode::Host,
             platform: crate::Platform::detect(),
             public_base_url: None,
+            oauth_state_file_path: temp.path().join("oauth-state.json"),
+            cloudflare_access_team_domain: None,
+            cloudflare_access_aud: String::new(),
+            cloudflare_access_jwks_url: None,
             host_workspace_path: temp.path().to_path_buf(),
             devbox_workspace_path: temp.path().to_path_buf(),
             devbox_container_name: "chatgpt-devbox-runtime".to_owned(),

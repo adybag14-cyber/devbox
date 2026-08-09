@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
+use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -124,6 +125,10 @@ pub struct Config {
     pub runtime_mode: RuntimeMode,
     pub platform: Platform,
     pub public_base_url: Option<String>,
+    pub oauth_state_file_path: PathBuf,
+    pub cloudflare_access_team_domain: Option<String>,
+    pub cloudflare_access_aud: String,
+    pub cloudflare_access_jwks_url: Option<String>,
     pub host_workspace_path: PathBuf,
     pub devbox_workspace_path: PathBuf,
     pub devbox_container_name: String,
@@ -158,6 +163,13 @@ pub struct Config {
     pub max_mcp_transfer_chars: usize,
 }
 
+struct OauthConfiguration {
+    state_file_path: PathBuf,
+    cloudflare_team_domain: Option<String>,
+    cloudflare_aud: String,
+    cloudflare_jwks_url: Option<String>,
+}
+
 struct ProgramConfiguration {
     host_shell: String,
     node_exe: String,
@@ -180,6 +192,7 @@ impl Config {
         let auth_mode =
             AuthMode::parse(&env::var("MCP_AUTH_MODE").unwrap_or_else(|_| "none".to_owned()))?;
         let public_base_url = load_public_base_url(auth_mode)?;
+        let oauth = load_oauth_configuration(&project_root, auth_mode)?;
 
         let host_workspace_path =
             env_path("HOST_WORKSPACE_PATH").unwrap_or_else(|| project_root.join("workspace"));
@@ -204,19 +217,7 @@ impl Config {
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| format!("{devbox_container_name}-tmp"));
-        let devbox_default_user = env::var("DEVBOX_DEFAULT_USER")
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| {
-                if runtime_mode == RuntimeMode::Docker {
-                    "root".to_owned()
-                } else {
-                    env::var("USERNAME")
-                        .or_else(|_| env::var("USER"))
-                        .unwrap_or_default()
-                }
-            });
+        let devbox_default_user = load_devbox_default_user(runtime_mode);
         let program = load_program_configuration(&platform, runtime_mode);
         let execution_slot_root = env_path("MCP_EXEC_SLOT_ROOT")
             .unwrap_or_else(|| project_root.join("run").join("execution-slots"));
@@ -231,6 +232,10 @@ impl Config {
             runtime_mode,
             platform,
             public_base_url,
+            oauth_state_file_path: oauth.state_file_path,
+            cloudflare_access_team_domain: oauth.cloudflare_team_domain,
+            cloudflare_access_aud: oauth.cloudflare_aud,
+            cloudflare_access_jwks_url: oauth.cloudflare_jwks_url,
             host_workspace_path,
             devbox_workspace_path,
             devbox_container_name,
@@ -325,6 +330,22 @@ fn find_project_root(start: &Path) -> Option<PathBuf> {
         let js_server = candidate.join("src").join("server.js");
         (package.is_file() && js_server.is_file()).then(|| candidate.to_path_buf())
     })
+}
+
+fn load_devbox_default_user(runtime_mode: RuntimeMode) -> String {
+    env::var("DEVBOX_DEFAULT_USER")
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            if runtime_mode == RuntimeMode::Docker {
+                "root".to_owned()
+            } else {
+                env::var("USERNAME")
+                    .or_else(|_| env::var("USER"))
+                    .unwrap_or_default()
+            }
+        })
 }
 
 fn load_program_configuration(
@@ -458,15 +479,93 @@ fn nonempty_env_or(name: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_owned())
 }
 
+fn load_oauth_configuration(
+    project_root: &Path,
+    auth_mode: AuthMode,
+) -> Result<OauthConfiguration> {
+    let state_file_path = env_path("OAUTH_STATE_FILE_PATH")
+        .unwrap_or_else(|| project_root.join("run").join("oauth-state.json"));
+    let cloudflare_team_domain = normalized_url_env("CLOUDFLARE_ACCESS_TEAM_DOMAIN");
+    let cloudflare_aud = env::var("CLOUDFLARE_ACCESS_AUD")
+        .unwrap_or_default()
+        .trim()
+        .to_owned();
+    let cloudflare_jwks_url = normalized_url_env("CLOUDFLARE_ACCESS_JWKS_URL");
+    validate_oauth_configuration(
+        auth_mode,
+        cloudflare_team_domain.as_deref(),
+        &cloudflare_aud,
+    )?;
+    Ok(OauthConfiguration {
+        state_file_path,
+        cloudflare_team_domain,
+        cloudflare_aud,
+        cloudflare_jwks_url,
+    })
+}
+
+fn validate_oauth_configuration(
+    auth_mode: AuthMode,
+    cloudflare_team_domain: Option<&str>,
+    cloudflare_aud: &str,
+) -> Result<()> {
+    if auth_mode == AuthMode::CloudflareAccess {
+        if cloudflare_team_domain.is_none() {
+            bail!("CLOUDFLARE_ACCESS_TEAM_DOMAIN is required when MCP_AUTH_MODE=cloudflare-access");
+        }
+        if cloudflare_aud.trim().is_empty() {
+            bail!("CLOUDFLARE_ACCESS_AUD is required when MCP_AUTH_MODE=cloudflare-access");
+        }
+    }
+    Ok(())
+}
+
+fn normalized_url_env(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_owned())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            if value.starts_with("http://") || value.starts_with("https://") {
+                value
+            } else {
+                format!("https://{value}")
+            }
+        })
+}
+
 fn load_public_base_url(auth_mode: AuthMode) -> Result<Option<String>> {
     let value = env::var("PUBLIC_BASE_URL")
         .ok()
         .map(|value| value.trim().trim_end_matches('/').to_owned())
         .filter(|value| !value.is_empty());
-    if auth_mode != AuthMode::None && value.is_none() {
-        bail!("PUBLIC_BASE_URL is required when MCP_AUTH_MODE uses OAuth");
+    if auth_mode != AuthMode::None {
+        let issuer = value.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("PUBLIC_BASE_URL is required when MCP_AUTH_MODE uses OAuth")
+        })?;
+        validate_issuer_url(
+            issuer,
+            parse_bool_env("MCP_DANGEROUSLY_ALLOW_INSECURE_ISSUER_URL", false),
+        )?;
     }
     Ok(value)
+}
+
+fn validate_issuer_url(value: &str, allow_insecure: bool) -> Result<()> {
+    let issuer = Url::parse(value).context("PUBLIC_BASE_URL must be a valid absolute URL")?;
+    if issuer.scheme() != "https"
+        && !matches!(issuer.host_str(), Some("localhost" | "127.0.0.1"))
+        && !allow_insecure
+    {
+        bail!("Issuer URL must be HTTPS");
+    }
+    if issuer.fragment().is_some() {
+        bail!("Issuer URL must not have a fragment: {value}");
+    }
+    if issuer.query().is_some() {
+        bail!("Issuer URL must not have a query string: {value}");
+    }
+    Ok(())
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -517,6 +616,17 @@ fn parse_bool_env(name: &str, fallback: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_issuer_security_matches_installed_sdk() {
+        assert!(validate_issuer_url("https://example.com/mcp", false).is_ok());
+        assert!(validate_issuer_url("http://localhost:8100", false).is_ok());
+        assert!(validate_issuer_url("http://127.0.0.1:8100", false).is_ok());
+        assert!(validate_issuer_url("http://example.com", false).is_err());
+        assert!(validate_issuer_url("http://example.com", true).is_ok());
+        assert!(validate_issuer_url("https://example.com/?x=1", false).is_err());
+        assert!(validate_issuer_url("https://example.com/#fragment", false).is_err());
+    }
 
     #[test]
     fn windows_auto_runtime_matches_javascript_default() {

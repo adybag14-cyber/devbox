@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use anyhow::Result;
-use devbox_mcp::{AuthMode, Config, contract::ParityReport};
+use devbox_mcp::{Config, contract::ParityReport};
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -30,12 +30,6 @@ async fn main() -> Result<()> {
     let config = Arc::new(Config::load()?);
     if let Some(request_path) = job_runner_request()? {
         return devbox_mcp::job_runner::run_job_request(config, &request_path).await;
-    }
-    if config.auth_mode != AuthMode::None {
-        anyhow::bail!(
-            "Rust MCP authentication parity is not implemented yet; refusing to start with MCP_AUTH_MODE={}",
-            config.auth_mode.as_str()
-        );
     }
 
     let cancellation = CancellationToken::new();

@@ -11,6 +11,7 @@ pub mod job_manager;
 pub mod job_runner;
 pub mod jobs;
 pub mod lifecycle;
+pub mod oauth;
 pub mod output;
 pub mod process;
 pub mod result;
