@@ -37,6 +37,7 @@ use crate::{
     files::{FileService, LargeReadResult, LargeWriteResult, ListOptions, ProcessResult},
     host_inspect::{InspectFileRequest, inspect_host_file},
     job_manager::{JobManager, StartProgramJob},
+    lifecycle::{LifecycleAction, LifecycleService},
     output::{OutputMode, shape_process_output},
     result::ToolEnvelope,
     runtime::{ProgramRequest, RuntimeExecError, RuntimeExecutor, ShellRequest},
@@ -52,6 +53,7 @@ pub struct DevboxMcp {
     runtime: Arc<RuntimeExecutor>,
     jobs: Arc<JobManager>,
     search: Arc<SearchService>,
+    lifecycle: Arc<LifecycleService>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -70,6 +72,7 @@ impl DevboxMcp {
             runtime: Arc::new(RuntimeExecutor::new(config.clone())),
             jobs: Arc::new(JobManager::new(config.clone())),
             search: Arc::new(SearchService::new(config.clone())),
+            lifecycle: Arc::new(LifecycleService::new(config.clone())),
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -804,6 +807,96 @@ impl DevboxMcp {
                 ToolEnvelope::success(summary, Some(data))
             }
             Err(message) => ToolEnvelope::error(message, None),
+        }
+    }
+
+    #[tool(
+        name = "devbox_start",
+        description = "Bring the selected Devbox runtime online. Host mode stays in the current server process; Docker mode starts or creates the configured container.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_start(&self, cancellation: CancellationToken) -> CallToolResult {
+        self.render_lifecycle(LifecycleAction::Start, cancellation)
+            .await
+    }
+
+    #[tool(
+        name = "devbox_stop",
+        description = "Stop the selected Devbox runtime without deleting its workspace. Host mode returns launcher guidance instead of terminating the MCP process.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_stop(&self, cancellation: CancellationToken) -> CallToolResult {
+        self.render_lifecycle(LifecycleAction::Stop, cancellation)
+            .await
+    }
+
+    #[tool(
+        name = "devbox_restart",
+        description = "Restart the selected Devbox runtime. Host mode returns launcher guidance; Docker mode restarts or creates the configured container.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_restart(&self, cancellation: CancellationToken) -> CallToolResult {
+        self.render_lifecycle(LifecycleAction::Restart, cancellation)
+            .await
+    }
+
+    #[tool(
+        name = "devbox_recreate",
+        description = "Rebuild the selected Devbox backend while preserving its workspace. Docker recreate uses rename/create/rollback and legacy /tmp migration semantics.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn devbox_recreate(&self, cancellation: CancellationToken) -> CallToolResult {
+        self.render_lifecycle(LifecycleAction::Recreate, cancellation)
+            .await
+    }
+
+    async fn render_lifecycle(
+        &self,
+        action: LifecycleAction,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        match self.lifecycle.control(action, cancellation).await {
+            Ok(data) => {
+                let docker = self.config.runtime_mode == RuntimeMode::Docker;
+                let name = data["name"].as_str().unwrap_or("devbox");
+                let summary = if docker {
+                    match action {
+                        LifecycleAction::Start => format!("Docker Devbox {name} is running."),
+                        LifecycleAction::Stop => format!("Docker Devbox {name} is stopped."),
+                        LifecycleAction::Restart => {
+                            format!("Docker Devbox {name} has been restarted.")
+                        }
+                        LifecycleAction::Recreate => {
+                            format!("Docker Devbox {name} has been recreated.")
+                        }
+                    }
+                } else if action == LifecycleAction::Start {
+                    format!(
+                        "{} Host Devbox is ready in the current server process.",
+                        self.config.platform.display_name
+                    )
+                } else {
+                    data["controlMessage"].as_str().map_or_else(
+                        || {
+                            format!(
+                                "{} Host Devbox {} is managed by the launcher command.",
+                                self.config.platform.display_name,
+                                action.as_str()
+                            )
+                        },
+                        str::to_owned,
+                    )
+                };
+                ToolEnvelope::success(summary, Some(data))
+            }
+            Err(error) => ToolEnvelope::error(
+                format!(
+                    "Failed to {} the {}: {error}",
+                    action.as_str(),
+                    self.config.runtime_label()
+                ),
+                None,
+            ),
         }
     }
 
@@ -2263,6 +2356,10 @@ mod tests {
             host_workspace_path: temp.path().to_path_buf(),
             devbox_workspace_path: temp.path().to_path_buf(),
             devbox_container_name: "chatgpt-devbox-runtime".to_owned(),
+            devbox_image_name: "chatgpt-devbox-runtime:local".to_owned(),
+            devbox_tmp_volume_name: "chatgpt-devbox-runtime-tmp".to_owned(),
+            devbox_retired_container_grace_ms: 300_000,
+            devbox_auto_start: true,
             devbox_default_user: "root".to_owned(),
             host_default_workdir: temp.path().to_path_buf(),
             host_shell: "unused".to_owned(),

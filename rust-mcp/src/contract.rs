@@ -67,6 +67,10 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "host_run_program",
     "windows_host_run_program",
     "windows_host_inspect_file",
+    "devbox_start",
+    "devbox_stop",
+    "devbox_restart",
+    "devbox_recreate",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

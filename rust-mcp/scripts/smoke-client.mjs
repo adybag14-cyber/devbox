@@ -48,6 +48,10 @@ for (const requiredTool of [
   "host_run_program",
   "windows_host_run_program",
   "windows_host_inspect_file",
+  "devbox_start",
+  "devbox_stop",
+  "devbox_restart",
+  "devbox_recreate",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -109,6 +113,23 @@ try {
     assert.equal(hostProgram.isError, false);
     assert.match(hostProgram.structuredContent?.stdout || "", /^git version /);
     assert.equal(hostProgram.structuredContent?.data?.execution?.pool, "execution");
+  }
+
+  const startedRuntime = await client.callTool({ name: "devbox_start", arguments: {} });
+  assert.equal(startedRuntime.isError, false);
+  assert.equal(startedRuntime.structuredContent?.data?.mode, "host");
+  assert.equal(startedRuntime.structuredContent?.data?.running, true);
+
+  for (const [toolName, action] of [
+    ["devbox_stop", "stop"],
+    ["devbox_restart", "restart"],
+    ["devbox_recreate", "recreate"],
+  ]) {
+    const lifecycle = await client.callTool({ name: toolName, arguments: {} });
+    assert.equal(lifecycle.isError, false);
+    assert.equal(lifecycle.structuredContent?.data?.controlAction, action);
+    assert.match(lifecycle.structuredContent?.data?.controlMessage || "", /launcher command/);
+    assert.equal(lifecycle.structuredContent?.data?.running, true);
   }
 
   const shellStarted = await client.callTool({

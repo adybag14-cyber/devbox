@@ -127,6 +127,10 @@ pub struct Config {
     pub host_workspace_path: PathBuf,
     pub devbox_workspace_path: PathBuf,
     pub devbox_container_name: String,
+    pub devbox_image_name: String,
+    pub devbox_tmp_volume_name: String,
+    pub devbox_retired_container_grace_ms: u64,
+    pub devbox_auto_start: bool,
     pub devbox_default_user: String,
     pub host_default_workdir: PathBuf,
     pub host_shell: String,
@@ -195,6 +199,16 @@ impl Config {
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "chatgpt-devbox-runtime".to_owned());
+        let devbox_image_name = env::var("DEVBOX_IMAGE_NAME")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "chatgpt-devbox-runtime:local".to_owned());
+        let devbox_tmp_volume_name = env::var("DEVBOX_TMP_VOLUME_NAME")
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("{devbox_container_name}-tmp"));
         let devbox_default_user = env::var("DEVBOX_DEFAULT_USER")
             .ok()
             .map(|value| value.trim().to_owned())
@@ -225,6 +239,13 @@ impl Config {
             host_workspace_path,
             devbox_workspace_path,
             devbox_container_name,
+            devbox_image_name,
+            devbox_tmp_volume_name,
+            devbox_retired_container_grace_ms: parse_env(
+                "DEVBOX_RETIRED_CONTAINER_GRACE_MS",
+                300_000_u64,
+            ),
+            devbox_auto_start: parse_bool_env("DEVBOX_AUTO_START", true),
             devbox_default_user,
             host_default_workdir,
             host_shell: program.host_shell,

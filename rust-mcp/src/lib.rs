@@ -8,6 +8,7 @@ pub mod job_logs;
 pub mod job_manager;
 pub mod job_runner;
 pub mod jobs;
+pub mod lifecycle;
 pub mod output;
 pub mod process;
 pub mod result;
