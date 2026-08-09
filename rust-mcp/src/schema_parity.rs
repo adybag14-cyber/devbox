@@ -52,15 +52,128 @@ pub fn configure_tool_metadata(tool: &mut Tool, config: &Config) {
     tool.title = metadata
         .get("title")
         .and_then(Value::as_str)
-        .map(str::to_owned);
+        .map(|value| render_metadata_field(tool.name.as_ref(), "title", value, config));
     tool.description = metadata
         .get("description")
         .and_then(Value::as_str)
-        .map(|value| Cow::Owned(value.to_owned()));
+        .map(|value| {
+            Cow::Owned(render_metadata_field(
+                tool.name.as_ref(),
+                "description",
+                value,
+                config,
+            ))
+        });
     tool.annotations = metadata
         .get("annotations")
         .cloned()
         .and_then(|value| serde_json::from_value::<ToolAnnotations>(value).ok());
+}
+
+#[derive(Debug, Clone)]
+struct MetadataLabels {
+    runtime_mode: RuntimeMode,
+    runtime_title: String,
+    runtime_label: String,
+    host_title: String,
+    host_command_title: String,
+    is_windows: bool,
+}
+
+impl MetadataLabels {
+    fn from_config(config: &Config) -> Self {
+        Self::new(
+            config.runtime_mode,
+            &config.platform.display_name,
+            config.platform.is_windows,
+        )
+    }
+
+    fn new(runtime_mode: RuntimeMode, platform_name: &str, is_windows: bool) -> Self {
+        let runtime_title = if runtime_mode == RuntimeMode::Docker {
+            "Docker Devbox".to_owned()
+        } else {
+            format!("{platform_name} Host Devbox")
+        };
+        let runtime_label = if runtime_mode == RuntimeMode::Docker {
+            "Docker devbox".to_owned()
+        } else {
+            format!("{platform_name} host devbox")
+        };
+        let host_title = if is_windows {
+            "Windows Host".to_owned()
+        } else {
+            format!("{platform_name} Host")
+        };
+        let host_command_title = if is_windows {
+            "Windows PowerShell".to_owned()
+        } else {
+            format!("{platform_name} Host Shell")
+        };
+        Self {
+            runtime_mode,
+            runtime_title,
+            runtime_label,
+            host_title,
+            host_command_title,
+            is_windows,
+        }
+    }
+}
+
+fn render_metadata_field(tool_name: &str, field: &str, value: &str, config: &Config) -> String {
+    render_metadata_field_with_labels(
+        tool_name,
+        field,
+        value,
+        &MetadataLabels::from_config(config),
+    )
+}
+
+fn render_metadata_field_with_labels(
+    tool_name: &str,
+    field: &str,
+    value: &str,
+    labels: &MetadataLabels,
+) -> String {
+    if tool_name == "host_exec" && field == "description" && !labels.is_windows {
+        return format!(
+            "Use this when you explicitly need native {} tooling rather than the {}, such as shell automation, git, node, python, or other host commands.",
+            labels.host_title.to_lowercase(),
+            labels.runtime_label
+        );
+    }
+
+    let mut rendered = value.to_owned();
+    if labels.runtime_mode != RuntimeMode::Docker {
+        rendered = rendered
+            .replace("Windows Host Devbox", &labels.runtime_title)
+            .replace("Windows host devbox", &labels.runtime_label);
+    }
+    if is_dynamic_host_metadata(tool_name) && !labels.is_windows {
+        rendered = rendered
+            .replace("Windows PowerShell", &labels.host_command_title)
+            .replace("Windows Host", &labels.host_title)
+            .replace("windows host", &labels.host_title.to_lowercase());
+    }
+    rendered
+}
+
+fn is_dynamic_host_metadata(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "host_status"
+            | "windows_host_status"
+            | "host_capture_display"
+            | "host_capture_window"
+            | "host_capture_program"
+            | "windows_host_capture_display"
+            | "windows_host_capture_program"
+            | "host_exec"
+            | "windows_host_exec"
+            | "host_run_program"
+            | "windows_host_run_program"
+    )
 }
 
 pub fn configure_tool_input_schema(
@@ -330,5 +443,71 @@ mod tests {
         assert!(value["properties"]["input"].get("default").is_none());
         assert!(value["properties"]["input"].get("format").is_none());
         assert_eq!(value["required"], json!([]));
+    }
+
+    #[test]
+    fn linux_host_metadata_renders_runtime_and_host_labels() {
+        let labels = MetadataLabels::new(RuntimeMode::Host, "Linux", false);
+        let status = render_metadata_field_with_labels(
+            "devbox_status",
+            "title",
+            "Windows Host Devbox Status",
+            &labels,
+        );
+        assert_eq!(status, "Linux Host Devbox Status");
+
+        let host_status = render_metadata_field_with_labels(
+            "host_status",
+            "description",
+            "Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+            &labels,
+        );
+        assert_eq!(
+            host_status,
+            "Use this when you need to inspect whether linux host execution is enabled and which native programs are allowed."
+        );
+
+        let host_exec_title = render_metadata_field_with_labels(
+            "host_exec",
+            "title",
+            "Run Windows PowerShell Command",
+            &labels,
+        );
+        assert_eq!(host_exec_title, "Run Linux Host Shell Command");
+    }
+
+    #[test]
+    fn linux_docker_metadata_keeps_docker_runtime_and_linux_host_tooling() {
+        let labels = MetadataLabels::new(RuntimeMode::Docker, "Linux", false);
+        let status = render_metadata_field_with_labels(
+            "devbox_status",
+            "title",
+            "Docker Devbox Status",
+            &labels,
+        );
+        assert_eq!(status, "Docker Devbox Status");
+
+        let host_exec = render_metadata_field_with_labels(
+            "host_exec",
+            "description",
+            "unused Windows host description",
+            &labels,
+        );
+        assert_eq!(
+            host_exec,
+            "Use this when you explicitly need native linux host tooling rather than the Docker devbox, such as shell automation, git, node, python, or other host commands."
+        );
+    }
+
+    #[test]
+    fn fixed_windows_compatibility_tool_metadata_remains_windows_specific() {
+        let labels = MetadataLabels::new(RuntimeMode::Host, "macOS", false);
+        let fixed = render_metadata_field_with_labels(
+            "windows_host_inspect_file",
+            "title",
+            "Inspect Windows Host File Integrity",
+            &labels,
+        );
+        assert_eq!(fixed, "Inspect Windows Host File Integrity");
     }
 }
