@@ -18,7 +18,6 @@ use crate::{
 };
 
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
-const DOCKER_TIMEOUT: Duration = Duration::from_secs(60);
 const DOCKER_CAPTURE_CHARS: usize = 262_144;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,6 +380,7 @@ impl LifecycleService {
 
     fn queue_retired_cleanup(&self, retired_name: String) {
         let delay = Duration::from_millis(self.config.devbox_retired_container_grace_ms);
+        let docker_timeout = Duration::from_millis(self.config.docker_command_timeout_ms);
         tokio::spawn(async move {
             if !delay.is_zero() {
                 tokio::time::sleep(delay).await;
@@ -389,7 +389,7 @@ impl LifecycleService {
                 "docker",
                 &["rm".to_owned(), "-f".to_owned(), retired_name],
                 ProcessOptions {
-                    timeout: Some(DOCKER_TIMEOUT),
+                    timeout: Some(docker_timeout),
                     max_capture_chars: Some(DOCKER_CAPTURE_CHARS),
                     ..ProcessOptions::default()
                 },
@@ -408,7 +408,7 @@ impl LifecycleService {
             "docker",
             &args,
             ProcessOptions {
-                timeout: Some(DOCKER_TIMEOUT),
+                timeout: Some(Duration::from_millis(self.config.docker_command_timeout_ms)),
                 max_capture_chars: Some(DOCKER_CAPTURE_CHARS),
                 ..ProcessOptions::default()
             },
@@ -569,6 +569,7 @@ mod tests {
             devbox_retired_container_grace_ms: 300_000,
             devbox_auto_start: true,
             devbox_version_cache_ms: 120_000,
+            docker_command_timeout_ms: 120_000,
             devbox_default_user: "root".to_owned(),
             host_default_workdir: root.clone(),
             host_shell: "pwsh".to_owned(),
@@ -576,6 +577,7 @@ mod tests {
             power_shell_fallback_exe: "powershell.exe".to_owned(),
             node_exe: "node".to_owned(),
             host_program_allowlist: vec![],
+            host_search_backend: crate::config::HostSearchBackend::Auto,
             devbox_program_allowlist: vec![],
             host_exec_enabled: true,
             allow_windows_host_exec_uac: false,
@@ -601,7 +603,8 @@ mod tests {
             screen_capture_attempt_timeout_ms: 8_000,
             screen_capture_retries: 1,
             screen_capture_queue_timeout_ms: 5_000,
-            max_wait_seconds: 85.0,
+            max_wait_seconds: 300.0,
+            command_output_limit_chars: 65_536,
             max_mcp_transfer_chars: 4_000_000,
         };
         let args = create_container_args(&config);

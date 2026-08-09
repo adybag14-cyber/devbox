@@ -13,6 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Config, RuntimeMode,
+    config::HostSearchBackend,
     files::ProcessResult,
     process::{OutputStream, ProcessError, ProcessOptions, spawn_process},
 };
@@ -58,6 +59,18 @@ impl SearchService {
         request.timeout = request.timeout.max(Duration::from_millis(1));
         let (line_regex, fixed_strings) =
             compile_pattern(&request.pattern, request.case_sensitive)?;
+
+        if self.config.runtime_mode == RuntimeMode::Host
+            && self.config.host_search_backend == HostSearchBackend::Rust
+        {
+            return search_host_fallback(
+                resolve_host_root(&self.config, &request.path),
+                &request,
+                &line_regex,
+                cancellation,
+            )
+            .await;
+        }
 
         match self
             .search_with_ripgrep(&request, fixed_strings, cancellation.clone())

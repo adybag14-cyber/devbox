@@ -116,6 +116,26 @@ impl Platform {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostSearchBackend {
+    Auto,
+    Ripgrep,
+    Rust,
+}
+
+impl HostSearchBackend {
+    fn parse(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "auto" => Ok(Self::Auto),
+            "rg" => Ok(Self::Ripgrep),
+            "js" => Ok(Self::Rust),
+            other => bail!(
+                "Unsupported HOST_SEARCH_BACKEND \"{other}\". Use \"auto\", \"rg\", or \"js\"."
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GatewayBridgeConfig {
     pub enabled: bool,
@@ -150,6 +170,7 @@ pub struct Config {
     pub devbox_retired_container_grace_ms: u64,
     pub devbox_auto_start: bool,
     pub devbox_version_cache_ms: u64,
+    pub docker_command_timeout_ms: u64,
     pub devbox_default_user: String,
     pub host_default_workdir: PathBuf,
     pub host_shell: String,
@@ -158,6 +179,7 @@ pub struct Config {
     pub node_exe: String,
     pub host_program_allowlist: Vec<String>,
     pub devbox_program_allowlist: Vec<String>,
+    pub host_search_backend: HostSearchBackend,
     pub host_exec_enabled: bool,
     pub allow_windows_host_exec_uac: bool,
     pub execution_slot_root: PathBuf,
@@ -180,6 +202,7 @@ pub struct Config {
     pub screen_capture_retries: usize,
     pub screen_capture_queue_timeout_ms: u64,
     pub max_wait_seconds: f64,
+    pub command_output_limit_chars: usize,
     pub max_mcp_transfer_chars: usize,
 }
 
@@ -263,12 +286,10 @@ impl Config {
             devbox_container_name,
             devbox_image_name,
             devbox_tmp_volume_name,
-            devbox_retired_container_grace_ms: parse_env(
-                "DEVBOX_RETIRED_CONTAINER_GRACE_MS",
-                300_000_u64,
-            ),
+            devbox_retired_container_grace_ms: load_retired_container_grace_ms(),
             devbox_auto_start: parse_bool_env("DEVBOX_AUTO_START", true),
             devbox_version_cache_ms: parse_env("DEVBOX_VERSION_CACHE_MS", 120_000_u64),
+            docker_command_timeout_ms: parse_env("DOCKER_COMMAND_TIMEOUT_MS", 120_000_u64),
             devbox_default_user,
             host_default_workdir,
             host_shell: program.host_shell,
@@ -277,7 +298,8 @@ impl Config {
             node_exe: program.node_exe,
             host_program_allowlist: program.host_program_allowlist,
             devbox_program_allowlist: program.devbox_program_allowlist,
-            host_exec_enabled: parse_bool_env("ENABLE_HOST_EXEC", true),
+            host_search_backend: load_host_search_backend()?,
+            host_exec_enabled: parse_host_exec_enabled(),
             allow_windows_host_exec_uac: parse_bool_env("ALLOW_WINDOWS_HOST_EXEC_UAC", false),
             execution_slot_root,
             jobs_root,
@@ -305,6 +327,7 @@ impl Config {
                 5_000_u64,
             ),
             max_wait_seconds: f64::from(parse_env("MCP_WAIT_MAX_SECONDS", 300_u16)),
+            command_output_limit_chars: parse_command_output_limit(),
             max_mcp_transfer_chars: parse_transfer_limit(),
         })
     }
@@ -325,6 +348,10 @@ impl Config {
         } else {
             format!("{} host devbox", self.platform.display_name)
         }
+    }
+    #[must_use]
+    pub fn command_output_chars(&self, requested: Option<usize>) -> usize {
+        requested.unwrap_or(self.command_output_limit_chars)
     }
 }
 
@@ -545,6 +572,14 @@ fn load_usage_log_configuration() -> UsageLogConfig {
     }
 }
 
+fn load_retired_container_grace_ms() -> u64 {
+    parse_env("DEVBOX_RETIRED_CONTAINER_GRACE_MS", 300_000_u64)
+}
+
+fn load_host_search_backend() -> Result<HostSearchBackend> {
+    HostSearchBackend::parse(&env::var("HOST_SEARCH_BACKEND").unwrap_or_else(|_| "auto".to_owned()))
+}
+
 fn load_gateway_bridge_configuration() -> GatewayBridgeConfig {
     GatewayBridgeConfig {
         enabled: parse_bool_env("ENABLE_GATEWAY_BRIDGE", true),
@@ -713,6 +748,48 @@ fn parse_scaled_size(value: &str, multiplier: usize) -> Option<usize> {
     (total > 0).then_some(total)
 }
 
+fn parse_command_output_limit() -> usize {
+    let command_limit = env::var("MAX_COMMAND_OUTPUT_CHARS")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(65_536)
+        .min(65_536);
+    match parse_character_limit("MAX_TEXT_OUTPUT_CHARS", 4_000_000) {
+        None => command_limit,
+        Some(text_limit) => text_limit.min(command_limit),
+    }
+}
+
+fn parse_character_limit(name: &str, fallback: usize) -> Option<usize> {
+    let Ok(raw) = env::var(name) else {
+        return Some(fallback);
+    };
+    let normalized = raw.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Some(fallback);
+    }
+    if matches!(
+        normalized.as_str(),
+        "0" | "-1" | "none" | "off" | "disabled" | "unlimited" | "infinite" | "infinity"
+    ) {
+        return None;
+    }
+    normalized
+        .parse::<usize>()
+        .ok()
+        .filter(|value| *value > 0)
+        .or(Some(fallback))
+}
+
+fn parse_host_exec_enabled() -> bool {
+    if env::var_os("ENABLE_HOST_EXEC").is_some() {
+        parse_bool_env("ENABLE_HOST_EXEC", true)
+    } else {
+        parse_bool_env("ENABLE_WINDOWS_HOST_EXEC", true)
+    }
+}
+
 fn parse_transfer_limit() -> usize {
     let raw = env::var("MAX_MCP_TRANSFER_CHARS").unwrap_or_default();
     let normalized = raw.trim().to_ascii_lowercase();
@@ -743,6 +820,23 @@ fn parse_bool_env(name: &str, fallback: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_search_backend_rejects_unknown_values() {
+        assert_eq!(
+            HostSearchBackend::parse("auto").expect("auto"),
+            HostSearchBackend::Auto
+        );
+        assert_eq!(
+            HostSearchBackend::parse("RG").expect("rg"),
+            HostSearchBackend::Ripgrep
+        );
+        assert_eq!(
+            HostSearchBackend::parse("js").expect("js"),
+            HostSearchBackend::Rust
+        );
+        assert!(HostSearchBackend::parse("invalid").is_err());
+    }
 
     #[test]
     fn json_body_scaled_sizes_match_express_style_units() {

@@ -381,9 +381,9 @@ struct RunProgramRequest {
     #[serde(default = "default_output_mode")]
     #[schemars(description = "Output shaping mode: head, tail, or summary.")]
     output_mode: String,
-    #[serde(default = "default_output_chars")]
+    #[serde(default)]
     #[schemars(description = "Maximum characters returned per output stream.")]
-    max_output_chars: usize,
+    max_output_chars: Option<usize>,
     #[serde(default)]
     #[schemars(
         description = "Optional maximum lines returned per stream; 0 disables line limiting."
@@ -403,8 +403,8 @@ struct RunShellRequest {
     user: String,
     #[serde(default = "default_output_mode")]
     output_mode: String,
-    #[serde(default = "default_output_chars")]
-    max_output_chars: usize,
+    #[serde(default)]
+    max_output_chars: Option<usize>,
     #[serde(default)]
     max_output_lines: usize,
 }
@@ -418,8 +418,8 @@ struct HostShellToolRequest {
     timeout_seconds: u64,
     #[serde(default = "default_output_mode")]
     output_mode: String,
-    #[serde(default = "default_output_chars")]
-    max_output_chars: usize,
+    #[serde(default)]
+    max_output_chars: Option<usize>,
     #[serde(default)]
     max_output_lines: usize,
 }
@@ -435,8 +435,8 @@ struct HostProgramToolRequest {
     timeout_seconds: u64,
     #[serde(default = "default_output_mode")]
     output_mode: String,
-    #[serde(default = "default_output_chars")]
-    max_output_chars: usize,
+    #[serde(default)]
+    max_output_chars: Option<usize>,
     #[serde(default)]
     max_output_lines: usize,
 }
@@ -553,9 +553,6 @@ const fn default_sync_timeout() -> u64 {
 }
 const fn default_async_timeout() -> u64 {
     7_200
-}
-const fn default_output_chars() -> usize {
-    65_536
 }
 const fn default_job_log_chars() -> usize {
     20_000
@@ -682,6 +679,36 @@ impl DevboxMcp {
         }
     }
 
+    fn configured_tool(&self, mut tool: rmcp::model::Tool) -> rmcp::model::Tool {
+        let mut schema = (*tool.input_schema).clone();
+        if let Some(Value::Object(properties)) = schema.get_mut("properties")
+            && let Some(property) = properties.get_mut("max_output_chars")
+        {
+            let description = property
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            let mut configured = serde_json::Map::from_iter([
+                ("type".to_owned(), json!("integer")),
+                ("minimum".to_owned(), json!(100)),
+                (
+                    "maximum".to_owned(),
+                    json!(self.config.command_output_limit_chars),
+                ),
+                (
+                    "default".to_owned(),
+                    json!(self.config.command_output_limit_chars),
+                ),
+            ]);
+            if let Some(description) = description {
+                configured.insert("description".to_owned(), json!(description));
+            }
+            *property = Value::Object(configured);
+        }
+        tool.input_schema = Arc::new(schema);
+        tool
+    }
+
     #[tool(
         name = "devbox_status",
         description = "Use this when you need the current state of the selected Devbox runtime.",
@@ -776,13 +803,12 @@ impl DevboxMcp {
         if !(1..=90).contains(&request.timeout_seconds) {
             return ToolEnvelope::error("timeout_seconds must be between 1 and 90", None);
         }
-        if request.max_output_chars < 100
-            || request.max_output_chars > self.config.max_mcp_transfer_chars
-        {
+        let max_output_chars = self.config.command_output_chars(request.max_output_chars);
+        if max_output_chars < 100 || max_output_chars > self.config.command_output_limit_chars {
             return ToolEnvelope::error(
                 format!(
                     "max_output_chars must be between 100 and {}",
-                    self.config.max_mcp_transfer_chars
+                    self.config.command_output_limit_chars
                 ),
                 None,
             );
@@ -830,7 +856,7 @@ impl DevboxMcp {
             &ShellRenderContext {
                 read_only,
                 output_mode: request.output_mode,
-                max_chars: request.max_output_chars,
+                max_chars: max_output_chars,
                 max_lines: request.max_output_lines,
                 queue_wait_ms: lease.queue_wait_ms,
                 slot: lease.slot,
@@ -856,8 +882,9 @@ impl DevboxMcp {
         if !(1..=90).contains(&request.timeout_seconds) {
             return ToolEnvelope::error("timeout_seconds must be between 1 and 90", None);
         }
-        if request.max_output_chars < 100
-            || request.max_output_chars > self.config.max_mcp_transfer_chars
+        let max_output_chars = self.config.command_output_chars(request.max_output_chars);
+        if max_output_chars < 100
+            || max_output_chars > self.config.command_output_limit_chars
             || request.max_output_lines > 10_000
         {
             return ToolEnvelope::error("Invalid host output bounds.", None);
@@ -901,7 +928,7 @@ impl DevboxMcp {
             &ShellRenderContext {
                 read_only: false,
                 output_mode: request.output_mode,
-                max_chars: request.max_output_chars,
+                max_chars: max_output_chars,
                 max_lines: request.max_output_lines,
                 queue_wait_ms: lease.queue_wait_ms,
                 slot: lease.slot,
@@ -927,8 +954,9 @@ impl DevboxMcp {
         if !(1..=90).contains(&request.timeout_seconds) {
             return ToolEnvelope::error("timeout_seconds must be between 1 and 90", None);
         }
-        if request.max_output_chars < 100
-            || request.max_output_chars > self.config.max_mcp_transfer_chars
+        let max_output_chars = self.config.command_output_chars(request.max_output_chars);
+        if max_output_chars < 100
+            || max_output_chars > self.config.command_output_limit_chars
             || request.max_output_lines > 10_000
         {
             return ToolEnvelope::error("Invalid host output bounds.", None);
@@ -975,7 +1003,7 @@ impl DevboxMcp {
             &ProgramRenderContext {
                 program: request.program,
                 output_mode: request.output_mode,
-                max_chars: request.max_output_chars,
+                max_chars: max_output_chars,
                 max_lines: request.max_output_lines,
                 queue_wait_ms: lease.queue_wait_ms,
                 slot: lease.slot,
@@ -1244,13 +1272,12 @@ impl DevboxMcp {
         if !(1..=90).contains(&request.timeout_seconds) {
             return ToolEnvelope::error("timeout_seconds must be between 1 and 90", None);
         }
-        if request.max_output_chars < 100
-            || request.max_output_chars > self.config.max_mcp_transfer_chars
-        {
+        let max_output_chars = self.config.command_output_chars(request.max_output_chars);
+        if max_output_chars < 100 || max_output_chars > self.config.command_output_limit_chars {
             return ToolEnvelope::error(
                 format!(
                     "max_output_chars must be between 100 and {}",
-                    self.config.max_mcp_transfer_chars
+                    self.config.command_output_limit_chars
                 ),
                 None,
             );
@@ -1295,7 +1322,7 @@ impl DevboxMcp {
             &ProgramRenderContext {
                 program: request.program,
                 output_mode: request.output_mode,
-                max_chars: request.max_output_chars,
+                max_chars: max_output_chars,
                 max_lines: request.max_output_lines,
                 queue_wait_ms: lease.queue_wait_ms,
                 slot: lease.slot,
@@ -2189,6 +2216,36 @@ impl ServerHandler for DevboxMcp {
         )
     }
 
+    async fn list_tools(
+        &self,
+        _request: Option<rmcp::model::PaginatedRequestParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<rmcp::model::ListToolsResult, rmcp::ErrorData> {
+        let supports_cache_hints = context
+            .protocol_version()
+            .is_some_and(|version| version >= rmcp::model::ProtocolVersion::V_2026_07_28);
+        Ok(rmcp::model::ListToolsResult {
+            result_type: Some(rmcp::model::ResultType::COMPLETE),
+            tools: self
+                .tool_router
+                .list_all()
+                .into_iter()
+                .map(|tool| self.configured_tool(tool))
+                .collect(),
+            meta: None,
+            next_cursor: None,
+            ttl_ms: supports_cache_hints.then_some(0),
+            cache_scope: supports_cache_hints.then_some(rmcp::model::CacheScope::Public),
+        })
+    }
+
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        self.tool_router
+            .get(name)
+            .cloned()
+            .map(|tool| self.configured_tool(tool))
+    }
+
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -3023,6 +3080,7 @@ mod tests {
             devbox_retired_container_grace_ms: 300_000,
             devbox_auto_start: true,
             devbox_version_cache_ms: 120_000,
+            docker_command_timeout_ms: 120_000,
             devbox_default_user: "root".to_owned(),
             host_default_workdir: temp.path().to_path_buf(),
             host_shell: "unused".to_owned(),
@@ -3030,6 +3088,7 @@ mod tests {
             power_shell_fallback_exe: "powershell.exe".to_owned(),
             node_exe: "node".to_owned(),
             host_program_allowlist: vec!["node".to_owned()],
+            host_search_backend: crate::config::HostSearchBackend::Auto,
             devbox_program_allowlist: vec!["node".to_owned()],
             host_exec_enabled: true,
             allow_windows_host_exec_uac: false,
@@ -3055,7 +3114,8 @@ mod tests {
             screen_capture_attempt_timeout_ms: 8_000,
             screen_capture_retries: 1,
             screen_capture_queue_timeout_ms: 5_000,
-            max_wait_seconds: 85.0,
+            max_wait_seconds: 300.0,
+            command_output_limit_chars: 65_536,
             max_mcp_transfer_chars: 4_000_000,
         });
         let server = DevboxMcp::new(config);
