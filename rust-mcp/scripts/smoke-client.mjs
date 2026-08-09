@@ -234,7 +234,7 @@ try {
   assert.equal(oversizedCapturePid.isError, true);
   assert.match(
     oversizedCapturePid.content?.find((entry) => entry.type === "text")?.text || "",
-    /pid exceeds .*process ID range/i,
+    /Cannot process argument transformation on parameter 'TargetPid'/,
   );
 
   if (process.env.RUST_MCP_SMOKE_CAPTURE_PID) {

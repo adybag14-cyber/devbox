@@ -134,20 +134,14 @@ impl DevboxMcp {
         match self.capture.display(request.quality, cancellation).await {
             Ok(capture) => ToolEnvelope::image_success(
                 format!(
-                    "Captured the {} host display.",
-                    self.config.platform.display_name
+                    "Captured the {} display.",
+                    host_title(&self.config).to_lowercase()
                 ),
                 Some(capture.metadata),
                 STANDARD.encode(capture.image),
                 capture.mime_type,
             ),
-            Err(error) => ToolEnvelope::error(
-                format!(
-                    "Failed to capture the {} host display: {error}",
-                    self.config.platform.display_name
-                ),
-                None,
-            ),
+            Err(error) => render_anyhow_tool_error(&error, self.config.command_output_limit_chars),
         }
     }
 
@@ -159,6 +153,9 @@ impl DevboxMcp {
         if request.pid == 0 {
             return ToolEnvelope::error("pid must be a positive process ID.", None);
         }
+        if self.config.platform.is_windows && request.pid > i32::MAX as u64 {
+            return render_windows_capture_pid_binding_error(request.pid);
+        }
         let Ok(pid) = u32::try_from(request.pid) else {
             return ToolEnvelope::error(
                 format!(
@@ -168,15 +165,6 @@ impl DevboxMcp {
                 None,
             );
         };
-        if self.config.platform.is_windows && request.pid > i32::MAX as u64 {
-            return ToolEnvelope::error(
-                format!(
-                    "Failed to capture {} host window for PID {}: pid exceeds the Windows capture backend process ID range.",
-                    self.config.platform.display_name, request.pid
-                ),
-                None,
-            );
-        }
         match self
             .capture
             .program(
@@ -189,20 +177,15 @@ impl DevboxMcp {
         {
             Ok(capture) => ToolEnvelope::image_success(
                 format!(
-                    "Captured {} host window for PID {}.",
-                    self.config.platform.display_name, request.pid
+                    "Captured {} window for PID {}.",
+                    host_title(&self.config),
+                    request.pid
                 ),
                 Some(capture.metadata),
                 STANDARD.encode(capture.image),
                 capture.mime_type,
             ),
-            Err(error) => ToolEnvelope::error(
-                format!(
-                    "Failed to capture {} host window for PID {}: {error}",
-                    self.config.platform.display_name, request.pid
-                ),
-                None,
-            ),
+            Err(error) => render_anyhow_tool_error(&error, self.config.command_output_limit_chars),
         }
     }
 }
@@ -647,13 +630,7 @@ impl DevboxMcp {
                 ),
                 serde_json::to_value(data).ok(),
             ),
-            Err(error) => ToolEnvelope::error(
-                format!(
-                    "Failed to fetch {} GitHub auth status: {error}",
-                    self.config.runtime_label()
-                ),
-                None,
-            ),
+            Err(error) => render_anyhow_tool_error(&error, self.config.command_output_limit_chars),
         }
     }
 
@@ -680,13 +657,7 @@ impl DevboxMcp {
                     "hostUserEmail": if result.host_user_email.is_empty() { Value::Null } else { Value::String(result.host_user_email) },
                 })),
             ),
-            Err(error) => ToolEnvelope::error(
-                format!(
-                    "Failed to sync host GitHub authentication into the {}: {error}",
-                    self.config.runtime_label()
-                ),
-                None,
-            ),
+            Err(error) => render_anyhow_tool_error(&error, self.config.command_output_limit_chars),
         }
     }
 
@@ -2695,6 +2666,34 @@ fn render_file_process_result(
         }
         Err(error) => ToolEnvelope::process_error(error, None, "", "", None, false),
     }
+}
+
+fn render_anyhow_tool_error(error: &anyhow::Error, max_chars: usize) -> CallToolResult {
+    if let Some(process) = error.downcast_ref::<crate::process::ProcessError>() {
+        return render_command_style_error(
+            process.message.clone(),
+            None,
+            &process.stdout,
+            &process.stderr,
+            process.exit_code,
+            max_chars,
+        );
+    }
+    render_command_style_error(error.to_string(), None, "", "", None, max_chars)
+}
+
+fn render_windows_capture_pid_binding_error(pid: u64) -> CallToolResult {
+    let summary = format!(
+        "\u{1b}[31;1mcapture.ps1: \u{1b}[31;1mCannot process argument transformation on parameter 'TargetPid'. Cannot convert value \"{pid}\" to type \"System.Int32\". Error: \"Value was either too large or too small for an Int32.\"\u{1b}[0m"
+    );
+    ToolEnvelope::process_error(
+        summary.clone(),
+        None,
+        "",
+        format!("{summary}\r\n"),
+        Some(1),
+        false,
+    )
 }
 
 fn render_command_style_error(

@@ -18,7 +18,7 @@ use crate::{
     process::{ProcessError, ProcessOptions, spawn_process},
 };
 
-const RETRY_BACKOFF: Duration = Duration::from_millis(250);
+const RETRY_BACKOFF: Duration = Duration::from_millis(150);
 static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
@@ -135,7 +135,7 @@ impl CaptureService {
                         format!("{operation} capture worker metadata must be a JSON object")
                     })?;
                     metadata.insert("capture_attempts".to_owned(), json!(attempt));
-                    metadata.insert("retried".to_owned(), json!(attempt > 1));
+                    metadata.insert("capture_retried".to_owned(), json!(attempt > 1));
                     metadata.insert("capture_queue_wait_ms".to_owned(), json!(queue_wait_ms));
                     metadata.insert(
                         "capture_attempt_timeout_ms".to_owned(),
@@ -378,6 +378,11 @@ mod tests {
     fn image_validation_rejects_wrong_magic() {
         assert!(validate_image(b"not jpeg", "image/jpeg").is_err());
         assert!(validate_image(b"not png", "image/png").is_err());
+    }
+
+    #[test]
+    fn capture_retry_backoff_matches_javascript_policy() {
+        assert_eq!(RETRY_BACKOFF, Duration::from_millis(150));
     }
 
     #[test]

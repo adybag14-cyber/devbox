@@ -18,6 +18,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-result-fixture-"));
 const jsStateRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-result-js-state-"));
 const rustStateRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-result-rust-state-"));
+const ghConfigRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-result-gh-config-"));
 await mkdir(path.join(fixtureRoot, "nested"), { recursive: true });
 await writeFile(path.join(fixtureRoot, "alpha.txt"), "alpha\nbeta\n", "utf8");
 await writeFile(path.join(fixtureRoot, "nested", "bravo.txt"), "needle Alpha\nsecond line\n", "utf8");
@@ -39,6 +40,7 @@ const commonEnv = {
   DEVBOX_WORKSPACE_PATH: fixtureRoot,
   MCP_JOBS_ROOT: path.join(jsStateRoot, "jobs"),
   MCP_EXEC_SLOT_ROOT: path.join(jsStateRoot, "slots"),
+  GH_CONFIG_DIR: ghConfigRoot,
 };
 Object.assign(process.env, commonEnv);
 
@@ -112,7 +114,7 @@ const volatileTimingKeys = new Set([
   "waited_ms", "waitedMs", "queue_wait_ms", "elapsed_ms", "elapsedMs",
   "average_queue_wait_ms", "max_queue_wait_ms",
   "startedAtUtc", "completedAtUtc", "createdAtUtc", "updatedAtUtc", "UpdatedAtUtc", "sampledAtUtc",
-  "queuedAtUtc", "heartbeatAgeMs", "queueWaitMs",
+  "queuedAtUtc", "heartbeatAgeMs", "queueWaitMs", "capture_queue_wait_ms",
 ]);
 
 const normalizeJobIds = (value) => typeof value === "string"
@@ -183,6 +185,11 @@ const calls = [
   ["devbox_read_file", { path: path.join(fixtureRoot, "missing.txt"), max_bytes: 64 }],
   ["devbox_run_program", { program: "definitely-not-allowlisted", args: [], working_dir: fixtureRoot, output_mode: "tail", max_output_chars: 2000 }],
   ["devbox_run_program", { program: "git", args: ["definitely-not-a-git-command"], working_dir: fixtureRoot, output_mode: "tail", max_output_chars: 4000 }],
+  ["devbox_github_auth_status", {}],
+  ["devbox_sync_github_auth_from_host", {}],
+  ["host_capture_window", { pid: Number.MAX_SAFE_INTEGER, quality: 80, include_process_tree: false }],
+  ["host_capture_program", { pid: Number.MAX_SAFE_INTEGER, quality: 80, include_process_tree: false }],
+  ["windows_host_capture_program", { pid: Number.MAX_SAFE_INTEGER, quality: 80, include_process_tree: false }],
   ["devbox_status", {}],
   ["devbox_stop", {}],
   ["devbox_start", {}],
@@ -217,6 +224,31 @@ const normalizedResult = (name, result) => ({
   content: normalizeText(name, result),
 });
 
+const normalizedCaptureResult = (result) => {
+  const structured = structuredClone(result.structuredContent || {});
+  if (structured.data && typeof structured.data === "object") {
+    delete structured.data.bytes;
+    delete structured.data.sha256;
+    for (const key of [
+      "print_window_mean_luma",
+      "print_window_luma_range",
+      "print_window_near_black_ratio",
+      "print_window_interior_mean_luma",
+      "print_window_interior_near_black_ratio",
+      "candidate_pid_count",
+    ]) {
+      if (Object.hasOwn(structured.data, key)) structured.data[key] = "<capture-metric>";
+    }
+  }
+  return {
+    isError: result.isError ?? false,
+    structuredContent: stable(structured),
+    content: (result.content || []).map((entry) => entry.type === "image"
+      ? { type: "image", mimeType: entry.mimeType }
+      : { type: entry.type, summary: structured.summary }),
+  };
+};
+
 const js = await startJs();
 const rust = await startRust();
 const differences = [];
@@ -228,11 +260,35 @@ const compareResults = (name, jsResult, rustResult) => {
   if (JSON.stringify(a) !== JSON.stringify(b)) differences.push({ name, js: a, rust: b });
 };
 
+const compareCaptureResults = (name, jsResult, rustResult) => {
+  comparedCalls += 1;
+  const a = normalizedCaptureResult(jsResult);
+  const b = normalizedCaptureResult(rustResult);
+  if (JSON.stringify(a) !== JSON.stringify(b)) differences.push({ name, js: a, rust: b });
+};
+
 try {
   for (const [name, args] of calls) {
     const jsResult = await js.client.callTool({ name, arguments: args });
     const rustResult = await rust.client.callTool({ name, arguments: args });
     compareResults(name, jsResult, rustResult);
+  }
+
+  for (const name of ["host_capture_display", "windows_host_capture_display"]) {
+    const jsResult = await js.client.callTool({ name, arguments: { quality: 80 } });
+    const rustResult = await rust.client.callTool({ name, arguments: { quality: 80 } });
+    compareCaptureResults(name, jsResult, rustResult);
+  }
+
+  if (process.env.RUST_MCP_RESULT_CAPTURE_PID) {
+    const capturePid = Number.parseInt(process.env.RUST_MCP_RESULT_CAPTURE_PID, 10);
+    assert.ok(Number.isInteger(capturePid) && capturePid > 0);
+    for (const name of ["host_capture_window", "host_capture_program", "windows_host_capture_program"]) {
+      const args = { pid: capturePid, quality: 80, include_process_tree: true };
+      const jsResult = await js.client.callTool({ name, arguments: args });
+      const rustResult = await rust.client.callTool({ name, arguments: args });
+      compareCaptureResults(name, jsResult, rustResult);
+    }
   }
 
   const shellArgs = {
@@ -301,6 +357,7 @@ try {
   await rm(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   await rm(jsStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   await rm(rustStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  await rm(ghConfigRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 console.log(JSON.stringify({ ok: differences.length === 0, callCount: comparedCalls, differingCallCount: differences.length, differingCalls: differences.map((entry) => entry.name), differences }, null, 2));
 process.exitCode = differences.length === 0 ? 0 : 2;
