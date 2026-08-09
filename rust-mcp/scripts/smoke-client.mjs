@@ -60,12 +60,17 @@ for (const endpoint of [baseUrl, new URL("mcp", baseUrl)]) {
   assert.equal(deletion.status, 200, `${endpoint.pathname} should match the stateless JS DELETE response`);
   assert.equal(await deletion.text(), "");
 }
-assert.equal(metadata.implementation, "rust");
-assert.equal(metadata.rust_replacement?.draft, true);
-assert.equal(metadata.rust_replacement?.parity?.target_count, 37);
-const expectedTools = [...(metadata.rust_replacement?.parity?.implemented || [])].sort();
-assert.equal(metadata.rust_replacement?.parity?.implemented_count, expectedTools.length);
-for (const requiredTool of [
+assert.equal(metadata.auth_mode, "none");
+assert.equal(metadata.runtime_mode, "host");
+assert.equal(metadata.local_base_url, baseUrl.toString().replace(/\/$/, ""));
+assert.equal(metadata.root_mcp_url, baseUrl.toString().replace(/\/$/, ""));
+assert.equal(metadata.mcp_url, new URL("mcp", baseUrl).toString().replace(/\/$/, ""));
+assert.equal(metadata.gateway_bridge?.enabled, true);
+assert.equal(metadata.gateway_bridge?.private_network_access, true);
+assert.deepEqual(metadata.gateway_bridge?.origins, ["https://chatgpt.com", "https://chat.openai.com"]);
+assert.equal(metadata.runtime?.runtimeMode, "host");
+assert.equal(metadata.devbox?.mode, "host");
+const expectedTools = [
   "devbox_status",
   "devbox_wait",
   "devbox_wait_for_file",
@@ -103,9 +108,8 @@ for (const requiredTool of [
   "host_capture_program",
   "windows_host_capture_display",
   "windows_host_capture_program",
-]) {
-  assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
-}
+].sort();
+assert.equal(expectedTools.length, 37);
 
 const transport = new StreamableHTTPClientTransport(baseUrl);
 const client = new Client({ name: "rust-parity-smoke", version: "0.1.0" });
@@ -498,7 +502,7 @@ try {
     ok: true,
     baseUrl: baseUrl.toString(),
     tools: names,
-    parity: metadata.rust_replacement.parity,
+    toolCount: names.length,
     waitMs: wait.structuredContent.data.waited_ms,
   }, null, 2));
 } finally {

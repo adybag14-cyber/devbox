@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use axum::{
     Json, Router,
     body::Body,
-    extract::State,
+    extract::{Extension, State},
     http::{HeaderMap, StatusCode, header},
     middleware,
     response::{IntoResponse, Response},
@@ -29,15 +29,15 @@ use rmcp::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 
 use crate::{
-    Config, RuntimeMode,
+    AuthMode, Config, RuntimeMode,
     capture::CaptureService,
-    contract::ParityReport,
     docker_files::{DockerFileBackend, DockerListOptions},
     execution::{AcquireRequest, ExecutionScheduler, SchedulerConfig},
     files::{FileService, LargeReadResult, LargeWriteResult, ListOptions, ProcessResult},
+    gateway::{GatewayRequestContext, GatewayState},
     github_auth::GithubAuthService,
     host_inspect::{InspectFileRequest, inspect_host_file},
     job_manager::{JobManager, StartProgramJob},
@@ -2179,6 +2179,8 @@ impl ServerHandler for DevboxMcp {
 struct HttpState {
     config: Arc<Config>,
     oauth: Option<Arc<OAuthService>>,
+    handler: DevboxMcp,
+    gateway: Arc<GatewayState>,
 }
 
 pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Router {
@@ -2233,9 +2235,12 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
     );
 
     let oauth = OAuthService::new(&config).map(Arc::new);
+    let gateway = Arc::new(GatewayState::new(config.clone()));
     let state = HttpState {
         config,
         oauth: oauth.clone(),
+        handler: handler.clone(),
+        gateway: gateway.clone(),
     };
     let mut router = Router::new()
         .route(
@@ -2258,7 +2263,10 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
             oauth,
             crate::oauth::mcp_bearer_guard,
         ))
-        .layer(CorsLayer::permissive())
+        .layer(middleware::from_fn_with_state(
+            gateway,
+            crate::gateway::guard_and_bridge,
+        ))
         .layer(TraceLayer::new_for_http())
 }
 
@@ -2276,9 +2284,12 @@ pub async fn serve(config: Arc<Config>, cancellation: CancellationToken) -> Resu
         .context("read Rust MCP listener address")?;
     let router = build_router(config, cancellation.clone());
     tokio::spawn(async move {
-        if let Err(error) = axum::serve(listener, router)
-            .with_graceful_shutdown(cancellation.cancelled_owned())
-            .await
+        if let Err(error) = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(cancellation.cancelled_owned())
+        .await
         {
             tracing::error!(%error, "Rust MCP HTTP server stopped with an error");
         }
@@ -2354,43 +2365,125 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-async fn root_metadata(State(state): State<HttpState>, headers: HeaderMap) -> Response {
+async fn root_metadata(
+    State(state): State<HttpState>,
+    Extension(request_context): Extension<GatewayRequestContext>,
+    headers: HeaderMap,
+) -> Response {
     if accepts_event_stream(&headers) {
         return mcp_sse_probe(headers).await;
     }
-    let host = headers
-        .get("host")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("localhost");
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|value| value.to_str().ok())
-        .unwrap_or("http");
-    let local_base = format!("{scheme}://{host}");
+
+    let is_local = request_context.is_local;
+    let local_base = resolve_local_base_url(&headers, is_local);
     let connector_base = state
         .config
         .public_base_url
         .clone()
-        .unwrap_or_else(|| local_base.clone());
-    let parity = ParityReport::current();
-    let body = json!({
-        "name": state.config.server_name(),
-        "version": env!("CARGO_PKG_VERSION"),
-        "implementation": "rust",
-        "auth_mode": state.config.auth_mode.as_str(),
-        "runtime_mode": state.config.runtime_mode.as_str(),
-        "platform": state.config.platform.id,
-        "public_base_url": state.config.public_base_url,
-        "local_base_url": local_base,
-        "mcp_url": format!("{connector_base}/mcp"),
-        "root_mcp_url": connector_base,
-        "oauth": state.oauth.as_ref().map(|service| service.oauth_info()),
-        "rust_replacement": {
-            "draft": true,
-            "parity": parity,
-        },
-    });
-    (StatusCode::OK, Json(body)).into_response()
+        .or_else(|| local_base.clone());
+    let mcp_url = connector_base
+        .as_ref()
+        .map(|base| format!("{}/mcp", base.trim_end_matches('/')));
+    let notes = match state.config.auth_mode {
+        AuthMode::CloudflareAccess => {
+            "Cloudflare Access-backed OAuth is enabled for ChatGPT app testing. Protect the /authorize path with a Cloudflare Access application."
+                .to_owned()
+        }
+        AuthMode::DemoOauth => format!(
+            "Demo OAuth is enabled for ChatGPT app testing. The {} is the main execution environment; host tools are separate and explicit.",
+            state.config.runtime_label()
+        ),
+        AuthMode::None => format!(
+            "No authentication mode is active. The {} is the main execution environment; host tools are separate and explicit.",
+            state.config.runtime_label()
+        ),
+    };
+    let mut body = serde_json::Map::from_iter([
+        ("name".to_owned(), json!(state.config.server_name())),
+        ("version".to_owned(), json!(env!("CARGO_PKG_VERSION"))),
+        (
+            "auth_mode".to_owned(),
+            json!(state.config.auth_mode.as_str()),
+        ),
+        (
+            "runtime_mode".to_owned(),
+            json!(state.config.runtime_mode.as_str()),
+        ),
+        ("platform".to_owned(), json!(state.config.platform.id)),
+        (
+            "public_base_url".to_owned(),
+            json!(state.config.public_base_url),
+        ),
+        ("local_base_url".to_owned(), json!(local_base)),
+        ("mcp_url".to_owned(), json!(mcp_url)),
+        ("root_mcp_url".to_owned(), json!(connector_base)),
+        (
+            "gateway_bridge".to_owned(),
+            state.gateway.bridge_info(is_local),
+        ),
+        (
+            "oauth".to_owned(),
+            json!(state.oauth.as_ref().map(|service| service.oauth_info())),
+        ),
+        ("notes".to_owned(), json!(notes)),
+    ]);
+
+    if state.config.auth_mode != AuthMode::None && !is_local {
+        return (StatusCode::OK, Json(Value::Object(body))).into_response();
+    }
+
+    let devbox = state
+        .handler
+        .lifecycle
+        .status(CancellationToken::new())
+        .await
+        .unwrap_or_else(|error| {
+            json!({
+                "exists": false,
+                "running": false,
+                "status": format!("error: {error}"),
+            })
+        });
+    body.insert(
+        "runtime".to_owned(),
+        json!({
+            "runtimeMode": state.config.runtime_mode.as_str(),
+            "platform": state.config.platform.id,
+            "hostShell": state.config.host_shell,
+            "devboxContainerName": state.config.devbox_container_name,
+            "devboxImageName": state.config.devbox_image_name,
+            "devboxWorkspacePath": state.config.devbox_workspace_path,
+            "hostWorkspacePath": state.config.host_workspace_path,
+            "hostExecEnabled": state.config.host_exec_enabled,
+        }),
+    );
+    body.insert("devbox".to_owned(), devbox);
+    (StatusCode::OK, Json(Value::Object(body))).into_response()
+}
+
+fn resolve_local_base_url(headers: &HeaderMap, is_local: bool) -> Option<String> {
+    if !is_local {
+        return None;
+    }
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())?
+        .trim();
+    if host.is_empty() {
+        return None;
+    }
+    let protocol = headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http");
+    Some(
+        format!("{protocol}://{host}")
+            .trim_end_matches('/')
+            .to_owned(),
+    )
 }
 
 async fn mcp_delete() -> impl IntoResponse {
@@ -2856,6 +2949,13 @@ mod tests {
             runtime_mode: RuntimeMode::Host,
             platform: crate::Platform::detect(),
             public_base_url: None,
+            gateway_bridge: crate::config::GatewayBridgeConfig {
+                enabled: false,
+                origins: vec![
+                    "https://chatgpt.com".to_owned(),
+                    "https://chat.openai.com".to_owned(),
+                ],
+            },
             oauth_state_file_path: temp.path().join("oauth-state.json"),
             cloudflare_access_team_domain: None,
             cloudflare_access_aud: String::new(),

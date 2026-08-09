@@ -550,6 +550,13 @@ mod tests {
             runtime_mode: RuntimeMode::Docker,
             platform: crate::Platform::detect(),
             public_base_url: None,
+            gateway_bridge: crate::config::GatewayBridgeConfig {
+                enabled: false,
+                origins: vec![
+                    "https://chatgpt.com".to_owned(),
+                    "https://chat.openai.com".to_owned(),
+                ],
+            },
             oauth_state_file_path: root.join("oauth-state.json"),
             cloudflare_access_team_domain: None,
             cloudflare_access_aud: String::new(),

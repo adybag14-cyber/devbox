@@ -117,6 +117,12 @@ impl Platform {
 }
 
 #[derive(Debug, Clone)]
+pub struct GatewayBridgeConfig {
+    pub enabled: bool,
+    pub origins: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     pub project_root: PathBuf,
     pub host: String,
@@ -125,6 +131,7 @@ pub struct Config {
     pub runtime_mode: RuntimeMode,
     pub platform: Platform,
     pub public_base_url: Option<String>,
+    pub gateway_bridge: GatewayBridgeConfig,
     pub oauth_state_file_path: PathBuf,
     pub cloudflare_access_team_domain: Option<String>,
     pub cloudflare_access_aud: String,
@@ -241,6 +248,7 @@ impl Config {
             runtime_mode,
             platform,
             public_base_url,
+            gateway_bridge: load_gateway_bridge_configuration(),
             oauth_state_file_path: oauth.state_file_path,
             cloudflare_access_team_domain: oauth.cloudflare_team_domain,
             cloudflare_access_aud: oauth.cloudflare_aud,
@@ -516,6 +524,19 @@ fn parse_csv_env(name: &str, fallback: Vec<String>) -> Vec<String> {
         }
     }
     values
+}
+
+fn load_gateway_bridge_configuration() -> GatewayBridgeConfig {
+    GatewayBridgeConfig {
+        enabled: parse_bool_env("ENABLE_GATEWAY_BRIDGE", true),
+        origins: parse_csv_env(
+            "GATEWAY_BRIDGE_ORIGINS",
+            vec![
+                "https://chatgpt.com".to_owned(),
+                "https://chat.openai.com".to_owned(),
+            ],
+        ),
+    }
 }
 
 fn nonempty_env_or(name: &str, fallback: &str) -> String {

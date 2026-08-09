@@ -4,6 +4,7 @@ pub mod contract;
 pub mod docker_files;
 pub mod execution;
 pub mod files;
+pub mod gateway;
 pub mod github_auth;
 pub mod host_inspect;
 pub mod job_logs;
