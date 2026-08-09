@@ -84,6 +84,19 @@ impl ToolEnvelope {
         )
     }
 
+    pub fn image_success(
+        summary: impl Into<String>,
+        data: Option<Value>,
+        image_base64: impl Into<String>,
+        mime_type: impl Into<String>,
+    ) -> CallToolResult {
+        let mut result = Self::success(summary, data);
+        result
+            .content
+            .push(ContentBlock::image(image_base64.into(), mime_type.into()));
+        result
+    }
+
     pub fn process_success(
         summary: impl Into<String>,
         data: Option<Value>,
@@ -168,6 +181,20 @@ mod tests {
         let schema = schemars::schema_for!(ToolEnvelope);
         let value = serde_json::to_value(schema).expect("serialize schema");
         assert_eq!(value["properties"]["data"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn image_success_adds_image_content_without_structured_base64() {
+        let result = ToolEnvelope::image_success(
+            "captured",
+            Some(serde_json::json!({"mime_type":"image/jpeg","bytes":3})),
+            "/9j/",
+            "image/jpeg",
+        );
+        assert_eq!(result.content.len(), 2);
+        assert!(result.content[1].as_image().is_some());
+        let structured = result.structured_content.expect("structured content");
+        assert!(!structured.to_string().contains("/9j/"));
     }
 
     #[test]

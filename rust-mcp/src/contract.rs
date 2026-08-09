@@ -73,6 +73,11 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
     "devbox_recreate",
     "devbox_github_auth_status",
     "devbox_sync_github_auth_from_host",
+    "host_capture_display",
+    "host_capture_window",
+    "host_capture_program",
+    "windows_host_capture_display",
+    "windows_host_capture_program",
 ];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

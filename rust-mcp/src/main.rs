@@ -7,6 +7,10 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if let Some(arguments) = capture_worker_arguments() {
+        return devbox_mcp::capture::run_capture_worker(&arguments).await;
+    }
+
     tracing_subscriber::registry()
         .with(
             EnvFilter::try_from_default_env()
@@ -61,4 +65,12 @@ fn job_runner_request() -> anyhow::Result<Option<PathBuf>> {
         anyhow::bail!("--job-runner accepts exactly one request.json path");
     }
     Ok(Some(PathBuf::from(request)))
+}
+
+fn capture_worker_arguments() -> Option<Vec<String>> {
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() != Some("--capture-worker") {
+        return None;
+    }
+    Some(args.collect())
 }

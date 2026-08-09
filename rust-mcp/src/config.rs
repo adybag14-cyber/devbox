@@ -151,6 +151,9 @@ pub struct Config {
     pub job_heartbeat_ms: u64,
     pub job_orphan_stale_ms: u64,
     pub job_retention_hours: u64,
+    pub screen_capture_attempt_timeout_ms: u64,
+    pub screen_capture_retries: usize,
+    pub screen_capture_queue_timeout_ms: u64,
     pub max_wait_seconds: f64,
     pub max_mcp_transfer_chars: usize,
 }
@@ -176,13 +179,7 @@ impl Config {
             RuntimeMode::resolve(env::var("DEVBOX_RUNTIME_MODE").ok().as_deref(), &platform)?;
         let auth_mode =
             AuthMode::parse(&env::var("MCP_AUTH_MODE").unwrap_or_else(|_| "none".to_owned()))?;
-        let public_base_url = env::var("PUBLIC_BASE_URL")
-            .ok()
-            .map(|value| value.trim().trim_end_matches('/').to_owned())
-            .filter(|value| !value.is_empty());
-        if auth_mode != AuthMode::None && public_base_url.is_none() {
-            bail!("PUBLIC_BASE_URL is required when MCP_AUTH_MODE uses OAuth");
-        }
+        let public_base_url = load_public_base_url(auth_mode)?;
 
         let host_workspace_path =
             env_path("HOST_WORKSPACE_PATH").unwrap_or_else(|| project_root.join("workspace"));
@@ -195,10 +192,8 @@ impl Config {
         });
         let host_default_workdir =
             env_path("HOST_DEFAULT_WORKDIR").unwrap_or_else(|| host_workspace_path.clone());
-        let devbox_container_name = env::var("DEVBOX_CONTAINER_NAME")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| "chatgpt-devbox-runtime".to_owned());
+        let devbox_container_name =
+            nonempty_env_or("DEVBOX_CONTAINER_NAME", "chatgpt-devbox-runtime");
         let devbox_image_name = env::var("DEVBOX_IMAGE_NAME")
             .ok()
             .map(|value| value.trim().to_owned())
@@ -266,6 +261,15 @@ impl Config {
             job_heartbeat_ms: parse_env("MCP_JOB_HEARTBEAT_MS", 5_000_u64),
             job_orphan_stale_ms: parse_env("MCP_JOB_ORPHAN_STALE_MS", 15_000_u64),
             job_retention_hours: parse_env("MCP_JOB_RETENTION_HOURS", 168_u64),
+            screen_capture_attempt_timeout_ms: parse_env(
+                "SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS",
+                8_000_u64,
+            ),
+            screen_capture_retries: parse_env("SCREEN_CAPTURE_RETRIES", 1_usize),
+            screen_capture_queue_timeout_ms: parse_env(
+                "SCREEN_CAPTURE_QUEUE_TIMEOUT_MS",
+                5_000_u64,
+            ),
             max_wait_seconds: f64::from(parse_env("MCP_WAIT_MAX_SECONDS", 300_u16)),
             max_mcp_transfer_chars: parse_transfer_limit(),
         })
@@ -444,6 +448,25 @@ fn parse_csv_env(name: &str, fallback: Vec<String>) -> Vec<String> {
         }
     }
     values
+}
+
+fn nonempty_env_or(name: &str, fallback: &str) -> String {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fallback.to_owned())
+}
+
+fn load_public_base_url(auth_mode: AuthMode) -> Result<Option<String>> {
+    let value = env::var("PUBLIC_BASE_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_owned())
+        .filter(|value| !value.is_empty());
+    if auth_mode != AuthMode::None && value.is_none() {
+        bail!("PUBLIC_BASE_URL is required when MCP_AUTH_MODE uses OAuth");
+    }
+    Ok(value)
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {

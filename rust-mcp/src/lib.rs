@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod config;
 pub mod contract;
 pub mod docker_files;
@@ -20,3 +21,9 @@ pub mod server;
 pub use config::{AuthMode, Config, Platform, RuntimeMode};
 pub use contract::{IMPLEMENTED_TOOL_NAMES, ParityReport, TARGET_TOOL_NAMES};
 pub use server::{DevboxMcp, build_router};
+
+#[cfg(windows)]
+pub mod windows_capture;
+
+#[cfg(any(not(windows), test))]
+pub mod posix_capture;

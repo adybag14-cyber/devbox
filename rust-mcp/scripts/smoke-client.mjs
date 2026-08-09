@@ -54,6 +54,11 @@ for (const requiredTool of [
   "devbox_recreate",
   "devbox_github_auth_status",
   "devbox_sync_github_auth_from_host",
+  "host_capture_display",
+  "host_capture_window",
+  "host_capture_program",
+  "windows_host_capture_display",
+  "windows_host_capture_program",
 ]) {
   assert.ok(expectedTools.includes(requiredTool), `parity report omitted established tool ${requiredTool}`);
 }
@@ -91,6 +96,39 @@ try {
     assert.ok((authData.statusSummary || "").length > 0);
     assert.equal(Object.prototype.hasOwnProperty.call(authData, "token"), false);
     assert.ok(!JSON.stringify(githubAuth.structuredContent).includes('"token"'));
+  }
+
+  if (process.env.RUST_MCP_SMOKE_CAPTURE_PID) {
+    const capturePid = Number.parseInt(process.env.RUST_MCP_SMOKE_CAPTURE_PID, 10);
+    assert.ok(Number.isInteger(capturePid) && capturePid > 0, "RUST_MCP_SMOKE_CAPTURE_PID must be a positive integer");
+
+    const assertCapture = (capture, { expectedPid } = {}) => {
+      assert.equal(capture.isError, false);
+      assert.equal(capture.structuredContent?.ok, true);
+      const image = capture.content?.find((entry) => entry.type === "image");
+      assert.ok(image?.data?.length > 100, "capture should contain non-empty base64 image data");
+      assert.match(image?.mimeType || "", /^image\/(?:jpeg|png)$/);
+      const data = capture.structuredContent?.data || {};
+      assert.ok((data.bytes || 0) > 0);
+      assert.match(data.sha256 || "", /^[0-9a-f]{64}$/);
+      assert.ok((data.capture_attempts || 0) >= 1);
+      assert.ok((data.width || 0) > 0);
+      assert.ok((data.height || 0) > 0);
+      if (expectedPid !== undefined) assert.equal(data.pid, expectedPid);
+    };
+
+    for (const toolName of ["host_capture_display", "windows_host_capture_display"]) {
+      const capture = await client.callTool({ name: toolName, arguments: { quality: 80 } });
+      assertCapture(capture);
+    }
+
+    for (const toolName of ["host_capture_window", "host_capture_program", "windows_host_capture_program"]) {
+      const capture = await client.callTool({
+        name: toolName,
+        arguments: { pid: capturePid, quality: 80, include_process_tree: true },
+      });
+      assertCapture(capture, { expectedPid: capturePid });
+    }
   }
 
   for (const [toolName, readOnly] of [

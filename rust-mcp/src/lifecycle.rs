@@ -525,6 +525,9 @@ mod tests {
             job_heartbeat_ms: 5_000,
             job_orphan_stale_ms: 15_000,
             job_retention_hours: 168,
+            screen_capture_attempt_timeout_ms: 8_000,
+            screen_capture_retries: 1,
+            screen_capture_queue_timeout_ms: 5_000,
             max_wait_seconds: 85.0,
             max_mcp_transfer_chars: 4_000_000,
         };

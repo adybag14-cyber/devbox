@@ -31,6 +31,7 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 use crate::{
     Config, RuntimeMode,
+    capture::CaptureService,
     contract::ParityReport,
     docker_files::{DockerFileBackend, DockerListOptions},
     execution::{AcquireRequest, ExecutionScheduler, SchedulerConfig},
@@ -56,6 +57,7 @@ pub struct DevboxMcp {
     search: Arc<SearchService>,
     lifecycle: Arc<LifecycleService>,
     github_auth: Arc<GithubAuthService>,
+    capture: Arc<CaptureService>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -77,12 +79,14 @@ impl DevboxMcp {
             runtime.clone(),
             lifecycle.clone(),
         ));
+        let capture = Arc::new(CaptureService::new(config.clone()));
         Self {
             runtime,
             jobs: Arc::new(JobManager::new(config.clone())),
             search: Arc::new(SearchService::new(config.clone())),
             lifecycle,
             github_auth,
+            capture,
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -94,6 +98,68 @@ impl DevboxMcp {
     #[must_use]
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    async fn capture_display_internal(
+        &self,
+        request: CaptureDisplayRequest,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        match self.capture.display(request.quality, cancellation).await {
+            Ok(capture) => ToolEnvelope::image_success(
+                format!(
+                    "Captured the {} host display.",
+                    self.config.platform.display_name
+                ),
+                Some(capture.metadata),
+                STANDARD.encode(capture.image),
+                capture.mime_type,
+            ),
+            Err(error) => ToolEnvelope::error(
+                format!(
+                    "Failed to capture the {} host display: {error}",
+                    self.config.platform.display_name
+                ),
+                None,
+            ),
+        }
+    }
+
+    async fn capture_window_internal(
+        &self,
+        request: CaptureWindowRequest,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        if request.pid == 0 {
+            return ToolEnvelope::error("pid must be a positive process ID.", None);
+        }
+        match self
+            .capture
+            .program(
+                request.pid,
+                request.quality,
+                request.include_process_tree,
+                cancellation,
+            )
+            .await
+        {
+            Ok(capture) => ToolEnvelope::image_success(
+                format!(
+                    "Captured {} host window for PID {}.",
+                    self.config.platform.display_name, request.pid
+                ),
+                Some(capture.metadata),
+                STANDARD.encode(capture.image),
+                capture.mime_type,
+            ),
+            Err(error) => ToolEnvelope::error(
+                format!(
+                    "Failed to capture {} host window for PID {}: {error}",
+                    self.config.platform.display_name, request.pid
+                ),
+                None,
+            ),
+        }
     }
 }
 
@@ -350,6 +416,31 @@ struct HostProgramToolRequest {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CaptureDisplayRequest {
+    #[serde(default = "default_capture_quality")]
+    #[schemars(
+        description = "Requested image quality from 1 through 100. Native lossless PNG backends record but do not apply JPEG quality."
+    )]
+    quality: u8,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct CaptureWindowRequest {
+    #[schemars(
+        description = "Host process ID whose visible application window should be captured."
+    )]
+    pid: u32,
+    #[serde(default = "default_capture_quality")]
+    #[schemars(description = "Requested image quality from 1 through 100.")]
+    quality: u8,
+    #[serde(default = "default_true")]
+    #[schemars(
+        description = "Also consider visible windows owned by child processes, useful for launchers, browsers, emulators, and multi-process GUI applications."
+    )]
+    include_process_tree: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct StartShellRequest {
     #[schemars(description = "Shell command to run as a detached Devbox job.")]
     command: String,
@@ -442,6 +533,9 @@ const fn default_output_chars() -> usize {
 }
 const fn default_job_log_chars() -> usize {
     20_000
+}
+const fn default_capture_quality() -> u8 {
+    85
 }
 fn default_output_mode() -> String {
     "tail".to_owned()
@@ -1825,6 +1919,71 @@ impl DevboxMcp {
     }
 
     #[tool(
+        name = "host_capture_display",
+        description = "Capture the complete host desktop using the native compositor/screenshot backend and return an MCP image content block. Windows returns JPEG; macOS/Linux use lossless PNG when their native tools do.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn host_capture_display(
+        &self,
+        Parameters(request): Parameters<CaptureDisplayRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.capture_display_internal(request, cancellation).await
+    }
+
+    #[tool(
+        name = "host_capture_window",
+        description = "Capture the largest visible window owned by a host PID or one of its child processes. The Windows backend detects black PrintWindow frames from GPU/DirectComposition surfaces and falls back to compositor-visible pixels.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn host_capture_window(
+        &self,
+        Parameters(request): Parameters<CaptureWindowRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.capture_window_internal(request, cancellation).await
+    }
+
+    #[tool(
+        name = "host_capture_program",
+        description = "Compatibility alias for host_capture_window.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn host_capture_program(
+        &self,
+        Parameters(request): Parameters<CaptureWindowRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.capture_window_internal(request, cancellation).await
+    }
+
+    #[tool(
+        name = "windows_host_capture_display",
+        description = "Compatibility alias for host_capture_display. On Windows this retains the original PR tool name.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn windows_host_capture_display(
+        &self,
+        Parameters(request): Parameters<CaptureDisplayRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.capture_display_internal(request, cancellation).await
+    }
+
+    #[tool(
+        name = "windows_host_capture_program",
+        description = "Compatibility alias for host_capture_window. On Windows this retains the original PR tool name.",
+        output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
+    )]
+    async fn windows_host_capture_program(
+        &self,
+        Parameters(request): Parameters<CaptureWindowRequest>,
+        cancellation: CancellationToken,
+    ) -> CallToolResult {
+        self.capture_window_internal(request, cancellation).await
+    }
+
+    #[tool(
         name = "host_exec",
         description = "Run a native host shell command. Prefer host_run_program when shell parsing is unnecessary.",
         output_schema = rmcp::handler::server::tool::schema_for_type::<ToolEnvelope>()
@@ -2447,6 +2606,9 @@ mod tests {
             job_heartbeat_ms: 5_000,
             job_orphan_stale_ms: 15_000,
             job_retention_hours: 168,
+            screen_capture_attempt_timeout_ms: 8_000,
+            screen_capture_retries: 1,
+            screen_capture_queue_timeout_ms: 5_000,
             max_wait_seconds: 85.0,
             max_mcp_transfer_chars: 4_000_000,
         });
