@@ -47,3 +47,7 @@ jobs:
         run: cargo clippy --manifest-path rust-mcp/Cargo.toml --all-targets -- -D warnings
       - name: Run Rust tests
         run: cargo test --manifest-path rust-mcp/Cargo.toml --locked
+      - name: Build Rust MCP shadow binary
+        run: cargo build --manifest-path rust-mcp/Cargo.toml --locked
+      - name: Run JavaScript MCP SDK interoperability smoke
+        run: node rust-mcp/scripts/smoke-runner.mjs
