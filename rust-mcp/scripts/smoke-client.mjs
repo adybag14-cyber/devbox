@@ -232,9 +232,12 @@ try {
     arguments: { pid: Number.MAX_SAFE_INTEGER, quality: 80, include_process_tree: false },
   });
   assert.equal(oversizedCapturePid.isError, true);
+  const oversizedCaptureText = oversizedCapturePid.content?.find((entry) => entry.type === "text")?.text || "";
   assert.match(
-    oversizedCapturePid.content?.find((entry) => entry.type === "text")?.text || "",
-    /Cannot process argument transformation on parameter 'TargetPid'/,
+    oversizedCaptureText,
+    process.platform === "win32"
+      ? /Cannot process argument transformation on parameter 'TargetPid'/
+      : /pid exceeds the native process ID range/,
   );
 
   if (process.env.RUST_MCP_SMOKE_CAPTURE_PID) {
@@ -513,7 +516,9 @@ try {
     });
     assert.equal(devboxSearch.isError, false);
     assert.match(devboxSearch.structuredContent?.stdout || "", /devbox-text\.txt:2:beta/);
-    assert.match(devboxSearch.structuredContent?.stderr || "", /search backend (?:ripgrep|rust fallback)/);
+    const searchDiagnostics = devboxSearch.structuredContent?.stderr || "";
+    if (searchDiagnostics) assert.match(searchDiagnostics, /search backend ripgrep/);
+    assert.doesNotMatch(searchDiagnostics, /rust fallback/);
     assertExecutionMetadata(devboxSearch);
 
     const devboxLargeWrite = await client.callTool({
