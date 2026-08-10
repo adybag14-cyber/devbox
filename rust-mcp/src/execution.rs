@@ -19,6 +19,10 @@ use tokio_util::sync::CancellationToken;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CLAIM_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 const CORRUPT_SLOT_STALE: Duration = Duration::from_secs(5 * 60);
+#[cfg(windows)]
+const WINDOWS_SLOT_IO_RETRY_ATTEMPTS: usize = 8;
+#[cfg(windows)]
+const WINDOWS_SLOT_IO_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -701,10 +705,7 @@ async fn create_owner_file(path: &Path, owner: SlotOwner) -> Result<()> {
 }
 
 async fn create_json_new(path: &Path, value: &Value) -> Result<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+    let mut file = open_new_slot_file(path)
         .await
         .with_context(|| format!("claim execution slot {}", path.display()))?;
     let mut bytes = serde_json::to_vec(value)?;
@@ -712,6 +713,49 @@ async fn create_json_new(path: &Path, value: &Value) -> Result<()> {
     file.write_all(&bytes).await?;
     file.flush().await?;
     Ok(())
+}
+
+async fn open_new_slot_file(path: &Path) -> std::io::Result<tokio::fs::File> {
+    #[cfg(windows)]
+    {
+        let mut last_error = None;
+        for attempt in 0..WINDOWS_SLOT_IO_RETRY_ATTEMPTS {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+                .await
+            {
+                Ok(file) => return Ok(file),
+                Err(error) if is_transient_slot_io(&error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < WINDOWS_SLOT_IO_RETRY_ATTEMPTS {
+                        tokio::time::sleep(WINDOWS_SLOT_IO_RETRY_DELAY).await;
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.expect("Windows slot retry loop records a transient error"))
+    }
+    #[cfg(not(windows))]
+    {
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .await
+    }
+}
+
+#[cfg(windows)]
+fn is_transient_slot_io(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+#[cfg(not(windows))]
+fn is_transient_slot_io(_: &std::io::Error) -> bool {
+    false
 }
 
 fn is_already_exists(error: &anyhow::Error) -> bool {
@@ -750,7 +794,7 @@ async fn remove_stale_slot(path: &Path) -> Result<bool> {
             Err(error) => return Err(error.into()),
         }
     }
-    match fs::remove_file(path).await {
+    match remove_slot_file(path).await {
         Ok(()) => Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
         Err(error) => Err(error.into()),
@@ -782,7 +826,7 @@ async fn release_owned_file(owned: &OwnedSlot) -> Result<()> {
     };
     let current: Value = serde_json::from_slice(&bytes)?;
     if current.get("token").and_then(Value::as_str) == Some(owned.token.as_str()) {
-        match fs::remove_file(&owned.path).await {
+        match remove_slot_file(&owned.path).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
@@ -799,7 +843,53 @@ fn release_owned_file_sync(owned: &OwnedSlot) {
         return;
     };
     if current.get("token").and_then(Value::as_str) == Some(owned.token.as_str()) {
-        let _ = std::fs::remove_file(&owned.path);
+        remove_slot_file_sync(&owned.path);
+    }
+}
+
+async fn remove_slot_file(path: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let mut last_error = None;
+        for attempt in 0..WINDOWS_SLOT_IO_RETRY_ATTEMPTS {
+            match fs::remove_file(path).await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(error),
+                Err(error) if is_transient_slot_io(&error) => {
+                    last_error = Some(error);
+                    if attempt + 1 < WINDOWS_SLOT_IO_RETRY_ATTEMPTS {
+                        tokio::time::sleep(WINDOWS_SLOT_IO_RETRY_DELAY).await;
+                    }
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Err(last_error.expect("Windows slot retry loop records a transient error"))
+    }
+    #[cfg(not(windows))]
+    {
+        fs::remove_file(path).await
+    }
+}
+
+fn remove_slot_file_sync(path: &Path) {
+    #[cfg(windows)]
+    {
+        for attempt in 0..WINDOWS_SLOT_IO_RETRY_ATTEMPTS {
+            match std::fs::remove_file(path) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(error) if is_transient_slot_io(&error) => {
+                    if attempt + 1 < WINDOWS_SLOT_IO_RETRY_ATTEMPTS {
+                        std::thread::sleep(WINDOWS_SLOT_IO_RETRY_DELAY);
+                    }
+                }
+                Ok(()) | Err(_) => return,
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -981,6 +1071,20 @@ mod tests {
             queue_timeout: Duration::from_millis(250),
             heavy_weight: 2,
         })
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_slot_retry_is_limited_to_transient_permission_denied() {
+        assert!(is_transient_slot_io(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_transient_slot_io(&std::io::Error::from(
+            std::io::ErrorKind::AlreadyExists
+        )));
+        assert!(!is_transient_slot_io(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
     }
 
     #[tokio::test]
