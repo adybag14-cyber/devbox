@@ -540,7 +540,12 @@ fn summarize_argument_value(key: &str, value: &Value) -> Value {
             object
                 .iter()
                 .take(12)
-                .map(|(nested, value)| (nested.clone(), summarize_argument_value(nested, value)))
+                .map(|(nested, value)| {
+                    (
+                        nested.clone(),
+                        summarize_argument_value(&format!("{key}.{nested}"), value),
+                    )
+                })
                 .collect(),
         ),
     }
@@ -684,11 +689,14 @@ mod tests {
     fn sensitive_arguments_are_redacted_and_large_values_are_bounded() {
         let mut arguments = JsonObject::new();
         arguments.insert("token".to_owned(), json!("super-secret-value"));
+        arguments.insert("secret".to_owned(), json!({"value": "nested-secret-value"}));
         arguments.insert("command".to_owned(), json!("x".repeat(300)));
         arguments.insert("requestId".to_owned(), json!(123));
         let summary = summarize_tool_arguments(Some(&arguments));
         assert_eq!(summary["token"]["redacted"], true);
         assert_eq!(summary["token"]["length"], 18);
+        assert_eq!(summary["secret"]["value"]["redacted"], true);
+        assert_eq!(summary["secret"]["value"]["length"], 19);
         assert_eq!(summary["command"]["length"], 300);
         assert_eq!(
             summary["command"]["preview"].as_str().map(str::len),
@@ -696,6 +704,7 @@ mod tests {
         );
         assert!(summary.get("requestId").is_none());
         assert!(!summary.to_string().contains("super-secret-value"));
+        assert!(!summary.to_string().contains("nested-secret-value"));
     }
 
     #[tokio::test]

@@ -290,13 +290,8 @@ fn normalize_origin(value: &str) -> Option<String> {
 }
 
 fn request_is_local(headers: &HeaderMap, peer: Option<SocketAddr>) -> bool {
-    if headers
-        .get(header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .and_then(hostname_from_host_header)
-        .is_some_and(|value| is_loopback_address(&value))
-    {
-        return true;
+    if !peer.is_some_and(|value| value.ip().is_loopback()) {
+        return false;
     }
     if let Some(forwarded) = headers
         .get("x-forwarded-for")
@@ -308,7 +303,7 @@ fn request_is_local(headers: &HeaderMap, peer: Option<SocketAddr>) -> bool {
             .map(str::trim)
             .is_some_and(is_loopback_address);
     }
-    peer.is_some_and(|value| value.ip().is_loopback())
+    true
 }
 
 fn is_loopback_address(value: &str) -> bool {
@@ -468,22 +463,14 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_loopback_detection_matches_javascript_bridge_rule() {
+    fn forwarded_loopback_is_trusted_only_from_loopback_peer() {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("example.com"));
         headers.insert(
             "x-forwarded-for",
-            HeaderValue::from_static("203.0.113.4, 127.0.0.1"),
-        );
-        assert!(!request_is_local(
-            &headers,
-            Some("203.0.113.9:1234".parse().expect("peer"))
-        ));
-        headers.insert(
-            "x-forwarded-for",
             HeaderValue::from_static("127.0.0.1, 203.0.113.4"),
         );
-        assert!(request_is_local(
+        assert!(!request_is_local(
             &headers,
             Some("203.0.113.9:1234".parse().expect("peer"))
         ));
@@ -491,6 +478,21 @@ mod tests {
         assert!(!request_is_local(
             &headers,
             Some("127.0.0.1:1234".parse().expect("peer"))
+        ));
+        headers.insert("x-forwarded-for", HeaderValue::from_static("127.0.0.1"));
+        assert!(request_is_local(
+            &headers,
+            Some("127.0.0.1:1234".parse().expect("peer"))
+        ));
+        headers.remove("x-forwarded-for");
+        assert!(request_is_local(
+            &headers,
+            Some("127.0.0.1:1234".parse().expect("peer"))
+        ));
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8100"));
+        assert!(!request_is_local(
+            &headers,
+            Some("203.0.113.9:1234".parse().expect("peer"))
         ));
     }
 }

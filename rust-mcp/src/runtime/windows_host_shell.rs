@@ -203,7 +203,20 @@ impl RuntimeExecutor {
         let stderr = windows_shell::clean_output(&stderr);
         emit_buffered_output(request.output_tx.as_ref(), OutputStream::Stdout, &stdout);
         emit_buffered_output(request.output_tx.as_ref(), OutputStream::Stderr, &stderr);
-        let exit_code = exit_code_text.trim().parse::<i32>().unwrap_or(0);
+        let Ok(exit_code) = exit_code_text.trim().parse::<i32>() else {
+            return Err(RuntimeExecError::Process(ProcessError {
+                message: "The elevated PowerShell command did not report an exit code.".to_owned(),
+                exit_code: None,
+                stdout: stdout.into_boxed_str(),
+                stderr: stderr.into_boxed_str(),
+                file: self.config.power_shell_exe.clone().into_boxed_str(),
+                args: windows_shell::file_args(script_path).into_boxed_slice(),
+                timed_out: false,
+                aborted: false,
+                signal: None,
+                elapsed_ms: elapsed_ms(started.elapsed()),
+            }));
+        };
         if exit_code != 0 {
             return Err(RuntimeExecError::Process(ProcessError {
                 message: stderr

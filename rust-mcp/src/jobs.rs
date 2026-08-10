@@ -514,7 +514,7 @@ impl JobStore {
         cancelled.insert("completedAtUtc".to_owned(), json!(completed.clone()));
         cancelled.insert("cancelRequested".to_owned(), json!(true));
         create_marker_once(&paths.cancel, &format!("{completed}\n")).await?;
-        if let Some(pid) = u32_field(&cancelled, "runnerPid") {
+        if let Some(pid) = u32_field(&cancelled, "runnerPid").filter(|_| runner_alive) {
             terminate_job_runner_gracefully(pid, &paths.status).await;
         }
         cancelled.insert("runnerAlive".to_owned(), json!(false));

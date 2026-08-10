@@ -219,6 +219,7 @@ pub struct OAuthFailure {
     pub code: &'static str,
     pub message: String,
     pub status: u16,
+    safe_redirect_uri: Option<String>,
 }
 
 impl OAuthFailure {
@@ -228,6 +229,7 @@ impl OAuthFailure {
             code: "invalid_request",
             message: message.into(),
             status: 400,
+            safe_redirect_uri: None,
         }
     }
 
@@ -237,6 +239,7 @@ impl OAuthFailure {
             code: "invalid_client_metadata",
             message: message.into(),
             status: 400,
+            safe_redirect_uri: None,
         }
     }
 
@@ -246,6 +249,7 @@ impl OAuthFailure {
             code: "invalid_client",
             message: message.into(),
             status: 400,
+            safe_redirect_uri: None,
         }
     }
 
@@ -255,6 +259,7 @@ impl OAuthFailure {
             code: "invalid_grant",
             message: message.into(),
             status: 400,
+            safe_redirect_uri: None,
         }
     }
 
@@ -264,6 +269,7 @@ impl OAuthFailure {
             code: "unsupported_grant_type",
             message: message.into(),
             status: 400,
+            safe_redirect_uri: None,
         }
     }
 
@@ -273,6 +279,7 @@ impl OAuthFailure {
             code: "invalid_token",
             message: message.into(),
             status: 401,
+            safe_redirect_uri: None,
         }
     }
 
@@ -282,7 +289,14 @@ impl OAuthFailure {
             code: "server_error",
             message: message.into(),
             status: 500,
+            safe_redirect_uri: None,
         }
+    }
+
+    #[must_use]
+    fn with_safe_redirect_uri(mut self, redirect_uri: &str) -> Self {
+        self.safe_redirect_uri = Some(redirect_uri.to_owned());
+        self
     }
 
     #[must_use]
@@ -430,25 +444,27 @@ impl OAuthService {
             OAuthFailure::invalid_request("Registered client has no redirect_uris")
         })?;
         let redirect_uri = resolve_redirect_uri(request.redirect_uri.as_deref(), &registered)?;
-        if !registered.iter().any(|value| value == &redirect_uri) {
-            return Err(OAuthFailure::invalid_request("Unregistered redirect_uri."));
-        }
         if request.response_type != "code" {
-            return Err(OAuthFailure::invalid_request("response_type must be code"));
+            return Err(OAuthFailure::invalid_request("response_type must be code")
+                .with_safe_redirect_uri(&redirect_uri));
         }
         if request.code_challenge.is_empty() || request.code_challenge_method != "S256" {
-            return Err(OAuthFailure::invalid_request(
-                "code_challenge and S256 are required",
-            ));
+            return Err(
+                OAuthFailure::invalid_request("code_challenge and S256 are required")
+                    .with_safe_redirect_uri(&redirect_uri),
+            );
         }
         if let Some(resource) = request.resource.as_deref() {
-            Url::parse(resource)
-                .map_err(|_| OAuthFailure::invalid_request("resource must be a valid URL"))?;
+            Url::parse(resource).map_err(|_| {
+                OAuthFailure::invalid_request("resource must be a valid URL")
+                    .with_safe_redirect_uri(&redirect_uri)
+            })?;
         }
         let identity = if self.mode == AuthMode::CloudflareAccess {
             Some(
                 self.verify_cloudflare_access_identity(cloudflare_assertion, cloudflare_email)
-                    .await?,
+                    .await
+                    .map_err(|failure| failure.with_safe_redirect_uri(&redirect_uri))?,
             )
         } else {
             None
@@ -471,9 +487,11 @@ impl OAuthService {
         );
         self.persist_locked(&state)
             .await
-            .map_err(internal_failure)?;
-        let mut target = Url::parse(&redirect_uri)
-            .map_err(|_| OAuthFailure::invalid_request("redirect_uri must be a valid URL"))?;
+            .map_err(|error| internal_failure(error).with_safe_redirect_uri(&redirect_uri))?;
+        let mut target = Url::parse(&redirect_uri).map_err(|_| {
+            OAuthFailure::invalid_request("redirect_uri must be a valid URL")
+                .with_safe_redirect_uri(&redirect_uri)
+        })?;
         target.query_pairs_mut().append_pair("code", &code);
         if let Some(value) = request.state {
             target.query_pairs_mut().append_pair("state", &value);
@@ -587,6 +605,7 @@ impl OAuthService {
             .map(|value| split_scope(Some(value)))
             .filter(|value| !value.is_empty())
             .unwrap_or(record.scopes);
+        state.refresh_tokens.remove(refresh);
         let result = issue_tokens(
             state,
             &request.client_id,
@@ -1010,14 +1029,11 @@ fn authorization_failure_response(
     parameters: &HashMap<String, String>,
     failure: &OAuthFailure,
 ) -> Response {
-    let redirect = parameters.get("redirect_uri");
-    let pre_redirect = failure.code == "invalid_client"
-        || failure.message == "Unregistered redirect_uri"
-        || redirect.is_none();
-    if pre_redirect {
-        return oauth_failure_response(failure);
-    }
-    let Some(mut target) = redirect.and_then(|value| Url::parse(value).ok()) else {
+    let Some(mut target) = failure
+        .safe_redirect_uri
+        .as_deref()
+        .and_then(|value| Url::parse(value).ok())
+    else {
         return oauth_failure_response(failure);
     };
     target.query_pairs_mut().append_pair("error", failure.code);

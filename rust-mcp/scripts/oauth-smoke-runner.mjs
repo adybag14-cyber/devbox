@@ -145,9 +145,26 @@ try {
   }).toString();
   const relaxed = await fetch(relaxedUrl, { redirect: "manual" });
   assert.equal(relaxed.status, 302);
-  const relaxedError = new URL(relaxed.headers.get("location"));
-  assert.equal(relaxedError.searchParams.get("error"), "invalid_request");
-  assert.equal(relaxedError.searchParams.get("error_description"), "Unregistered redirect_uri.");
+  const relaxedLocation = new URL(relaxed.headers.get("location"));
+  assert.equal(relaxedLocation.origin + relaxedLocation.pathname, new URL(relaxedRedirect).origin + new URL(relaxedRedirect).pathname);
+  assert.equal(relaxedLocation.searchParams.get("state"), "relaxed-port-state");
+  assert.ok(relaxedLocation.searchParams.get("code"));
+
+  const unregisteredUrl = new URL("authorize", baseUrl);
+  unregisteredUrl.search = new URLSearchParams({
+    client_id: registered.client_id,
+    redirect_uri: "https://attacker.example/callback",
+    response_type: "code",
+    code_challenge: pkce(verifier),
+    code_challenge_method: "S256",
+    state: "must-not-reflect",
+  }).toString();
+  const unregistered = await fetch(unregisteredUrl, { redirect: "manual" });
+  assert.equal(unregistered.status, 400);
+  assert.equal(unregistered.headers.get("location"), null);
+  const unregisteredBody = await unregistered.json();
+  assert.equal(unregisteredBody.error, "invalid_request");
+  assert.equal(unregisteredBody.error_description, "Unregistered redirect_uri");
 
   const authorizeUrl = new URL("authorize", baseUrl);
   authorizeUrl.search = new URLSearchParams({
@@ -218,6 +235,17 @@ try {
   assert.equal(refreshedResponse.status, 200);
   const refreshed = await refreshedResponse.json();
   assert.ok(refreshed.access_token);
+  assert.ok(refreshed.refresh_token);
+  assert.notEqual(refreshed.refresh_token, tokens.refresh_token);
+
+  const replayedRefreshResponse = await fetch(new URL("token", baseUrl), {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: form({ grant_type: "refresh_token", client_id: registered.client_id, refresh_token: tokens.refresh_token }),
+  });
+  assert.equal(replayedRefreshResponse.status, 400);
+  const replayedRefresh = await replayedRefreshResponse.json();
+  assert.equal(replayedRefresh.error, "invalid_grant");
 
   const revoke = await fetch(new URL("revoke", baseUrl), {
     method: "POST",
