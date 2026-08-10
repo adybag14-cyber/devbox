@@ -97,9 +97,15 @@ impl RunnerMonitor {
             let mut heartbeat_tick =
                 tokio::time::interval(Duration::from_millis(heartbeat_ms.max(1000)));
             heartbeat_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            let shutdown_signal = wait_runner_shutdown_signal();
+            tokio::pin!(shutdown_signal);
             loop {
                 tokio::select! {
                     () = task_stop.cancelled() => break,
+                    () = &mut shutdown_signal => {
+                        task_cancel.cancel();
+                        break;
+                    }
                     _ = cancel_poll.tick() => {
                         if task_heartbeat
                             .store
@@ -155,6 +161,29 @@ pub async fn run_job_request(config: Arc<Config>, request_path: &Path) -> Result
         return Ok(());
     };
     run_prepared(prepared).await
+}
+
+#[cfg(unix)]
+async fn wait_runner_shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let Ok(mut terminate) = signal(SignalKind::terminate()) else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    let Ok(mut interrupt) = signal(SignalKind::interrupt()) else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    tokio::select! {
+        _ = terminate.recv() => {},
+        _ = interrupt.recv() => {},
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_runner_shutdown_signal() {
+    std::future::pending::<()>().await;
 }
 
 struct PreparedRunner {
@@ -768,6 +797,33 @@ mod tests {
             assert_eq!(name, "succeeded");
             assert_eq!(status["executionWeight"], 1);
             assert_eq!(status["logs"]["stdout"]["totalBytes"], 10);
+
+            let cancelled_error = RuntimeExecError::Process(crate::process::ProcessError {
+                message: "Command cancelled by the MCP client.".to_owned(),
+                exit_code: None,
+                stdout: "".into(),
+                stderr: "".into(),
+                file: "node".into(),
+                args: Vec::<String>::new().into_boxed_slice(),
+                timed_out: false,
+                aborted: true,
+                signal: None,
+                elapsed_ms: 1,
+            });
+            let (cancelled_name, cancelled) = terminal_from_runtime(
+                &request,
+                &utc_now(),
+                &utc_now(),
+                &lease,
+                Some(42),
+                Err(cancelled_error),
+                true,
+                &logs,
+            );
+            assert_eq!(cancelled_name, "cancelled");
+            assert_eq!(cancelled["error"], "Command cancelled by the MCP client.");
+            assert_eq!(cancelled["logs"]["stdout"]["totalBytes"], 10);
+            assert!(cancelled.get("cancelRequested").is_none());
             lease.release().await.unwrap();
         });
     }

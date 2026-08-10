@@ -233,12 +233,14 @@ try {
   });
   assert.equal(oversizedCapturePid.isError, true);
   const oversizedCaptureText = oversizedCapturePid.content?.find((entry) => entry.type === "text")?.text || "";
-  assert.match(
-    oversizedCaptureText,
-    process.platform === "win32"
-      ? /Cannot process argument transformation on parameter 'TargetPid'/
-      : /pid exceeds the native process ID range/,
-  );
+  const oversizedCapturePattern = process.platform === "win32"
+    ? /Cannot process argument transformation on parameter 'TargetPid'/
+    : process.platform === "darwin"
+      ? /No on-screen CoreGraphics window matched the requested process tree/
+      : process.platform === "linux"
+        ? /No capturable Linux graphical session|No PID-selected window could be discovered|No visible X11\/XWayland window was found/
+        : /pid exceeds the native process ID range/;
+  assert.match(oversizedCaptureText, oversizedCapturePattern);
 
   if (process.env.RUST_MCP_SMOKE_CAPTURE_PID) {
     const capturePid = Number.parseInt(process.env.RUST_MCP_SMOKE_CAPTURE_PID, 10);

@@ -27,6 +27,7 @@ const MOJIBAKE_MARKERS: &[&str] = &[
 pub struct InspectFileRequest {
     pub path: String,
     pub working_dir: PathBuf,
+    pub resolved_path: Option<PathBuf>,
     pub max_bytes: usize,
 }
 
@@ -40,7 +41,10 @@ pub async fn inspect_host_file(
     request: InspectFileRequest,
     cancellation: CancellationToken,
 ) -> Result<Value> {
-    let resolved = resolve_host_path(&request.path, &request.working_dir);
+    let resolved = request
+        .resolved_path
+        .clone()
+        .unwrap_or_else(|| resolve_host_path(&request.path, &request.working_dir));
     let extension = extension_lower(&resolved);
     let mut info = base_info(&request.path, &resolved, &extension);
     let metadata = match fs::metadata(&resolved).await {

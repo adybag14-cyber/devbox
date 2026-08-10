@@ -122,6 +122,7 @@ const normalizeJobIds = (value) => typeof value === "string"
       .replaceAll(jsStateRoot, "<state>")
       .replaceAll(rustStateRoot, "<state>")
       .replace(/job-[A-Za-z0-9_-]+/g, "<job>")
+      .replace(/(?:[/\\][^/\\]+)*[/\\]devbox-macos-window-capture-[^/\\]+[/\\]devbox-window-query\.swift/g, "<capture>/devbox-window-query.swift")
   : value;
 
 const stable = (value, pathParts = []) => {
@@ -269,8 +270,16 @@ const compareCaptureResults = (name, jsResult, rustResult) => {
 
 try {
   for (const [name, args] of calls) {
+    const legacyWindowsWriteTarget = name === "windows_host_write_large_file" && process.platform !== "win32"
+      ? (path.win32.isAbsolute(args.path)
+          ? path.win32.normalize(args.path)
+          : path.win32.resolve(args.working_dir || fixtureRoot, args.path))
+      : null;
+    if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
     const jsResult = await js.client.callTool({ name, arguments: args });
+    if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
     const rustResult = await rust.client.callTool({ name, arguments: args });
+    if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
     compareResults(name, jsResult, rustResult);
   }
 

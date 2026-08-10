@@ -157,12 +157,10 @@ impl DevboxMcp {
             return render_windows_capture_pid_binding_error(request.pid);
         }
         let Ok(pid) = u32::try_from(request.pid) else {
-            return ToolEnvelope::error(
-                format!(
-                    "Failed to capture {} host window for PID {}: pid exceeds the native process ID range.",
-                    self.config.platform.display_name, request.pid
-                ),
-                None,
+            return render_oversized_posix_capture_pid(
+                &self.config,
+                request.pid,
+                self.config.command_output_limit_chars,
             );
         };
         match self
@@ -1891,12 +1889,21 @@ impl DevboxMcp {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .map_or_else(|| self.config.host_default_workdir.clone(), PathBuf::from);
+        let resolved_path = match resolve_host_file_path(
+            &request.path,
+            request.working_dir.as_deref(),
+            &self.config.host_default_workdir,
+        ) {
+            Ok(path) => path,
+            Err(message) => return ToolEnvelope::error(message, None),
+        };
         match inspect_host_file(
             self.config.clone(),
             self.runtime.clone(),
             InspectFileRequest {
                 path: request.path.clone(),
                 working_dir,
+                resolved_path: Some(resolved_path),
                 max_bytes: request.max_bytes,
             },
             cancellation,
@@ -1907,13 +1914,7 @@ impl DevboxMcp {
                 format!("Inspected {} on the Windows host.", request.path),
                 Some(data),
             ),
-            Err(error) => ToolEnvelope::error(
-                format!(
-                    "Failed to inspect {} on the Windows host: {error}",
-                    request.path
-                ),
-                None,
-            ),
+            Err(error) => ToolEnvelope::error(error.to_string(), None),
         }
     }
 
@@ -1959,13 +1960,7 @@ impl DevboxMcp {
                 let text = large_read_text(&summary, &data);
                 ToolEnvelope::success_with_text(summary, serde_json::to_value(data).ok(), text)
             }
-            Err(error) => ToolEnvelope::error(
-                format!(
-                    "Failed to read {} from byte {} on the Windows host: {error}",
-                    request.path, request.offset_bytes
-                ),
-                None,
-            ),
+            Err(error) => ToolEnvelope::error(error.to_string(), None),
         }
     }
 
@@ -2022,13 +2017,7 @@ impl DevboxMcp {
                 let text = large_write_text(&summary, &data);
                 ToolEnvelope::success_with_text(summary, serde_json::to_value(data).ok(), text)
             }
-            Err(error) => ToolEnvelope::error(
-                format!(
-                    "Failed to write large payload to {} on the Windows host: {error}",
-                    request.path
-                ),
-                None,
-            ),
+            Err(error) => ToolEnvelope::error(error.to_string(), None),
         }
     }
 
@@ -2682,6 +2671,71 @@ fn render_anyhow_tool_error(error: &anyhow::Error, max_chars: usize) -> CallTool
     render_command_style_error(error.to_string(), None, "", "", None, max_chars)
 }
 
+fn render_oversized_posix_capture_pid(
+    config: &Config,
+    pid: u64,
+    max_chars: usize,
+) -> CallToolResult {
+    if config.platform.is_linux && !config.platform.is_termux {
+        let session_type = std::env::var("XDG_SESSION_TYPE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some() || session_type == "wayland";
+        let x11 = std::env::var_os("DISPLAY").is_some() || session_type == "x11";
+        let session = if wayland {
+            "wayland"
+        } else if x11 {
+            "x11"
+        } else if session_type.is_empty() {
+            "headless"
+        } else {
+            &session_type
+        };
+        let summary = if !wayland && !x11 {
+            format!(
+                "No capturable Linux graphical session was detected (session={session}). Set DISPLAY for X11 or WAYLAND_DISPLAY for Wayland and run Devbox inside the logged-in desktop session."
+            )
+        } else if wayland && !x11 {
+            "No PID-selected window could be discovered on this Wayland compositor. Sway and Hyprland are supported directly; other compositors may intentionally hide window/PID enumeration and require an interactive desktop portal.".to_owned()
+        } else {
+            format!(
+                "No visible X11/XWayland window was found for PID {pid} or its child processes."
+            )
+        };
+        return render_command_style_error(summary, None, "", "", None, max_chars);
+    }
+    if config.platform.is_macos {
+        let script_path = std::env::temp_dir()
+            .join(format!("devbox-macos-window-capture-rust-{pid}"))
+            .join("devbox-window-query.swift")
+            .to_string_lossy()
+            .into_owned();
+        return render_command_style_error(
+            "No on-screen CoreGraphics window matched the requested process tree.".to_owned(),
+            Some(json!({
+                "file": "/usr/bin/swift",
+                "args": [script_path, "window", pid.to_string()],
+            })),
+            "",
+            "No on-screen CoreGraphics window matched the requested process tree.\n",
+            Some(3),
+            max_chars,
+        );
+    }
+    render_command_style_error(
+        format!(
+            "Failed to capture {} host window for PID {pid}: pid exceeds the native process ID range.",
+            config.platform.display_name
+        ),
+        None,
+        "",
+        "",
+        None,
+        max_chars,
+    )
+}
+
 fn render_windows_capture_pid_binding_error(pid: u64) -> CallToolResult {
     let summary = format!(
         "\u{1b}[31;1mcapture.ps1: \u{1b}[31;1mCannot process argument transformation on parameter 'TargetPid'. Cannot convert value \"{pid}\" to type \"System.Int32\". Error: \"Value was either too large or too small for an Int32.\"\u{1b}[0m"
@@ -2877,21 +2931,90 @@ fn resolve_host_file_path(
     let base = working_dir
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map_or_else(|| default_working_dir.to_path_buf(), PathBuf::from);
-    let path = if let Some(rest) = raw.strip_prefix('~') {
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
-            .map(PathBuf::from)
-            .ok_or_else(|| "Could not resolve the host home directory.".to_owned())?;
-        home.join(rest.trim_start_matches(['/', '\\']))
+        .map_or_else(
+            || default_working_dir.to_string_lossy().into_owned(),
+            str::to_owned,
+        );
+    let resolved = if let Some(rest) = raw.strip_prefix('~') {
+        let home = std::env::var("USERPROFILE")
+            .or_else(|_| std::env::var("HOME"))
+            .map_err(|_| "Could not resolve the host home directory.".to_owned())?;
+        win32_resolve(&home, rest)
+    } else if win32_is_absolute(raw) {
+        win32_normalize(raw)
     } else {
-        PathBuf::from(raw)
+        win32_resolve(&base, raw)
     };
-    Ok(if path.is_absolute() {
-        path
+    Ok(PathBuf::from(resolved))
+}
+
+fn win32_is_absolute(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    matches!(bytes.first(), Some(b'/' | b'\\'))
+        || (bytes.len() >= 3 && bytes[1] == b':' && matches!(bytes[2], b'/' | b'\\'))
+}
+
+fn win32_drive(value: &str) -> Option<&str> {
+    let bytes = value.as_bytes();
+    (bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()).then(|| &value[..2])
+}
+
+fn win32_normalize(value: &str) -> String {
+    let replaced = value.replace('/', "\\");
+    let drive = win32_drive(&replaced).map(str::to_owned);
+    let tail = drive.as_ref().map_or(replaced.as_str(), |_| &replaced[2..]);
+    let rooted = tail.starts_with('\\');
+    let unc = drive.is_none() && tail.starts_with("\\\\");
+    let mut parts = Vec::<&str>::new();
+    for part in tail
+        .split('\\')
+        .filter(|part| !part.is_empty() && *part != ".")
+    {
+        if part == ".." {
+            if parts.last().is_some_and(|last| *last != "..") {
+                parts.pop();
+            } else if !rooted {
+                parts.push(part);
+            }
+        } else {
+            parts.push(part);
+        }
+    }
+    let mut out = String::new();
+    if let Some(drive) = drive {
+        out.push_str(&drive);
+    }
+    if unc {
+        out.push_str("\\\\");
+    } else if rooted {
+        out.push('\\');
+    }
+    out.push_str(&parts.join("\\"));
+    if out.is_empty() {
+        ".".to_owned()
+    } else if out.len() == 2 && out.as_bytes()[1] == b':' && rooted {
+        format!("{out}\\")
     } else {
-        base.join(path)
-    })
+        out
+    }
+}
+
+fn win32_resolve(base: &str, value: &str) -> String {
+    if win32_is_absolute(value) {
+        let normalized = win32_normalize(value);
+        if win32_drive(value).is_none()
+            && let Some(drive) = win32_drive(base)
+        {
+            return format!("{drive}{normalized}");
+        }
+        return normalized;
+    }
+    let separator = if base.ends_with(['/', '\\']) {
+        ""
+    } else {
+        "\\"
+    };
+    win32_normalize(&format!("{base}{separator}{value}"))
 }
 
 fn normalize_large_write_payload(
@@ -3256,6 +3379,19 @@ mod tests {
             .clone();
         assert!(!text.contains("YWxwaGE="));
         assert!(text.contains("content_base64_chars"));
+    }
+
+    #[test]
+    fn legacy_windows_host_paths_use_win32_semantics_on_every_platform() {
+        assert_eq!(win32_normalize("/tmp/alpha/../beta.txt"), "\\tmp\\beta.txt");
+        assert_eq!(
+            win32_resolve("/tmp/base", "nested/file.bin"),
+            "\\tmp\\base\\nested\\file.bin"
+        );
+        assert_eq!(win32_normalize("C:/work/./file.txt"), "C:\\work\\file.txt");
+        assert!(win32_is_absolute("/tmp/file.txt"));
+        assert!(win32_is_absolute("C:/work/file.txt"));
+        assert!(!win32_is_absolute("relative/file.txt"));
     }
 
     #[test]

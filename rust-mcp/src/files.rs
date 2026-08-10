@@ -156,7 +156,7 @@ impl FileService {
         let _guard = lock.read().await;
         let metadata = fs::metadata(path)
             .await
-            .with_context(|| format!("read metadata for {}", path.display()))?;
+            .map_err(|error| anyhow::anyhow!(javascript_stat_error(path, &error)))?;
         if !metadata.is_file() {
             bail!("Not a regular file.");
         }
@@ -444,6 +444,19 @@ fn absolute_lexical_path(path: &Path) -> PathBuf {
     }
 }
 
+fn javascript_stat_error(path: &Path, error: &std::io::Error) -> String {
+    let path = path.to_string_lossy();
+    match error.kind() {
+        std::io::ErrorKind::NotFound => {
+            format!("ENOENT: no such file or directory, stat '{path}'")
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            format!("EACCES: permission denied, stat '{path}'")
+        }
+        _ => error.to_string(),
+    }
+}
+
 fn javascript_open_error(path: &Path, error: &std::io::Error) -> String {
     let path = path.to_string_lossy();
     match error.kind() {
@@ -556,6 +569,23 @@ mod tests {
         assert_eq!(result.next_offset_bytes, 10);
         assert!(result.eof);
         assert_eq!(STANDARD.decode(result.content_base64).unwrap(), b"789");
+    }
+
+    #[tokio::test]
+    async fn missing_large_read_uses_node_fs_style_stat_error() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("missing.bin");
+        let error = FileService::new()
+            .read_large(&path, 0, 64)
+            .await
+            .expect_err("missing large read must fail");
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "ENOENT: no such file or directory, stat '{}'",
+                path.to_string_lossy()
+            )
+        );
     }
 
     #[tokio::test]
