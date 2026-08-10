@@ -20,6 +20,9 @@ if (result.command === "run") {
   if (result.manager) {
     console.log(`manager: ${result.manager}`);
   }
+  if (result.implementation) {
+    console.log(`implementation: ${result.implementation}`);
+  }
   console.log(`health: ${result.healthy === false ? "unhealthy" : "healthy"}`);
   console.log(`log: ${result.logFile}`);
   if (result.note) {

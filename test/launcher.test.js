@@ -20,7 +20,9 @@ test("getLauncherPaths stores pid and log files under run/", () => {
   assert.equal(paths.runDir, path.join("/tmp/devbox-project", "run"));
   assert.equal(paths.pidFile, path.join("/tmp/devbox-project", "run", "devbox.pid"));
   assert.equal(paths.logFile, path.join("/tmp/devbox-project", "run", "devbox.log"));
+  assert.equal(paths.implementationFile, path.join("/tmp/devbox-project", "run", "devbox.implementation"));
   assert.equal(paths.managedPidFile, path.join("/tmp/devbox-project", "run", "mcp.pid"));
+  assert.equal(paths.managedImplementationFile, path.join("/tmp/devbox-project", "run", "mcp.implementation"));
   assert.equal(paths.managedStdoutLogFile, path.join("/tmp/devbox-project", "run", "mcp.stdout.log"));
   assert.equal(paths.guardianDesiredStateFile, path.join("/tmp/devbox-project", "run", "guardian.desired-state.json"));
 });
@@ -87,6 +89,7 @@ test("status recognizes a healthy externally managed MCP without claiming stop o
     const paths = getLauncherPaths(root);
     await mkdir(paths.runDir, { recursive: true });
     await writeFile(paths.managedPidFile, `${process.pid}\n`, "utf8");
+    await writeFile(paths.managedImplementationFile, "rust\n", "utf8");
 
     const status = await getServerStatus(root, { url, healthTimeoutMs: 1000 });
     assert.equal(status.running, true);
@@ -94,6 +97,7 @@ test("status recognizes a healthy externally managed MCP without claiming stop o
     assert.equal(status.pid, process.pid);
     assert.equal(status.manager, "managed-mcp");
     assert.equal(status.managedExternally, true);
+    assert.equal(status.implementation, "rust");
     assert.equal(status.pidFile, paths.managedPidFile);
 
     const stop = await stopServerProcess(root, { url, healthTimeoutMs: 1000 });
