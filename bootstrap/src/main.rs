@@ -1269,6 +1269,62 @@ fn format_host_port(host: &str, port: u16) -> String {
     }
 }
 
+fn decode_chunked_http_body(body: &str) -> Option<String> {
+    let bytes = body.as_bytes();
+    let mut offset = 0usize;
+    let mut decoded = Vec::<u8>::new();
+
+    loop {
+        let line_end = bytes[offset..]
+            .windows(2)
+            .position(|window| window == b"\r\n")?
+            + offset;
+        let size_line = std::str::from_utf8(&bytes[offset..line_end]).ok()?;
+        let size_text = size_line.split(';').next()?.trim();
+        let size = usize::from_str_radix(size_text, 16).ok()?;
+        offset = line_end + 2;
+
+        if size == 0 {
+            return String::from_utf8(decoded).ok();
+        }
+        let chunk_end = offset.checked_add(size)?;
+        if chunk_end > bytes.len() || bytes.get(chunk_end..chunk_end + 2)? != b"\r\n" {
+            return None;
+        }
+        decoded.extend_from_slice(&bytes[offset..chunk_end]);
+        offset = chunk_end + 2;
+    }
+}
+
+fn health_response_is_ok(response: &str) -> bool {
+    let (headers, body) = match response.split_once("\r\n\r\n") {
+        Some(parts) => parts,
+        None => return false,
+    };
+    let status_ok = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        == Some("200");
+    if !status_ok {
+        return false;
+    }
+
+    let chunked = headers.lines().any(|line| {
+        let mut parts = line.splitn(2, ':');
+        let name = parts.next().unwrap_or_default().trim();
+        let value = parts.next().unwrap_or_default();
+        name.eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+    });
+    if chunked {
+        return decode_chunked_http_body(body).is_some_and(|decoded| decoded.trim() == "ok");
+    }
+    body.trim() == "ok"
+}
+
 fn health_check(host: &str, port: u16) -> bool {
     let address = format_host_port(host, port);
     let socket = match address
@@ -1294,8 +1350,7 @@ fn health_check(host: &str, port: u16) -> bool {
     if stream.read_to_string(&mut response).is_err() {
         return false;
     }
-    let (headers, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
-    headers.starts_with("HTTP/1.1 200") && body.trim() == "ok"
+    health_response_is_ok(&response)
 }
 
 fn wait_for_health(host: &str, port: u16) -> bool {
@@ -1671,5 +1726,38 @@ mod tests {
         assert_eq!(format_host_port("127.0.0.1", 8100), "127.0.0.1:8100");
         assert_eq!(format_host_port("::1", 8100), "[::1]:8100");
         assert_eq!(format_host_port("[::1]", 8100), "[::1]:8100");
+    }
+
+    #[test]
+    fn accepts_content_length_and_chunked_health_responses() {
+        let content_length = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "content-type: text/plain\r\n",
+            "content-length: 2\r\n",
+            "connection: close\r\n\r\n",
+            "ok"
+        );
+        let chunked = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "content-type: text/plain; charset=utf-8\r\n",
+            "transfer-encoding: chunked\r\n",
+            "connection: close\r\n\r\n",
+            "2\r\nok\r\n0\r\n\r\n"
+        );
+        assert!(health_response_is_ok(content_length));
+        assert!(health_response_is_ok(chunked));
+    }
+
+    #[test]
+    fn rejects_malformed_or_unhealthy_http_responses() {
+        assert!(!health_response_is_ok(
+            "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 2\r\n\r\nok"
+        ));
+        assert!(!health_response_is_ok(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nbad\r\n0\r\n\r\n"
+        ));
+        assert!(!health_response_is_ok(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\no"
+        ));
     }
 }
