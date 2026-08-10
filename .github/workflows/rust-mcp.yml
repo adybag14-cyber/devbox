@@ -87,8 +87,12 @@ jobs:
         env:
           SCHEMA_PARITY_MAX_TEXT_OUTPUT_CHARS: "50"
           SCHEMA_PARITY_MAX_COMMAND_OUTPUT_CHARS: "50"
-          SCHEMA_PARITY_MAX_MCP_TRANSFER_CHARS: "10"
+          SCHEMA_PARITY_MAX_MCP_TRANSFER_CHARS: "1"
           SCHEMA_PARITY_MCP_WAIT_MAX_SECONDS: "1"
+        run: node rust-mcp/scripts/schema-parity-audit.mjs
+      - name: Verify transfer-limit unlimited schema parity
+        env:
+          SCHEMA_PARITY_MAX_MCP_TRANSFER_CHARS: unlimited
         run: node rust-mcp/scripts/schema-parity-audit.mjs
       - name: Verify JavaScript-to-Rust observable result parity
         env:

@@ -627,7 +627,12 @@ function Test-IsOwnedServerCommandLine {
         return $false
     }
 
-    $executable = Resolve-McpComparablePath -Path ([string]$arguments[0])
+    $executableArgument = [string]$arguments[0]
+    $executable = if ([IO.Path]::IsPathRooted($executableArgument)) {
+        Resolve-McpComparablePath -Path $executableArgument
+    } else {
+        $null
+    }
     if ($executable -eq $expectedRust) {
         return $true
     }
@@ -638,15 +643,16 @@ function Test-IsOwnedServerCommandLine {
         $argument = [string]$arguments[$i]
         if ($argument.StartsWith('--env-file=', [StringComparison]::OrdinalIgnoreCase)) {
             $runtimePath = $argument.Substring('--env-file='.Length)
-            $runtimeEnvMatches = (Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv
+            $runtimeEnvMatches = [IO.Path]::IsPathRooted($runtimePath) -and ((Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv)
             continue
         }
         if ($argument.Equals('--env-file', [StringComparison]::OrdinalIgnoreCase) -and ($i + 1) -lt $arguments.Count) {
             $i++
-            $runtimeEnvMatches = (Resolve-McpComparablePath -Path ([string]$arguments[$i])) -eq $expectedRuntimeEnv
+            $runtimePath = [string]$arguments[$i]
+            $runtimeEnvMatches = [IO.Path]::IsPathRooted($runtimePath) -and ((Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv)
             continue
         }
-        if ((Resolve-McpComparablePath -Path $argument) -eq $expectedServer) {
+        if ([IO.Path]::IsPathRooted($argument) -and ((Resolve-McpComparablePath -Path $argument) -eq $expectedServer)) {
             $serverMatches = $true
         }
     }
@@ -846,10 +852,16 @@ function Resolve-CargoExecutable {
     param([string]$ConfiguredPath)
 
     if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath)) {
-        if (Test-Path $ConfiguredPath) { return (Resolve-Path $ConfiguredPath).Path }
+        if ([IO.Path]::IsPathRooted($ConfiguredPath)) {
+            if (Test-Path -LiteralPath $ConfiguredPath) { return (Resolve-Path -LiteralPath $ConfiguredPath).Path }
+            throw "Cargo executable not found at '$ConfiguredPath'."
+        }
+        if ($ConfiguredPath.Contains('\') -or $ConfiguredPath.Contains('/')) {
+            throw "Configured CARGO_EXE must be an absolute path or a command name resolved from PATH."
+        }
         $configuredCommand = Get-Command $ConfiguredPath -ErrorAction SilentlyContinue
         if ($configuredCommand -and $configuredCommand.Source) { return [string]$configuredCommand.Source }
-        throw "Cargo executable not found at or on PATH as '$ConfiguredPath'."
+        throw "Cargo executable not found on PATH as '$ConfiguredPath'."
     }
 
     $candidates = @(
@@ -859,7 +871,9 @@ function Resolve-CargoExecutable {
     )
     foreach ($candidate in $candidates) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
-        if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
+        if ([IO.Path]::IsPathRooted($candidate) -and (Test-Path -LiteralPath $candidate)) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
         $command = Get-Command $candidate -ErrorAction SilentlyContinue
         if ($command -and $command.Source) { return [string]$command.Source }
     }
@@ -1105,10 +1119,11 @@ function Assert-McpReplacementReady {
         }
         $cargoExe = Resolve-CargoExecutable -ConfiguredPath $configuredCargo
         $manifestPath = Join-Path $ProjectRoot 'rust-mcp\Cargo.toml'
-        $binaryPath = Join-Path $ProjectRoot 'rust-mcp\target\release\devbox-mcp.exe'
+        $targetDir = Join-Path $ProjectRoot 'rust-mcp\target'
+        $binaryPath = Join-Path $targetDir 'release\devbox-mcp.exe'
         Push-Location $ProjectRoot
         try {
-            $buildOutput = & $cargoExe 'build' '--manifest-path' $manifestPath '--release' '--locked' 2>&1 | Out-String
+            $buildOutput = & $cargoExe 'build' '--manifest-path' $manifestPath '--target-dir' $targetDir '--release' '--locked' 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
                 throw "Rust MCP release preflight failed before the existing MCP was stopped. Output:`n$buildOutput`nTemporary rollback: DEVBOX_MCP_IMPLEMENTATION=js."
             }

@@ -272,7 +272,12 @@ function Test-IsOwnedServerCommandLine {
         return $false
     }
 
-    $executable = Resolve-McpComparablePath -Path ([string]$arguments[0])
+    $executableArgument = [string]$arguments[0]
+    $executable = if ([IO.Path]::IsPathRooted($executableArgument)) {
+        Resolve-McpComparablePath -Path $executableArgument
+    } else {
+        $null
+    }
     if ($executable -eq $expectedRust) {
         return $true
     }
@@ -283,15 +288,16 @@ function Test-IsOwnedServerCommandLine {
         $argument = [string]$arguments[$i]
         if ($argument.StartsWith('--env-file=', [StringComparison]::OrdinalIgnoreCase)) {
             $runtimePath = $argument.Substring('--env-file='.Length)
-            $runtimeEnvMatches = (Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv
+            $runtimeEnvMatches = [IO.Path]::IsPathRooted($runtimePath) -and ((Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv)
             continue
         }
         if ($argument.Equals('--env-file', [StringComparison]::OrdinalIgnoreCase) -and ($i + 1) -lt $arguments.Count) {
             $i++
-            $runtimeEnvMatches = (Resolve-McpComparablePath -Path ([string]$arguments[$i])) -eq $expectedRuntimeEnv
+            $runtimePath = [string]$arguments[$i]
+            $runtimeEnvMatches = [IO.Path]::IsPathRooted($runtimePath) -and ((Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv)
             continue
         }
-        if ((Resolve-McpComparablePath -Path $argument) -eq $expectedServer) {
+        if ([IO.Path]::IsPathRooted($argument) -and ((Resolve-McpComparablePath -Path $argument) -eq $expectedServer)) {
             $serverMatches = $true
         }
     }

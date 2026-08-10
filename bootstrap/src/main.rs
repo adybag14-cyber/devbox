@@ -7,7 +7,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_REPO_URL: &str = "https://github.com/adybag14-cyber/devbox.git";
 const CANONICAL_TERMUX_REPO: &str = "https://github.com/adybag14-cyber/termux-app";
@@ -717,20 +717,6 @@ fn install_system_prerequisites(options: &Options) -> SetupResult<()> {
             if rust_needs_install {
                 packages.push("curl".into());
                 packages.push("ca-certificates".into());
-                if manager.ends_with("apt-get") {
-                    packages.push("rustc".into());
-                    packages.push("cargo".into());
-                } else if manager.ends_with("dnf")
-                    || manager.ends_with("yum")
-                    || manager.ends_with("apk")
-                    || manager.ends_with("zypper")
-                {
-                    packages.push("rust".into());
-                    packages.push("cargo".into());
-                } else {
-                    packages.push("rust".into());
-                    packages.push("cargo".into());
-                }
             }
             if manager.ends_with("apt-get") {
                 run_system_package_command(&manager, &["update".into()], options.dry_run)?;
@@ -785,6 +771,37 @@ fn recommended_runtime() -> RuntimeMode {
     recommended_runtime_for(platform_kind(), docker_available)
 }
 
+fn create_private_staging_dir(prefix: &str) -> SetupResult<PathBuf> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |value| value.as_nanos());
+    for attempt in 0..32_u32 {
+        let path =
+            env::temp_dir().join(format!("{prefix}-{}-{nonce}-{attempt}", std::process::id()));
+        #[cfg(unix)]
+        let create_result = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700).create(&path)
+        };
+        #[cfg(not(unix))]
+        let create_result = fs::create_dir(&path);
+        match create_result {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(Box::new(SetupError(format!(
+                    "could not create private staging directory in {}: {error}",
+                    env::temp_dir().display()
+                ))));
+            }
+        }
+    }
+    Err(Box::new(SetupError(
+        "could not allocate a unique private staging directory".to_string(),
+    )))
+}
+
 fn ensure_supported_rust_toolchain(options: &Options) -> SetupResult<()> {
     let current = capture_command(command_name("rustc"), &["--version"], None).ok();
     let cargo_ready = command_available(command_name("cargo"), &["--version"]);
@@ -793,6 +810,12 @@ fn ensure_supported_rust_toolchain(options: &Options) -> SetupResult<()> {
     }
 
     let found = current.unwrap_or_else(|| "not installed".to_string());
+    if options.dry_run {
+        println!(
+            "Dry run: would ensure Rust {PINNED_RUST_TOOLCHAIN} and Cargo are available (found {found})."
+        );
+        return Ok(());
+    }
     if !options.install_system_packages {
         return Err(Box::new(SetupError(format!(
             "Rust {}.{}.{}+ and Cargo are required; found {found}. Install a supported toolchain with rustup or rerun without --skip-system-packages.",
@@ -823,8 +846,8 @@ fn ensure_supported_rust_toolchain(options: &Options) -> SetupResult<()> {
                             .to_string(),
                     )) as Box<dyn Error>
                 })?;
-                let installer =
-                    env::temp_dir().join(format!("devbox-rustup-init-{}.sh", std::process::id()));
+                let staging = create_private_staging_dir("devbox-rustup")?;
+                let installer = staging.join("rustup-init.sh");
                 let download_args = vec![
                     "--proto".to_string(),
                     "=https".to_string(),
@@ -834,21 +857,26 @@ fn ensure_supported_rust_toolchain(options: &Options) -> SetupResult<()> {
                     "-o".to_string(),
                     installer.to_string_lossy().to_string(),
                 ];
-                run_owned_command(&curl, &download_args, None, options.dry_run)?;
-                let install_args = vec![
-                    installer.to_string_lossy().to_string(),
-                    "-y".to_string(),
-                    "--profile".to_string(),
-                    "minimal".to_string(),
-                    "--default-toolchain".to_string(),
-                    PINNED_RUST_TOOLCHAIN.to_string(),
-                    "--no-modify-path".to_string(),
-                ];
-                let result = run_owned_command("sh", &install_args, None, options.dry_run);
-                if !options.dry_run {
-                    let _ = fs::remove_file(&installer);
-                }
+                let result = (|| -> SetupResult<()> {
+                    run_owned_command(&curl, &download_args, None, options.dry_run)?;
+                    let install_args = vec![
+                        installer.to_string_lossy().to_string(),
+                        "-y".to_string(),
+                        "--profile".to_string(),
+                        "minimal".to_string(),
+                        "--default-toolchain".to_string(),
+                        PINNED_RUST_TOOLCHAIN.to_string(),
+                    ];
+                    run_owned_command("sh", &install_args, None, options.dry_run)
+                })();
+                let cleanup = fs::remove_dir_all(&staging);
                 result?;
+                if let Err(error) = cleanup {
+                    return Err(Box::new(SetupError(format!(
+                        "rustup installed but private staging cleanup failed for {}: {error}",
+                        staging.display()
+                    ))));
+                }
                 refresh_common_tool_paths();
                 rustup = first_available_command(&[command_name("rustup")], &["--version"]);
             }
@@ -885,10 +913,10 @@ fn ensure_supported_rust_toolchain(options: &Options) -> SetupResult<()> {
 }
 
 fn refresh_common_tool_paths() {
-    let separator = if cfg!(windows) { ";" } else { ":" };
     let mut entries = env::var_os("PATH")
         .map(|value| env::split_paths(&value).collect::<Vec<_>>())
         .unwrap_or_default();
+    let mut priority_candidates = Vec::<PathBuf>::new();
     let mut candidates = Vec::<PathBuf>::new();
     if cfg!(windows) {
         if let Ok(program_files) = env::var("ProgramFiles") {
@@ -898,16 +926,22 @@ fn refresh_common_tool_paths() {
         candidates.push(PathBuf::from(r"C:\Program Files\nodejs"));
         candidates.push(PathBuf::from(r"C:\Program Files\Git\cmd"));
         if let Some(home) = env::var_os("USERPROFILE") {
-            candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
+            priority_candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
         }
     } else if cfg!(target_os = "macos") {
         candidates.push(PathBuf::from("/opt/homebrew/bin"));
         candidates.push(PathBuf::from("/usr/local/bin"));
         if let Some(home) = env::var_os("HOME") {
-            candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
+            priority_candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
         }
     } else if let Some(home) = env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
+        priority_candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
+    }
+    for candidate in priority_candidates.into_iter().rev() {
+        if candidate.is_dir() {
+            entries.retain(|existing| existing != &candidate);
+            entries.insert(0, candidate);
+        }
     }
     for candidate in candidates {
         if candidate.is_dir() && !entries.iter().any(|existing| existing == &candidate) {
@@ -916,9 +950,6 @@ fn refresh_common_tool_paths() {
     }
     if let Ok(joined) = env::join_paths(entries) {
         env::set_var("PATH", joined);
-    } else if let Ok(existing) = env::var("PATH") {
-        let _ = separator;
-        env::set_var("PATH", existing);
     }
 }
 fn verify_toolchain() -> SetupResult<()> {
@@ -1427,7 +1458,9 @@ fn setup(options: Options) -> SetupResult<()> {
     refresh_common_tool_paths();
     ensure_supported_rust_toolchain(&options)?;
     refresh_common_tool_paths();
-    verify_toolchain()?;
+    if !options.dry_run {
+        verify_toolchain()?;
+    }
     let repo = clone_or_locate_repo(&options)?;
     if options.dry_run && !is_devbox_repo(&repo) {
         println!("Dry run complete; the repository would be cloned before configuration.");

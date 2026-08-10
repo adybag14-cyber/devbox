@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 
 const VALID_IMPLEMENTATIONS = new Set(["rust", "js"]);
 const MAX_PREFLIGHT_OUTPUT_CHARS = 12000;
+const DEFAULT_PREFLIGHT_TIMEOUT_MS = 15 * 60 * 1000;
 
 export const resolveMcpImplementation = (env = process.env) => {
   const value = String(env.DEVBOX_MCP_IMPLEMENTATION ?? "rust").trim().toLowerCase() || "rust";
@@ -14,8 +15,10 @@ export const resolveMcpImplementation = (env = process.env) => {
   return value;
 };
 
+export const getRustTargetDir = (root) => path.join(root, "rust-mcp", "target");
+
 export const getRustMcpBinaryPath = (root, platform = process.platform) =>
-  path.join(root, "rust-mcp", "target", "release", platform === "win32" ? "devbox-mcp.exe" : "devbox-mcp");
+  path.join(getRustTargetDir(root), "release", platform === "win32" ? "devbox-mcp.exe" : "devbox-mcp");
 
 export const getRustManifestPath = (root) => path.join(root, "rust-mcp", "Cargo.toml");
 
@@ -28,14 +31,23 @@ export const runCheckedProcess = (file, args, {
   env = process.env,
   label = file,
   stdio = ["ignore", "pipe", "pipe"],
+  timeoutMs = DEFAULT_PREFLIGHT_TIMEOUT_MS,
 } = {}) => new Promise((resolve, reject) => {
   let stdout = "";
   let stderr = "";
   let child;
+  let settled = false;
+  let timer;
+  const finish = (callback, value) => {
+    if (settled) return;
+    settled = true;
+    if (timer) clearTimeout(timer);
+    callback(value);
+  };
   try {
     child = spawn(file, args, { cwd, env, stdio, windowsHide: true });
   } catch (error) {
-    reject(new Error(`${label} could not start: ${error instanceof Error ? error.message : String(error)}`));
+    finish(reject, new Error(`${label} could not start: ${error instanceof Error ? error.message : String(error)}`));
     return;
   }
   child.stdout?.setEncoding("utf8");
@@ -43,17 +55,27 @@ export const runCheckedProcess = (file, args, {
   child.stdout?.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
   child.stderr?.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
   child.once("error", (error) => {
-    reject(new Error(`${label} could not start: ${error.message}`));
+    finish(reject, new Error(`${label} could not start: ${error.message}`));
   });
   child.once("exit", (code, signal) => {
     if (code === 0) {
-      resolve({ stdout, stderr, exitCode: 0 });
+      finish(resolve, { stdout, stderr, exitCode: 0 });
       return;
     }
     const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
     const suffix = detail ? `\n${detail}` : "";
-    reject(new Error(`${label} failed (code=${code ?? "null"}, signal=${signal ?? "null"}).${suffix}`));
+    finish(reject, new Error(`${label} failed (code=${code ?? "null"}, signal=${signal ?? "null"}).${suffix}`));
   });
+  const effectiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
+    ? timeoutMs
+    : DEFAULT_PREFLIGHT_TIMEOUT_MS;
+  timer = setTimeout(() => {
+    const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
+    const suffix = detail ? `\n${detail}` : "";
+    try { child.kill(); } catch {}
+    finish(reject, new Error(`${label} timed out after ${effectiveTimeoutMs} ms.${suffix}`));
+  }, effectiveTimeoutMs);
+  timer.unref?.();
 });
 
 export const getMcpLaunchSpec = (root, {
@@ -94,7 +116,15 @@ export const prepareMcpImplementation = async (root, {
   const manifest = getRustManifestPath(root);
   const cargo = resolveCargoCommand(env);
   try {
-    await runProcess(cargo, ["build", "--manifest-path", manifest, "--release", "--locked"], {
+    await runProcess(cargo, [
+      "build",
+      "--manifest-path",
+      manifest,
+      "--target-dir",
+      getRustTargetDir(root),
+      "--release",
+      "--locked",
+    ], {
       cwd: root,
       env,
       label: "Rust MCP release build",

@@ -79,19 +79,7 @@ const startServer = async ({ authMode, jsonBodyLimit = "16mb" }) => {
     child.once("error", reject);
     child.once("exit", (code, signal) => resolve({ code, signal }));
   });
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    const early = await Promise.race([
-      exited.then((result) => ({ result })),
-      new Promise((resolve) => setTimeout(() => resolve(null), 100)),
-    ]);
-    if (early) throw new Error(`gateway smoke server exited early: ${JSON.stringify(early.result)}\n${stdout}\n${stderr}`);
-    try {
-      const health = await rawRequest({ port, headers: { Host: `127.0.0.1:${port}` }, pathname: "/healthz" });
-      if (health.status === 200 && health.body === "ok") break;
-    } catch {}
-  }
-  return {
+  const server = {
     port,
     publicBaseUrl,
     runtimeDir,
@@ -99,15 +87,49 @@ const startServer = async ({ authMode, jsonBodyLimit = "16mb" }) => {
     exited,
     logs: () => ({ stdout, stderr }),
   };
+  try {
+    const deadline = Date.now() + 30_000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      const early = await Promise.race([
+        exited.then((result) => ({ result })),
+        new Promise((resolve) => setTimeout(() => resolve(null), 100)),
+      ]);
+      if (early) throw new Error(`gateway smoke server exited early: ${JSON.stringify(early.result)}\n${stdout}\n${stderr}`);
+      try {
+        const health = await rawRequest({ port, headers: { Host: `127.0.0.1:${port}` }, pathname: "/healthz" });
+        if (health.status === 200 && health.body === "ok") {
+          ready = true;
+          break;
+        }
+      } catch {}
+    }
+    if (!ready) throw new Error(`gateway smoke server failed readiness\n${stdout}\n${stderr}`);
+    return server;
+  } catch (error) {
+    await stopServer(server).catch((cleanupError) => {
+      error.message = `${error.message}\ncleanup failed: ${cleanupError?.stack || cleanupError}`;
+    });
+    throw error;
+  }
 };
 
 const stopServer = async (server) => {
   if (server.child.exitCode === null && server.child.signalCode === null) {
     server.child.kill();
-    await Promise.race([server.exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
-    if (server.child.exitCode === null && server.child.signalCode === null) server.child.kill("SIGKILL");
+    await Promise.race([
+      server.exited.catch(() => null),
+      new Promise((resolve) => setTimeout(resolve, 5_000)),
+    ]);
+    if (server.child.exitCode === null && server.child.signalCode === null) {
+      server.child.kill("SIGKILL");
+      await Promise.race([
+        server.exited.catch(() => null),
+        new Promise((resolve) => setTimeout(resolve, 1_000)),
+      ]);
+    }
   }
-  await rm(server.runtimeDir, { recursive: true, force: true });
+  await rm(server.runtimeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 };
 
 await access(binaryPath);

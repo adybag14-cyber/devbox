@@ -64,16 +64,23 @@ const exited = new Promise((resolve, reject) => {
   server.once("error", reject);
   server.once("exit", (code, signal) => resolve({ code, signal }));
 });
+let socket;
 
 try {
   const deadline = Date.now() + 30_000;
+  let ready = false;
   while (Date.now() < deadline) {
+    const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
+    if (early) throw new Error(`disconnect smoke server exited early ${JSON.stringify(early.result)}\n${stdout}\n${stderr}`);
     try {
       const response = await fetch(`http://127.0.0.1:${port}/healthz`);
-      if (response.ok && (await response.text()) === "ok") break;
+      if (response.ok && (await response.text()) === "ok") {
+        ready = true;
+        break;
+      }
     } catch {}
-    await sleep(100);
   }
+  if (!ready) throw new Error(`disconnect smoke server failed readiness\n${stdout}\n${stderr}`);
 
   const childScript = [
     "const fs=require('fs');",
@@ -98,7 +105,7 @@ try {
   });
 
   let responseBytes = "";
-  const socket = net.createConnection({ host: "127.0.0.1", port });
+  socket = net.createConnection({ host: "127.0.0.1", port });
   socket.setEncoding("utf8");
   socket.on("data", (chunk) => { responseBytes += chunk; });
   await new Promise((resolve, reject) => {
@@ -177,10 +184,14 @@ try {
   if (stderr.trim()) console.error(`\n--- Rust MCP stderr ---\n${stderr}`);
   throw error;
 } finally {
+  socket?.destroy();
   if (server.exitCode === null && server.signalCode === null) {
     server.kill();
-    await Promise.race([exited, sleep(5_000)]);
-    if (server.exitCode === null && server.signalCode === null) server.kill("SIGKILL");
+    await Promise.race([exited.catch(() => null), sleep(5_000)]);
+    if (server.exitCode === null && server.signalCode === null) {
+      server.kill("SIGKILL");
+      await Promise.race([exited.catch(() => null), sleep(1_000)]);
+    }
   }
-  await rm(runtimeDir, { recursive: true, force: true });
+  await rm(runtimeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }

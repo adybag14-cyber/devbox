@@ -260,19 +260,12 @@ fn apply_common_constraints(tool_name: &str, properties: &mut Map<String, Value>
     set_integer_bounds(properties, "max_entries", 1, 50_000);
     set_integer_bounds(properties, "max_matches", 1, 5_000);
     set_integer_bounds(properties, "max_file_bytes", 1, 64 * 1024 * 1024);
-    set_integer_bounds(
-        properties,
-        "max_bytes",
-        1,
-        config.max_mcp_transfer_chars as u64,
-    );
+    let transfer_max = u64::try_from(config.max_mcp_transfer_chars)
+        .unwrap_or(u64::MAX)
+        .min(MAX_SAFE_INTEGER);
+    set_integer_bounds(properties, "max_bytes", 1, transfer_max);
     set_integer_bounds(properties, "offset_bytes", 0, MAX_SAFE_INTEGER);
-    set_integer_bounds(
-        properties,
-        "content_max_bytes",
-        1_024,
-        config.max_mcp_transfer_chars as u64,
-    );
+    set_integer_bounds(properties, "content_max_bytes", 1_024, transfer_max);
     set_integer_bounds(properties, "min_bytes", 0, MAX_SAFE_INTEGER);
     set_integer_bounds(properties, "stable_ms", 0, 30_000);
     set_integer_bounds(properties, "poll_ms", 50, 5_000);

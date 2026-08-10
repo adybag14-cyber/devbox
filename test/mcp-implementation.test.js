@@ -7,7 +7,9 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import {
   getMcpLaunchSpec,
   getRustMcpBinaryPath,
+  getRustTargetDir,
   prepareMcpImplementation,
+  runCheckedProcess,
   resolveCargoCommand,
   resolveMcpImplementation,
 } from "../src/mcp-implementation.js";
@@ -71,6 +73,8 @@ test("Rust preflight builds locked release before probing the binary", async () 
       "build",
       "--manifest-path",
       path.join(root, "rust-mcp", "Cargo.toml"),
+      "--target-dir",
+      getRustTargetDir(root),
       "--release",
       "--locked",
     ]);
@@ -98,6 +102,18 @@ test("Rust build failure leaves a rollback instruction before replacement", asyn
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+
+test("checked preflight terminates stalled processes at its deadline", async () => {
+  await assert.rejects(
+    runCheckedProcess(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], {
+      label: "deadline-test",
+      timeoutMs: 50,
+    }),
+    /deadline-test timed out after 50 ms/u,
+  );
 });
 
 test("JS rollback preflight does not invoke Cargo", async () => {

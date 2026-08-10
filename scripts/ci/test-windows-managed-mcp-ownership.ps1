@@ -119,11 +119,16 @@ try {
     # while checkout B has no PID file. B must never discover or stop A.
     $processA = Start-DummyMcp -Path $checkoutA
     $pidFileB = Join-Path $checkoutB 'run\mcp.pid'
-    $foundForB = Find-OwnedServerProcess -PidFile $pidFileB -ProjectRoot $checkoutB
-    if ($foundForB) {
-        throw "Cross-checkout fallback incorrectly claimed PID $($foundForB.ProcessId): $($foundForB.CommandLine)"
+    Push-Location $checkoutB
+    try {
+        $foundForB = Find-OwnedServerProcess -PidFile $pidFileB -ProjectRoot $checkoutB
+        if ($foundForB) {
+            throw "Cross-checkout fallback incorrectly claimed PID $($foundForB.ProcessId): $($foundForB.CommandLine)"
+        }
+        Stop-ExistingServerIfOwned -PidFile $pidFileB -ProjectRoot $checkoutB
+    } finally {
+        Pop-Location
     }
-    Stop-ExistingServerIfOwned -PidFile $pidFileB -ProjectRoot $checkoutB
     if (-not (Get-Process -Id $processA.Id -ErrorAction SilentlyContinue)) {
         throw 'Cross-checkout stop killed checkout A MCP.'
     }

@@ -135,31 +135,22 @@ async fn capture_linux_program(
         )
     })?;
     let (_temp_dir, path) = temporary_png_target("window")?;
-    let method = if command_available("import", cancellation).await {
-        run_command(
-            "import",
-            vec![
-                "-window".to_owned(),
-                window.window_id.clone(),
-                path_text(&path),
-            ],
-            cancellation.child_token(),
-        )
-        .await?;
-        "import"
-    } else if command_available("gnome-screenshot", cancellation).await {
-        run_command(
-            "gnome-screenshot",
-            vec!["-w".to_owned(), "-f".to_owned(), path_text(&path)],
-            cancellation.child_token(),
-        )
-        .await?;
-        "gnome-screenshot"
-    } else {
+    if !command_available("import", cancellation).await {
         bail!(
-            "No supported Linux window screenshot tool is installed. Install ImageMagick import or gnome-screenshot."
+            "No supported Linux process-window screenshot tool is installed. Install ImageMagick import."
         );
-    };
+    }
+    run_command(
+        "import",
+        vec![
+            "-window".to_owned(),
+            window.window_id.clone(),
+            path_text(&path),
+        ],
+        cancellation.child_token(),
+    )
+    .await?;
+    let method = "import";
     let image = read_valid_png(&path).await?;
     Ok(NativeCapture {
         image,
@@ -398,8 +389,10 @@ async fn find_linux_window(
     let mut best = None;
     let mut best_area = 0_u64;
     for (window_id, owner_pid) in window_ids {
-        let Ok(geometry) = xwininfo_geometry(&window_id, cancellation).await else {
-            continue;
+        let geometry = match xwininfo_geometry(&window_id, cancellation).await {
+            Ok(geometry) => geometry,
+            Err(error) if cancellation.is_cancelled() => return Err(error),
+            Err(_) => continue,
         };
         if geometry.width < 32 || geometry.height < 32 {
             continue;

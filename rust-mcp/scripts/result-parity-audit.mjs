@@ -66,13 +66,28 @@ const startJs = async () => {
   assert.ok(source.includes(`const projectRoot = ${JSON.stringify(jsStateRoot)};`));
   const instrumentedPath = path.join(path.dirname(serverPath), `.result-parity-server-${process.pid}-${Date.now()}.mjs`);
   await writeFile(instrumentedPath, source, "utf8");
-  const module = await import(`${pathToFileURL(instrumentedPath).href}?audit=${Date.now()}`);
-  const server = module.buildServer();
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "js-result-parity", version: "1.0.0" });
-  await server.connect(serverTransport);
-  await client.connect(clientTransport);
-  return { client, close: async () => { await client.close(); await server.close(); await rm(instrumentedPath, { force: true }); } };
+  let server;
+  let client;
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    if (client) await client.close().catch(() => {});
+    if (server) await server.close().catch(() => {});
+    await rm(instrumentedPath, { force: true });
+  };
+  try {
+    const module = await import(`${pathToFileURL(instrumentedPath).href}?audit=${Date.now()}`);
+    server = module.buildServer();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: "js-result-parity", version: "1.0.0" });
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    return { client, close };
+  } catch (error) {
+    await close();
+    throw error;
+  }
 };
 
 const startRust = async () => {
@@ -99,15 +114,42 @@ const startRust = async () => {
     server.once("exit", (code, signal) => resolve({ code, signal }));
   });
   const baseUrl = new URL(`http://127.0.0.1:${port}/`);
-  const deadline = Date.now() + 30000;
-  while (Date.now() < deadline) {
-    const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
-    if (early) throw new Error(`Rust server exited ${JSON.stringify(early.result)}\n${stderr}`);
-    try { if ((await fetch(new URL("healthz", baseUrl))).ok) break; } catch {}
+  let client;
+  let closed = false;
+  const close = async () => {
+    if (closed) return;
+    closed = true;
+    if (client) await client.close().catch(() => {});
+    if (server.exitCode === null && server.signalCode === null) {
+      server.kill();
+      await Promise.race([exited.catch(() => null), sleep(5000)]);
+      if (server.exitCode === null && server.signalCode === null) {
+        server.kill("SIGKILL");
+        await Promise.race([exited.catch(() => null), sleep(1000)]);
+      }
+    }
+  };
+  try {
+    const deadline = Date.now() + 30000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
+      if (early) throw new Error(`Rust server exited ${JSON.stringify(early.result)}\n${stderr}`);
+      try {
+        if ((await fetch(new URL("healthz", baseUrl))).ok) {
+          ready = true;
+          break;
+        }
+      } catch {}
+    }
+    if (!ready) throw new Error(`Rust server failed readiness\n${stderr}`);
+    client = new Client({ name: "rust-result-parity", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(baseUrl));
+    return { client, close };
+  } catch (error) {
+    await close();
+    throw error;
   }
-  const client = new Client({ name: "rust-result-parity", version: "1.0.0" });
-  await client.connect(new StreamableHTTPClientTransport(baseUrl));
-  return { client, close: async () => { await client.close(); if (server.exitCode === null && server.signalCode === null) server.kill(); await Promise.race([exited, sleep(5000)]); } };
 };
 
 const volatileTimingKeys = new Set([
@@ -251,8 +293,8 @@ const normalizedCaptureResult = (result) => {
   };
 };
 
-const js = await startJs();
-const rust = await startRust();
+let js;
+let rust;
 const differences = [];
 let comparedCalls = 0;
 const compareResults = (name, jsResult, rustResult) => {
@@ -270,6 +312,8 @@ const compareCaptureResults = (name, jsResult, rustResult) => {
 };
 
 try {
+  js = await startJs();
+  rust = await startRust();
   for (const [name, args] of calls) {
     const legacyWindowsWriteTarget = name === "windows_host_write_large_file" && process.platform !== "win32"
       ? (path.win32.isAbsolute(args.path)
@@ -364,8 +408,8 @@ try {
   const rustCancelled = await rust.client.callTool({ name: "devbox_job_status", arguments: { job_id: rustProgramId, wait_seconds: 10, terminal_only: true } });
   compareResults("devbox_job_status", jsCancelled, rustCancelled);
 } finally {
-  await js.close();
-  await rust.close();
+  if (js) await js.close();
+  if (rust) await rust.close();
   await rm(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   await rm(jsStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   await rm(rustStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });

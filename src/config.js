@@ -30,6 +30,7 @@ const parseCharacterLimit = (value, fallback) => {
 };
 
 export const MAX_SAFE_COMMAND_OUTPUT_CHARS = 65536;
+export const DEFAULT_MCP_TRANSFER_CHARS = 4000000;
 export const MIN_SAFE_MCP_TRANSFER_CHARS = 262144;
 
 const parseCommandOutputLimit = (value) => {
@@ -41,7 +42,7 @@ const parseCommandOutputLimit = (value) => {
 };
 
 const parseMcpTransferLimit = (value) => {
-  const parsed = parseCharacterLimit(value, 4000000);
+  const parsed = parseCharacterLimit(value, DEFAULT_MCP_TRANSFER_CHARS);
   return parsed === null ? null : Math.max(MIN_SAFE_MCP_TRANSFER_CHARS, parsed);
 };
 

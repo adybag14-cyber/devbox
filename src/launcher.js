@@ -77,6 +77,19 @@ export const waitForServerReady = async ({
   throw new Error(`Timed out after ${timeoutMs} ms waiting for ${healthUrl}.${detail}`);
 };
 
+const waitForChildSpawn = (child) => new Promise((resolve, reject) => {
+  const onSpawn = () => {
+    child.off("error", onError);
+    resolve();
+  };
+  const onError = (error) => {
+    child.off("spawn", onSpawn);
+    reject(error);
+  };
+  child.once("spawn", onSpawn);
+  child.once("error", onError);
+});
+
 export const isProcessAlive = (pid) => {
   if (!Number.isInteger(pid) || pid <= 0) {
     return false;
@@ -235,17 +248,28 @@ export const startServerProcess = async (root = projectRoot, { preparedSpec = nu
   const spec = preparedSpec ?? await prepareMcpImplementation(root);
   await writeGuardianDesiredState(paths, true, "devbox start");
   const logHandle = await open(paths.logFile, "a");
-  const child = spawn(spec.file, spec.args, {
-    cwd: root,
-    env: spec.env,
-    detached: true,
-    stdio: ["ignore", logHandle.fd, logHandle.fd],
-  });
-
-  child.unref();
-  await writeFile(paths.pidFile, `${child.pid}\n`, "utf8");
-  await writeFile(paths.implementationFile, `${spec.implementation}\n`, "utf8");
-  await logHandle.close();
+  let child;
+  try {
+    child = spawn(spec.file, spec.args, {
+      cwd: root,
+      env: spec.env,
+      detached: true,
+      stdio: ["ignore", logHandle.fd, logHandle.fd],
+    });
+    await waitForChildSpawn(child);
+    child.unref();
+    await writeFile(paths.pidFile, `${child.pid}\n`, "utf8");
+    await writeFile(paths.implementationFile, `${spec.implementation}\n`, "utf8");
+  } catch (error) {
+    if (child?.pid && isProcessAlive(child.pid)) {
+      try { process.kill(child.pid, "SIGTERM"); } catch {}
+    }
+    await rm(paths.pidFile, { force: true });
+    await rm(paths.implementationFile, { force: true });
+    throw new Error(`Devbox MCP process could not start: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await logHandle.close().catch(() => {});
+  }
 
   const spawnedStatus = await getServerStatus(root);
   try {

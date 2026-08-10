@@ -72,22 +72,34 @@ const startServer = async (overrides = {}) => {
     child.once("exit", (code, signal) => resolve({ code, signal }));
   });
   const baseUrl = new URL(`http://127.0.0.1:${port}/`);
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
-    if (early) throw new Error(`server exited early ${JSON.stringify(early.result)}\n${stdout}\n${stderr}`);
-    try {
-      const response = await fetch(new URL("healthz", baseUrl));
-      if (response.ok) return { runtimeDir, workspace, child, exited, baseUrl, logs: () => ({ stdout, stderr }) };
-    } catch {}
+  const server = { runtimeDir, workspace, child, exited, baseUrl, logs: () => ({ stdout, stderr }) };
+  try {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
+      if (early) throw new Error(`server exited early ${JSON.stringify(early.result)}\n${stdout}\n${stderr}`);
+      try {
+        const response = await fetch(new URL("healthz", baseUrl));
+        if (response.ok) return server;
+      } catch {}
+    }
+    throw new Error(`server failed readiness\n${stdout}\n${stderr}`);
+  } catch (error) {
+    await stopServer(server).catch((cleanupError) => {
+      error.message = `${error.message}\ncleanup failed: ${cleanupError?.stack || cleanupError}`;
+    });
+    throw error;
   }
-  throw new Error(`server failed readiness\n${stdout}\n${stderr}`);
 };
 
 const stopServer = async (server) => {
   if (server.child.exitCode === null && server.child.signalCode === null) {
     server.child.kill();
-    await Promise.race([server.exited, sleep(5_000)]);
+    await Promise.race([server.exited.catch(() => null), sleep(5_000)]);
+    if (server.child.exitCode === null && server.child.signalCode === null) {
+      server.child.kill("SIGKILL");
+      await Promise.race([server.exited.catch(() => null), sleep(1_000)]);
+    }
   }
   await sleep(150);
   await rmWithRetry(server.runtimeDir);

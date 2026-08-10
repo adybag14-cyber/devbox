@@ -5,7 +5,7 @@ import os from "node:os";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 
-import { buildServerUrl, getLauncherPaths, getServerStatus, parseLauncherArgs, stopServerProcess, waitForServerReady } from "../src/launcher.js";
+import { buildServerUrl, getLauncherPaths, getServerStatus, parseLauncherArgs, startServerProcess, stopServerProcess, waitForServerReady } from "../src/launcher.js";
 
 test("parseLauncherArgs defaults to background start and supports explicit commands", () => {
   assert.deepEqual(parseLauncherArgs([]), { command: "start", background: true });
@@ -54,6 +54,30 @@ test("waitForServerReady waits until the health endpoint is actually ready", asy
     assert.match(result.healthUrl, /\/healthz$/u);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+
+
+test("background start does not persist ownership when spawn fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-launcher-spawn-fail-"));
+  try {
+    const paths = getLauncherPaths(root);
+    await assert.rejects(
+      startServerProcess(root, {
+        preparedSpec: {
+          implementation: "rust",
+          file: path.join(root, "missing-devbox-binary"),
+          args: [],
+          env: process.env,
+        },
+      }),
+      /could not start/u,
+    );
+    await assert.rejects(readFile(paths.pidFile, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(paths.implementationFile, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

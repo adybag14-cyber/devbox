@@ -770,7 +770,12 @@ fn parse_command_output_limit() -> usize {
 }
 
 fn parse_character_limit(name: &str, fallback: usize) -> Option<usize> {
-    let Ok(raw) = env::var(name) else {
+    let raw = env::var(name).ok();
+    parse_character_limit_value(raw.as_deref(), fallback)
+}
+
+fn parse_character_limit_value(raw: Option<&str>, fallback: usize) -> Option<usize> {
+    let Some(raw) = raw else {
         return Some(fallback);
     };
     let normalized = raw.trim().to_ascii_lowercase();
@@ -798,21 +803,18 @@ fn parse_host_exec_enabled() -> bool {
     }
 }
 
+const DEFAULT_MCP_TRANSFER_CHARS: usize = 4_000_000;
+const MIN_SAFE_MCP_TRANSFER_CHARS: usize = 262_144;
+
 fn parse_transfer_limit() -> usize {
-    let raw = env::var("MAX_MCP_TRANSFER_CHARS").unwrap_or_default();
-    let normalized = raw.trim().to_ascii_lowercase();
-    if matches!(
-        normalized.as_str(),
-        "0" | "-1" | "none" | "off" | "disabled" | "unlimited" | "infinite" | "infinity"
-    ) {
-        return usize::MAX;
-    }
-    normalized
-        .parse::<usize>()
-        .ok()
-        .filter(|value| *value > 0)
-        .unwrap_or(4_000_000)
-        .max(262_144)
+    let raw = env::var("MAX_MCP_TRANSFER_CHARS").ok();
+    parse_transfer_limit_value(raw.as_deref())
+}
+
+fn parse_transfer_limit_value(raw: Option<&str>) -> usize {
+    parse_character_limit_value(raw, DEFAULT_MCP_TRANSFER_CHARS)
+        .unwrap_or(usize::MAX)
+        .max(MIN_SAFE_MCP_TRANSFER_CHARS)
 }
 
 fn parse_bool_env(name: &str, fallback: bool) -> bool {
@@ -845,6 +847,37 @@ mod tests {
             HostSearchBackend::Rust
         );
         assert!(HostSearchBackend::parse("invalid").is_err());
+    }
+
+    #[test]
+    fn transfer_limit_matches_javascript_alias_default_and_minimum_semantics() {
+        assert_eq!(parse_transfer_limit_value(None), DEFAULT_MCP_TRANSFER_CHARS);
+        assert_eq!(
+            parse_transfer_limit_value(Some("")),
+            DEFAULT_MCP_TRANSFER_CHARS
+        );
+        assert_eq!(parse_transfer_limit_value(Some("unlimited")), usize::MAX);
+        assert_eq!(parse_transfer_limit_value(Some("OFF")), usize::MAX);
+        assert_eq!(
+            parse_transfer_limit_value(Some("1")),
+            MIN_SAFE_MCP_TRANSFER_CHARS
+        );
+        assert_eq!(
+            parse_transfer_limit_value(Some("10")),
+            MIN_SAFE_MCP_TRANSFER_CHARS
+        );
+        assert_eq!(
+            parse_transfer_limit_value(Some("262144")),
+            MIN_SAFE_MCP_TRANSFER_CHARS
+        );
+        assert_eq!(
+            parse_transfer_limit_value(Some("4000000")),
+            DEFAULT_MCP_TRANSFER_CHARS
+        );
+        assert_eq!(
+            parse_transfer_limit_value(Some("not-a-number")),
+            DEFAULT_MCP_TRANSFER_CHARS
+        );
     }
 
     #[test]

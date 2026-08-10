@@ -100,24 +100,34 @@ const listRustTools = async () => {
     server.once("exit", (code, signal) => resolve({ code, signal }));
   });
   const baseUrl = new URL(`http://127.0.0.1:${port}/`);
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
-    if (early) throw new Error(`Rust schema server exited ${JSON.stringify(early.result)}\n${stderr}`);
-    try {
-      const health = await fetch(new URL("healthz", baseUrl));
-      if (health.ok) break;
-    } catch {}
-  }
-  const client = new Client({ name: "rust-schema-audit", version: "1.0.0" });
-  await client.connect(new StreamableHTTPClientTransport(baseUrl));
+  let client;
   try {
+    const deadline = Date.now() + 30_000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
+      if (early) throw new Error(`Rust schema server exited ${JSON.stringify(early.result)}\n${stderr}`);
+      try {
+        const health = await fetch(new URL("healthz", baseUrl));
+        if (health.ok) {
+          ready = true;
+          break;
+        }
+      } catch {}
+    }
+    if (!ready) throw new Error(`Rust schema server failed readiness\n${stderr}`);
+    client = new Client({ name: "rust-schema-audit", version: "1.0.0" });
+    await client.connect(new StreamableHTTPClientTransport(baseUrl));
     return (await client.listTools()).tools;
   } finally {
-    await client.close();
+    if (client) await client.close().catch(() => {});
     if (server.exitCode === null && server.signalCode === null) {
       server.kill();
-      await Promise.race([exited, sleep(5000)]);
+      await Promise.race([exited.catch(() => null), sleep(5000)]);
+      if (server.exitCode === null && server.signalCode === null) {
+        server.kill("SIGKILL");
+        await Promise.race([exited.catch(() => null), sleep(1000)]);
+      }
     }
     await rm(runtimeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
@@ -160,17 +170,34 @@ const collectNumericSchemaErrors = (schema, pathParts = ["$"], errors = []) => {
   }
   if (!schema || typeof schema !== "object") return errors;
   const minimum = typeof schema.minimum === "number" ? schema.minimum : null;
+  const exclusiveMinimum = typeof schema.exclusiveMinimum === "number" ? schema.exclusiveMinimum : null;
   const maximum = typeof schema.maximum === "number" ? schema.maximum : null;
+  const exclusiveMaximum = typeof schema.exclusiveMaximum === "number" ? schema.exclusiveMaximum : null;
   const location = pathParts.join(".");
   if (minimum !== null && maximum !== null && minimum > maximum) {
     errors.push({ path: location, error: "minimum_exceeds_maximum", minimum, maximum });
+  }
+  if (exclusiveMinimum !== null && maximum !== null && exclusiveMinimum >= maximum) {
+    errors.push({ path: location, error: "exclusive_minimum_excludes_maximum", exclusiveMinimum, maximum });
+  }
+  if (minimum !== null && exclusiveMaximum !== null && minimum >= exclusiveMaximum) {
+    errors.push({ path: location, error: "minimum_excludes_exclusive_maximum", minimum, exclusiveMaximum });
+  }
+  if (exclusiveMinimum !== null && exclusiveMaximum !== null && exclusiveMinimum >= exclusiveMaximum) {
+    errors.push({ path: location, error: "exclusive_minimum_exceeds_exclusive_maximum", exclusiveMinimum, exclusiveMaximum });
   }
   if (typeof schema.default === "number") {
     if (minimum !== null && schema.default < minimum) {
       errors.push({ path: location, error: "default_below_minimum", default: schema.default, minimum });
     }
+    if (exclusiveMinimum !== null && schema.default <= exclusiveMinimum) {
+      errors.push({ path: location, error: "default_not_above_exclusive_minimum", default: schema.default, exclusiveMinimum });
+    }
     if (maximum !== null && schema.default > maximum) {
       errors.push({ path: location, error: "default_above_maximum", default: schema.default, maximum });
+    }
+    if (exclusiveMaximum !== null && schema.default >= exclusiveMaximum) {
+      errors.push({ path: location, error: "default_not_below_exclusive_maximum", default: schema.default, exclusiveMaximum });
     }
   }
   for (const [key, value] of Object.entries(schema)) {
@@ -184,6 +211,16 @@ assert.deepEqual(
   flattenOptionalNullable({ anyOf: [{ type: "string" }, { type: "null" }], default: "x", maxLength: 4 }),
   { type: "string", default: "x", maxLength: 4 },
 );
+assert.ok(
+  collectNumericSchemaErrors({ type: "number", exclusiveMinimum: 0, default: 0 })
+    .some((error) => error.error === "default_not_above_exclusive_minimum"),
+);
+assert.ok(
+  collectNumericSchemaErrors({ type: "number", exclusiveMaximum: 10, default: 10 })
+    .some((error) => error.error === "default_not_below_exclusive_maximum"),
+);
+assert.equal(collectNumericSchemaErrors({ type: "number", exclusiveMinimum: 0, default: 0.5 }).length, 0);
+assert.equal(collectNumericSchemaErrors({ type: "number", exclusiveMaximum: 10, default: 9.5 }).length, 0);
 
 const jsTools = await listJsTools();
 const rustTools = await listRustTools();

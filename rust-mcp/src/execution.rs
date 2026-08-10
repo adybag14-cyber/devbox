@@ -516,11 +516,16 @@ impl ExecutionScheduler {
             };
             match create_owner_file(&path, slot_owner).await {
                 Ok(()) => owned.push(OwnedSlot { path, token, index }),
-                Err(error) if is_already_exists(&error) => {
-                    if remove_stale_slot(&path).await? {
-                        continue;
+                Err(error) if is_already_exists(&error) => match remove_stale_slot(&path).await {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) if is_transient_slot_error(&error) => {}
+                    Err(error) => {
+                        release_owned_files(&owned).await.ok();
+                        return Err(error);
                     }
-                }
+                },
+                Err(error) if is_transient_slot_error(&error) => {}
                 Err(error) => {
                     release_owned_files(&owned).await.ok();
                     return Err(error);
@@ -574,11 +579,13 @@ impl ExecutionScheduler {
                         released: false,
                     }));
                 }
-                Err(error) if is_already_exists(&error) => {
-                    if remove_stale_slot(&path).await? {
-                        continue;
-                    }
-                }
+                Err(error) if is_already_exists(&error) => match remove_stale_slot(&path).await {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(error) if is_transient_slot_error(&error) => {}
+                    Err(error) => return Err(error),
+                },
+                Err(error) if is_transient_slot_error(&error) => {}
                 Err(error) => return Err(error),
             }
             cancellable_sleep(
@@ -751,6 +758,22 @@ async fn open_new_slot_file(path: &Path) -> std::io::Result<tokio::fs::File> {
 #[cfg(windows)]
 fn is_transient_slot_io(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+fn is_transient_slot_error(error: &anyhow::Error) -> bool {
+    #[cfg(windows)]
+    {
+        error.chain().any(|source| {
+            source
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(is_transient_slot_io)
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 fn is_already_exists(error: &anyhow::Error) -> bool {
