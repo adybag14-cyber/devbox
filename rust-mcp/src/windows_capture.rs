@@ -44,6 +44,8 @@ use windows_sys::Win32::{
 
 const DWMWA_EXTENDED_FRAME_BOUNDS: u32 = 9;
 const DWMWA_CLOAKED: u32 = 14;
+const MAX_CAPTURE_DIMENSION: u32 = 32_768;
+const MAX_CAPTURE_PIXELS: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub struct NativeCapture {
@@ -378,6 +380,7 @@ fn capture_print_window(hwnd: HWND, rect: FrameRect, flags: u32) -> Result<Optio
 }
 
 fn compatible_target(screen: HDC, width: i32, height: i32) -> Result<(MemoryDc, Bitmap)> {
+    validate_capture_dimensions(width, height)?;
     let memory = unsafe { CreateCompatibleDC(screen) };
     if memory.is_null() {
         bail!("CreateCompatibleDC failed during Windows capture.");
@@ -391,17 +394,14 @@ fn compatible_target(screen: HDC, width: i32, height: i32) -> Result<(MemoryDc, 
 }
 
 fn bitmap_to_rgb(hdc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> Result<RgbFrame> {
-    let width_u32 = u32::try_from(width).context("capture width overflow")?;
-    let height_u32 = u32::try_from(height).context("capture height overflow")?;
-    let pixels = usize::try_from(width_u32)
-        .ok()
-        .and_then(|width| {
-            usize::try_from(height_u32)
-                .ok()
-                .map(|height| width.saturating_mul(height))
-        })
-        .context("capture pixel count overflow")?;
-    let mut bgra = vec![0_u8; pixels.saturating_mul(4)];
+    let (width_u32, height_u32, pixels) = validate_capture_dimensions(width, height)?;
+    let bgra_bytes = pixels
+        .checked_mul(4)
+        .context("capture BGRA byte count overflow")?;
+    let mut bgra = Vec::new();
+    bgra.try_reserve_exact(bgra_bytes)
+        .context("reserve Windows capture BGRA buffer")?;
+    bgra.resize(bgra_bytes, 0);
     let mut info = BITMAPINFO {
         bmiHeader: BITMAPINFOHEADER {
             biSize: u32::try_from(size_of::<BITMAPINFOHEADER>()).unwrap_or(u32::MAX),
@@ -432,7 +432,12 @@ fn bitmap_to_rgb(hdc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> Result<R
     if lines != height {
         bail!("GetDIBits returned {lines} scanlines for a {height}-line capture.");
     }
-    let mut rgb = Vec::with_capacity(pixels.saturating_mul(3));
+    let rgb_bytes = pixels
+        .checked_mul(3)
+        .context("capture RGB byte count overflow")?;
+    let mut rgb = Vec::new();
+    rgb.try_reserve_exact(rgb_bytes)
+        .context("reserve Windows capture RGB buffer")?;
     for pixel in bgra.chunks_exact(4) {
         rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
     }
@@ -441,6 +446,29 @@ fn bitmap_to_rgb(hdc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> Result<R
         height: height_u32,
         pixels: rgb,
     })
+}
+
+fn validate_capture_dimensions(width: i32, height: i32) -> Result<(u32, u32, usize)> {
+    let width = u32::try_from(width).context("capture width must be positive")?;
+    let height = u32::try_from(height).context("capture height must be positive")?;
+    if width == 0 || height == 0 {
+        bail!("capture dimensions must be positive, got {width}x{height}.");
+    }
+    if width > MAX_CAPTURE_DIMENSION || height > MAX_CAPTURE_DIMENSION {
+        bail!(
+            "capture dimensions {width}x{height} exceed the maximum supported dimension {MAX_CAPTURE_DIMENSION}."
+        );
+    }
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .context("capture pixel count overflow")?;
+    if pixels > MAX_CAPTURE_PIXELS {
+        bail!(
+            "capture dimensions {width}x{height} exceed the maximum supported pixel count {MAX_CAPTURE_PIXELS}."
+        );
+    }
+    let pixels = usize::try_from(pixels).context("capture pixel count does not fit memory size")?;
+    Ok((width, height, pixels))
 }
 
 fn encode_jpeg(frame: &RgbFrame, quality: u8) -> Result<Vec<u8>> {
@@ -804,6 +832,18 @@ mod tests {
             collect_process_tree(&processes, 1, true),
             HashSet::from([1, 2, 3])
         );
+    }
+
+    #[test]
+    fn capture_dimensions_are_bounded_before_allocation() {
+        let (width, height, pixels) = validate_capture_dimensions(15_360, 2_160)
+            .expect("four horizontal 4K displays stay supported");
+        assert_eq!(width, 15_360);
+        assert_eq!(height, 2_160);
+        assert_eq!(pixels, 33_177_600);
+        assert!(validate_capture_dimensions(32_768, 32_768).is_err());
+        assert!(validate_capture_dimensions(40_000, 100).is_err());
+        assert!(validate_capture_dimensions(-1, 100).is_err());
     }
 
     #[test]
