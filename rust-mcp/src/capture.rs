@@ -1,15 +1,13 @@
 use std::{
     path::PathBuf,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    sync::Arc,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tempfile::TempDir;
 use tokio::{fs, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -19,7 +17,6 @@ use crate::{
 };
 
 const RETRY_BACKOFF: Duration = Duration::from_millis(150);
-static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct CaptureResult {
@@ -178,9 +175,8 @@ impl CaptureService {
     ) -> Result<CaptureResult> {
         let executable =
             std::env::current_exe().context("resolve Rust MCP executable for capture worker")?;
-        let temp_dir = temporary_capture_dir();
-        fs::create_dir_all(&temp_dir).await?;
-        let image_path = temp_dir.join("capture.bin");
+        let temp_dir = temporary_capture_dir()?;
+        let image_path = temp_dir.path().join("capture.bin");
         let mut args = vec![
             "--capture-worker".to_owned(),
             image_path.to_string_lossy().into_owned(),
@@ -197,7 +193,7 @@ impl CaptureService {
             cancellation,
         )
         .await;
-        let outcome = async {
+        async {
             let process = result.map_err(anyhow::Error::new)?;
             let mut metadata: Value = serde_json::from_str(process.stdout.trim())
                 .context("parse Rust capture-worker metadata")?;
@@ -220,9 +216,7 @@ impl CaptureService {
                 metadata,
             })
         }
-        .await;
-        fs::remove_dir_all(&temp_dir).await.ok();
-        outcome
+        .await
     }
 }
 
@@ -392,15 +386,18 @@ fn is_transient_capture_error(error: &anyhow::Error) -> bool {
     .any(|needle| message.contains(needle))
 }
 
-fn temporary_capture_dir() -> PathBuf {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis());
-    let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "devbox-rust-capture-{millis}-{}-{counter}",
-        std::process::id()
-    ))
+fn temporary_capture_dir() -> Result<TempDir> {
+    let directory = tempfile::Builder::new()
+        .prefix("devbox-rust-capture-")
+        .tempdir()
+        .context("create private capture temporary directory")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .context("secure capture temporary directory permissions")?;
+    }
+    Ok(directory)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

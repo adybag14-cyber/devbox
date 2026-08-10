@@ -2,6 +2,8 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $startPath = Join-Path $root 'scripts\Start-ChatGptDevboxMcp.ps1'
+$ownershipPath = Join-Path $root 'scripts\DevboxMcpOwnership.ps1'
+. $ownershipPath
 
 $tokens = $null
 $errors = $null
@@ -10,7 +12,7 @@ if ($errors.Count -gt 0) {
     throw "PowerShell parser errors in $startPath`n$($errors | Out-String)"
 }
 
-foreach ($name in @('Split-WindowsCommandLine', 'Resolve-McpComparablePath', 'Test-IsOwnedServerCommandLine', 'Find-OwnedServerProcess', 'Stop-ExistingServerIfOwned')) {
+foreach ($name in @('Find-OwnedServerProcess', 'Stop-ExistingServerIfOwned')) {
     $functionAst = $ast.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -148,7 +150,9 @@ try {
         throw 'Absolute checkout-local MCP recovery returned an unexpected PID.'
     }
     Stop-Process -Id $processBAbsolute.Id -Force
-    Start-Sleep -Milliseconds 200
+    if (-not $processBAbsolute.WaitForExit(5000)) {
+        throw 'Absolute-argument fixture process did not exit after forced termination.'
+    }
 
     # A PID file is not sufficient authority for a relative command line because
     # stale/reused PIDs cannot prove which checkout owns that process. Fail closed.

@@ -66,6 +66,7 @@ pub fn elevated_wrapper(
     stdout_path: &Path,
     stderr_path: &Path,
     exit_code_path: &Path,
+    elevated_pid_path: &Path,
 ) -> String {
     format!(
         r"$ErrorActionPreference = 'Stop'
@@ -74,6 +75,8 @@ $InformationPreference = 'SilentlyContinue'
 $stdoutPath = '{}'
 $stderrPath = '{}'
 $exitCodePath = '{}'
+$elevatedPidPath = '{}'
+Set-Content -LiteralPath $elevatedPidPath -Value ([string]$PID) -Encoding ascii
 Set-Location -LiteralPath '{}'
 $global:LASTEXITCODE = 0
 try {{
@@ -90,12 +93,17 @@ Set-Content -LiteralPath $exitCodePath -Value ([string]$exitCode) -Encoding asci
         ps_single_quote(stdout_path),
         ps_single_quote(stderr_path),
         ps_single_quote(exit_code_path),
+        ps_single_quote(elevated_pid_path),
         ps_single_quote(working_dir),
         ps_single_quote(script_path),
     )
 }
 
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "all paths belong to one elevated-command handoff"
+)]
 pub fn elevated_launcher(
     power_shell_exe: &str,
     script_path: &Path,
@@ -103,6 +111,7 @@ pub fn elevated_launcher(
     stdout_path: &Path,
     stderr_path: &Path,
     exit_code_path: &Path,
+    elevated_pid_path: &Path,
     timeout_ms: u64,
 ) -> String {
     let child_args = encoded_command_args(&elevated_wrapper(
@@ -111,6 +120,7 @@ pub fn elevated_launcher(
         stdout_path,
         stderr_path,
         exit_code_path,
+        elevated_pid_path,
     ));
     let escaped_child_args = child_args
         .iter()
@@ -126,9 +136,11 @@ $process = Start-Process -FilePath '{}' -Verb RunAs -PassThru -WindowStyle Hidde
 if ($null -eq $process) {{
   throw 'Failed to start elevated PowerShell process.'
 }}
+Set-Content -LiteralPath '{}' -Value ([string]$process.Id) -Encoding ascii
 if (-not $process.WaitForExit({})) {{
   try {{
-    Stop-Process -Id $process.Id -Force -ErrorAction Stop
+    & taskkill.exe /PID $process.Id /T /F *> $null
+    $process.WaitForExit()
   }} catch {{
   }}
   throw 'Command timed out after {} ms.'
@@ -136,6 +148,7 @@ if (-not $process.WaitForExit({})) {{
 exit $process.ExitCode",
         ps_single_quote_str(power_shell_exe),
         ps_single_quote(working_dir),
+        ps_single_quote(elevated_pid_path),
         timeout_ms.max(1),
         timeout_ms.max(1),
     )
@@ -249,18 +262,23 @@ mod tests {
             Path::new(r"C:\Temp\stdout.txt"),
             Path::new(r"C:\Temp\stderr.txt"),
             Path::new(r"C:\Temp\exitcode.txt"),
+            Path::new(r"C:\Temp\elevated-pid.txt"),
             30_000,
         );
         assert!(launcher.contains("Start-Process"));
         assert!(launcher.contains("-Verb RunAs"));
         assert!(launcher.contains("WaitForExit(30000)"));
+        assert!(launcher.contains("taskkill.exe /PID $process.Id /T /F"));
+        assert!(launcher.contains("elevated-pid.txt"));
         let wrapper = elevated_wrapper(
             Path::new(r"C:\Temp\it's\command.ps1"),
             Path::new(r"C:\work dir"),
             Path::new(r"C:\Temp\stdout.txt"),
             Path::new(r"C:\Temp\stderr.txt"),
             Path::new(r"C:\Temp\exitcode.txt"),
+            Path::new(r"C:\Temp\elevated-pid.txt"),
         );
         assert!(wrapper.contains("it''s"));
+        assert!(wrapper.contains("Set-Content -LiteralPath $elevatedPidPath"));
     }
 }

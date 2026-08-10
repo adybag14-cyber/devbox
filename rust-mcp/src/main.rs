@@ -38,9 +38,25 @@ async fn main() -> Result<()> {
 
     tokio::select! {
         result = tokio::signal::ctrl_c() => result?,
+        result = termination_signal() => result?,
         () = cancellation.cancelled() => {},
     }
     cancellation.cancel();
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn termination_signal() -> std::io::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut terminate = signal(SignalKind::terminate())?;
+    terminate.recv().await;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn termination_signal() -> std::io::Result<()> {
+    std::future::pending::<()>().await;
     Ok(())
 }
 

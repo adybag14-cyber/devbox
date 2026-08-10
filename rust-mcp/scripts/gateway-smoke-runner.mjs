@@ -28,7 +28,7 @@ const reservePort = () => new Promise((resolve, reject) => {
   });
 });
 
-const rawRequest = ({ port, method = "GET", pathname = "/", headers = {}, body = "" }) => new Promise((resolve, reject) => {
+const rawRequest = ({ port, method = "GET", pathname = "/", headers = {}, body = "", timeoutMs = 10_000 }) => new Promise((resolve, reject) => {
   const request = http.request({ hostname: "127.0.0.1", port, method, path: pathname, headers }, (response) => {
     const chunks = [];
     response.on("data", (chunk) => chunks.push(chunk));
@@ -39,6 +39,7 @@ const rawRequest = ({ port, method = "GET", pathname = "/", headers = {}, body =
     }));
   });
   request.once("error", reject);
+  request.setTimeout(timeoutMs, () => request.destroy(new Error(`HTTP request timed out after ${timeoutMs} ms`)));
   request.end(body);
 });
 
@@ -97,7 +98,12 @@ const startServer = async ({ authMode, jsonBodyLimit = "16mb" }) => {
       ]);
       if (early) throw new Error(`gateway smoke server exited early: ${JSON.stringify(early.result)}\n${stdout}\n${stderr}`);
       try {
-        const health = await rawRequest({ port, headers: { Host: `127.0.0.1:${port}` }, pathname: "/healthz" });
+        const health = await rawRequest({
+          port,
+          headers: { Host: `127.0.0.1:${port}` },
+          pathname: "/healthz",
+          timeoutMs: Math.max(1, Math.min(1_000, deadline - Date.now())),
+        });
         if (health.status === 200 && health.body === "ok") {
           ready = true;
           break;

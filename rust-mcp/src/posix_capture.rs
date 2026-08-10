@@ -392,6 +392,9 @@ async fn find_linux_window(
         let geometry = match xwininfo_geometry(&window_id, cancellation).await {
             Ok(geometry) => geometry,
             Err(error) if cancellation.is_cancelled() => return Err(error),
+            Err(error) if is_missing_program_error(&error) => {
+                bail!("Window geometry discovery requires xwininfo on Linux. Install xwininfo.")
+            }
             Err(_) => continue,
         };
         if geometry.width < 32 || geometry.height < 32 {

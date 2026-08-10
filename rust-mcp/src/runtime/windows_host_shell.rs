@@ -169,6 +169,7 @@ impl RuntimeExecutor {
         let stdout_path = temp_dir.join("stdout.txt");
         let stderr_path = temp_dir.join("stderr.txt");
         let exit_code_path = temp_dir.join("exitcode.txt");
+        let elevated_pid_path = temp_dir.join("elevated-pid.txt");
         let timeout_ms = u64::try_from(request.timeout.as_millis())
             .unwrap_or(u64::MAX)
             .max(1);
@@ -179,10 +180,11 @@ impl RuntimeExecutor {
             &stdout_path,
             &stderr_path,
             &exit_code_path,
+            &elevated_pid_path,
             timeout_ms,
         );
         let started = Instant::now();
-        let launcher_output = self
+        let launcher_result = self
             .spawn_windows_powershell(
                 PowerShellSpawnRequest {
                     args: windows_shell::encoded_command_args(&launcher),
@@ -194,8 +196,11 @@ impl RuntimeExecutor {
                 },
                 cancellation,
             )
-            .await
-            .map_err(clean_runtime_process_error)?;
+            .await;
+        if launcher_result.is_err() {
+            terminate_reported_elevated_process_tree(&elevated_pid_path).await;
+        }
+        let launcher_output = launcher_result.map_err(clean_runtime_process_error)?;
         let stdout = read_text_file_or_empty(&stdout_path).await;
         let stderr = read_text_file_or_empty(&stderr_path).await;
         let exit_code_text = read_text_file_or_empty(&exit_code_path).await;
@@ -348,7 +353,19 @@ fn clean_runtime_process_error(error: RuntimeExecError) -> RuntimeExecError {
 }
 
 fn is_powershell_launch_failure(error: &ProcessError) -> bool {
-    error.exit_code.is_none() && !error.timed_out && !error.aborted
+    if error.exit_code.is_some() || error.timed_out || error.aborted {
+        return false;
+    }
+    let message = error.message.to_ascii_lowercase();
+    [
+        "os error 2",
+        "no such file or directory",
+        "the system cannot find the file specified",
+        "executable file not found",
+        "program not found",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
 }
 
 fn is_command_too_long_error(error: &ProcessError) -> bool {
@@ -360,6 +377,22 @@ fn is_command_too_long_error(error: &ProcessError) -> bool {
                 || value.contains("filename or extension is too long")
                 || value.contains("command line is too long")
         })
+}
+
+async fn terminate_reported_elevated_process_tree(pid_path: &std::path::Path) {
+    const PID_DISCOVERY_ATTEMPTS: usize = 20;
+    for attempt in 0..PID_DISCOVERY_ATTEMPTS {
+        if let Ok(value) = tokio::fs::read_to_string(pid_path).await
+            && let Ok(pid) = value.trim().parse::<u32>()
+            && pid > 0
+        {
+            crate::process::terminate_process_tree(pid).await;
+            return;
+        }
+        if attempt + 1 < PID_DISCOVERY_ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
 }
 
 async fn read_text_file_or_empty(path: &std::path::Path) -> String {
@@ -385,4 +418,34 @@ fn emit_buffered_output(
 
 fn elapsed_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn process_error(message: &str) -> ProcessError {
+        ProcessError {
+            message: message.to_owned(),
+            exit_code: None,
+            stdout: Box::default(),
+            stderr: Box::default(),
+            file: "pwsh.exe".into(),
+            args: Box::default(),
+            timed_out: false,
+            aborted: false,
+            signal: None,
+            elapsed_ms: 1,
+        }
+    }
+
+    #[test]
+    fn powershell_fallback_retries_only_explicit_launch_failures() {
+        assert!(is_powershell_launch_failure(&process_error(
+            "The system cannot find the file specified. (os error 2)"
+        )));
+        assert!(!is_powershell_launch_failure(&process_error(
+            "Command process disappeared without an exit status."
+        )));
+    }
 }

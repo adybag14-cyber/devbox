@@ -405,7 +405,7 @@ impl DockerFileBackend {
         let lock = self.lock_for(config, path);
         let _guard = lock.read().await;
         let output = self
-            .run_python(
+            .run_python_with_capture(
                 config,
                 LARGE_READ_PYTHON,
                 vec![
@@ -415,6 +415,7 @@ impl DockerFileBackend {
                 ],
                 None,
                 Duration::from_secs(120),
+                Some(large_read_capture_chars(max_bytes)),
                 cancellation,
             )
             .await?;
@@ -478,6 +479,32 @@ impl DockerFileBackend {
         timeout: Duration,
         cancellation: CancellationToken,
     ) -> Result<crate::process::ProcessOutput, DockerFileError> {
+        self.run_python_with_capture(
+            config,
+            script,
+            script_args,
+            input,
+            timeout,
+            None,
+            cancellation,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "capture sizing extends the existing Docker helper contract"
+    )]
+    async fn run_python_with_capture(
+        &self,
+        config: &Config,
+        script: &str,
+        script_args: Vec<String>,
+        input: Option<Vec<u8>>,
+        timeout: Duration,
+        max_capture_chars: Option<usize>,
+        cancellation: CancellationToken,
+    ) -> Result<crate::process::ProcessOutput, DockerFileError> {
         let mut args = vec!["exec".to_owned()];
         if input.is_some() {
             args.push("-i".to_owned());
@@ -500,7 +527,10 @@ impl DockerFileBackend {
             ProcessOptions {
                 timeout: Some(timeout),
                 input,
-                max_capture_chars: Some(config.max_mcp_transfer_chars.min(8_000_000)),
+                max_capture_chars: Some(
+                    max_capture_chars
+                        .unwrap_or_else(|| config.max_mcp_transfer_chars.min(8_000_000)),
+                ),
                 ..ProcessOptions::default()
             },
             cancellation,
@@ -520,6 +550,14 @@ impl DockerFileBackend {
             .or_insert_with(|| Arc::new(RwLock::new(())))
             .clone()
     }
+}
+
+fn large_read_capture_chars(max_bytes: usize) -> usize {
+    max_bytes
+        .max(1)
+        .div_ceil(3)
+        .saturating_mul(4)
+        .saturating_add(16_384)
 }
 
 fn normalize_posix_key(workspace: &str, path: &str) -> String {

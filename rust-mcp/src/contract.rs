@@ -98,13 +98,14 @@ impl ParityReport {
             .copied()
             .filter(|name| !IMPLEMENTED_TOOL_NAMES.contains(name))
             .collect::<Vec<_>>();
+        let complete = missing.is_empty();
         Self {
             target_count: TARGET_TOOL_NAMES.len(),
             implemented_count: IMPLEMENTED_TOOL_NAMES.len(),
             missing_count: missing.len(),
             implemented: IMPLEMENTED_TOOL_NAMES.to_vec(),
             missing,
-            complete: IMPLEMENTED_TOOL_NAMES.len() == TARGET_TOOL_NAMES.len(),
+            complete,
         }
     }
 }
@@ -124,6 +125,18 @@ mod tests {
                 .collect::<BTreeSet<_>>()
                 .len(),
             37
+        );
+    }
+
+    #[test]
+    fn implemented_tools_are_unique() {
+        assert_eq!(
+            IMPLEMENTED_TOOL_NAMES
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            IMPLEMENTED_TOOL_NAMES.len()
         );
     }
 

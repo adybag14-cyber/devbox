@@ -79,7 +79,10 @@ const startServer = async (overrides = {}) => {
       const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
       if (early) throw new Error(`server exited early ${JSON.stringify(early.result)}\n${stdout}\n${stderr}`);
       try {
-        const response = await fetch(new URL("healthz", baseUrl));
+        const remaining = Math.max(1, deadline - Date.now());
+        const response = await fetch(new URL("healthz", baseUrl), {
+          signal: AbortSignal.timeout(Math.min(1_000, remaining)),
+        });
         if (response.ok) return server;
       } catch {}
     }

@@ -109,7 +109,10 @@ const waitForHealth = async () => {
     const early = await Promise.race([exited.then((result) => ({ result })), new Promise((resolve) => setTimeout(() => resolve(null), 100))]);
     if (early) throw new Error(`Cloudflare OAuth smoke server exited early: ${JSON.stringify(early.result)}`);
     try {
-      const response = await fetch(new URL("healthz", baseUrl));
+      const remaining = Math.max(1, deadline - Date.now());
+      const response = await fetch(new URL("healthz", baseUrl), {
+        signal: AbortSignal.timeout(Math.min(1_000, remaining)),
+      });
       if (response.ok && await response.text() === "ok") return;
     } catch {}
   }

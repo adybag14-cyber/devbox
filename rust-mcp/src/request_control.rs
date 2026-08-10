@@ -109,12 +109,15 @@ impl ActiveRequestRegistry {
     }
 
     fn cancel_key(&self, key: &ActiveRequestKey) -> usize {
-        let entries = self.lock_entries();
-        let Some(tokens) = entries.get(key) else {
-            return 0;
+        let tokens = {
+            let entries = self.lock_entries();
+            let Some(tokens) = entries.get(key) else {
+                return 0;
+            };
+            tokens.values().cloned().collect::<Vec<_>>()
         };
         let mut cancelled = 0_usize;
-        for token in tokens.values() {
+        for token in &tokens {
             if !token.is_cancelled() {
                 token.cancel();
                 cancelled = cancelled.saturating_add(1);
@@ -187,10 +190,7 @@ fn request_key(
     ActiveRequestKey {
         authorization: header_text(headers, "authorization"),
         session_id: header_text(headers, "mcp-session-id"),
-        peer: headers
-            .get("x-forwarded-for")
-            .and_then(|value| value.to_str().ok())
-            .map_or_else(|| peer.unwrap_or_default().to_owned(), str::to_owned),
+        peer: peer.unwrap_or_default().to_owned(),
         user_agent: header_text(headers, "user-agent"),
         request_id_type,
         request_id: request_id.to_owned(),
@@ -230,6 +230,14 @@ fn json_request_id_parts(value: &Value) -> Option<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forwarded_for_header_cannot_spoof_request_identity() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", "203.0.113.99".parse().expect("header"));
+        let key = request_key(&headers, Some("127.0.0.1"), "number", "7");
+        assert_eq!(key.peer, "127.0.0.1");
+    }
 
     #[test]
     fn matching_notification_cancels_only_matching_peer_and_id() {

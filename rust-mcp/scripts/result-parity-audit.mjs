@@ -329,6 +329,9 @@ const normalizedCaptureResult = (result) => {
 
 let js;
 let rust;
+let primaryError;
+let sideCleanupError;
+let directoryFailures = [];
 const differences = [];
 let comparedCalls = 0;
 const compareResults = (name, jsResult, rustResult) => {
@@ -441,8 +444,9 @@ try {
   const jsCancelled = await js.client.callTool({ name: "devbox_job_status", arguments: { job_id: jsProgramId, wait_seconds: 10, terminal_only: true } });
   const rustCancelled = await rust.client.callTool({ name: "devbox_job_status", arguments: { job_id: rustProgramId, wait_seconds: 10, terminal_only: true } });
   compareResults("devbox_job_status", jsCancelled, rustCancelled);
+} catch (error) {
+  primaryError = error;
 } finally {
-  let sideCleanupError;
   try {
     await closeAuditSides(js, rust);
   } catch (error) {
@@ -454,15 +458,17 @@ try {
     rm(rustStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
     rm(ghConfigRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
   ]);
-  const directoryFailures = directoryCleanup
+  directoryFailures = directoryCleanup
     .filter((result) => result.status === "rejected")
     .map((result) => result.reason);
-  if (sideCleanupError || directoryFailures.length > 0) {
-    throw new AggregateError(
-      [sideCleanupError, ...directoryFailures].filter(Boolean),
-      "Result-parity audit cleanup failed.",
-    );
-  }
+}
+const cleanupFailures = [sideCleanupError, ...directoryFailures].filter(Boolean);
+if (primaryError && cleanupFailures.length === 0) throw primaryError;
+if (primaryError || cleanupFailures.length > 0) {
+  throw new AggregateError(
+    [primaryError, ...cleanupFailures].filter(Boolean),
+    primaryError ? "Result-parity audit failed and cleanup also failed." : "Result-parity audit cleanup failed.",
+  );
 }
 console.log(JSON.stringify({ ok: differences.length === 0, callCount: comparedCalls, differingCallCount: differences.length, differingCalls: differences.map((entry) => entry.name), differences }, null, 2));
 process.exitCode = differences.length === 0 ? 0 : 2;

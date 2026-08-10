@@ -126,17 +126,24 @@ impl SearchService {
         });
 
         let mut parser = RipgrepJsonParser::new(request.max_matches);
-        while let Some(chunk) = rx.recv().await {
-            if chunk.stream == OutputStream::Stdout {
-                parser.push_bytes(&chunk.bytes);
-                if parser.match_limit_reached {
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => {
                     process_cancel.cancel();
                     break;
                 }
-            }
-            if cancellation.is_cancelled() {
-                process_cancel.cancel();
-                break;
+                chunk = rx.recv() => {
+                    let Some(chunk) = chunk else {
+                        break;
+                    };
+                    if chunk.stream == OutputStream::Stdout {
+                        parser.push_bytes(&chunk.bytes);
+                        if parser.match_limit_reached {
+                            process_cancel.cancel();
+                            break;
+                        }
+                    }
+                }
             }
         }
         drop(rx);

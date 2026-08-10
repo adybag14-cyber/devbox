@@ -737,9 +737,8 @@ async fn read_tail(path: &Path, max_chars: usize) -> Result<String> {
         metadata.len().saturating_sub(bytes),
     ))
     .await?;
-    let mut buffer = vec![0_u8; usize::try_from(bytes).unwrap_or(usize::MAX)];
-    let read = file.read(&mut buffer).await?;
-    buffer.truncate(read);
+    let mut buffer = Vec::with_capacity(usize::try_from(bytes).unwrap_or(usize::MAX));
+    file.read_to_end(&mut buffer).await?;
     let text = String::from_utf8_lossy(&buffer).into_owned();
     Ok(utf16_tail(&text, max_chars))
 }
@@ -814,13 +813,12 @@ async fn compact_legacy_log(path: &Path, max_bytes: u64) -> Result<LegacyCompact
     let mut file = fs::File::open(path).await?;
     file.seek(std::io::SeekFrom::Start(metadata.len() - limit))
         .await?;
-    let mut buffer = vec![0_u8; usize::try_from(limit).unwrap_or(usize::MAX)];
-    let read = file.read(&mut buffer).await?;
-    buffer.truncate(read);
+    let mut buffer = Vec::with_capacity(usize::try_from(limit).unwrap_or(usize::MAX));
+    file.read_to_end(&mut buffer).await?;
     fs::write(path, &buffer).await?;
     Ok(LegacyCompaction {
         compacted: true,
-        bytes: u64::try_from(read).unwrap_or(u64::MAX),
+        bytes: u64::try_from(buffer.len()).unwrap_or(u64::MAX),
         previous_bytes: Some(metadata.len()),
     })
 }
