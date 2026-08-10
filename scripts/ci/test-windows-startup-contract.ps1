@@ -81,9 +81,11 @@ foreach ($file in @($startPath, $stopPath, $ownershipPath, $installPath)) {
 $legacy = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 if (Test-Path $legacy) {
     $escapedStart = $startPath.Replace("'", "''")
+    $escapedStop = $stopPath.Replace("'", "''")
+    $escapedOwnership = $ownershipPath.Replace("'", "''")
     $escapedInstall = $installPath.Replace("'", "''")
     $command = @"
-`$ErrorActionPreference='Stop'; foreach(`$f in @('$escapedStart','$escapedInstall')) { `$t=`$null; `$e=`$null; [System.Management.Automation.Language.Parser]::ParseFile(`$f,[ref]`$t,[ref]`$e) | Out-Null; if(`$e.Count -gt 0) { throw (`$e | Out-String) } }
+`$ErrorActionPreference='Stop'; foreach(`$f in @('$escapedStart','$escapedStop','$escapedOwnership','$escapedInstall')) { `$t=`$null; `$e=`$null; [System.Management.Automation.Language.Parser]::ParseFile(`$f,[ref]`$t,[ref]`$e) | Out-Null; if(`$e.Count -gt 0) { throw (`$e | Out-String) } }
 "@
     & $legacy -NoLogo -NoProfile -NonInteractive -Command $command
     if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 parse validation failed with exit code $LASTEXITCODE." }
