@@ -36,6 +36,52 @@ function Initialize-DummyCheckout {
     Set-Content -LiteralPath (Join-Path $Path 'src\server.js') -Value 'setInterval(() => {}, 1000);' -Encoding UTF8
 }
 
+function Wait-ForCimProcess {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [int]$TimeoutMilliseconds = 5000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    do {
+        $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ProcessId) -ErrorAction SilentlyContinue
+        if ($candidate -and -not [string]::IsNullOrWhiteSpace([string]$candidate.CommandLine)) {
+            return $candidate
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "Process $ProcessId did not become visible through Win32_Process within ${TimeoutMilliseconds}ms."
+}
+
+function Wait-ForOwnedServerProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$PidFile,
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [Parameter(Mandatory = $true)][int]$ExpectedProcessId,
+        [int]$TimeoutMilliseconds = 5000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $lastFound = $null
+    do {
+        $lastFound = Find-OwnedServerProcess -PidFile $PidFile -ProjectRoot $ProjectRoot
+        if ($lastFound -and [int]$lastFound.ProcessId -eq $ExpectedProcessId) {
+            return $lastFound
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $expected = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $ExpectedProcessId) -ErrorAction SilentlyContinue
+    $lastDescription = if ($lastFound) {
+        "PID $($lastFound.ProcessId): $($lastFound.CommandLine)"
+    } else {
+        '<none>'
+    }
+    $expectedDescription = if ($expected) { [string]$expected.CommandLine } else { '<missing>' }
+    throw "Expected checkout-local MCP PID $ExpectedProcessId was not recovered within ${TimeoutMilliseconds}ms. Last match: $lastDescription. Expected command line: $expectedDescription"
+}
+
 function Start-DummyMcp {
     param(
         [string]$Path,
@@ -52,7 +98,7 @@ function Start-DummyMcp {
     }
     $process = Start-Process -FilePath $nodeExe -ArgumentList $arguments -WorkingDirectory $Path -PassThru -WindowStyle Hidden
     $processes.Add($process)
-    Start-Sleep -Milliseconds 300
+    [void](Wait-ForCimProcess -ProcessId $process.Id)
     return $process
 }
 
@@ -76,9 +122,9 @@ try {
     # New managed launches use absolute arguments, so checkout-local recovery is
     # still possible even when its PID sidecar is missing.
     $processBAbsolute = Start-DummyMcp -Path $checkoutB -AbsoluteArguments
-    $foundAbsolute = Find-OwnedServerProcess -PidFile $pidFileB -ProjectRoot $checkoutB
-    if (-not $foundAbsolute -or [int]$foundAbsolute.ProcessId -ne $processBAbsolute.Id) {
-        throw 'Absolute checkout-local MCP was not recoverable without its PID file.'
+    $foundAbsolute = Wait-ForOwnedServerProcess -PidFile $pidFileB -ProjectRoot $checkoutB -ExpectedProcessId $processBAbsolute.Id
+    if ([int]$foundAbsolute.ProcessId -ne $processBAbsolute.Id) {
+        throw 'Absolute checkout-local MCP recovery returned an unexpected PID.'
     }
     Stop-Process -Id $processBAbsolute.Id -Force
     Start-Sleep -Milliseconds 200
