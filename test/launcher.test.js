@@ -110,3 +110,44 @@ test("status recognizes a healthy externally managed MCP without claiming stop o
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("managed status derives health URL from .env.runtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-managed-url-"));
+  const server = createServer((request, response) => {
+    response.writeHead(request.url === "/healthz" ? 200 : 404, { "content-type": "text/plain" });
+    response.end(request.url === "/healthz" ? "ok" : "not found");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  try {
+    const paths = getLauncherPaths(root);
+    await mkdir(paths.runDir, { recursive: true });
+    await writeFile(paths.managedPidFile, `${process.pid}\n`, "utf8");
+    await writeFile(paths.managedImplementationFile, "rust\n", "utf8");
+    await writeFile(path.join(root, ".env.runtime"), `HOST=127.0.0.1\nPORT=${address.port}\n`, "utf8");
+
+    const status = await getServerStatus(root, { healthTimeoutMs: 1000 });
+    assert.equal(status.healthy, true);
+    assert.equal(status.url, `http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("status removes stale managed PID and implementation metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-managed-stale-"));
+  try {
+    const paths = getLauncherPaths(root);
+    await mkdir(paths.runDir, { recursive: true });
+    await writeFile(paths.managedPidFile, "99999999\n", "utf8");
+    await writeFile(paths.managedImplementationFile, "rust\n", "utf8");
+
+    const status = await getServerStatus(root, { url: "http://127.0.0.1:9", healthTimeoutMs: 100 });
+    assert.equal(status.running, false);
+    await assert.rejects(readFile(paths.managedPidFile, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(paths.managedImplementationFile, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

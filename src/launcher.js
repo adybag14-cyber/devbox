@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 
 import { config } from "./config.js";
 import { prepareMcpImplementation } from "./mcp-implementation.js";
+import { parseEnvText } from "./env.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const projectRoot = path.resolve(__dirname, "..");
@@ -112,6 +113,21 @@ const ensureRunDir = async (runDir) => {
   await mkdir(runDir, { recursive: true });
 };
 
+const readManagedServerUrl = async (root) => {
+  for (const name of [".env.runtime", ".env"]) {
+    try {
+      const values = parseEnvText(await readFile(path.join(root, name), "utf8"));
+      const port = Number.parseInt(String(values.PORT ?? ""), 10);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+        return buildServerUrl({ host: values.HOST ?? "127.0.0.1", port });
+      }
+    } catch {
+      // Fall through to the next config layer / caller environment.
+    }
+  }
+  return buildServerUrl();
+};
+
 export const probeServerHealth = async ({ url = buildServerUrl(), timeoutMs = 1000 } = {}) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), Math.max(100, timeoutMs));
@@ -134,7 +150,9 @@ const writeGuardianDesiredState = async (paths, shouldRun, source) => {
   }, null, 2)}\n`, "utf8");
 };
 
-export const getServerStatus = async (root = projectRoot, { url = buildServerUrl(), healthTimeoutMs = 1000 } = {}) => {
+export const getServerStatus = async (root = projectRoot, options = {}) => {
+  const { healthTimeoutMs = 1000 } = options;
+  const requestedUrl = options.url ?? buildServerUrl();
   const paths = getLauncherPaths(root);
   await ensureRunDir(paths.runDir);
 
@@ -145,7 +163,7 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
     await rm(paths.implementationFile, { force: true });
   }
   if (launcherAlive) {
-    const healthy = await probeServerHealth({ url, timeoutMs: healthTimeoutMs });
+    const healthy = await probeServerHealth({ url: requestedUrl, timeoutMs: healthTimeoutMs });
     return {
       running: true,
       healthy,
@@ -156,7 +174,7 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
       manager: "portable-launcher",
       managedExternally: false,
       implementation: await readImplementationFile(paths.implementationFile),
-      url,
+      url: requestedUrl,
     };
   }
 
@@ -165,8 +183,13 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
   // ownership of it for stop/restart operations.
   const managedPid = await readPidFile(paths.managedPidFile);
   const managedAlive = isProcessAlive(managedPid);
+  if (!managedAlive && managedPid !== null) {
+    await rm(paths.managedPidFile, { force: true });
+    await rm(paths.managedImplementationFile, { force: true });
+  }
   if (managedAlive) {
-    const healthy = await probeServerHealth({ url, timeoutMs: healthTimeoutMs });
+    const managedUrl = options.url ?? await readManagedServerUrl(root);
+    const healthy = await probeServerHealth({ url: managedUrl, timeoutMs: healthTimeoutMs });
     return {
       running: true,
       healthy,
@@ -177,7 +200,7 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
       manager: "managed-mcp",
       managedExternally: true,
       implementation: await readImplementationFile(paths.managedImplementationFile),
-      url,
+      url: managedUrl,
     };
   }
 
@@ -191,7 +214,7 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
     manager: null,
     managedExternally: false,
     implementation: null,
-    url,
+    url: requestedUrl,
   };
 };
 

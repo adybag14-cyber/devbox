@@ -356,9 +356,16 @@ impl Config {
 }
 
 fn load_env_layers(project_root: &Path) {
-    // Match the JS launcher's effective precedence: .env.runtime is loaded by
-    // the process launcher first, then .env may only fill missing values.
-    let _ = dotenvy::from_path(project_root.join(".env.runtime"));
+    // Launcher-managed processes mark .env.runtime as authoritative so a
+    // production parent environment (for example PORT=8100) cannot leak into
+    // a replacement child. Direct/ad-hoc Rust runs keep normal environment
+    // precedence unless they explicitly opt into this launcher contract.
+    let runtime_path = project_root.join(".env.runtime");
+    if parse_bool_env("DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE", false) {
+        let _ = dotenvy::from_path_override(&runtime_path);
+    } else {
+        let _ = dotenvy::from_path(&runtime_path);
+    }
     let _ = dotenvy::from_path(project_root.join(".env"));
 }
 

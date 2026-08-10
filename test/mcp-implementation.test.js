@@ -29,6 +29,7 @@ test("Rust launch spec uses release binary and pins the project root", () => {
   assert.equal(posix.file, path.join(root, "rust-mcp", "target", "release", "devbox-mcp"));
   assert.deepEqual(posix.args, []);
   assert.equal(posix.env.DEVBOX_PROJECT_ROOT, root);
+  assert.equal(posix.env.DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE, "1");
   assert.equal(posix.env.PATH, "test");
 
   const windows = getMcpLaunchSpec(root, { env, platform: "win32", implementation: "rust" });

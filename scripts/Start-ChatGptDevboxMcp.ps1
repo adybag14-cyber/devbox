@@ -474,6 +474,58 @@ function Write-RuntimeEnvFile {
     Set-Content -Path $RuntimeEnvFile -Value $output
 }
 
+function Read-RuntimeEnvValues {
+    param([Parameter(Mandatory = $true)][string]$FilePath)
+
+    $values = @{}
+    foreach ($rawLine in (Get-Content -LiteralPath $FilePath -ErrorAction Stop)) {
+        $line = [string]$rawLine
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $trimmed = $line.Trim()
+        if ($trimmed.StartsWith('#')) { continue }
+        if ($trimmed.StartsWith('export ')) { $trimmed = $trimmed.Substring(7).TrimStart() }
+        $equals = $trimmed.IndexOf('=')
+        if ($equals -le 0) { continue }
+        $name = $trimmed.Substring(0, $equals).Trim()
+        if ($name -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { continue }
+        $value = $trimmed.Substring($equals + 1).Trim()
+        if ($value.Length -ge 2) {
+            $first = $value[0]
+            $last = $value[$value.Length - 1]
+            if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+        }
+        $values[$name] = $value
+    }
+    return $values
+}
+
+function Set-TemporaryProcessEnvironment {
+    param([Parameter(Mandatory = $true)][hashtable]$Values)
+
+    $previous = @{}
+    foreach ($name in $Values.Keys) {
+        $existing = [Environment]::GetEnvironmentVariable([string]$name, 'Process')
+        $previous[$name] = [pscustomobject]@{
+            Existed = $null -ne $existing
+            Value = $existing
+        }
+        [Environment]::SetEnvironmentVariable([string]$name, [string]$Values[$name], 'Process')
+    }
+    return $previous
+}
+
+function Restore-TemporaryProcessEnvironment {
+    param([Parameter(Mandatory = $true)][hashtable]$Previous)
+
+    foreach ($name in $Previous.Keys) {
+        $entry = $Previous[$name]
+        $value = if ($entry.Existed) { [string]$entry.Value } else { $null }
+        [Environment]::SetEnvironmentVariable([string]$name, $value, 'Process')
+    }
+}
+
 function Get-CommandLineForPid {
     param([int]$ProcessId)
 
@@ -486,33 +538,54 @@ function Get-CommandLineForPid {
 }
 
 function Test-IsOwnedServerCommandLine {
-    param([string]$CommandLine)
+    param(
+        [string]$CommandLine,
+        [string]$ProjectRoot
+    )
 
     if ([string]::IsNullOrWhiteSpace($CommandLine)) {
         return $false
     }
 
-    return (
-        ([string]$CommandLine -match 'src[\\/]server\.js\b') -and
-        ([string]$CommandLine -match '--env-file(?:=|\s+)[^"\s]*\.env\.runtime\b')
+    $text = ([string]$CommandLine).Replace('/', '\').ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
+        $isLegacyJs = $text.Contains('src\server.js') -and $text.Contains('.env.runtime')
+        $isRust = $text.Contains('rust-mcp\target\release\devbox-mcp.exe')
+        return ($isLegacyJs -or $isRust)
+    }
+
+    $normalizedRoot = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\').Replace('/', '\').ToLowerInvariant()
+    $isOwnedJs = (
+        $text.Contains("$normalizedRoot\src\server.js") -and
+        $text.Contains("$normalizedRoot\.env.runtime")
     )
+    $isOwnedRust = $text.Contains("$normalizedRoot\rust-mcp\target\release\devbox-mcp.exe")
+    return ($isOwnedJs -or $isOwnedRust)
 }
 
 function Find-OwnedServerProcess {
-    param([string]$PidFile)
+    param(
+        [string]$PidFile,
+        [string]$ProjectRoot
+    )
 
     if (Test-Path $PidFile) {
         $pidText = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
         if ($pidText -match '^\d+$') {
             $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
+            # A checkout-local PID file is the ownership authority for legacy
+            # relative JS launches. The command still has to be an MCP shape.
             if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
                 return $candidate
             }
         }
     }
 
+    # Missing/stale PID metadata must never let one worktree claim another
+    # checkout's relative `src/server.js` process. Recovery discovery is only
+    # allowed for launch command lines that contain this checkout's absolute root.
     return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { Test-IsOwnedServerCommandLine -CommandLine ([string]$_.CommandLine) } |
+        Where-Object { Test-IsOwnedServerCommandLine -CommandLine ([string]$_.CommandLine) -ProjectRoot $ProjectRoot } |
         Sort-Object CreationDate -Descending |
         Select-Object -First 1
 }
@@ -523,7 +596,7 @@ function Stop-ExistingServerIfOwned {
         [string]$ProjectRoot
     )
 
-    $ownedProcess = Find-OwnedServerProcess -PidFile $PidFile
+    $ownedProcess = Find-OwnedServerProcess -PidFile $PidFile -ProjectRoot $ProjectRoot
     if (-not $ownedProcess) {
         Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
         return
@@ -667,6 +740,40 @@ function Resolve-NodeExecutable {
     }
 
     return $resolvedPath
+}
+
+function Resolve-McpImplementation {
+    param([string]$ConfiguredValue)
+
+    $value = if ([string]::IsNullOrWhiteSpace($ConfiguredValue)) { 'rust' } else { $ConfiguredValue.Trim().ToLowerInvariant() }
+    if ($value -notin @('rust', 'js')) {
+        throw "Invalid DEVBOX_MCP_IMPLEMENTATION=$ConfiguredValue. Expected rust or js."
+    }
+    return $value
+}
+
+function Resolve-CargoExecutable {
+    param([string]$ConfiguredPath)
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        if (Test-Path $ConfiguredPath) { return (Resolve-Path $ConfiguredPath).Path }
+        $configuredCommand = Get-Command $ConfiguredPath -ErrorAction SilentlyContinue
+        if ($configuredCommand -and $configuredCommand.Source) { return [string]$configuredCommand.Source }
+        throw "Cargo executable not found at or on PATH as '$ConfiguredPath'."
+    }
+
+    $candidates = @(
+        $(if ($env:USERPROFILE) { Join-Path $env:USERPROFILE '.cargo\bin\cargo.exe' } else { $null }),
+        'cargo.exe',
+        'cargo'
+    )
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
+        $command = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($command -and $command.Source) { return [string]$command.Source }
+    }
+    throw 'Rust/Cargo was not found. Install Rust/Cargo or set CARGO_EXE. Temporary rollback: DEVBOX_MCP_IMPLEMENTATION=js.'
 }
 
 function Test-DockerObjectExists {
@@ -895,15 +1002,48 @@ function Start-CloudflaredQuickTunnel {
 
 function Assert-McpReplacementReady {
     param(
-        [Parameter(Mandatory = $true)][string]$NodeExe,
+        [Parameter(Mandatory = $true)][string]$Implementation,
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
         [Parameter(Mandatory = $true)][string]$RuntimeEnvFile
     )
 
+    if ($Implementation -eq 'rust') {
+        $configuredCargo = if (-not [string]::IsNullOrWhiteSpace($env:CARGO_EXE)) {
+            $env:CARGO_EXE
+        } else {
+            Get-EnvValue -FilePath (Join-Path $ProjectRoot '.env') -Name 'CARGO_EXE'
+        }
+        $cargoExe = Resolve-CargoExecutable -ConfiguredPath $configuredCargo
+        $manifestPath = Join-Path $ProjectRoot 'rust-mcp\Cargo.toml'
+        $binaryPath = Join-Path $ProjectRoot 'rust-mcp\target\release\devbox-mcp.exe'
+        Push-Location $ProjectRoot
+        try {
+            $buildOutput = & $cargoExe 'build' '--manifest-path' $manifestPath '--release' '--locked' 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+                throw "Rust MCP release preflight failed before the existing MCP was stopped. Output:`n$buildOutput`nTemporary rollback: DEVBOX_MCP_IMPLEMENTATION=js."
+            }
+            if (-not (Test-Path $binaryPath)) {
+                throw "Rust MCP release build succeeded but the binary was not found at $binaryPath. The existing MCP was not stopped."
+            }
+            $parityOutput = & $binaryPath '--parity-report' 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) {
+                throw "Rust MCP binary preflight failed before the existing MCP was stopped. Output:`n$parityOutput"
+            }
+        } finally {
+            Pop-Location
+        }
+        return [pscustomobject]@{
+            Implementation = 'rust'
+            FilePath = $binaryPath
+            ArgumentList = @()
+        }
+    }
+
+    $nodeExe = Resolve-NodeExecutable -ConfiguredPath (Get-EnvValue -FilePath (Join-Path $ProjectRoot '.env') -Name 'NODE_EXE')
     $serverPath = Join-Path $ProjectRoot 'src/server.js'
-    $syntaxOutput = & $NodeExe '--check' $serverPath 2>&1 | Out-String
+    $syntaxOutput = & $nodeExe '--check' $serverPath 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
-        throw "MCP replacement preflight failed JavaScript syntax validation. The existing MCP was not stopped. Output:`n$syntaxOutput"
+        throw "MCP rollback preflight failed JavaScript syntax validation. The existing MCP was not stopped. Output:`n$syntaxOutput"
     }
 
     $dependencyProbe = @'
@@ -912,12 +1052,17 @@ for (const dependency of dependencies) await import(dependency);
 '@
     Push-Location $ProjectRoot
     try {
-        $dependencyOutput = & $NodeExe ("--env-file={0}" -f $RuntimeEnvFile) '--input-type=module' '-e' $dependencyProbe 2>&1 | Out-String
+        $dependencyOutput = & $nodeExe ("--env-file={0}" -f $RuntimeEnvFile) '--input-type=module' '-e' $dependencyProbe 2>&1 | Out-String
         if ($LASTEXITCODE -ne 0) {
-            throw "MCP replacement dependency preflight failed. The existing MCP was not stopped. Restore the locked dependencies with npm ci. Output:`n$dependencyOutput"
+            throw "MCP rollback dependency preflight failed. The existing MCP was not stopped. Restore the locked dependencies with npm ci. Output:`n$dependencyOutput"
         }
     } finally {
         Pop-Location
+    }
+    return [pscustomobject]@{
+        Implementation = 'js'
+        FilePath = $nodeExe
+        ArgumentList = @(("--env-file={0}" -f $RuntimeEnvFile), $serverPath)
     }
 }
 
@@ -1238,6 +1383,7 @@ $envFile = Join-Path $root ".env"
 $runtimeEnvFile = Join-Path $root ".env.runtime"
 $runDir = Join-Path $root "run"
 $pidFile = Join-Path $runDir "mcp.pid"
+$implementationFile = Join-Path $runDir "mcp.implementation"
 $stdoutLog = Join-Path $runDir "mcp.stdout.log"
 $stderrLog = Join-Path $runDir "mcp.stderr.log"
 
@@ -1281,7 +1427,12 @@ Ensure-Directory -Path $runDir
 Write-StartupPhase -Phase 'preparing-runtime'
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $true -Source "Start-ChatGptDevboxMcp.ps1"
 
-$nodeExe = Resolve-NodeExecutable -ConfiguredPath (Get-EnvValue -FilePath $envFile -Name "NODE_EXE")
+$configuredMcpImplementation = if (-not [string]::IsNullOrWhiteSpace($env:DEVBOX_MCP_IMPLEMENTATION)) {
+    $env:DEVBOX_MCP_IMPLEMENTATION
+} else {
+    Get-EnvValue -FilePath $envFile -Name 'DEVBOX_MCP_IMPLEMENTATION'
+}
+$mcpImplementation = Resolve-McpImplementation -ConfiguredValue $configuredMcpImplementation
 $envRuntime = (Get-EnvValue -FilePath $envFile -Name 'DEVBOX_RUNTIME_MODE').ToLowerInvariant()
 $runtimeMode = if ($PSBoundParameters.ContainsKey('Runtime')) {
     $Runtime.ToLowerInvariant()
@@ -1401,6 +1552,7 @@ $overrides = @{
     "MCP_AUTH_MODE" = $authMode
     "PUBLIC_BASE_URL" = $publicBaseUrl
     "DEVBOX_RUNTIME_MODE" = $selectedRuntime
+    "DEVBOX_MCP_IMPLEMENTATION" = $mcpImplementation
 }
 if ($selectedRuntime -eq 'host') {
     # Migrate the legacy Docker default so host tools do not try to use /workspace
@@ -1416,28 +1568,45 @@ Write-StartupPhase -Phase 'writing-runtime-config'
 Write-RuntimeEnvFile -SourceEnvFile $envFile -RuntimeEnvFile $runtimeEnvFile -Overrides $overrides
 Assert-StartupDeadline -Phase 'preflighting-mcp-replacement'
 Write-StartupPhase -Phase 'preflighting-mcp-replacement'
-Assert-McpReplacementReady -NodeExe $nodeExe -ProjectRoot $root -RuntimeEnvFile $runtimeEnvFile
+$launchSpec = Assert-McpReplacementReady -Implementation $mcpImplementation -ProjectRoot $root -RuntimeEnvFile $runtimeEnvFile
 Assert-StartupDeadline -Phase 'stopping-existing-mcp'
 Write-StartupPhase -Phase 'stopping-existing-mcp'
 Stop-ExistingServerIfOwned -PidFile $pidFile -ProjectRoot $root
+Remove-Item $implementationFile -Force -ErrorAction SilentlyContinue
 
 if (Test-Path $stdoutLog) { Remove-Item $stdoutLog -Force -ErrorAction SilentlyContinue }
 if (Test-Path $stderrLog) { Remove-Item $stderrLog -Force -ErrorAction SilentlyContinue }
 
 Assert-StartupDeadline -Phase 'starting-mcp'
 Write-StartupPhase -Phase 'starting-mcp'
-$process = Start-Process -FilePath $nodeExe `
-    -ArgumentList @("--env-file=.env.runtime", "src/server.js") `
-    -WorkingDirectory $root `
-    -RedirectStandardOutput $stdoutLog `
-    -RedirectStandardError $stderrLog `
-    -PassThru `
-    -WindowStyle Hidden
+$startProcessParameters = @{
+    FilePath = [string]$launchSpec.FilePath
+    WorkingDirectory = $root
+    RedirectStandardOutput = $stdoutLog
+    RedirectStandardError = $stderrLog
+    PassThru = $true
+    WindowStyle = 'Hidden'
+}
+$launchArguments = @($launchSpec.ArgumentList)
+if ($launchArguments.Count -gt 0) {
+    $startProcessParameters['ArgumentList'] = $launchArguments
+}
+$childEnvironment = Read-RuntimeEnvValues -FilePath $runtimeEnvFile
+if ($mcpImplementation -eq 'rust') {
+    $childEnvironment['DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE'] = '1'
+}
+$previousChildEnvironment = Set-TemporaryProcessEnvironment -Values $childEnvironment
+try {
+    $process = Start-Process @startProcessParameters
+} finally {
+    Restore-TemporaryProcessEnvironment -Previous $previousChildEnvironment
+}
 
 $script:startupMcpPid = [int]$process.Id
 # Establish ownership immediately. If health/elevation validation later fails,
 # the outer catch block removes this exact owned process and PID file.
 Set-Content -Path $pidFile -Value $process.Id -Encoding ASCII
+Set-Content -Path $implementationFile -Value $mcpImplementation -Encoding ASCII
 Write-StartupPhase -Phase 'waiting-local-health' -Extra @{ McpProcessId = [int]$process.Id; LocalUrl = "http://127.0.0.1:$port" }
 
 $localUrl = "http://127.0.0.1:$port"
@@ -1497,6 +1666,7 @@ if ($Public) {
 }
 Write-Host "Authentication mode: $(if ($authMode -eq 'none') { 'No Authentication' } else { 'OAuth' })"
 Write-Host "Selected runtime: $selectedRuntime (requested: $runtimeMode)"
+Write-Host "MCP implementation: $mcpImplementation"
 } catch {
     $failureMessage = $_.Exception.Message
     try {
@@ -1520,6 +1690,7 @@ Write-Host "Selected runtime: $selectedRuntime (requested: $runtimeMode)"
                 $pidText = Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1
                 if ($pidText -eq [string]$script:startupMcpPid) {
                     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+                    Remove-Item $implementationFile -Force -ErrorAction SilentlyContinue
                 }
             }
         } catch {

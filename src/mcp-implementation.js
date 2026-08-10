@@ -73,7 +73,11 @@ export const getMcpLaunchSpec = (root, {
     implementation,
     file: getRustMcpBinaryPath(root, platform),
     args: [],
-    env: { ...env, DEVBOX_PROJECT_ROOT: root },
+    env: {
+      ...env,
+      DEVBOX_PROJECT_ROOT: root,
+      DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE: "1",
+    },
   };
 };
 

@@ -6,11 +6,23 @@ on:
     paths:
       - "rust-mcp/**"
       - "src/server.js"
+      - "src/launcher.js"
+      - "src/mcp-implementation.js"
+      - "scripts/Start-ChatGptDevboxMcp.ps1"
+      - "scripts/Stop-ChatGptDevboxMcp.ps1"
+      - "scripts/ci/test-windows-startup-contract.ps1"
+      - "scripts/ci/test-windows-managed-mcp-ownership.ps1"
       - ".github/workflows/rust-mcp.yml"
   pull_request:
     paths:
       - "rust-mcp/**"
       - "src/server.js"
+      - "src/launcher.js"
+      - "src/mcp-implementation.js"
+      - "scripts/Start-ChatGptDevboxMcp.ps1"
+      - "scripts/Stop-ChatGptDevboxMcp.ps1"
+      - "scripts/ci/test-windows-startup-contract.ps1"
+      - "scripts/ci/test-windows-managed-mcp-ownership.ps1"
       - ".github/workflows/rust-mcp.yml"
   workflow_dispatch:
 
@@ -37,11 +49,11 @@ jobs:
           cache: npm
       - name: Install JavaScript SDK dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Install stable Rust with quality components
+      - name: Install Rust 1.97.1 with quality components
         shell: bash
         run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.97.1
       - name: Check JavaScript-to-Rust tool contract drift
         run: node rust-mcp/scripts/check-contract-parity.mjs
       - name: Check formatting
@@ -50,6 +62,12 @@ jobs:
         run: cargo clippy --manifest-path rust-mcp/Cargo.toml --all-targets -- -D warnings
       - name: Run Rust tests
         run: cargo test --manifest-path rust-mcp/Cargo.toml --locked
+      - name: Validate Windows managed cutover contracts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./scripts/ci/test-windows-startup-contract.ps1
+          ./scripts/ci/test-windows-managed-mcp-ownership.ps1
       - name: Build Rust MCP shadow binary
         run: cargo build --manifest-path rust-mcp/Cargo.toml --locked
       - name: Verify exact JavaScript-to-Rust tool schema parity (host)
