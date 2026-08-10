@@ -70,6 +70,13 @@ jobs:
           ./scripts/ci/test-windows-managed-mcp-ownership.ps1
       - name: Build Rust MCP shadow binary
         run: cargo build --manifest-path rust-mcp/Cargo.toml --locked
+      - name: Run Rust HTTP, auth, and disconnect regression smokes
+        run: |
+          node rust-mcp/scripts/config-parity-smoke-runner.mjs
+          node rust-mcp/scripts/gateway-smoke-runner.mjs
+          node rust-mcp/scripts/oauth-smoke-runner.mjs
+          node rust-mcp/scripts/cloudflare-oauth-smoke-runner.mjs
+          node rust-mcp/scripts/disconnect-smoke-runner.mjs
       - name: Verify exact JavaScript-to-Rust tool schema parity (host)
         run: node rust-mcp/scripts/schema-parity-audit.mjs
       - name: Verify exact JavaScript-to-Rust tool schema parity (Docker profile)
