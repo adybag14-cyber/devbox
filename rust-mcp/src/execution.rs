@@ -753,11 +753,6 @@ fn is_transient_slot_io(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::PermissionDenied
 }
 
-#[cfg(not(windows))]
-fn is_transient_slot_io(_: &std::io::Error) -> bool {
-    false
-}
-
 fn is_already_exists(error: &anyhow::Error) -> bool {
     error.chain().any(|source| {
         source
