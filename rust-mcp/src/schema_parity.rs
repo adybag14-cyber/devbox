@@ -292,6 +292,11 @@ fn apply_common_constraints(tool_name: &str, properties: &mut Map<String, Value>
     match tool_name {
         "devbox_wait_for_file" => {
             set_number_bounds(properties, "timeout_seconds", 0.1, interactive_max);
+            set_default(
+                properties,
+                "timeout_seconds",
+                json!(interactive_max.min(60.0)),
+            );
         }
         "devbox_exec_start" | "devbox_run_program_start" => {
             set_integer_bounds(properties, "timeout_seconds", 1, 86_400);

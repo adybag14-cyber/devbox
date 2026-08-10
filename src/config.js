@@ -30,13 +30,19 @@ const parseCharacterLimit = (value, fallback) => {
 };
 
 export const MAX_SAFE_COMMAND_OUTPUT_CHARS = 65536;
+export const MIN_SAFE_MCP_TRANSFER_CHARS = 262144;
 
 const parseCommandOutputLimit = (value) => {
   const parsed = Number.parseInt(value ?? "", 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return MAX_SAFE_COMMAND_OUTPUT_CHARS;
   }
-  return Math.min(parsed, MAX_SAFE_COMMAND_OUTPUT_CHARS);
+  return Math.max(100, Math.min(parsed, MAX_SAFE_COMMAND_OUTPUT_CHARS));
+};
+
+const parseMcpTransferLimit = (value) => {
+  const parsed = parseCharacterLimit(value, 4000000);
+  return parsed === null ? null : Math.max(MIN_SAFE_MCP_TRANSFER_CHARS, parsed);
 };
 
 const parseJsonBodyLimit = (value, fallback) => {
@@ -133,7 +139,7 @@ export const config = {
   publicBaseUrl,
   maxTextOutputChars: parseCharacterLimit(process.env.MAX_TEXT_OUTPUT_CHARS, 4000000),
   maxCommandOutputChars: parseCommandOutputLimit(process.env.MAX_COMMAND_OUTPUT_CHARS),
-  maxMcpTransferChars: parseCharacterLimit(process.env.MAX_MCP_TRANSFER_CHARS, 4000000),
+  maxMcpTransferChars: parseMcpTransferLimit(process.env.MAX_MCP_TRANSFER_CHARS),
   mcpJsonBodyLimit: parseJsonBodyLimit(process.env.MCP_JSON_BODY_LIMIT, "16mb"),
   mcpUsageLogMaxBytes: parseInteger(process.env.MCP_USAGE_LOG_MAX_BYTES, 16 * 1024 * 1024),
   mcpUsageLogRotations: parseInteger(process.env.MCP_USAGE_LOG_ROTATIONS, 3),
@@ -148,7 +154,7 @@ export const config = {
   mcpJobHeartbeatMs: parseInteger(process.env.MCP_JOB_HEARTBEAT_MS, 5000),
   mcpJobOrphanStaleMs: parseInteger(process.env.MCP_JOB_ORPHAN_STALE_MS, 15000),
   mcpJobRetentionHours: parseInteger(process.env.MCP_JOB_RETENTION_HOURS, 168),
-  mcpWaitMaxSeconds: parseInteger(process.env.MCP_WAIT_MAX_SECONDS, 300),
+  mcpWaitMaxSeconds: Math.max(1, parseInteger(process.env.MCP_WAIT_MAX_SECONDS, 300)),
   screenCaptureAttemptTimeoutMs: parseInteger(process.env.SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS, 8000),
   screenCaptureRetries: parseInteger(process.env.SCREEN_CAPTURE_RETRIES, 1),
   screenCaptureQueueTimeoutMs: parseInteger(process.env.SCREEN_CAPTURE_QUEUE_TIMEOUT_MS, 5000),

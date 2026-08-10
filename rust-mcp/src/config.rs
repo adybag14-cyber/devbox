@@ -326,7 +326,7 @@ impl Config {
                 "SCREEN_CAPTURE_QUEUE_TIMEOUT_MS",
                 5_000_u64,
             ),
-            max_wait_seconds: f64::from(parse_env("MCP_WAIT_MAX_SECONDS", 300_u16)),
+            max_wait_seconds: f64::from(parse_env("MCP_WAIT_MAX_SECONDS", 300_u16).max(1)),
             command_output_limit_chars: parse_command_output_limit(),
             max_mcp_transfer_chars: parse_transfer_limit(),
         })
@@ -766,6 +766,7 @@ fn parse_command_output_limit() -> usize {
         None => command_limit,
         Some(text_limit) => text_limit.min(command_limit),
     }
+    .max(100)
 }
 
 fn parse_character_limit(name: &str, fallback: usize) -> Option<usize> {
@@ -811,6 +812,7 @@ fn parse_transfer_limit() -> usize {
         .ok()
         .filter(|value| *value > 0)
         .unwrap_or(4_000_000)
+        .max(262_144)
 }
 
 fn parse_bool_env(name: &str, fallback: bool) -> bool {

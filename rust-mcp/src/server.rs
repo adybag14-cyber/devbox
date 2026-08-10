@@ -210,9 +210,9 @@ struct WaitForFileRequest {
     #[serde(default)]
     #[schemars(description = "Require the condition to remain true for this duration.")]
     stable_ms: u64,
-    #[serde(default = "default_wait_timeout")]
+    #[serde(default)]
     #[schemars(description = "Maximum wait duration in seconds.")]
-    timeout_seconds: f64,
+    timeout_seconds: Option<f64>,
     #[serde(default = "default_poll_ms")]
     #[schemars(description = "Filesystem poll interval in milliseconds.")]
     poll_ms: u64,
@@ -561,9 +561,6 @@ fn default_resource_class() -> String {
 
 const fn default_true() -> bool {
     true
-}
-const fn default_wait_timeout() -> f64 {
-    60.0
 }
 const fn default_poll_ms() -> u64 {
     250
@@ -3119,10 +3116,10 @@ async fn wait_for_path(
     if request.path.trim().is_empty() {
         return Err("path must not be empty".to_owned());
     }
-    if !request.timeout_seconds.is_finite()
-        || request.timeout_seconds < 0.1
-        || request.timeout_seconds > max_wait_seconds
-    {
+    let timeout_seconds = request
+        .timeout_seconds
+        .unwrap_or(max_wait_seconds.min(60.0));
+    if !timeout_seconds.is_finite() || timeout_seconds < 0.1 || timeout_seconds > max_wait_seconds {
         return Err(format!(
             "timeout_seconds must be between 0.1 and {max_wait_seconds}"
         ));
@@ -3136,7 +3133,7 @@ async fn wait_for_path(
 
     let path = PathBuf::from(&request.path);
     let started = Instant::now();
-    let deadline = started + Duration::from_secs_f64(request.timeout_seconds);
+    let deadline = started + Duration::from_secs_f64(timeout_seconds);
     let mut stable_since = None;
 
     loop {
@@ -3472,7 +3469,7 @@ mod tests {
                 should_exist: true,
                 min_bytes: 5,
                 stable_ms: 0,
-                timeout_seconds: 1.0,
+                timeout_seconds: Some(1.0),
                 poll_ms: 50,
             },
             5.0,

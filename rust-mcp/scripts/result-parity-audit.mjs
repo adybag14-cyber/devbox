@@ -150,7 +150,8 @@ const normalizeTextValue = (value, pathParts = []) => {
   if (typeof value === "number" && pathParts.includes("performance")) return "<metric>";
   if (!value || typeof value !== "object") return value;
   const out = {};
-  for (const [key, item] of Object.entries(value)) {
+  for (const key of Object.keys(value).sort()) {
+    const item = value[key];
     if (["pid", "runnerPid", "childPid"].includes(key)) continue;
     if (volatileTimingKeys.has(key) && item !== null) {
       out[key] = "<timing>";

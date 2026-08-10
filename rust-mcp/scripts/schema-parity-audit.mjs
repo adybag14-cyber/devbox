@@ -32,9 +32,10 @@ const commonEnv = {
   PUBLIC_BASE_URL: "",
   DEVBOX_RUNTIME_MODE: process.env.SCHEMA_PARITY_RUNTIME_MODE || "host",
   ENABLE_HOST_EXEC: "true",
-  MAX_TEXT_OUTPUT_CHARS: "4000000",
-  MAX_COMMAND_OUTPUT_CHARS: "65536",
-  MAX_MCP_TRANSFER_CHARS: "4000000",
+  MAX_TEXT_OUTPUT_CHARS: process.env.SCHEMA_PARITY_MAX_TEXT_OUTPUT_CHARS || "4000000",
+  MAX_COMMAND_OUTPUT_CHARS: process.env.SCHEMA_PARITY_MAX_COMMAND_OUTPUT_CHARS || "65536",
+  MAX_MCP_TRANSFER_CHARS: process.env.SCHEMA_PARITY_MAX_MCP_TRANSFER_CHARS || "4000000",
+  MCP_WAIT_MAX_SECONDS: process.env.SCHEMA_PARITY_MCP_WAIT_MAX_SECONDS || "300",
   HOST_SEARCH_BACKEND: "auto",
   HOST_WORKSPACE_PATH: projectRoot,
   HOST_DEFAULT_WORKDIR: projectRoot,
@@ -139,7 +140,11 @@ const flattenOptionalNullable = (schema) => {
   if (Array.isArray(schema.anyOf)) {
     const nonNull = schema.anyOf.filter((item) => !(item && item.type === "null"));
     if (nonNull.length === 1 && nonNull.length !== schema.anyOf.length) {
-      return flattenOptionalNullable(nonNull[0]);
+      const { anyOf: _removed, ...rest } = schema;
+      return {
+        ...flattenOptionalNullable(nonNull[0]),
+        ...flattenOptionalNullable(rest),
+      };
     }
   }
   return Object.fromEntries(Object.entries(schema).map(([key, value]) => [key, flattenOptionalNullable(value)]));
@@ -147,6 +152,38 @@ const flattenOptionalNullable = (schema) => {
 
 const normalizeInput = (schema) => simplify(flattenOptionalNullable(schema));
 const normalizeOutput = (schema) => simplify(schema);
+
+const collectNumericSchemaErrors = (schema, pathParts = ["$"], errors = []) => {
+  if (Array.isArray(schema)) {
+    schema.forEach((item, index) => collectNumericSchemaErrors(item, [...pathParts, String(index)], errors));
+    return errors;
+  }
+  if (!schema || typeof schema !== "object") return errors;
+  const minimum = typeof schema.minimum === "number" ? schema.minimum : null;
+  const maximum = typeof schema.maximum === "number" ? schema.maximum : null;
+  const location = pathParts.join(".");
+  if (minimum !== null && maximum !== null && minimum > maximum) {
+    errors.push({ path: location, error: "minimum_exceeds_maximum", minimum, maximum });
+  }
+  if (typeof schema.default === "number") {
+    if (minimum !== null && schema.default < minimum) {
+      errors.push({ path: location, error: "default_below_minimum", default: schema.default, minimum });
+    }
+    if (maximum !== null && schema.default > maximum) {
+      errors.push({ path: location, error: "default_above_maximum", default: schema.default, maximum });
+    }
+  }
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "default") continue;
+    collectNumericSchemaErrors(value, [...pathParts, key], errors);
+  }
+  return errors;
+};
+
+assert.deepEqual(
+  flattenOptionalNullable({ anyOf: [{ type: "string" }, { type: "null" }], default: "x", maxLength: 4 }),
+  { type: "string", default: "x", maxLength: 4 },
+);
 
 const jsTools = await listJsTools();
 const rustTools = await listRustTools();
@@ -163,9 +200,21 @@ const comparableMetadata = (tool) => ({
 const inputDifferences = [];
 const outputDifferences = [];
 const metadataDifferences = [];
+const schemaErrors = [];
 for (const name of [...jsByName.keys()].sort()) {
   const jsTool = jsByName.get(name);
   const rustTool = rustByName.get(name);
+  for (const [implementation, schema] of [["js", jsTool.inputSchema], ["rust", rustTool.inputSchema]]) {
+    for (const error of collectNumericSchemaErrors(schema)) {
+      schemaErrors.push({ name, implementation, schema: "input", ...error });
+    }
+  }
+  for (const [implementation, schema] of [["js", jsTool.outputSchema], ["rust", rustTool.outputSchema]]) {
+    for (const error of collectNumericSchemaErrors(schema)) {
+      schemaErrors.push({ name, implementation, schema: "output", ...error });
+    }
+  }
+
   const jsInput = normalizeInput(jsTool.inputSchema);
   const rustInput = normalizeInput(rustTool.inputSchema);
   if (JSON.stringify(jsInput) !== JSON.stringify(rustInput)) {
@@ -184,7 +233,7 @@ for (const name of [...jsByName.keys()].sort()) {
     metadataDifferences.push({ name, js: jsMetadata, rust: rustMetadata });
   }
 }
-const ok = inputDifferences.length === 0 && outputDifferences.length === 0 && metadataDifferences.length === 0;
+const ok = inputDifferences.length === 0 && outputDifferences.length === 0 && metadataDifferences.length === 0 && schemaErrors.length === 0;
 console.log(JSON.stringify({
   ok,
   toolCount: jsTools.length,
@@ -202,6 +251,10 @@ console.log(JSON.stringify({
     differingToolCount: metadataDifferences.length,
     differingTools: metadataDifferences.map((entry) => entry.name),
     differences: metadataDifferences,
+  },
+  validity: {
+    errorCount: schemaErrors.length,
+    errors: schemaErrors,
   },
 }, null, 2));
 process.exitCode = ok ? 0 : 2;

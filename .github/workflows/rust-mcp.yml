@@ -83,6 +83,13 @@ jobs:
         env:
           SCHEMA_PARITY_RUNTIME_MODE: docker
         run: node rust-mcp/scripts/schema-parity-audit.mjs
+      - name: Verify schemas stay valid under constrained limits
+        env:
+          SCHEMA_PARITY_MAX_TEXT_OUTPUT_CHARS: "50"
+          SCHEMA_PARITY_MAX_COMMAND_OUTPUT_CHARS: "50"
+          SCHEMA_PARITY_MAX_MCP_TRANSFER_CHARS: "10"
+          SCHEMA_PARITY_MCP_WAIT_MAX_SECONDS: "1"
+        run: node rust-mcp/scripts/schema-parity-audit.mjs
       - name: Verify JavaScript-to-Rust observable result parity
         env:
           RUST_MCP_RESULT_SKIP_DISPLAY: "1"
