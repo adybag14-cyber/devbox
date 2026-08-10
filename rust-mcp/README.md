@@ -43,7 +43,7 @@ The Rust MCP now provides:
 
 Both the portable Node launcher and the Windows managed PowerShell lifecycle preflight the selected replacement **before** stopping an existing owned MCP. The managed launcher records `run/mcp.implementation`, validates checkout-local ownership, applies the generated `.env.runtime` values authoritatively to the spawned child, and restores the parent process environment immediately afterward.
 
-The portable launcher has been exercised on isolated ports with both implementations: Rust and JavaScript each reached healthy status and passed the 22-tool platform runtime E2E before a clean stop. The Windows managed launcher is gated separately by cross-checkout ownership and runtime-environment regression tests; its isolated Rust/JavaScript hot-swap drill must be rerun successfully before any live cutover.
+The portable launcher and Windows managed launcher have both been exercised on isolated ports with Rust and JavaScript. Each implementation reached healthy status and passed the 22-tool platform runtime E2E before a clean stop. The managed drill additionally asserts the live production PID remains unchanged before, during, and after the Rust -> JavaScript rollback sequence.
 
 ## CI and remaining deployment gates
 
