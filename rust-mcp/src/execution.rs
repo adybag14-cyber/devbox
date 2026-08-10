@@ -20,7 +20,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CLAIM_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 const CORRUPT_SLOT_STALE: Duration = Duration::from_secs(5 * 60);
 #[cfg(windows)]
-const WINDOWS_SLOT_IO_RETRY_ATTEMPTS: usize = 8;
+const WINDOWS_SLOT_IO_RETRY_ATTEMPTS: usize = 100;
 #[cfg(windows)]
 const WINDOWS_SLOT_IO_RETRY_DELAY: Duration = Duration::from_millis(10);
 

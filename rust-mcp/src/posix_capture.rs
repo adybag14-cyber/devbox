@@ -634,6 +634,12 @@ fn temporary_png_target(kind: &str) -> Result<(tempfile::TempDir, PathBuf)> {
         .prefix(&format!("devbox-rust-{kind}-"))
         .tempdir()
         .context("create private capture temporary directory")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .context("secure capture temporary directory permissions")?;
+    }
     let path = directory.path().join("capture.png");
     Ok((directory, path))
 }
