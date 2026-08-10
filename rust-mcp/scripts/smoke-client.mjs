@@ -468,12 +468,18 @@ try {
       arguments: { path: devboxTextPath, max_bytes: 1_024 },
     });
     assert.equal(inspected.isError, false);
-    assert.equal(inspected.structuredContent?.data?.exists, true);
-    assert.equal(inspected.structuredContent?.data?.is_file, true);
-    assert.equal(inspected.structuredContent?.data?.utf8_valid, true);
-    assert.equal(inspected.structuredContent?.data?.line_endings, "lf");
-    assert.equal(inspected.structuredContent?.data?.likely_corrupted_on_disk, false);
-    assert.match(inspected.structuredContent?.data?.preview || "", /^alpha\nbeta/);
+    if (process.platform === "win32") {
+      assert.equal(inspected.structuredContent?.data?.exists, true);
+      assert.equal(inspected.structuredContent?.data?.is_file, true);
+      assert.equal(inspected.structuredContent?.data?.utf8_valid, true);
+      assert.equal(inspected.structuredContent?.data?.line_endings, "lf");
+      assert.equal(inspected.structuredContent?.data?.likely_corrupted_on_disk, false);
+      assert.match(inspected.structuredContent?.data?.preview || "", /^alpha\nbeta/);
+    } else {
+      assert.equal(inspected.structuredContent?.data?.exists, false);
+      assert.match(inspected.structuredContent?.data?.resolved_path || "", /\\/);
+      assert.match(inspected.structuredContent?.data?.observations?.join("\n") || "", /does not exist on disk/);
+    }
 
     if (process.platform === "win32") {
       const validPs1 = path.join(fixtureDir, "valid.ps1");

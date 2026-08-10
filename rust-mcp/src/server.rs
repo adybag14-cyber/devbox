@@ -2411,6 +2411,12 @@ fn resolved_program_path(program: &str, windows: bool) -> String {
                 directory.join(program)
             };
             if candidate.is_file() {
+                if windows && program.eq_ignore_ascii_case("node") {
+                    return candidate
+                        .with_file_name("node.exe")
+                        .to_string_lossy()
+                        .into_owned();
+                }
                 return candidate.to_string_lossy().into_owned();
             }
         }
