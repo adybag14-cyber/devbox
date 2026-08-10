@@ -448,6 +448,7 @@ where
 {
     let mut captured = String::new();
     let mut buffer = vec![0_u8; 16 * 1024];
+    let mut pending_utf8 = Vec::with_capacity(4);
     loop {
         let count = match reader.read(&mut buffer).await {
             Ok(0) | Err(_) => break,
@@ -460,12 +461,46 @@ where
                 bytes: Arc::from(bytes),
             });
         }
-        captured.push_str(&String::from_utf8_lossy(bytes));
+        append_stream_utf8(&mut captured, &mut pending_utf8, bytes);
+        if let Some(limit) = max_capture_chars {
+            retain_tail_chars(&mut captured, limit);
+        }
+    }
+    if !pending_utf8.is_empty() {
+        captured.push_str(&String::from_utf8_lossy(&pending_utf8));
         if let Some(limit) = max_capture_chars {
             retain_tail_chars(&mut captured, limit);
         }
     }
     captured
+}
+
+fn append_stream_utf8(captured: &mut String, pending: &mut Vec<u8>, bytes: &[u8]) {
+    pending.extend_from_slice(bytes);
+    loop {
+        match std::str::from_utf8(pending) {
+            Ok(text) => {
+                captured.push_str(text);
+                pending.clear();
+                return;
+            }
+            Err(error) => {
+                let valid_up_to = error.valid_up_to();
+                if valid_up_to > 0 {
+                    let valid = std::str::from_utf8(&pending[..valid_up_to])
+                        .expect("valid_up_to must delimit valid UTF-8");
+                    captured.push_str(valid);
+                }
+                if let Some(error_len) = error.error_len() {
+                    captured.push('�');
+                    pending.drain(..valid_up_to.saturating_add(error_len));
+                } else {
+                    pending.drain(..valid_up_to);
+                    return;
+                }
+            }
+        }
+    }
 }
 
 async fn join_capture(task: tokio::task::JoinHandle<String>) -> String {
@@ -709,6 +744,28 @@ mod tests {
         assert!(error.timed_out);
         assert!(!error.aborted);
         assert!(error.message.contains("100 ms"));
+    }
+
+    #[test]
+    fn streaming_utf8_decoder_preserves_split_multibyte_sequences() {
+        let text = "A🙂中B";
+        let bytes = text.as_bytes();
+        let mut captured = String::new();
+        let mut pending = Vec::new();
+        append_stream_utf8(&mut captured, &mut pending, &bytes[..3]);
+        append_stream_utf8(&mut captured, &mut pending, &bytes[3..6]);
+        append_stream_utf8(&mut captured, &mut pending, &bytes[6..]);
+        assert!(pending.is_empty());
+        assert_eq!(captured, text);
+    }
+
+    #[test]
+    fn streaming_utf8_decoder_replaces_only_invalid_sequences() {
+        let mut captured = String::new();
+        let mut pending = Vec::new();
+        append_stream_utf8(&mut captured, &mut pending, b"a\xffb");
+        assert!(pending.is_empty());
+        assert_eq!(captured, "a�b");
     }
 
     #[tokio::test]

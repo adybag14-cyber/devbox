@@ -266,8 +266,13 @@ pub async fn run_capture_worker(arguments: &[String]) -> Result<()> {
     };
 
     #[cfg(not(windows))]
+    let cancellation = capture_worker_cancellation();
+
+    #[cfg(not(windows))]
     let capture = match mode {
-        "display" => crate::posix_capture::capture_display(quality).await?,
+        "display" => {
+            crate::posix_capture::capture_display(quality, cancellation.child_token()).await?
+        }
         "program" => {
             let pid = arguments
                 .get(3)
@@ -279,11 +284,21 @@ pub async fn run_capture_worker(arguments: &[String]) -> Result<()> {
                 .context("program capture requires include-process-tree")?
                 .parse::<bool>()
                 .context("parse include-process-tree")?;
-            crate::posix_capture::capture_program(pid, quality, include_process_tree).await?
+            crate::posix_capture::capture_program(
+                pid,
+                quality,
+                include_process_tree,
+                cancellation.child_token(),
+            )
+            .await?
         }
         other => bail!("unsupported capture-worker mode {other:?}"),
     };
 
+    #[cfg(not(windows))]
+    if cancellation.is_cancelled() {
+        bail!("Screen capture worker cancelled before writing the result.");
+    }
     if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).await?;
     }
@@ -300,6 +315,32 @@ pub async fn run_capture_worker(arguments: &[String]) -> Result<()> {
     );
     println!("{}", serde_json::to_string(&metadata)?);
     Ok(())
+}
+
+#[cfg(unix)]
+fn capture_worker_cancellation() -> CancellationToken {
+    let cancellation = CancellationToken::new();
+    let signal_cancellation = cancellation.clone();
+    tokio::spawn(async move {
+        use tokio::signal::unix::{SignalKind, signal};
+        let Ok(mut terminate) = signal(SignalKind::terminate()) else {
+            return;
+        };
+        let Ok(mut interrupt) = signal(SignalKind::interrupt()) else {
+            return;
+        };
+        tokio::select! {
+            _ = terminate.recv() => {}
+            _ = interrupt.recv() => {}
+        }
+        signal_cancellation.cancel();
+    });
+    cancellation
+}
+
+#[cfg(all(not(windows), not(unix)))]
+fn capture_worker_cancellation() -> CancellationToken {
+    CancellationToken::new()
 }
 
 fn validate_quality(quality: u8) -> Result<()> {

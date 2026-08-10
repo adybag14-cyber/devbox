@@ -2,8 +2,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::{
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -15,7 +14,6 @@ use tokio_util::sync::CancellationToken;
 use crate::process::ProcessError;
 use crate::process::{ProcessOptions, ProcessOutput, spawn_process};
 
-static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(20);
 const CAPTURE_CHARS: usize = 128_000;
 const PNG_SIGNATURE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
@@ -43,8 +41,11 @@ struct WindowCandidate {
 /// # Errors
 /// Returns when capture fails or PNG output is invalid.
 #[cfg(target_os = "macos")]
-pub async fn capture_display(quality: u8) -> Result<NativeCapture> {
-    capture_macos_display(quality).await
+pub async fn capture_display(
+    quality: u8,
+    cancellation: CancellationToken,
+) -> Result<NativeCapture> {
+    capture_macos_display(quality, &cancellation).await
 }
 
 /// Capture the full Linux host display using the configured native screenshot backend.
@@ -52,8 +53,11 @@ pub async fn capture_display(quality: u8) -> Result<NativeCapture> {
 /// # Errors
 /// Returns when no graphical session/capture utility exists, the command fails, or PNG output is invalid.
 #[cfg(not(target_os = "macos"))]
-pub async fn capture_display(quality: u8) -> Result<NativeCapture> {
-    capture_linux_display(quality).await
+pub async fn capture_display(
+    quality: u8,
+    cancellation: CancellationToken,
+) -> Result<NativeCapture> {
+    capture_linux_display(quality, &cancellation).await
 }
 
 /// Capture the best visible macOS window for a PID/process tree.
@@ -65,11 +69,12 @@ pub async fn capture_program(
     pid: u32,
     quality: u8,
     include_process_tree: bool,
+    cancellation: CancellationToken,
 ) -> Result<NativeCapture> {
     if pid == 0 {
         bail!("pid must be a positive process ID.");
     }
-    capture_macos_program(pid, quality, include_process_tree).await
+    capture_macos_program(pid, quality, include_process_tree, &cancellation).await
 }
 
 /// Capture the best visible Linux window for a PID/process tree.
@@ -81,21 +86,24 @@ pub async fn capture_program(
     pid: u32,
     quality: u8,
     include_process_tree: bool,
+    cancellation: CancellationToken,
 ) -> Result<NativeCapture> {
     if pid == 0 {
         bail!("pid must be a positive process ID.");
     }
-    capture_linux_program(pid, quality, include_process_tree).await
+    capture_linux_program(pid, quality, include_process_tree, &cancellation).await
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn capture_linux_display(quality: u8) -> Result<NativeCapture> {
+async fn capture_linux_display(
+    quality: u8,
+    cancellation: &CancellationToken,
+) -> Result<NativeCapture> {
     assert_linux_session()?;
-    let path = temporary_png_path("display");
-    let (tool, args) = select_linux_display_backend(&path).await?;
-    run_command(&tool, args, CancellationToken::new()).await?;
+    let (_temp_dir, path) = temporary_png_target("display")?;
+    let (tool, args) = select_linux_display_backend(&path, cancellation).await?;
+    run_command(&tool, args, cancellation.child_token()).await?;
     let image = read_valid_png(&path).await?;
-    fs::remove_file(&path).await.ok();
     Ok(NativeCapture {
         image,
         mime_type: "image/png",
@@ -112,21 +120,22 @@ async fn capture_linux_program(
     pid: u32,
     quality: u8,
     include_process_tree: bool,
+    cancellation: &CancellationToken,
 ) -> Result<NativeCapture> {
     assert_linux_session()?;
-    let processes = linux_process_table().await?;
+    let processes = linux_process_table(cancellation).await?;
     let process_name = processes
         .get(&pid)
         .map(|value| value.1.clone())
         .with_context(|| format!("Linux process {pid} does not exist."))?;
     let candidate_pids = collect_process_tree(&processes, pid, include_process_tree);
-    let window = find_linux_window(&candidate_pids).await?.with_context(|| {
+    let window = find_linux_window(&candidate_pids, cancellation).await?.with_context(|| {
         format!(
             "Process {pid} ({process_name}) and its visible child processes have no discoverable top-level X11 window."
         )
     })?;
-    let path = temporary_png_path("window");
-    let method = if command_available("import").await {
+    let (_temp_dir, path) = temporary_png_target("window")?;
+    let method = if command_available("import", cancellation).await {
         run_command(
             "import",
             vec![
@@ -134,15 +143,15 @@ async fn capture_linux_program(
                 window.window_id.clone(),
                 path_text(&path),
             ],
-            CancellationToken::new(),
+            cancellation.child_token(),
         )
         .await?;
         "import"
-    } else if command_available("gnome-screenshot").await {
+    } else if command_available("gnome-screenshot", cancellation).await {
         run_command(
             "gnome-screenshot",
             vec!["-w".to_owned(), "-f".to_owned(), path_text(&path)],
-            CancellationToken::new(),
+            cancellation.child_token(),
         )
         .await?;
         "gnome-screenshot"
@@ -152,7 +161,6 @@ async fn capture_linux_program(
         );
     };
     let image = read_valid_png(&path).await?;
-    fs::remove_file(&path).await.ok();
     Ok(NativeCapture {
         image,
         mime_type: "image/png",
@@ -175,16 +183,18 @@ async fn capture_linux_program(
 }
 
 #[cfg(target_os = "macos")]
-async fn capture_macos_display(quality: u8) -> Result<NativeCapture> {
-    let path = temporary_png_path("display");
+async fn capture_macos_display(
+    quality: u8,
+    cancellation: &CancellationToken,
+) -> Result<NativeCapture> {
+    let (_temp_dir, path) = temporary_png_target("display")?;
     run_command(
         "screencapture",
         vec!["-x".to_owned(), path_text(&path)],
-        CancellationToken::new(),
+        cancellation.child_token(),
     )
     .await?;
     let image = read_valid_png(&path).await?;
-    fs::remove_file(&path).await.ok();
     Ok(NativeCapture {
         image,
         mime_type: "image/png",
@@ -201,15 +211,16 @@ async fn capture_macos_program(
     pid: u32,
     quality: u8,
     include_process_tree: bool,
+    cancellation: &CancellationToken,
 ) -> Result<NativeCapture> {
-    let process_name = macos_process_name(pid).await?;
-    let window = macos_window_metadata(pid, include_process_tree).await?;
+    let process_name = macos_process_name(pid, cancellation).await?;
+    let window = macos_window_metadata(pid, include_process_tree, cancellation).await?;
     let window_id = window["window_id"]
         .as_u64()
         .context("macOS Quartz window discovery omitted window_id")?;
     let owner_pid =
         u32::try_from(window["owner_pid"].as_u64().unwrap_or(u64::from(pid))).unwrap_or(pid);
-    let path = temporary_png_path("window");
+    let (_temp_dir, path) = temporary_png_target("window")?;
     run_command(
         "screencapture",
         vec![
@@ -218,11 +229,10 @@ async fn capture_macos_program(
             window_id.to_string(),
             path_text(&path),
         ],
-        CancellationToken::new(),
+        cancellation.child_token(),
     )
     .await?;
     let image = read_valid_png(&path).await?;
-    fs::remove_file(&path).await.ok();
     Ok(NativeCapture {
         image,
         mime_type: "image/png",
@@ -253,21 +263,24 @@ fn assert_linux_session() -> Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn select_linux_display_backend(path: &Path) -> Result<(String, Vec<String>)> {
+async fn select_linux_display_backend(
+    path: &Path,
+    cancellation: &CancellationToken,
+) -> Result<(String, Vec<String>)> {
     let wayland = std::env::var_os("WAYLAND_DISPLAY").is_some();
-    if wayland && command_available("grim").await {
+    if wayland && command_available("grim", cancellation).await {
         return Ok(("grim".to_owned(), vec![path_text(path)]));
     }
-    if command_available("gnome-screenshot").await {
+    if command_available("gnome-screenshot", cancellation).await {
         return Ok((
             "gnome-screenshot".to_owned(),
             vec!["-f".to_owned(), path_text(path)],
         ));
     }
-    if command_available("scrot").await {
+    if command_available("scrot", cancellation).await {
         return Ok(("scrot".to_owned(), vec![path_text(path)]));
     }
-    if command_available("import").await {
+    if command_available("import", cancellation).await {
         return Ok((
             "import".to_owned(),
             vec!["-window".to_owned(), "root".to_owned(), path_text(path)],
@@ -279,10 +292,15 @@ async fn select_linux_display_backend(path: &Path) -> Result<(String, Vec<String
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn linux_process_table() -> Result<HashMap<u32, (u32, String)>> {
+async fn linux_process_table(
+    cancellation: &CancellationToken,
+) -> Result<HashMap<u32, (u32, String)>> {
     let mut result = HashMap::new();
     let mut entries = fs::read_dir("/proc").await.context("list /proc")?;
     while let Some(entry) = entries.next_entry().await? {
+        if cancellation.is_cancelled() {
+            bail!("Screen capture cancelled while scanning Linux processes.");
+        }
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
@@ -336,9 +354,12 @@ fn collect_process_tree(
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn find_linux_window(candidate_pids: &HashSet<u32>) -> Result<Option<WindowCandidate>> {
+async fn find_linux_window(
+    candidate_pids: &HashSet<u32>,
+    cancellation: &CancellationToken,
+) -> Result<Option<WindowCandidate>> {
     let mut window_ids = Vec::new();
-    if command_available("xdotool").await {
+    if command_available("xdotool", cancellation).await {
         for pid in candidate_pids {
             match run_command(
                 "xdotool",
@@ -348,7 +369,7 @@ async fn find_linux_window(candidate_pids: &HashSet<u32>) -> Result<Option<Windo
                     "--pid".to_owned(),
                     pid.to_string(),
                 ],
-                CancellationToken::new(),
+                cancellation.child_token(),
             )
             .await
             {
@@ -366,9 +387,9 @@ async fn find_linux_window(candidate_pids: &HashSet<u32>) -> Result<Option<Windo
                 Err(error) => return Err(error),
             }
         }
-    } else if command_available("wmctrl").await {
+    } else if command_available("wmctrl", cancellation).await {
         let output =
-            run_command("wmctrl", vec!["-lp".to_owned()], CancellationToken::new()).await?;
+            run_command("wmctrl", vec!["-lp".to_owned()], cancellation.child_token()).await?;
         window_ids.extend(parse_wmctrl_windows(&output.stdout, candidate_pids));
     } else {
         bail!("Window discovery requires xdotool or wmctrl on Linux.");
@@ -377,7 +398,7 @@ async fn find_linux_window(candidate_pids: &HashSet<u32>) -> Result<Option<Windo
     let mut best = None;
     let mut best_area = 0_u64;
     for (window_id, owner_pid) in window_ids {
-        let Ok(geometry) = xwininfo_geometry(&window_id).await else {
+        let Ok(geometry) = xwininfo_geometry(&window_id, cancellation).await else {
             continue;
         };
         if geometry.width < 32 || geometry.height < 32 {
@@ -415,11 +436,14 @@ fn parse_wmctrl_windows(stdout: &str, candidate_pids: &HashSet<u32>) -> Vec<(Str
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn xwininfo_geometry(window_id: &str) -> Result<WindowCandidate> {
+async fn xwininfo_geometry(
+    window_id: &str,
+    cancellation: &CancellationToken,
+) -> Result<WindowCandidate> {
     let output = run_command(
         "xwininfo",
         vec!["-id".to_owned(), window_id.to_owned()],
-        CancellationToken::new(),
+        cancellation.child_token(),
     )
     .await?;
     let value = parse_xwininfo(&output.stdout)?;
@@ -451,7 +475,7 @@ fn parse_xwininfo(stdout: &str) -> Result<(i32, i32, u32, u32)> {
 }
 
 #[cfg(target_os = "macos")]
-async fn macos_process_name(pid: u32) -> Result<String> {
+async fn macos_process_name(pid: u32, cancellation: &CancellationToken) -> Result<String> {
     let output = run_command(
         "ps",
         vec![
@@ -460,7 +484,7 @@ async fn macos_process_name(pid: u32) -> Result<String> {
             "-o".to_owned(),
             "comm=".to_owned(),
         ],
-        CancellationToken::new(),
+        cancellation.child_token(),
     )
     .await?;
     let name = Path::new(output.stdout.trim())
@@ -474,7 +498,11 @@ async fn macos_process_name(pid: u32) -> Result<String> {
 }
 
 #[cfg(target_os = "macos")]
-async fn macos_window_metadata(pid: u32, include_process_tree: bool) -> Result<Value> {
+async fn macos_window_metadata(
+    pid: u32,
+    include_process_tree: bool,
+    cancellation: &CancellationToken,
+) -> Result<Value> {
     let script = r"import json, subprocess, sys
 try:
     from Quartz import CGWindowListCopyWindowInfo, kCGWindowListOptionOnScreenOnly, kCGNullWindowID
@@ -518,18 +546,18 @@ best.pop('area', None); print(json.dumps(best))";
             pid.to_string(),
             include_process_tree.to_string(),
         ],
-        CancellationToken::new(),
+        cancellation.child_token(),
     )
     .await?;
     serde_json::from_str(output.stdout.trim()).context("parse macOS Quartz window metadata")
 }
 
 #[cfg(not(target_os = "macos"))]
-async fn command_available(program: &str) -> bool {
+async fn command_available(program: &str, cancellation: &CancellationToken) -> bool {
     match run_command(
         program,
         version_probe_args(program),
-        CancellationToken::new(),
+        cancellation.child_token(),
     )
     .await
     {
@@ -601,15 +629,13 @@ async fn read_valid_png(path: &Path) -> Result<Vec<u8>> {
     Ok(image)
 }
 
-fn temporary_png_path(kind: &str) -> PathBuf {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis());
-    let counter = UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "devbox-rust-{kind}-{millis}-{}-{counter}.png",
-        std::process::id()
-    ))
+fn temporary_png_target(kind: &str) -> Result<(tempfile::TempDir, PathBuf)> {
+    let directory = tempfile::Builder::new()
+        .prefix(&format!("devbox-rust-{kind}-"))
+        .tempdir()
+        .context("create private capture temporary directory")?;
+    let path = directory.path().join("capture.png");
+    Ok((directory, path))
 }
 
 fn path_text(path: &Path) -> String {
@@ -619,6 +645,25 @@ fn path_text(path: &Path) -> String {
 #[cfg(all(test, not(target_os = "macos")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_temp_target_is_inside_a_private_random_directory() {
+        let (directory, path) = temporary_png_target("test").expect("private temp target");
+        assert_eq!(path.parent(), Some(directory.path()));
+        assert_eq!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some("capture.png")
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(directory.path())
+                .expect("temp dir metadata")
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0);
+        }
+    }
 
     #[test]
     fn proc_stat_parser_handles_spaces_in_process_name() {
