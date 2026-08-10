@@ -182,9 +182,11 @@ export const SYNC_MCP_TIMEOUT_SECONDS = 90;
 const syncCommandTimeoutSchema = () => z.number().int().min(1).max(SYNC_MCP_TIMEOUT_SECONDS).default(SYNC_MCP_TIMEOUT_SECONDS).describe(
   `Synchronous command timeout in seconds (maximum ${SYNC_MCP_TIMEOUT_SECONDS}). Use devbox_exec_start for longer work so upstream MCP request deadlines cannot cancel it.`,
 );
-const COMMAND_OUTPUT_LIMIT_CHARS = config.maxTextOutputChars === null
+const COMMAND_OUTPUT_LIMIT_CHARS = Math.max(100, config.maxTextOutputChars === null
   ? config.maxCommandOutputChars
-  : Math.min(config.maxTextOutputChars, config.maxCommandOutputChars);
+  : Math.min(config.maxTextOutputChars, config.maxCommandOutputChars));
+const INTERACTIVE_WAIT_MAX_SECONDS = Math.min(config.mcpWaitMaxSeconds, 85);
+const WAIT_FOR_FILE_DEFAULT_SECONDS = Math.min(60, INTERACTIVE_WAIT_MAX_SECONDS);
 const withInteractiveExecution = async ({ label, signal }, callback) =>
   withExecutionSlot({
     kind: "interactive",
@@ -1101,7 +1103,7 @@ const buildServer = ({ requestSignal } = {}) => {
         description: "Read background-job status. Prefer wait_seconds instead of Start-Sleep polling; waiting here uses only a Node timer and consumes no execution slot or shell process.",
         inputSchema: {
           job_id: z.string().min(8).describe("Job id returned by devbox_exec_start or devbox_run_program_start."),
-          wait_seconds: z.number().int().min(0).max(Math.min(config.mcpWaitMaxSeconds, 85)).default(0).describe("Long-poll for a status change/terminal state without consuming an execution slot."),
+          wait_seconds: z.number().int().min(0).max(INTERACTIVE_WAIT_MAX_SECONDS).default(0).describe("Long-poll for a status change/terminal state without consuming an execution slot."),
           terminal_only: z.boolean().default(true).describe("When waiting, return early only for a terminal state; false also returns on queued to running transitions."),
         },
         outputSchema,
@@ -1177,7 +1179,7 @@ const buildServer = ({ requestSignal } = {}) => {
         title: "Wait Without Consuming An Execution Slot",
         description: "Use this instead of Start-Sleep/sleep when you simply need to wait before the next MCP action. It uses a Node timer only: no PowerShell process and no execution slot.",
         inputSchema: {
-          seconds: z.number().min(0.05).max(Math.min(config.mcpWaitMaxSeconds, 85)).describe("How long to wait."),
+          seconds: z.number().min(0.05).max(INTERACTIVE_WAIT_MAX_SECONDS).describe("How long to wait."),
           reason: z.string().max(200).default("").describe("Optional human-readable reason for telemetry/context."),
         },
         outputSchema,
@@ -1207,7 +1209,7 @@ const buildServer = ({ requestSignal } = {}) => {
           should_exist: z.boolean().default(true).describe("Wait for the path to exist; false waits for removal."),
           min_bytes: z.number().int().min(0).default(0).describe("When waiting for existence, require at least this file size."),
           stable_ms: z.number().int().min(0).max(30000).default(0).describe("Require the condition to remain true for this duration."),
-          timeout_seconds: z.number().min(0.1).max(Math.min(config.mcpWaitMaxSeconds, 85)).default(60).describe("Maximum wait duration."),
+          timeout_seconds: z.number().min(0.1).max(INTERACTIVE_WAIT_MAX_SECONDS).default(WAIT_FOR_FILE_DEFAULT_SECONDS).describe("Maximum wait duration."),
           poll_ms: z.number().int().min(50).max(5000).default(250).describe("Filesystem poll interval."),
         },
         outputSchema,

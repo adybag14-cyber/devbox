@@ -34,10 +34,27 @@ node bin/devbox.js stop >/dev/null 2>&1 || true
 npm ci
 node scripts/ci/screen-capture-platform-e2e.mjs
 node bin/devbox.js start
+STATUS_OUTPUT=$(node bin/devbox.js status)
+printf '%s\n' "$STATUS_OUTPUT"
+printf '%s\n' "$STATUS_OUTPUT" | grep -q '^implementation: rust$'
 node scripts/ci/platform-runtime-e2e.mjs \
   --url "http://127.0.0.1:$PORT/" \
   --workspace "$WORKSPACE" \
   --expect-platform "$EXPECT_PLATFORM"
 
 node scripts/devbox-guardian.mjs --once --no-repair
-node bin/devbox.js status
+
+echo '=== JavaScript rollback smoke ==='
+node bin/devbox.js stop
+DEVBOX_MCP_IMPLEMENTATION=js node bin/devbox.js start
+ROLLBACK_STATUS=$(node bin/devbox.js status)
+printf '%s\n' "$ROLLBACK_STATUS"
+printf '%s\n' "$ROLLBACK_STATUS" | grep -q '^implementation: js$'
+curl -fsS "http://127.0.0.1:$PORT/healthz" | grep -q 'ok'
+
+echo '=== Return to Rust default ==='
+node bin/devbox.js stop
+DEVBOX_MCP_IMPLEMENTATION=rust node bin/devbox.js start
+FINAL_STATUS=$(node bin/devbox.js status)
+printf '%s\n' "$FINAL_STATUS"
+printf '%s\n' "$FINAL_STATUS" | grep -q '^implementation: rust$'

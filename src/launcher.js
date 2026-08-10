@@ -4,6 +4,8 @@ import { mkdir, open, readFile, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 
 import { config } from "./config.js";
+import { prepareMcpImplementation } from "./mcp-implementation.js";
+import { parseEnvText } from "./env.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const projectRoot = path.resolve(__dirname, "..");
@@ -14,7 +16,9 @@ export const getLauncherPaths = (root = projectRoot) => {
     runDir,
     pidFile: path.join(runDir, "devbox.pid"),
     logFile: path.join(runDir, "devbox.log"),
+    implementationFile: path.join(runDir, "devbox.implementation"),
     managedPidFile: path.join(runDir, "mcp.pid"),
+    managedImplementationFile: path.join(runDir, "mcp.implementation"),
     managedStdoutLogFile: path.join(runDir, "mcp.stdout.log"),
     managedStderrLogFile: path.join(runDir, "mcp.stderr.log"),
     guardianDesiredStateFile: path.join(runDir, "guardian.desired-state.json"),
@@ -73,6 +77,19 @@ export const waitForServerReady = async ({
   throw new Error(`Timed out after ${timeoutMs} ms waiting for ${healthUrl}.${detail}`);
 };
 
+const waitForChildSpawn = (child) => new Promise((resolve, reject) => {
+  const onSpawn = () => {
+    child.off("error", onError);
+    resolve();
+  };
+  const onError = (error) => {
+    child.off("spawn", onSpawn);
+    reject(error);
+  };
+  child.once("spawn", onSpawn);
+  child.once("error", onError);
+});
+
 export const isProcessAlive = (pid) => {
   if (!Number.isInteger(pid) || pid <= 0) {
     return false;
@@ -96,8 +113,32 @@ const readPidFile = async (pidFile) => {
   }
 };
 
+const readImplementationFile = async (implementationFile) => {
+  try {
+    const value = String(await readFile(implementationFile, "utf8")).trim().toLowerCase();
+    return ["rust", "js"].includes(value) ? value : null;
+  } catch {
+    return null;
+  }
+};
+
 const ensureRunDir = async (runDir) => {
   await mkdir(runDir, { recursive: true });
+};
+
+const readManagedServerUrl = async (root) => {
+  for (const name of [".env.runtime", ".env"]) {
+    try {
+      const values = parseEnvText(await readFile(path.join(root, name), "utf8"));
+      const port = Number.parseInt(String(values.PORT ?? ""), 10);
+      if (Number.isInteger(port) && port > 0 && port <= 65535) {
+        return buildServerUrl({ host: values.HOST ?? "127.0.0.1", port });
+      }
+    } catch {
+      // Fall through to the next config layer / caller environment.
+    }
+  }
+  return buildServerUrl();
 };
 
 export const probeServerHealth = async ({ url = buildServerUrl(), timeoutMs = 1000 } = {}) => {
@@ -122,7 +163,9 @@ const writeGuardianDesiredState = async (paths, shouldRun, source) => {
   }, null, 2)}\n`, "utf8");
 };
 
-export const getServerStatus = async (root = projectRoot, { url = buildServerUrl(), healthTimeoutMs = 1000 } = {}) => {
+export const getServerStatus = async (root = projectRoot, options = {}) => {
+  const { healthTimeoutMs = 1000 } = options;
+  const requestedUrl = options.url ?? buildServerUrl();
   const paths = getLauncherPaths(root);
   await ensureRunDir(paths.runDir);
 
@@ -130,9 +173,10 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
   const launcherAlive = isProcessAlive(launcherPid);
   if (!launcherAlive && launcherPid !== null) {
     await rm(paths.pidFile, { force: true });
+    await rm(paths.implementationFile, { force: true });
   }
   if (launcherAlive) {
-    const healthy = await probeServerHealth({ url, timeoutMs: healthTimeoutMs });
+    const healthy = await probeServerHealth({ url: requestedUrl, timeoutMs: healthTimeoutMs });
     return {
       running: true,
       healthy,
@@ -142,7 +186,8 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
       stderrLogFile: paths.logFile,
       manager: "portable-launcher",
       managedExternally: false,
-      url,
+      implementation: await readImplementationFile(paths.implementationFile),
+      url: requestedUrl,
     };
   }
 
@@ -151,8 +196,13 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
   // ownership of it for stop/restart operations.
   const managedPid = await readPidFile(paths.managedPidFile);
   const managedAlive = isProcessAlive(managedPid);
+  if (!managedAlive && managedPid !== null) {
+    await rm(paths.managedPidFile, { force: true });
+    await rm(paths.managedImplementationFile, { force: true });
+  }
   if (managedAlive) {
-    const healthy = await probeServerHealth({ url, timeoutMs: healthTimeoutMs });
+    const managedUrl = options.url ?? await readManagedServerUrl(root);
+    const healthy = await probeServerHealth({ url: managedUrl, timeoutMs: healthTimeoutMs });
     return {
       running: true,
       healthy,
@@ -162,7 +212,8 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
       stderrLogFile: paths.managedStderrLogFile,
       manager: "managed-mcp",
       managedExternally: true,
-      url,
+      implementation: await readImplementationFile(paths.managedImplementationFile),
+      url: managedUrl,
     };
   }
 
@@ -175,16 +226,17 @@ export const getServerStatus = async (root = projectRoot, { url = buildServerUrl
     stderrLogFile: paths.logFile,
     manager: null,
     managedExternally: false,
-    url,
+    implementation: null,
+    url: requestedUrl,
   };
 };
 
-export const startServerProcess = async (root = projectRoot) => {
+export const startServerProcess = async (root = projectRoot, { preparedSpec = null } = {}) => {
   const paths = getLauncherPaths(root);
   await ensureRunDir(paths.runDir);
-  await writeGuardianDesiredState(paths, true, "devbox start");
   const status = await getServerStatus(root);
   if (status.running) {
+    await writeGuardianDesiredState(paths, true, "devbox start");
     if (status.healthy === false) {
       throw new Error(
         `A Devbox MCP process is already running as PID ${status.pid} (${status.manager}) but its health endpoint is not responding; refusing to start a competing server.`,
@@ -193,17 +245,31 @@ export const startServerProcess = async (root = projectRoot) => {
     return { ...status, started: false };
   }
 
+  const spec = preparedSpec ?? await prepareMcpImplementation(root);
+  await writeGuardianDesiredState(paths, true, "devbox start");
   const logHandle = await open(paths.logFile, "a");
-  const child = spawn(process.execPath, [path.join(root, "src/server.js")], {
-    cwd: root,
-    env: process.env,
-    detached: true,
-    stdio: ["ignore", logHandle.fd, logHandle.fd],
-  });
-
-  child.unref();
-  await writeFile(paths.pidFile, `${child.pid}\n`, "utf8");
-  await logHandle.close();
+  let child;
+  try {
+    child = spawn(spec.file, spec.args, {
+      cwd: root,
+      env: spec.env,
+      detached: true,
+      stdio: ["ignore", logHandle.fd, logHandle.fd],
+    });
+    await waitForChildSpawn(child);
+    child.unref();
+    await writeFile(paths.pidFile, `${child.pid}\n`, "utf8");
+    await writeFile(paths.implementationFile, `${spec.implementation}\n`, "utf8");
+  } catch (error) {
+    if (child?.pid && isProcessAlive(child.pid)) {
+      try { process.kill(child.pid, "SIGTERM"); } catch {}
+    }
+    await rm(paths.pidFile, { force: true });
+    await rm(paths.implementationFile, { force: true });
+    throw new Error(`Devbox MCP process could not start: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    await logHandle.close().catch(() => {});
+  }
 
   const spawnedStatus = await getServerStatus(root);
   try {
@@ -224,6 +290,7 @@ export const startServerProcess = async (root = projectRoot) => {
       }
     }
     await rm(paths.pidFile, { force: true });
+    await rm(paths.implementationFile, { force: true });
     const suffix = logTail ? `\nRecent ${paths.logFile}:\n${logTail}` : "";
     throw new Error(`${error instanceof Error ? error.message : String(error)}${suffix}`);
   }
@@ -240,6 +307,7 @@ export const stopServerProcess = async (root = projectRoot, statusOptions = {}) 
   const pid = await readPidFile(paths.pidFile);
   if (!isProcessAlive(pid)) {
     await rm(paths.pidFile, { force: true });
+    await rm(paths.implementationFile, { force: true });
     const status = await getServerStatus(root, statusOptions);
     if (status.managedExternally) {
       return {
@@ -267,10 +335,28 @@ export const stopServerProcess = async (root = projectRoot, statusOptions = {}) 
   }
 
   await rm(paths.pidFile, { force: true });
+  await rm(paths.implementationFile, { force: true });
   const status = await getServerStatus(root);
   await writeGuardianDesiredState(paths, false, "devbox stop");
   return { ...status, stopped: true };
 };
+
+const runForegroundRustServer = async (spec, root) => new Promise((resolve, reject) => {
+  const child = spawn(spec.file, spec.args, {
+    cwd: root,
+    env: spec.env,
+    stdio: "inherit",
+    windowsHide: false,
+  });
+  child.once("error", reject);
+  child.once("exit", (code, signal) => {
+    if (code === 0 || signal === "SIGINT" || signal === "SIGTERM") {
+      resolve();
+    } else {
+      reject(new Error(`Rust MCP foreground process exited with code=${code ?? "null"}, signal=${signal ?? "null"}.`));
+    }
+  });
+});
 
 export const runLauncher = async (argv = process.argv.slice(2), root = projectRoot) => {
   const parsed = parseLauncherArgs(argv);
@@ -278,9 +364,14 @@ export const runLauncher = async (argv = process.argv.slice(2), root = projectRo
   if (parsed.command === "run") {
     const paths = getLauncherPaths(root);
     await ensureRunDir(paths.runDir);
+    const spec = await prepareMcpImplementation(root);
     await writeGuardianDesiredState(paths, true, "devbox run");
-    await import("./server.js");
-    return { command: "run", url: buildServerUrl() };
+    if (spec.implementation === "js") {
+      await import("./server.js");
+    } else {
+      await runForegroundRustServer(spec, root);
+    }
+    return { command: "run", implementation: spec.implementation, url: buildServerUrl() };
   }
 
   if (parsed.command === "status") {
@@ -292,11 +383,12 @@ export const runLauncher = async (argv = process.argv.slice(2), root = projectRo
   }
 
   if (parsed.command === "restart") {
+    const preparedSpec = await prepareMcpImplementation(root);
     const stopped = await stopServerProcess(root);
     if (stopped.stopRefused) {
       throw new Error(stopped.note);
     }
-    return { command: "restart", ...(await startServerProcess(root)) };
+    return { command: "restart", ...(await startServerProcess(root, { preparedSpec })) };
   }
 
   return { command: "start", ...(await startServerProcess(root)) };

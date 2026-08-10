@@ -1,0 +1,712 @@
+{
+  "host": {
+    "devbox_exec": {
+      "title": "Run Mutating Shell Command In Windows Host Devbox",
+      "description": "Use this when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the Windows host devbox. Prefer devbox_run_program for a single executable and devbox_exec_readonly for shell-based inspection. Synchronous calls are capped at 90s; use devbox_exec_start for builds or other longer work.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_exec_readonly": {
+      "title": "Run Read-Only Shell Command In Windows Host Devbox",
+      "description": "Use this only when inspection requires shell syntax such as pipelines, redirection, variables, or compound commands. Prefer devbox_run_program for a single executable such as git, gh, node, python, or rg because it avoids shell startup overhead. In Windows host devbox mode this runs directly on the host shell, so read-only behavior is advisory rather than sandbox-enforced. Synchronous calls are capped at 90s; use devbox_exec_start for longer work.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_exec_start": {
+      "title": "Start Background Shell Job In Windows Host Devbox",
+      "description": "Use this for Windows host devbox commands expected to run longer than about 90 seconds. It starts a detached persisted job and returns immediately so connector request deadlines do not cancel the work.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_github_auth_status": {
+      "title": "Windows Host Devbox GitHub Auth Status",
+      "description": "Use this when you need to confirm whether the Windows host devbox is authenticated to GitHub and which git identity is configured.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_job_cancel": {
+      "title": "Cancel Devbox Background Job",
+      "description": "Use this to stop a job started by devbox_exec_start. The detached runner and its process tree are terminated.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_job_logs": {
+      "title": "Read Devbox Background Job Logs",
+      "description": "Use this to retrieve bounded stdout/stderr tails for a job started by devbox_exec_start.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_job_status": {
+      "title": "Get Devbox Background Job Status",
+      "description": "Read background-job status. Prefer wait_seconds instead of Start-Sleep polling; waiting here uses only a Node timer and consumes no execution slot or shell process.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_list_files": {
+      "title": "List Windows Host Devbox Files",
+      "description": "Use this when you need a directory listing inside the Windows host devbox workspace or another configured path.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_read_file": {
+      "title": "Read Windows Host Devbox File",
+      "description": "Use this when you need text content from a file inside the Windows host devbox.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_read_large_file": {
+      "title": "Read Large Windows Host Devbox File Chunk",
+      "description": "Use this when you need an exact byte range from a larger file inside the Windows host devbox. It returns a base64 chunk plus metadata for safe paging without UTF-8 corruption.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_recreate": {
+      "title": "Recreate Windows Host Devbox",
+      "description": "Use this when the Windows host devbox should be rebuilt from the configured backend while preserving the workspace.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_restart": {
+      "title": "Restart Windows Host Devbox",
+      "description": "Use this when the Windows host devbox needs a clean restart.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_run_program": {
+      "title": "Run Program Directly In Windows Host Devbox",
+      "description": "Preferred fast path for running one executable with structured arguments inside the Windows host devbox (for example git, gh, node, python, or rg). This avoids shell startup and quoting overhead. Use devbox_exec or devbox_exec_readonly only when shell syntax is actually required.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_run_program_start": {
+      "title": "Start Background Program Directly In Windows Host Devbox",
+      "description": "Preferred detached path for one long-running executable. It avoids shell startup/quoting and participates in weighted scheduling. Use resource_class=watch for passive watchers and heavy for builds/browser workloads.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_search_files": {
+      "title": "Search Windows Host Devbox Files",
+      "description": "Use this when you need text search inside the Windows host devbox workspace. ripgrep-style syntax is supported best-effort in host mode.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_start": {
+      "title": "Start Windows Host Devbox",
+      "description": "Use this when the Windows host devbox is stopped or missing and needs to be brought online.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_status": {
+      "title": "Windows Host Devbox Status",
+      "description": "Use this when you need the current state of the Windows host devbox and its installed toolchain.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_stop": {
+      "title": "Stop Windows Host Devbox",
+      "description": "Use this when the Windows host devbox should be shut down without deleting the workspace.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_sync_github_auth_from_host": {
+      "title": "Sync Host GitHub Auth Into Windows Host Devbox",
+      "description": "Use this when the host already has a valid GitHub CLI login and the Windows host devbox should inherit GitHub authentication and git identity from the host.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_wait": {
+      "title": "Wait Without Consuming An Execution Slot",
+      "description": "Use this instead of Start-Sleep/sleep when you simply need to wait before the next MCP action. It uses a Node timer only: no PowerShell process and no execution slot.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_wait_for_file": {
+      "title": "Wait For Host File Condition Without A Shell",
+      "description": "Host-mode filesystem condition wait using Node fs polling only. Prefer this over Start-Sleep followed by Test-Path/Get-Content. Docker mode should use devbox_wait because container paths are not directly visible to the MCP process.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_write_file": {
+      "title": "Write Windows Host Devbox File",
+      "description": "Use this when you need to create or overwrite a text file inside the Windows host devbox workspace.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_write_large_file": {
+      "title": "Write Large Windows Host Devbox File",
+      "description": "Use this when you need to create or overwrite a large file inside the Windows host devbox workspace using base64-backed transfer with post-write verification.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "host_capture_display": {
+      "title": "Capture Windows Host Display",
+      "description": "Capture the complete windows host desktop using the native compositor/screenshot backend and return an MCP image content block. Windows returns JPEG; macOS/Linux use lossless PNG when their native tools do.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "host_capture_program": {
+      "title": "Capture Windows Host Window by PID",
+      "description": "Compatibility alias for host_capture_window.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "host_capture_window": {
+      "title": "Capture Windows Host Window by PID",
+      "description": "Capture the largest visible window owned by a host PID or one of its child processes. The Windows backend detects black PrintWindow frames from GPU/DirectComposition surfaces and falls back to compositor-visible pixels. macOS uses CoreGraphics window discovery plus screencapture; Linux supports X11 and compositor-specific Wayland paths.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "host_exec": {
+      "title": "Run Windows PowerShell Command",
+      "description": "Use this when you explicitly need native windows host shell automation rather than the Windows host devbox. Prefer host_run_program for a single allowed executable such as git, gh, node, python, or rg because it avoids PowerShell startup overhead. On Windows this runs elevated inside the already-elevated MCP service (no per-command UAC).",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "host_run_program": {
+      "title": "Run Allowed Windows Host Program",
+      "description": "Preferred fast path when you need a specific allowed windows host program such as git, gh, node, python, or rg with structured arguments; this avoids shell startup and quoting overhead.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "host_status": {
+      "title": "Windows Host Tool Status",
+      "description": "Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_capture_display": {
+      "title": "Capture Windows Host Display",
+      "description": "Compatibility alias for host_capture_display. On Windows this retains the original PR tool name.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_capture_program": {
+      "title": "Capture Windows Host Window by PID",
+      "description": "Compatibility alias for host_capture_window. On Windows this retains the original PR tool name.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_exec": {
+      "title": "Run Windows PowerShell Command",
+      "description": "Compatibility alias for host_exec. Use this when you explicitly need native windows host tooling rather than the Windows host devbox.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_inspect_file": {
+      "title": "Inspect Windows Host File Integrity",
+      "description": "Use this when a Windows host command references a file that may be corrupted, mojibake-encoded, syntactically broken, or otherwise suspect on disk. It inspects exact bytes and PowerShell parser status where relevant.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_read_large_file": {
+      "title": "Read Large Windows Host File Chunk",
+      "description": "Use this when you need an exact byte range from a Windows host file so you can diagnose or repair corruption without lossy UTF-8 conversion.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_run_program": {
+      "title": "Run Allowed Windows Host Program",
+      "description": "Compatibility alias for host_run_program. Use this when you need a specific allowed windows host program with structured arguments.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_status": {
+      "title": "Windows Host Tool Status",
+      "description": "Compatibility alias for host_status. Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_write_large_file": {
+      "title": "Write Large Windows Host File",
+      "description": "Use this when you need to create or overwrite a Windows host file using exact bytes, especially to repair corruption while preserving the intended payload end to end.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    }
+  },
+  "docker": {
+    "devbox_exec": {
+      "title": "Run Mutating Shell Command In Docker Devbox",
+      "description": "Use this only when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the devbox or workspace. Prefer devbox_run_program for a single executable and devbox_exec_readonly for shell-based inspection. Synchronous calls are capped at 90s; use devbox_exec_start for builds or other longer work.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_exec_readonly": {
+      "title": "Run Read-Only Shell Command In Docker Devbox",
+      "description": "Use this only when inspection requires shell syntax such as pipelines, redirection, variables, or compound commands. Prefer devbox_run_program for a single executable such as git, gh, node, python, or rg because it avoids shell startup overhead. It runs in the long-lived devbox container; read-only behavior is advisory. Synchronous calls are capped at 90s; use devbox_exec_start for longer work.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_exec_start": {
+      "title": "Start Background Shell Job In Docker Devbox",
+      "description": "Use this for Docker devbox commands expected to run longer than about 90 seconds. It starts a detached persisted job and returns immediately so connector request deadlines do not cancel the work.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_github_auth_status": {
+      "title": "Docker Devbox GitHub Auth Status",
+      "description": "Use this when you need to confirm whether the Docker devbox is authenticated to GitHub and which git identity is configured.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_job_cancel": {
+      "title": "Cancel Devbox Background Job",
+      "description": "Use this to stop a job started by devbox_exec_start. The detached runner and its process tree are terminated.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_job_logs": {
+      "title": "Read Devbox Background Job Logs",
+      "description": "Use this to retrieve bounded stdout/stderr tails for a job started by devbox_exec_start.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_job_status": {
+      "title": "Get Devbox Background Job Status",
+      "description": "Read background-job status. Prefer wait_seconds instead of Start-Sleep polling; waiting here uses only a Node timer and consumes no execution slot or shell process.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_list_files": {
+      "title": "List Docker Devbox Files",
+      "description": "Use this when you need a directory listing inside the Docker devbox workspace or another configured path.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_read_file": {
+      "title": "Read Docker Devbox File",
+      "description": "Use this when you need text content from a file inside the Docker devbox.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_read_large_file": {
+      "title": "Read Large Docker Devbox File Chunk",
+      "description": "Use this when you need an exact byte range from a larger file inside the Docker devbox. It returns a base64 chunk plus metadata for safe paging without UTF-8 corruption.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_recreate": {
+      "title": "Recreate Docker Devbox",
+      "description": "Use this when the Docker devbox should be rebuilt from the configured backend while preserving the workspace.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_restart": {
+      "title": "Restart Docker Devbox",
+      "description": "Use this when the Docker devbox needs a clean restart.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_run_program": {
+      "title": "Run Program Directly In Docker Devbox",
+      "description": "Preferred fast path for running one executable with structured arguments inside the Docker devbox (for example git, gh, node, python, or rg). This avoids shell startup and quoting overhead. Use devbox_exec or devbox_exec_readonly only when shell syntax is actually required.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_run_program_start": {
+      "title": "Start Background Program Directly In Docker Devbox",
+      "description": "Preferred detached path for one long-running executable. It avoids shell startup/quoting and participates in weighted scheduling. Use resource_class=watch for passive watchers and heavy for builds/browser workloads.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_search_files": {
+      "title": "Search Docker Devbox Files",
+      "description": "Use this when you need ripgrep-style text search inside the Docker devbox workspace.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_start": {
+      "title": "Start Docker Devbox",
+      "description": "Use this when the Docker devbox is stopped or missing and needs to be brought online.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_status": {
+      "title": "Docker Devbox Status",
+      "description": "Use this when you need the current state of the Docker devbox and its installed toolchain.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_stop": {
+      "title": "Stop Docker Devbox",
+      "description": "Use this when the Docker devbox should be shut down without deleting the workspace.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_sync_github_auth_from_host": {
+      "title": "Sync Host GitHub Auth Into Docker Devbox",
+      "description": "Use this when the host already has a valid GitHub CLI login and the Docker devbox should inherit GitHub authentication and git identity from the host.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_wait": {
+      "title": "Wait Without Consuming An Execution Slot",
+      "description": "Use this instead of Start-Sleep/sleep when you simply need to wait before the next MCP action. It uses a Node timer only: no PowerShell process and no execution slot.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_wait_for_file": {
+      "title": "Wait For Host File Condition Without A Shell",
+      "description": "Host-mode filesystem condition wait using Node fs polling only. Prefer this over Start-Sleep followed by Test-Path/Get-Content. Docker mode should use devbox_wait because container paths are not directly visible to the MCP process.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "devbox_write_file": {
+      "title": "Write Docker Devbox File",
+      "description": "Use this when you need to create or overwrite a text file inside the Docker devbox workspace.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "devbox_write_large_file": {
+      "title": "Write Large Docker Devbox File",
+      "description": "Use this when you need to create or overwrite a large file inside the Docker devbox workspace using base64-backed transfer with post-write verification.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "host_capture_display": {
+      "title": "Capture Windows Host Display",
+      "description": "Capture the complete windows host desktop using the native compositor/screenshot backend and return an MCP image content block. Windows returns JPEG; macOS/Linux use lossless PNG when their native tools do.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "host_capture_program": {
+      "title": "Capture Windows Host Window by PID",
+      "description": "Compatibility alias for host_capture_window.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "host_capture_window": {
+      "title": "Capture Windows Host Window by PID",
+      "description": "Capture the largest visible window owned by a host PID or one of its child processes. The Windows backend detects black PrintWindow frames from GPU/DirectComposition surfaces and falls back to compositor-visible pixels. macOS uses CoreGraphics window discovery plus screencapture; Linux supports X11 and compositor-specific Wayland paths.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "host_exec": {
+      "title": "Run Windows PowerShell Command",
+      "description": "Use this when you explicitly need native windows host shell automation rather than the Docker devbox. Prefer host_run_program for a single allowed executable such as git, gh, node, python, or rg because it avoids PowerShell startup overhead. On Windows this runs elevated inside the already-elevated MCP service (no per-command UAC).",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "host_run_program": {
+      "title": "Run Allowed Windows Host Program",
+      "description": "Preferred fast path when you need a specific allowed windows host program such as git, gh, node, python, or rg with structured arguments; this avoids shell startup and quoting overhead.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "host_status": {
+      "title": "Windows Host Tool Status",
+      "description": "Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_capture_display": {
+      "title": "Capture Windows Host Display",
+      "description": "Compatibility alias for host_capture_display. On Windows this retains the original PR tool name.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_capture_program": {
+      "title": "Capture Windows Host Window by PID",
+      "description": "Compatibility alias for host_capture_window. On Windows this retains the original PR tool name.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_exec": {
+      "title": "Run Windows PowerShell Command",
+      "description": "Compatibility alias for host_exec. Use this when you explicitly need native windows host tooling rather than the Docker devbox.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_inspect_file": {
+      "title": "Inspect Windows Host File Integrity",
+      "description": "Use this when a Windows host command references a file that may be corrupted, mojibake-encoded, syntactically broken, or otherwise suspect on disk. It inspects exact bytes and PowerShell parser status where relevant.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_read_large_file": {
+      "title": "Read Large Windows Host File Chunk",
+      "description": "Use this when you need an exact byte range from a Windows host file so you can diagnose or repair corruption without lossy UTF-8 conversion.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_run_program": {
+      "title": "Run Allowed Windows Host Program",
+      "description": "Compatibility alias for host_run_program. Use this when you need a specific allowed windows host program with structured arguments.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_status": {
+      "title": "Windows Host Tool Status",
+      "description": "Compatibility alias for host_status. Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    "windows_host_write_large_file": {
+      "title": "Write Large Windows Host File",
+      "description": "Use this when you need to create or overwrite a Windows host file using exact bytes, especially to repair corruption while preserving the intended payload end to end.",
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "openWorldHint": false
+      }
+    }
+  }
+}

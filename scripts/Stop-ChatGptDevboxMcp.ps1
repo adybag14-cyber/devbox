@@ -182,18 +182,7 @@ function Get-CommandLineForPid {
     return $proc.CommandLine
 }
 
-function Test-IsOwnedServerCommandLine {
-    param([string]$CommandLine)
-
-    if ([string]::IsNullOrWhiteSpace($CommandLine)) {
-        return $false
-    }
-
-    return (
-        ([string]$CommandLine -match 'src[\\/]server\.js\b') -and
-        ([string]$CommandLine -match '--env-file(?:=|\s+)[^"\s]*\.env\.runtime\b')
-    )
-}
+. (Join-Path $PSScriptRoot 'DevboxMcpOwnership.ps1')
 
 function Test-IsOwnedHostCloudflaredCommandLine {
     param([string]$CommandLine)
@@ -233,20 +222,23 @@ function Stop-ExistingHostCloudflared {
 }
 
 function Find-OwnedServerProcess {
-    param([string]$PidFile)
+    param(
+        [string]$PidFile,
+        [string]$ProjectRoot
+    )
 
     if (Test-Path $PidFile) {
         $pidText = Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($pidText -match '^\d+$') {
             $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
-            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine) -ProjectRoot $ProjectRoot)) {
                 return $candidate
             }
         }
     }
 
     return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { Test-IsOwnedServerCommandLine -CommandLine ([string]$_.CommandLine) } |
+        Where-Object { Test-IsOwnedServerCommandLine -CommandLine ([string]$_.CommandLine) -ProjectRoot $ProjectRoot } |
         Sort-Object CreationDate -Descending |
         Select-Object -First 1
 }
@@ -314,6 +306,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $envFile = Join-Path $root ".env"
 $runDir = Join-Path $root "run"
 $pidFile = Join-Path $runDir "mcp.pid"
+$implementationFile = Join-Path $runDir "mcp.implementation"
 $settingsPath = Join-Path $runDir 'guardian.settings.json'
 $settings = if (Test-Path $settingsPath) { Get-Content $settingsPath -Raw | ConvertFrom-Json } else { $null }
 $selectedRuntime = if ($settings -and $settings.PSObject.Properties['SelectedRuntime'] -and ([string]$settings.SelectedRuntime).ToLowerInvariant() -in @('host', 'docker')) {
@@ -326,7 +319,7 @@ $script:dockerConfiguredPath = Get-EnvValue -FilePath $envFile -Name "DOCKER_EXE
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $false -Source "Stop-ChatGptDevboxMcp.ps1"
 
 if (Test-Path $pidFile) {
-    $ownedProcess = Find-OwnedServerProcess -PidFile $pidFile
+    $ownedProcess = Find-OwnedServerProcess -PidFile $pidFile -ProjectRoot $root
     if ($ownedProcess) {
         $ownedPid = [int]$ownedProcess.ProcessId
         Stop-Process -Id $ownedPid -Force
@@ -335,6 +328,7 @@ if (Test-Path $pidFile) {
 
     Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
 }
+Remove-Item $implementationFile -Force -ErrorAction SilentlyContinue
 
 if ((Test-Path $envFile) -and ($Tunnel -or $All)) {
     Stop-ExistingHostCloudflared -PidFile (Join-Path $runDir 'host-cloudflared.pid')

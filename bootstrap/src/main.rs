@@ -7,11 +7,13 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const DEFAULT_REPO_URL: &str = "https://github.com/adybag14-cyber/devbox.git";
 const CANONICAL_TERMUX_REPO: &str = "https://github.com/adybag14-cyber/termux-app";
 const MINIMUM_NODE_MAJOR: u32 = 18;
+const MINIMUM_RUST_VERSION: (u32, u32, u32) = (1, 88, 0);
+const PINNED_RUST_TOOLCHAIN: &str = "1.97.1";
 const TERMUX_PACKAGES: &[&str] = &[
     "nodejs",
     "git",
@@ -19,6 +21,7 @@ const TERMUX_PACKAGES: &[&str] = &[
     "ripgrep",
     "curl",
     "ca-certificates",
+    "rust",
 ];
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -292,6 +295,7 @@ fn is_devbox_repo(path: &Path) -> bool {
     path.join("package.json").is_file()
         && path.join(".env.example").is_file()
         && path.join("src/server.js").is_file()
+        && path.join("rust-mcp/Cargo.toml").is_file()
 }
 
 fn directory_is_empty(path: &Path) -> SetupResult<bool> {
@@ -420,6 +424,25 @@ fn parse_node_major(version: &str) -> Option<u32> {
         .next()?
         .parse::<u32>()
         .ok()
+}
+
+fn parse_rust_version(version: &str) -> Option<(u32, u32, u32)> {
+    let numeric = version
+        .split_whitespace()
+        .find(|part| part.chars().next().is_some_and(|ch| ch.is_ascii_digit()))?;
+    let mut pieces = numeric.split('.');
+    let major = pieces.next()?.parse::<u32>().ok()?;
+    let minor = pieces.next()?.parse::<u32>().ok()?;
+    let patch = pieces
+        .next()
+        .and_then(|value| value.split('-').next())
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
+    Some((major, minor, patch))
+}
+
+fn rust_version_is_supported(version: &str) -> bool {
+    parse_rust_version(version).is_some_and(|parsed| parsed >= MINIMUM_RUST_VERSION)
 }
 
 fn is_termux_values(termux_version: Option<&str>, prefix: Option<&str>) -> bool {
@@ -569,7 +592,7 @@ fn run_system_package_command(
         return run_owned_command("sudo", &sudo_args, None, dry_run);
     }
     Err(Box::new(SetupError(format!(
-        "installing system packages with {program} requires root privileges; install Node.js {MINIMUM_NODE_MAJOR}+, npm, and Git manually or rerun with sudo"
+        "installing system packages with {program} requires root privileges; install Node.js {MINIMUM_NODE_MAJOR}+, npm, Git, Rust, and Cargo manually or rerun with sudo"
     ))))
 }
 
@@ -577,7 +600,14 @@ fn install_system_prerequisites(options: &Options) -> SetupResult<()> {
     let node_missing = !command_available(command_name("node"), &["--version"]);
     let npm_missing = !command_available(command_name("npm"), &["--version"]);
     let git_missing = !command_available(command_name("git"), &["--version"]);
-    if !(node_missing || npm_missing || git_missing) {
+    let rustc_version = capture_command(command_name("rustc"), &["--version"], None).ok();
+    let rustc_missing = rustc_version.is_none();
+    let cargo_missing = !command_available(command_name("cargo"), &["--version"]);
+    let rust_too_old = rustc_version
+        .as_deref()
+        .is_some_and(|version| !rust_version_is_supported(version));
+    let rust_needs_install = rustc_missing || cargo_missing || rust_too_old;
+    if !(node_missing || npm_missing || git_missing || rust_needs_install) {
         return Ok(());
     }
     if !options.install_system_packages {
@@ -591,14 +621,14 @@ fn install_system_prerequisites(options: &Options) -> SetupResult<()> {
             let arguments = termux_package_arguments();
             run_command("pkg", &arguments, None, options.dry_run).map_err(|error| {
                 Box::new(SetupError(format!(
-                    "failed to install Termux packages with pkg: {error}. Use --skip-system-packages only when Node.js {MINIMUM_NODE_MAJOR}+, npm, and Git are already installed"
+                    "failed to install Termux packages with pkg: {error}. Use --skip-system-packages only when Node.js {MINIMUM_NODE_MAJOR}+, npm, Git, Rust, and Cargo are already installed"
                 ))) as Box<dyn Error>
             })?;
         }
         PlatformKind::Windows => {
             let winget = first_available_command(&["winget.exe", "winget"], &["--version"]).ok_or_else(|| {
                 Box::new(SetupError(
-                    "Node.js/npm or Git is missing and winget was not found. Install Node.js LTS and Git for Windows, then rerun devbox-setup, or use --skip-system-packages.".to_string(),
+                    "Node.js/npm, Git, Rust, or Cargo is missing and winget was not found. Install Node.js LTS, Git for Windows, and Rustup, then rerun devbox-setup, or use --skip-system-packages.".to_string(),
                 )) as Box<dyn Error>
             })?;
             if node_missing || npm_missing {
@@ -633,11 +663,27 @@ fn install_system_prerequisites(options: &Options) -> SetupResult<()> {
                     options.dry_run,
                 )?;
             }
+            if rust_needs_install {
+                run_owned_command(
+                    &winget,
+                    &[
+                        "install".into(),
+                        "--exact".into(),
+                        "--id".into(),
+                        "Rustlang.Rustup".into(),
+                        "--accept-package-agreements".into(),
+                        "--accept-source-agreements".into(),
+                        "--silent".into(),
+                    ],
+                    None,
+                    options.dry_run,
+                )?;
+            }
         }
         PlatformKind::MacOS => {
             let brew = first_available_command(&["brew", "/opt/homebrew/bin/brew", "/usr/local/bin/brew"], &["--version"]).ok_or_else(|| {
                 Box::new(SetupError(
-                    "Node.js/npm or Git is missing and Homebrew was not found. Install Homebrew (or Node.js LTS and Git manually), then rerun devbox-setup, or use --skip-system-packages.".to_string(),
+                    "Node.js/npm, Git, Rust, or Cargo is missing and Homebrew was not found. Install Homebrew (or Node.js LTS, Git, Rust, and Cargo manually), then rerun devbox-setup, or use --skip-system-packages.".to_string(),
                 )) as Box<dyn Error>
             })?;
             let mut packages = Vec::<String>::new();
@@ -647,6 +693,9 @@ fn install_system_prerequisites(options: &Options) -> SetupResult<()> {
             if git_missing {
                 packages.push("git".into());
             }
+            if rust_needs_install {
+                packages.push("rust".into());
+            }
             let mut arguments = vec!["install".to_string()];
             arguments.extend(packages);
             run_owned_command(&brew, &arguments, None, options.dry_run)?;
@@ -655,7 +704,7 @@ fn install_system_prerequisites(options: &Options) -> SetupResult<()> {
             let manager = first_available_command(&["apt-get", "dnf", "yum", "pacman", "zypper", "apk"], &["--version"])
                 .or_else(|| first_available_command(&["apt-get", "dnf", "yum", "pacman", "zypper", "apk"], &["--help"]))
                 .ok_or_else(|| Box::new(SetupError(
-                    "Node.js/npm or Git is missing and no supported package manager was found (apt-get, dnf, yum, pacman, zypper, apk). Install prerequisites manually or use --skip-system-packages.".to_string(),
+                    "Node.js/npm, Git, Rust, or Cargo is missing and no supported package manager was found (apt-get, dnf, yum, pacman, zypper, apk). Install prerequisites manually or use --skip-system-packages.".to_string(),
                 )) as Box<dyn Error>)?;
             let mut packages = Vec::<String>::new();
             if node_missing || npm_missing {
@@ -664,6 +713,10 @@ fn install_system_prerequisites(options: &Options) -> SetupResult<()> {
             }
             if git_missing {
                 packages.push("git".into());
+            }
+            if rust_needs_install {
+                packages.push("curl".into());
+                packages.push("ca-certificates".into());
             }
             if manager.ends_with("apt-get") {
                 run_system_package_command(&manager, &["update".into()], options.dry_run)?;
@@ -718,11 +771,152 @@ fn recommended_runtime() -> RuntimeMode {
     recommended_runtime_for(platform_kind(), docker_available)
 }
 
+fn create_private_staging_dir(prefix: &str) -> SetupResult<PathBuf> {
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |value| value.as_nanos());
+    for attempt in 0..32_u32 {
+        let path =
+            env::temp_dir().join(format!("{prefix}-{}-{nonce}-{attempt}", std::process::id()));
+        #[cfg(unix)]
+        let create_result = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = fs::DirBuilder::new();
+            builder.mode(0o700).create(&path)
+        };
+        #[cfg(not(unix))]
+        let create_result = fs::create_dir(&path);
+        match create_result {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(Box::new(SetupError(format!(
+                    "could not create private staging directory in {}: {error}",
+                    env::temp_dir().display()
+                ))));
+            }
+        }
+    }
+    Err(Box::new(SetupError(
+        "could not allocate a unique private staging directory".to_string(),
+    )))
+}
+
+fn ensure_supported_rust_toolchain(options: &Options) -> SetupResult<()> {
+    let current = capture_command(command_name("rustc"), &["--version"], None).ok();
+    let cargo_ready = command_available(command_name("cargo"), &["--version"]);
+    if current.as_deref().is_some_and(rust_version_is_supported) && cargo_ready {
+        return Ok(());
+    }
+
+    let found = current.unwrap_or_else(|| "not installed".to_string());
+    if options.dry_run {
+        println!(
+            "Dry run: would ensure Rust {PINNED_RUST_TOOLCHAIN} and Cargo are available (found {found})."
+        );
+        return Ok(());
+    }
+    if !options.install_system_packages {
+        return Err(Box::new(SetupError(format!(
+            "Rust {}.{}.{}+ and Cargo are required; found {found}. Install a supported toolchain with rustup or rerun without --skip-system-packages.",
+            MINIMUM_RUST_VERSION.0, MINIMUM_RUST_VERSION.1, MINIMUM_RUST_VERSION.2
+        ))));
+    }
+
+    refresh_common_tool_paths();
+    let mut rustup = first_available_command(&[command_name("rustup")], &["--version"]);
+    if rustup.is_none() {
+        match platform_kind() {
+            PlatformKind::Windows => {
+                return Err(Box::new(SetupError(format!(
+                    "Rust remained below {}.{}.{} after installing Rustup. Reopen the shell so %USERPROFILE%\\.cargo\\bin is on PATH, then rerun devbox-setup.",
+                    MINIMUM_RUST_VERSION.0, MINIMUM_RUST_VERSION.1, MINIMUM_RUST_VERSION.2
+                ))));
+            }
+            PlatformKind::Termux => {
+                return Err(Box::new(SetupError(format!(
+                    "The Termux Rust package remained below {}.{}.{}. Update Termux packages and rerun devbox-setup.",
+                    MINIMUM_RUST_VERSION.0, MINIMUM_RUST_VERSION.1, MINIMUM_RUST_VERSION.2
+                ))));
+            }
+            PlatformKind::MacOS | PlatformKind::Linux => {
+                let curl = first_available_command(&["curl"], &["--version"]).ok_or_else(|| {
+                    Box::new(SetupError(
+                        "curl is required to install a supported Rust toolchain with rustup"
+                            .to_string(),
+                    )) as Box<dyn Error>
+                })?;
+                let staging = create_private_staging_dir("devbox-rustup")?;
+                let installer = staging.join("rustup-init.sh");
+                let download_args = vec![
+                    "--proto".to_string(),
+                    "=https".to_string(),
+                    "--tlsv1.2".to_string(),
+                    "-sSf".to_string(),
+                    "https://sh.rustup.rs".to_string(),
+                    "-o".to_string(),
+                    installer.to_string_lossy().to_string(),
+                ];
+                let result = (|| -> SetupResult<()> {
+                    run_owned_command(&curl, &download_args, None, options.dry_run)?;
+                    let install_args = vec![
+                        installer.to_string_lossy().to_string(),
+                        "-y".to_string(),
+                        "--profile".to_string(),
+                        "minimal".to_string(),
+                        "--default-toolchain".to_string(),
+                        PINNED_RUST_TOOLCHAIN.to_string(),
+                    ];
+                    run_owned_command("sh", &install_args, None, options.dry_run)
+                })();
+                let cleanup = fs::remove_dir_all(&staging);
+                result?;
+                if let Err(error) = cleanup {
+                    return Err(Box::new(SetupError(format!(
+                        "rustup installed but private staging cleanup failed for {}: {error}",
+                        staging.display()
+                    ))));
+                }
+                refresh_common_tool_paths();
+                rustup = first_available_command(&[command_name("rustup")], &["--version"]);
+            }
+            PlatformKind::Other => {}
+        }
+    }
+
+    let rustup = rustup.ok_or_else(|| {
+        Box::new(SetupError(format!(
+            "Rust {}.{}.{}+ is required; rustup could not be installed or found on PATH",
+            MINIMUM_RUST_VERSION.0, MINIMUM_RUST_VERSION.1, MINIMUM_RUST_VERSION.2
+        ))) as Box<dyn Error>
+    })?;
+    run_owned_command(
+        &rustup,
+        &[
+            "toolchain".into(),
+            "install".into(),
+            PINNED_RUST_TOOLCHAIN.into(),
+            "--profile".into(),
+            "minimal".into(),
+        ],
+        None,
+        options.dry_run,
+    )?;
+    run_owned_command(
+        &rustup,
+        &["default".into(), PINNED_RUST_TOOLCHAIN.into()],
+        None,
+        options.dry_run,
+    )?;
+    refresh_common_tool_paths();
+    Ok(())
+}
+
 fn refresh_common_tool_paths() {
-    let separator = if cfg!(windows) { ";" } else { ":" };
     let mut entries = env::var_os("PATH")
         .map(|value| env::split_paths(&value).collect::<Vec<_>>())
         .unwrap_or_default();
+    let mut priority_candidates = Vec::<PathBuf>::new();
     let mut candidates = Vec::<PathBuf>::new();
     if cfg!(windows) {
         if let Ok(program_files) = env::var("ProgramFiles") {
@@ -731,9 +925,23 @@ fn refresh_common_tool_paths() {
         }
         candidates.push(PathBuf::from(r"C:\Program Files\nodejs"));
         candidates.push(PathBuf::from(r"C:\Program Files\Git\cmd"));
+        if let Some(home) = env::var_os("USERPROFILE") {
+            priority_candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
+        }
     } else if cfg!(target_os = "macos") {
         candidates.push(PathBuf::from("/opt/homebrew/bin"));
         candidates.push(PathBuf::from("/usr/local/bin"));
+        if let Some(home) = env::var_os("HOME") {
+            priority_candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
+        }
+    } else if let Some(home) = env::var_os("HOME") {
+        priority_candidates.push(PathBuf::from(home).join(".cargo").join("bin"));
+    }
+    for candidate in priority_candidates.into_iter().rev() {
+        if candidate.is_dir() {
+            entries.retain(|existing| existing != &candidate);
+            entries.insert(0, candidate);
+        }
     }
     for candidate in candidates {
         if candidate.is_dir() && !entries.iter().any(|existing| existing == &candidate) {
@@ -742,9 +950,6 @@ fn refresh_common_tool_paths() {
     }
     if let Ok(joined) = env::join_paths(entries) {
         env::set_var("PATH", joined);
-    } else if let Ok(existing) = env::var("PATH") {
-        let _ = separator;
-        env::set_var("PATH", existing);
     }
 }
 fn verify_toolchain() -> SetupResult<()> {
@@ -761,9 +966,19 @@ fn verify_toolchain() -> SetupResult<()> {
     }
     let npm = capture_command(command_name("npm"), &["--version"], None)?;
     let git = capture_command(command_name("git"), &["--version"], None)?;
+    let rustc = capture_command(command_name("rustc"), &["--version"], None)?;
+    if !rust_version_is_supported(&rustc) {
+        return Err(Box::new(SetupError(format!(
+            "Rust {}.{}.{}+ is required; found {rustc}",
+            MINIMUM_RUST_VERSION.0, MINIMUM_RUST_VERSION.1, MINIMUM_RUST_VERSION.2
+        ))));
+    }
+    let cargo = capture_command(command_name("cargo"), &["--version"], None)?;
     println!("Node.js: {node}");
     println!("npm: {npm}");
     println!("Git: {git}");
+    println!("Rust: {rustc}");
+    println!("Cargo: {cargo}");
     Ok(())
 }
 
@@ -1085,6 +1300,62 @@ fn format_host_port(host: &str, port: u16) -> String {
     }
 }
 
+fn decode_chunked_http_body(body: &str) -> Option<String> {
+    let bytes = body.as_bytes();
+    let mut offset = 0usize;
+    let mut decoded = Vec::<u8>::new();
+
+    loop {
+        let line_end = bytes[offset..]
+            .windows(2)
+            .position(|window| window == b"\r\n")?
+            + offset;
+        let size_line = std::str::from_utf8(&bytes[offset..line_end]).ok()?;
+        let size_text = size_line.split(';').next()?.trim();
+        let size = usize::from_str_radix(size_text, 16).ok()?;
+        offset = line_end + 2;
+
+        if size == 0 {
+            return String::from_utf8(decoded).ok();
+        }
+        let chunk_end = offset.checked_add(size)?;
+        if chunk_end > bytes.len() || bytes.get(chunk_end..chunk_end + 2)? != b"\r\n" {
+            return None;
+        }
+        decoded.extend_from_slice(&bytes[offset..chunk_end]);
+        offset = chunk_end + 2;
+    }
+}
+
+fn health_response_is_ok(response: &str) -> bool {
+    let (headers, body) = match response.split_once("\r\n\r\n") {
+        Some(parts) => parts,
+        None => return false,
+    };
+    let status_ok = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        == Some("200");
+    if !status_ok {
+        return false;
+    }
+
+    let chunked = headers.lines().any(|line| {
+        let mut parts = line.splitn(2, ':');
+        let name = parts.next().unwrap_or_default().trim();
+        let value = parts.next().unwrap_or_default();
+        name.eq_ignore_ascii_case("transfer-encoding")
+            && value
+                .split(',')
+                .any(|encoding| encoding.trim().eq_ignore_ascii_case("chunked"))
+    });
+    if chunked {
+        return decode_chunked_http_body(body).is_some_and(|decoded| decoded.trim() == "ok");
+    }
+    body.trim() == "ok"
+}
+
 fn health_check(host: &str, port: u16) -> bool {
     let address = format_host_port(host, port);
     let socket = match address
@@ -1110,8 +1381,7 @@ fn health_check(host: &str, port: u16) -> bool {
     if stream.read_to_string(&mut response).is_err() {
         return false;
     }
-    let (headers, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
-    headers.starts_with("HTTP/1.1 200") && body.trim() == "ok"
+    health_response_is_ok(&response)
 }
 
 fn wait_for_health(host: &str, port: u16) -> bool {
@@ -1186,7 +1456,11 @@ fn setup(options: Options) -> SetupResult<()> {
     println!("Platform: {}", platform_kind().as_str());
     install_system_prerequisites(&options)?;
     refresh_common_tool_paths();
-    verify_toolchain()?;
+    ensure_supported_rust_toolchain(&options)?;
+    refresh_common_tool_paths();
+    if !options.dry_run {
+        verify_toolchain()?;
+    }
     let repo = clone_or_locate_repo(&options)?;
     if options.dry_run && !is_devbox_repo(&repo) {
         println!("Dry run complete; the repository would be cloned before configuration.");
@@ -1306,6 +1580,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_and_checks_rust_versions() {
+        assert_eq!(
+            parse_rust_version("rustc 1.97.1 (abc 2026-07-14)"),
+            Some((1, 97, 1))
+        );
+        assert_eq!(parse_rust_version("rustc 1.88.0"), Some((1, 88, 0)));
+        assert!(rust_version_is_supported("rustc 1.88.0"));
+        assert!(rust_version_is_supported("rustc 1.97.1"));
+        assert!(!rust_version_is_supported("rustc 1.85.0"));
+        assert_eq!(parse_rust_version("unknown"), None);
+    }
+
+    #[test]
     fn parses_runtime_modes() {
         assert_eq!(RuntimeMode::parse("AUTO").unwrap(), RuntimeMode::Auto);
         assert_eq!(RuntimeMode::parse("host").unwrap(), RuntimeMode::Host);
@@ -1328,7 +1615,7 @@ mod tests {
     fn termux_packages_include_required_runtime_tools() {
         let arguments = termux_package_arguments();
         assert_eq!(&arguments[..2], &["install", "-y"]);
-        for package in ["nodejs", "git", "python", "ripgrep", "curl"] {
+        for package in ["nodejs", "git", "python", "ripgrep", "curl", "rust"] {
             assert!(arguments.contains(&package));
         }
     }
@@ -1472,5 +1759,38 @@ mod tests {
         assert_eq!(format_host_port("127.0.0.1", 8100), "127.0.0.1:8100");
         assert_eq!(format_host_port("::1", 8100), "[::1]:8100");
         assert_eq!(format_host_port("[::1]", 8100), "[::1]:8100");
+    }
+
+    #[test]
+    fn accepts_content_length_and_chunked_health_responses() {
+        let content_length = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "content-type: text/plain\r\n",
+            "content-length: 2\r\n",
+            "connection: close\r\n\r\n",
+            "ok"
+        );
+        let chunked = concat!(
+            "HTTP/1.1 200 OK\r\n",
+            "content-type: text/plain; charset=utf-8\r\n",
+            "transfer-encoding: chunked\r\n",
+            "connection: close\r\n\r\n",
+            "2\r\nok\r\n0\r\n\r\n"
+        );
+        assert!(health_response_is_ok(content_length));
+        assert!(health_response_is_ok(chunked));
+    }
+
+    #[test]
+    fn rejects_malformed_or_unhealthy_http_responses() {
+        assert!(!health_response_is_ok(
+            "HTTP/1.1 503 Service Unavailable\r\ncontent-length: 2\r\n\r\nok"
+        ));
+        assert!(!health_response_is_ok(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n3\r\nbad\r\n0\r\n\r\n"
+        ));
+        assert!(!health_response_is_ok(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n2\r\no"
+        ));
     }
 }

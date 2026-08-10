@@ -5,7 +5,7 @@ import os from "node:os";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 
-import { buildServerUrl, getLauncherPaths, getServerStatus, parseLauncherArgs, stopServerProcess, waitForServerReady } from "../src/launcher.js";
+import { buildServerUrl, getLauncherPaths, getServerStatus, parseLauncherArgs, startServerProcess, stopServerProcess, waitForServerReady } from "../src/launcher.js";
 
 test("parseLauncherArgs defaults to background start and supports explicit commands", () => {
   assert.deepEqual(parseLauncherArgs([]), { command: "start", background: true });
@@ -20,7 +20,9 @@ test("getLauncherPaths stores pid and log files under run/", () => {
   assert.equal(paths.runDir, path.join("/tmp/devbox-project", "run"));
   assert.equal(paths.pidFile, path.join("/tmp/devbox-project", "run", "devbox.pid"));
   assert.equal(paths.logFile, path.join("/tmp/devbox-project", "run", "devbox.log"));
+  assert.equal(paths.implementationFile, path.join("/tmp/devbox-project", "run", "devbox.implementation"));
   assert.equal(paths.managedPidFile, path.join("/tmp/devbox-project", "run", "mcp.pid"));
+  assert.equal(paths.managedImplementationFile, path.join("/tmp/devbox-project", "run", "mcp.implementation"));
   assert.equal(paths.managedStdoutLogFile, path.join("/tmp/devbox-project", "run", "mcp.stdout.log"));
   assert.equal(paths.guardianDesiredStateFile, path.join("/tmp/devbox-project", "run", "guardian.desired-state.json"));
 });
@@ -52,6 +54,30 @@ test("waitForServerReady waits until the health endpoint is actually ready", asy
     assert.match(result.healthUrl, /\/healthz$/u);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+
+
+test("background start does not persist ownership when spawn fails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-launcher-spawn-fail-"));
+  try {
+    const paths = getLauncherPaths(root);
+    await assert.rejects(
+      startServerProcess(root, {
+        preparedSpec: {
+          implementation: "rust",
+          file: path.join(root, "missing-devbox-binary"),
+          args: [],
+          env: process.env,
+        },
+      }),
+      /could not start/u,
+    );
+    await assert.rejects(readFile(paths.pidFile, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(paths.implementationFile, "utf8"), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -87,6 +113,7 @@ test("status recognizes a healthy externally managed MCP without claiming stop o
     const paths = getLauncherPaths(root);
     await mkdir(paths.runDir, { recursive: true });
     await writeFile(paths.managedPidFile, `${process.pid}\n`, "utf8");
+    await writeFile(paths.managedImplementationFile, "rust\n", "utf8");
 
     const status = await getServerStatus(root, { url, healthTimeoutMs: 1000 });
     assert.equal(status.running, true);
@@ -94,6 +121,7 @@ test("status recognizes a healthy externally managed MCP without claiming stop o
     assert.equal(status.pid, process.pid);
     assert.equal(status.manager, "managed-mcp");
     assert.equal(status.managedExternally, true);
+    assert.equal(status.implementation, "rust");
     assert.equal(status.pidFile, paths.managedPidFile);
 
     const stop = await stopServerProcess(root, { url, healthTimeoutMs: 1000 });
@@ -103,6 +131,47 @@ test("status recognizes a healthy externally managed MCP without claiming stop o
     await assert.rejects(readFile(paths.guardianDesiredStateFile, "utf8"), { code: "ENOENT" });
   } finally {
     await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("managed status derives health URL from .env.runtime", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-managed-url-"));
+  const server = createServer((request, response) => {
+    response.writeHead(request.url === "/healthz" ? 200 : 404, { "content-type": "text/plain" });
+    response.end(request.url === "/healthz" ? "ok" : "not found");
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  try {
+    const paths = getLauncherPaths(root);
+    await mkdir(paths.runDir, { recursive: true });
+    await writeFile(paths.managedPidFile, `${process.pid}\n`, "utf8");
+    await writeFile(paths.managedImplementationFile, "rust\n", "utf8");
+    await writeFile(path.join(root, ".env.runtime"), `HOST=127.0.0.1\nPORT=${address.port}\n`, "utf8");
+
+    const status = await getServerStatus(root, { healthTimeoutMs: 1000 });
+    assert.equal(status.healthy, true);
+    assert.equal(status.url, `http://127.0.0.1:${address.port}`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("status removes stale managed PID and implementation metadata", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-managed-stale-"));
+  try {
+    const paths = getLauncherPaths(root);
+    await mkdir(paths.runDir, { recursive: true });
+    await writeFile(paths.managedPidFile, "99999999\n", "utf8");
+    await writeFile(paths.managedImplementationFile, "rust\n", "utf8");
+
+    const status = await getServerStatus(root, { url: "http://127.0.0.1:9", healthTimeoutMs: 100 });
+    assert.equal(status.running, false);
+    await assert.rejects(readFile(paths.managedPidFile, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(paths.managedImplementationFile, "utf8"), { code: "ENOENT" });
+  } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
