@@ -159,6 +159,33 @@ try {
   });
   assert.ok(remoteMetadata.runtime, "auth=none JS root still exposes runtime to remote requests");
   assert.ok(remoteMetadata.devbox, "auth=none JS root still exposes devbox to remote requests");
+  const initializeBody = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "gateway-host-smoke", version: "1" },
+    },
+  });
+  const remoteMcp = await rawRequest({
+    port: noAuth.port,
+    method: "POST",
+    pathname: "/mcp",
+    headers: {
+      Host: "devbox.example",
+      Accept: "application/json, text/event-stream",
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(initializeBody),
+      "MCP-Protocol-Version": "2025-06-18",
+      "X-Forwarded-For": "203.0.113.8",
+      "X-Forwarded-Proto": "https",
+    },
+    body: initializeBody,
+  });
+  assert.equal(remoteMcp.status, 200, `public MCP Host must pass both gateway and rmcp validation: ${remoteMcp.body}`);
+  assert.match(remoteMcp.headers["content-type"] || "", /^text\/event-stream/);
 
   const allowedPreflight = await rawRequest({
     port: noAuth.port,

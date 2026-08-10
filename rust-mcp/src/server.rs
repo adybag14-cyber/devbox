@@ -42,7 +42,7 @@ use crate::{
     docker_files::{DockerFileBackend, DockerListOptions},
     execution::{AcquireRequest, ExecutionScheduler, SchedulerConfig},
     files::{FileService, LargeReadResult, LargeWriteResult, ListOptions, ProcessResult},
-    gateway::{GatewayRequestContext, GatewayState},
+    gateway::{GatewayRequestContext, GatewayState, transport_allowed_hosts},
     github_auth::GithubAuthService,
     host_inspect::{InspectFileRequest, inspect_host_file},
     job_manager::{JobManager, StartProgramJob},
@@ -2299,6 +2299,7 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
     });
     let service_handler = handler.clone();
     let transport_config = StreamableHttpServerConfig::default()
+        .with_allowed_hosts(transport_allowed_hosts(&config))
         .with_legacy_session_mode(false)
         .with_json_response(false)
         .with_cancellation_token(cancellation);

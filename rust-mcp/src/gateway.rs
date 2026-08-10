@@ -41,6 +41,35 @@ pub struct GatewayState {
     active_requests: Arc<ActiveRequestRegistry>,
 }
 
+pub(crate) fn transport_allowed_hosts(config: &Config) -> Vec<String> {
+    trusted_hosts(config.public_base_url.as_deref())
+}
+
+fn trusted_hosts(public_base_url: Option<&str>) -> Vec<String> {
+    let mut hosts = vec![
+        "localhost".to_owned(),
+        "127.0.0.1".to_owned(),
+        "::1".to_owned(),
+    ];
+    if let Some(public_base_url) = public_base_url
+        && let Ok(url) = Url::parse(public_base_url)
+        && let Some(host) = url.host_str()
+    {
+        let host = normalize_hostname(host);
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    hosts
+}
+
+fn normalize_hostname(value: &str) -> String {
+    value
+        .trim_matches('[')
+        .trim_matches(']')
+        .to_ascii_lowercase()
+}
+
 impl GatewayState {
     #[must_use]
     pub fn new(
@@ -48,16 +77,9 @@ impl GatewayState {
         http_usage: Arc<UsageLogger>,
         active_requests: Arc<ActiveRequestRegistry>,
     ) -> Self {
-        let mut allowed_hosts = ["127.0.0.1", "localhost", "[::1]"]
+        let allowed_hosts = transport_allowed_hosts(&config)
             .into_iter()
-            .map(str::to_owned)
             .collect::<HashSet<_>>();
-        if let Some(public_base_url) = config.public_base_url.as_deref()
-            && let Ok(url) = Url::parse(public_base_url)
-            && let Some(host) = url.host_str()
-        {
-            allowed_hosts.insert(host.to_ascii_lowercase());
-        }
         let mut allowed_origins = Vec::new();
         for origin in config
             .gateway_bridge
@@ -232,7 +254,7 @@ fn validate_host(headers: &HeaderMap, allowed_hosts: &HashSet<String>) -> Option
     let Some(hostname) = hostname_from_host_header(host_header) else {
         return Some(host_failure(&format!("Invalid Host header: {host_header}")));
     };
-    if !allowed_hosts.contains(&hostname.to_ascii_lowercase()) {
+    if !allowed_hosts.contains(&normalize_hostname(&hostname)) {
         return Some(host_failure(&format!("Invalid Host: {hostname}")));
     }
     None
@@ -366,6 +388,38 @@ fn apply_bridge_headers(request_headers: &HeaderMap, response: &mut Response, or
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trusted_hosts_include_only_local_and_configured_public_hostname() {
+        let hosts = trusted_hosts(Some("https://MCP.Example.com:443/some/path"));
+        assert_eq!(
+            hosts,
+            vec!["localhost", "127.0.0.1", "::1", "mcp.example.com"]
+        );
+        assert!(
+            !hosts
+                .iter()
+                .any(|host| host == "mcp.example.com.evil.example")
+        );
+    }
+
+    #[test]
+    fn public_host_validation_rejects_lookalike_domains() {
+        let allowed_hosts = trusted_hosts(Some("https://mcp.example.com"))
+            .into_iter()
+            .collect::<HashSet<_>>();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("mcp.example.com:443"),
+        );
+        assert!(validate_host(&headers, &allowed_hosts).is_none());
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_static("mcp.example.com.evil.example"),
+        );
+        assert!(validate_host(&headers, &allowed_hosts).is_some());
+    }
 
     #[test]
     fn host_parser_matches_ipv4_ipv6_and_hostname_forms() {
