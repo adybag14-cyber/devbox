@@ -397,8 +397,8 @@ fn load_devbox_default_user(runtime_mode: RuntimeMode) -> String {
             if runtime_mode == RuntimeMode::Docker {
                 "root".to_owned()
             } else {
-                env::var("USERNAME")
-                    .or_else(|_| env::var("USER"))
+                env::var("USER")
+                    .or_else(|_| env::var("LOGNAME"))
                     .unwrap_or_default()
             }
         })

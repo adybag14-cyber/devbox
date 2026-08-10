@@ -515,12 +515,51 @@ impl JobStore {
         cancelled.insert("cancelRequested".to_owned(), json!(true));
         create_marker_once(&paths.cancel, &format!("{completed}\n")).await?;
         if let Some(pid) = u32_field(&cancelled, "runnerPid") {
-            terminate_process_tree(pid).await;
+            terminate_job_runner_gracefully(pid, &paths.status).await;
         }
         cancelled.insert("runnerAlive".to_owned(), json!(false));
         cancelled.insert("jobDir".to_owned(), json!(path_text(&paths.dir)));
         Ok(Value::Object(cancelled))
     }
+}
+
+#[cfg(windows)]
+async fn terminate_job_runner_gracefully(pid: u32, _status_path: &Path) {
+    terminate_process_tree(pid).await;
+}
+
+#[cfg(unix)]
+async fn terminate_job_runner_gracefully(pid: u32, status_path: &Path) {
+    use nix::{
+        sys::signal::{Signal, killpg},
+        unistd::Pid,
+    };
+
+    let Ok(raw_pid) = i32::try_from(pid) else {
+        return;
+    };
+    let group = Pid::from_raw(raw_pid);
+    let _ = killpg(group, Signal::SIGTERM);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        if read_json(status_path)
+            .await
+            .ok()
+            .is_some_and(|status| is_terminal(status_name(&status)) && status.get("logs").is_some())
+        {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let _ = killpg(group, Signal::SIGKILL);
+}
+
+#[cfg(not(any(windows, unix)))]
+async fn terminate_job_runner_gracefully(pid: u32, _status_path: &Path) {
+    terminate_process_tree(pid).await;
 }
 
 #[derive(Debug)]
