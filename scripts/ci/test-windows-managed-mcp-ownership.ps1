@@ -10,7 +10,7 @@ if ($errors.Count -gt 0) {
     throw "PowerShell parser errors in $startPath`n$($errors | Out-String)"
 }
 
-foreach ($name in @('Get-WindowsPathAliases', 'Test-IsOwnedServerCommandLine', 'Find-OwnedServerProcess', 'Stop-ExistingServerIfOwned')) {
+foreach ($name in @('Split-WindowsCommandLine', 'Resolve-McpComparablePath', 'Test-IsOwnedServerCommandLine', 'Find-OwnedServerProcess', 'Stop-ExistingServerIfOwned')) {
     $functionAst = $ast.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -106,12 +106,12 @@ try {
     Initialize-DummyCheckout -Path $checkoutA
     Initialize-DummyCheckout -Path $checkoutB
 
-    $checkoutBAliases = @(Get-WindowsPathAliases -Path $checkoutB)
-    $shortCheckoutB = $checkoutBAliases | Where-Object { $_ -ne $checkoutB.ToLowerInvariant() } | Select-Object -First 1
-    if ($shortCheckoutB) {
-        $shortCommand = ('node.exe --env-file={0}\.env.runtime {0}\src\server.js' -f $shortCheckoutB)
-        if (-not (Test-IsOwnedServerCommandLine -CommandLine $shortCommand -ProjectRoot $checkoutB)) {
-            throw "8.3 path alias was not recognized as the same checkout root: $shortCheckoutB"
+    $programFilesShort = 'C:\PROGRA~1'
+    if ((Test-Path -LiteralPath $programFilesShort) -and -not [string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+        $shortComparable = Resolve-McpComparablePath -Path $programFilesShort
+        $longComparable = Resolve-McpComparablePath -Path $env:ProgramFiles
+        if ($shortComparable -ne $longComparable) {
+            throw "8.3 path canonicalization mismatch: $programFilesShort -> $shortComparable; $env:ProgramFiles -> $longComparable"
         }
     }
 
@@ -131,6 +131,13 @@ try {
     # New managed launches use absolute arguments, so checkout-local recovery is
     # still possible even when its PID sidecar is missing.
     $processBAbsolute = Start-DummyMcp -Path $checkoutB -AbsoluteArguments
+    $absoluteCim = Wait-ForCimProcess -ProcessId $processBAbsolute.Id
+    $absoluteArgs = @(Split-WindowsCommandLine -CommandLine ([string]$absoluteCim.CommandLine))
+    $absoluteServer = Resolve-McpComparablePath -Path ([string]$absoluteArgs[$absoluteArgs.Count - 1])
+    $expectedServer = (Resolve-McpComparablePath -Path $checkoutB) + '\src\server.js'
+    if ($absoluteServer -ne $expectedServer) {
+        throw "Windows command-line path canonicalization did not resolve to checkout B. Expected $expectedServer got $absoluteServer"
+    }
     $foundAbsolute = Wait-ForOwnedServerProcess -PidFile $pidFileB -ProjectRoot $checkoutB -ExpectedProcessId $processBAbsolute.Id
     if ([int]$foundAbsolute.ProcessId -ne $processBAbsolute.Id) {
         throw 'Absolute checkout-local MCP recovery returned an unexpected PID.'

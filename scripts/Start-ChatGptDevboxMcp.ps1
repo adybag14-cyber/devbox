@@ -537,47 +537,65 @@ function Get-CommandLineForPid {
     return $proc.CommandLine
 }
 
-function Get-WindowsPathAliases {
-    param([Parameter(Mandatory = $true)][string]$Path)
+function Split-WindowsCommandLine {
+    param([Parameter(Mandatory = $true)][string]$CommandLine)
 
-    $aliases = New-Object System.Collections.Generic.List[string]
-    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
-    try {
-        $resolved = (Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop).FullName.TrimEnd('\')
-    } catch {
-        $resolved = $fullPath
-    }
-
-    foreach ($candidate in @($fullPath, $resolved)) {
-        $normalized = ([string]$candidate).Replace('/', '\').ToLowerInvariant()
-        if (-not $aliases.Contains($normalized)) {
-            $aliases.Add($normalized)
-        }
-    }
-
-    if (-not ('DevboxMcpPathNativeMethods' -as [type])) {
+    if (-not ('DevboxMcpCommandLineNativeMethods' -as [type])) {
         Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Text;
 
-public static class DevboxMcpPathNativeMethods {
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferLength);
+public static class DevboxMcpCommandLineNativeMethods {
+    [DllImport("shell32.dll", SetLastError = true)]
+    private static extern IntPtr CommandLineToArgvW(
+        [MarshalAs(UnmanagedType.LPWStr)] string commandLine,
+        out int argumentCount
+    );
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr LocalFree(IntPtr memory);
+
+    public static string[] Split(string commandLine) {
+        int count;
+        IntPtr argv = CommandLineToArgvW(commandLine, out count);
+        if (argv == IntPtr.Zero) {
+            return Array.Empty<string>();
+        }
+        try {
+            var arguments = new List<string>(count);
+            for (int i = 0; i < count; i++) {
+                IntPtr value = Marshal.ReadIntPtr(argv, i * IntPtr.Size);
+                arguments.Add(Marshal.PtrToStringUni(value) ?? string.Empty);
+            }
+            return arguments.ToArray();
+        } finally {
+            LocalFree(argv);
+        }
+    }
 }
 '@
     }
 
-    $buffer = New-Object System.Text.StringBuilder 32768
-    $length = [DevboxMcpPathNativeMethods]::GetShortPathName($resolved, $buffer, [uint32]$buffer.Capacity)
-    if ($length -gt 0 -and $length -lt $buffer.Capacity) {
-        $shortPath = $buffer.ToString().TrimEnd('\').Replace('/', '\').ToLowerInvariant()
-        if (-not $aliases.Contains($shortPath)) {
-            $aliases.Add($shortPath)
+    return @([DevboxMcpCommandLineNativeMethods]::Split($CommandLine))
+}
+
+function Resolve-McpComparablePath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+    try {
+        $resolved = (Get-Item -LiteralPath $Path -Force -ErrorAction Stop).FullName
+    } catch {
+        try {
+            $resolved = [IO.Path]::GetFullPath($Path)
+        } catch {
+            return $null
         }
     }
-
-    return @($aliases)
+    return ([string]$resolved).TrimEnd('\').Replace('/', '\').ToLowerInvariant()
 }
 
 function Test-IsOwnedServerCommandLine {
@@ -597,17 +615,42 @@ function Test-IsOwnedServerCommandLine {
         return ($isLegacyJs -or $isRust)
     }
 
-    foreach ($normalizedRoot in @(Get-WindowsPathAliases -Path $ProjectRoot)) {
-        $isOwnedJs = (
-            $text.Contains("$normalizedRoot\src\server.js") -and
-            $text.Contains("$normalizedRoot\.env.runtime")
-        )
-        $isOwnedRust = $text.Contains("$normalizedRoot\rust-mcp\target\release\devbox-mcp.exe")
-        if ($isOwnedJs -or $isOwnedRust) {
-            return $true
+    $normalizedRoot = Resolve-McpComparablePath -Path $ProjectRoot
+    if ([string]::IsNullOrWhiteSpace($normalizedRoot)) {
+        return $false
+    }
+    $expectedServer = "$normalizedRoot\src\server.js"
+    $expectedRuntimeEnv = "$normalizedRoot\.env.runtime"
+    $expectedRust = "$normalizedRoot\rust-mcp\target\release\devbox-mcp.exe"
+    $arguments = @(Split-WindowsCommandLine -CommandLine ([string]$CommandLine))
+    if ($arguments.Count -eq 0) {
+        return $false
+    }
+
+    $executable = Resolve-McpComparablePath -Path ([string]$arguments[0])
+    if ($executable -eq $expectedRust) {
+        return $true
+    }
+
+    $serverMatches = $false
+    $runtimeEnvMatches = $false
+    for ($i = 1; $i -lt $arguments.Count; $i++) {
+        $argument = [string]$arguments[$i]
+        if ($argument.StartsWith('--env-file=', [StringComparison]::OrdinalIgnoreCase)) {
+            $runtimePath = $argument.Substring('--env-file='.Length)
+            $runtimeEnvMatches = (Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv
+            continue
+        }
+        if ($argument.Equals('--env-file', [StringComparison]::OrdinalIgnoreCase) -and ($i + 1) -lt $arguments.Count) {
+            $i++
+            $runtimeEnvMatches = (Resolve-McpComparablePath -Path ([string]$arguments[$i])) -eq $expectedRuntimeEnv
+            continue
+        }
+        if ((Resolve-McpComparablePath -Path $argument) -eq $expectedServer) {
+            $serverMatches = $true
         }
     }
-    return $false
+    return ($serverMatches -and $runtimeEnvMatches)
 }
 
 function Find-OwnedServerProcess {
