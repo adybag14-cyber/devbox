@@ -10,7 +10,7 @@ if ($errors.Count -gt 0) {
     throw "PowerShell parser errors in $startPath`n$($errors | Out-String)"
 }
 
-foreach ($name in @('Test-IsOwnedServerCommandLine', 'Find-OwnedServerProcess', 'Stop-ExistingServerIfOwned')) {
+foreach ($name in @('Get-WindowsPathAliases', 'Test-IsOwnedServerCommandLine', 'Find-OwnedServerProcess', 'Stop-ExistingServerIfOwned')) {
     $functionAst = $ast.Find({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -105,6 +105,15 @@ function Start-DummyMcp {
 try {
     Initialize-DummyCheckout -Path $checkoutA
     Initialize-DummyCheckout -Path $checkoutB
+
+    $checkoutBAliases = @(Get-WindowsPathAliases -Path $checkoutB)
+    $shortCheckoutB = $checkoutBAliases | Where-Object { $_ -ne $checkoutB.ToLowerInvariant() } | Select-Object -First 1
+    if ($shortCheckoutB) {
+        $shortCommand = ('node.exe --env-file={0}\.env.runtime {0}\src\server.js' -f $shortCheckoutB)
+        if (-not (Test-IsOwnedServerCommandLine -CommandLine $shortCommand -ProjectRoot $checkoutB)) {
+            throw "8.3 path alias was not recognized as the same checkout root: $shortCheckoutB"
+        }
+    }
 
     # Reproduce the production incident: checkout A has a legacy relative JS MCP,
     # while checkout B has no PID file. B must never discover or stop A.

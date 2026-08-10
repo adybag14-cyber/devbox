@@ -182,6 +182,49 @@ function Get-CommandLineForPid {
     return $proc.CommandLine
 }
 
+function Get-WindowsPathAliases {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $aliases = New-Object System.Collections.Generic.List[string]
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    try {
+        $resolved = (Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop).FullName.TrimEnd('\')
+    } catch {
+        $resolved = $fullPath
+    }
+
+    foreach ($candidate in @($fullPath, $resolved)) {
+        $normalized = ([string]$candidate).Replace('/', '\').ToLowerInvariant()
+        if (-not $aliases.Contains($normalized)) {
+            $aliases.Add($normalized)
+        }
+    }
+
+    if (-not ('DevboxMcpPathNativeMethods' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class DevboxMcpPathNativeMethods {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferLength);
+}
+'@
+    }
+
+    $buffer = New-Object System.Text.StringBuilder 32768
+    $length = [DevboxMcpPathNativeMethods]::GetShortPathName($resolved, $buffer, [uint32]$buffer.Capacity)
+    if ($length -gt 0 -and $length -lt $buffer.Capacity) {
+        $shortPath = $buffer.ToString().TrimEnd('\').Replace('/', '\').ToLowerInvariant()
+        if (-not $aliases.Contains($shortPath)) {
+            $aliases.Add($shortPath)
+        }
+    }
+
+    return @($aliases)
+}
+
 function Test-IsOwnedServerCommandLine {
     param(
         [string]$CommandLine,
@@ -199,13 +242,17 @@ function Test-IsOwnedServerCommandLine {
         return ($isLegacyJs -or $isRust)
     }
 
-    $normalizedRoot = [IO.Path]::GetFullPath($ProjectRoot).TrimEnd('\').Replace('/', '\').ToLowerInvariant()
-    $isOwnedJs = (
-        $text.Contains("$normalizedRoot\src\server.js") -and
-        $text.Contains("$normalizedRoot\.env.runtime")
-    )
-    $isOwnedRust = $text.Contains("$normalizedRoot\rust-mcp\target\release\devbox-mcp.exe")
-    return ($isOwnedJs -or $isOwnedRust)
+    foreach ($normalizedRoot in @(Get-WindowsPathAliases -Path $ProjectRoot)) {
+        $isOwnedJs = (
+            $text.Contains("$normalizedRoot\src\server.js") -and
+            $text.Contains("$normalizedRoot\.env.runtime")
+        )
+        $isOwnedRust = $text.Contains("$normalizedRoot\rust-mcp\target\release\devbox-mcp.exe")
+        if ($isOwnedJs -or $isOwnedRust) {
+            return $true
+        }
+    }
+    return $false
 }
 
 function Test-IsOwnedHostCloudflaredCommandLine {
