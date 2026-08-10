@@ -46,10 +46,11 @@ while stack:
         continue
     mode = info.st_mode
     kind = "l" if stat.S_ISLNK(mode) else "d" if stat.S_ISDIR(mode) else "f" if stat.S_ISREG(mode) else "?"
-    entries.append(f"{kind}\t{current}")
-    if len(entries) >= max_entries:
-        truncated = True
-        break
+    if depth > 0 or not stat.S_ISDIR(mode) or recursive:
+        entries.append(f"{kind}\t{current}")
+        if len(entries) >= max_entries:
+            truncated = True
+            break
     if not recursive or not stat.S_ISDIR(mode) or depth >= max_depth:
         continue
     try:
@@ -558,6 +559,7 @@ mod tests {
     fn listing_script_does_not_interpolate_user_paths() {
         assert!(!LIST_PYTHON.contains("{path}"));
         assert!(LIST_PYTHON.contains("sys.argv[1]"));
+        assert!(LIST_PYTHON.contains("if depth > 0 or not stat.S_ISDIR(mode) or recursive:"));
     }
 
     #[test]

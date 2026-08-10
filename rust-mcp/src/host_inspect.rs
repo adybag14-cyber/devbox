@@ -19,9 +19,7 @@ use crate::{
 const MAX_HASH_BYTES: u64 = 8 * 1024 * 1024;
 const PREVIEW_CHARS: usize = 400;
 const POWERSHELL_EXTENSIONS: &[&str] = &[".ps1", ".psm1", ".psd1"];
-const MOJIBAKE_MARKERS: &[&str] = &[
-    "â€”", "â€“", "â€œ", "â€�", "â€˜", "â€™", "â€¦", "â€¢", "ðŸ", "Ã", "Â",
-];
+const MOJIBAKE_MARKERS: &[&str] = &["â€”", "â€“", "â€œ", "â€�", "â€˜", "â€™", "â€¦", "â€¢", "ðŸ"];
 
 #[derive(Debug, Clone)]
 pub struct InspectFileRequest {
@@ -471,6 +469,18 @@ mod tests {
             .replace_nanosecond(735_970_000)
             .unwrap();
         assert_eq!(format_javascript_iso_utc(value), "1970-01-01T00:00:00.736Z");
+    }
+
+    #[test]
+    fn standalone_latin_letters_are_not_mojibake_markers() {
+        let mut info = json!({"observations": []});
+        inspect_text_sample(&mut info, "Ã Â".as_bytes(), None);
+        assert_eq!(info["utf8_valid"], true);
+        assert_eq!(info["suspicious_mojibake_count"], 0);
+
+        let mut corrupted = json!({"observations": []});
+        inspect_text_sample(&mut corrupted, "â€”".as_bytes(), None);
+        assert!(corrupted["suspicious_mojibake_count"].as_u64().unwrap() > 0);
     }
 
     #[test]

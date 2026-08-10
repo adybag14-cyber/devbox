@@ -103,11 +103,7 @@ impl LifecycleService {
             ),
         )
         .await?;
-        if fs::rename(&temporary, &path).await.is_err() {
-            fs::remove_file(&path).await.ok();
-            fs::rename(&temporary, &path).await?;
-        }
-        Ok(())
+        replace_file_preserving_previous(&temporary, &path).await
     }
 
     /// Apply one start/stop/restart/recreate mutation under the shared lifecycle gate.
@@ -517,6 +513,43 @@ fn is_missing_container_error(error: &anyhow::Error) -> bool {
     text.contains("no such container") || text.contains("no such object")
 }
 
+async fn replace_file_preserving_previous(
+    temporary: &std::path::Path,
+    path: &std::path::Path,
+) -> Result<()> {
+    match fs::rename(temporary, path).await {
+        Ok(()) => return Ok(()),
+        Err(first_error) => {
+            if fs::metadata(path).await.is_err() {
+                fs::remove_file(temporary).await.ok();
+                return Err(first_error.into());
+            }
+        }
+    }
+
+    let backup = path.with_extension(format!("{}.bak", unique_suffix()));
+    fs::rename(path, &backup)
+        .await
+        .with_context(|| format!("preserve previous state file {}", path.display()))?;
+    match fs::rename(temporary, path).await {
+        Ok(()) => {
+            fs::remove_file(&backup).await.ok();
+            Ok(())
+        }
+        Err(replacement_error) => {
+            let rollback = fs::rename(&backup, path).await;
+            fs::remove_file(temporary).await.ok();
+            if let Err(rollback_error) = rollback {
+                bail!(
+                    "failed to replace state file {}: {replacement_error}; rollback also failed: {rollback_error}",
+                    path.display()
+                );
+            }
+            Err(replacement_error.into())
+        }
+    }
+}
+
 fn retired_container_name(base: &str) -> String {
     format!("{base}-retired-{}", unique_suffix())
 }
@@ -533,6 +566,26 @@ fn unique_suffix() -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[tokio::test]
+    async fn state_file_replacement_preserves_or_restores_previous_value() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("state.json");
+        let replacement = temp.path().join("replacement.tmp");
+        fs::write(&path, b"old").await.expect("old state");
+        fs::write(&replacement, b"new").await.expect("new state");
+        replace_file_preserving_previous(&replacement, &path)
+            .await
+            .expect("replace state");
+        assert_eq!(fs::read(&path).await.expect("new state read"), b"new");
+
+        let missing_replacement = temp.path().join("missing.tmp");
+        let error = replace_file_preserving_previous(&missing_replacement, &path)
+            .await
+            .expect_err("missing replacement must fail");
+        assert!(!error.to_string().is_empty());
+        assert_eq!(fs::read(&path).await.expect("restored state read"), b"new");
+    }
 
     #[test]
     fn docker_info_parser_matches_javascript_shape() {

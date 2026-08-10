@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -99,13 +99,17 @@ impl FileService {
         if !metadata.is_file() {
             bail!("Not a regular file.");
         }
-        let bytes = match fs::read(path).await {
-            Ok(bytes) => bytes,
+        let file = match File::open(path).await {
+            Ok(file) => file,
             Err(error) => return Err(anyhow::anyhow!(javascript_open_error(path, &error))),
         };
-        let end = bytes.len().min(max_bytes.max(1));
+        let limit = u64::try_from(max_bytes.max(1)).unwrap_or(u64::MAX);
+        let mut bytes = Vec::new();
+        if let Err(error) = file.take(limit).read_to_end(&mut bytes).await {
+            return Err(anyhow::anyhow!(javascript_open_error(path, &error)));
+        }
         Ok(ProcessResult::success(
-            String::from_utf8_lossy(&bytes[..end]).into_owned(),
+            String::from_utf8_lossy(&bytes).into_owned(),
             String::new(),
         ))
     }
@@ -435,13 +439,33 @@ fn build_list_result(
     ProcessResult::success(stdout, stderr)
 }
 fn absolute_lexical_path(path: &Path) -> PathBuf {
-    if path.is_absolute() {
+    let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
             .join(path)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            Component::RootDir => normalized.push(component.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(
+                    normalized.components().next_back(),
+                    Some(Component::Normal(_))
+                ) {
+                    normalized.pop();
+                } else if !normalized.has_root() {
+                    normalized.push(component.as_os_str());
+                }
+            }
+            Component::Normal(value) => normalized.push(value),
+        }
     }
+    normalized
 }
 
 fn javascript_stat_error(path: &Path, error: &std::io::Error) -> String {
@@ -586,6 +610,41 @@ mod tests {
                 path.to_string_lossy()
             )
         );
+    }
+
+    #[tokio::test]
+    async fn text_read_returns_only_the_requested_prefix() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("prefix.txt");
+        fs::write(&path, b"abcdefghijklmnopqrstuvwxyz")
+            .await
+            .expect("write fixture");
+        let result = FileService::new()
+            .read_text(&path, 5)
+            .await
+            .expect("bounded text read");
+        assert_eq!(result.stdout, "abcde");
+    }
+
+    #[test]
+    fn lexical_lock_key_normalizes_dot_and_parent_aliases() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let direct = absolute_lexical_path(&temp.path().join("a").join("c.txt"));
+        let aliased = absolute_lexical_path(
+            &temp
+                .path()
+                .join("a")
+                .join("b")
+                .join("..")
+                .join(".")
+                .join("c.txt"),
+        );
+        assert_eq!(direct, aliased);
+        let service = FileService::new();
+        assert!(Arc::ptr_eq(
+            &service.lock_for(&direct),
+            &service.lock_for(&aliased)
+        ));
     }
 
     #[tokio::test]
