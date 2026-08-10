@@ -150,13 +150,20 @@ try {
     Stop-Process -Id $processBAbsolute.Id -Force
     Start-Sleep -Milliseconds 200
 
-    # Existing installations can still have a relative JS command line. A valid
-    # checkout-local PID file remains authoritative for that legacy shape.
+    # A PID file is not sufficient authority for a relative command line because
+    # stale/reused PIDs cannot prove which checkout owns that process. Fail closed.
     $processBLegacy = Start-DummyMcp -Path $checkoutB
     Set-Content -LiteralPath $pidFileB -Value $processBLegacy.Id -Encoding ASCII
     $foundLegacy = Find-OwnedServerProcess -PidFile $pidFileB -ProjectRoot $checkoutB
-    if (-not $foundLegacy -or [int]$foundLegacy.ProcessId -ne $processBLegacy.Id) {
-        throw 'Checkout-local PID file no longer recognizes a legacy relative JS MCP.'
+    if ($foundLegacy) {
+        throw "Relative command line was incorrectly authorized by PID metadata: $($foundLegacy.CommandLine)"
+    }
+    Stop-ExistingServerIfOwned -PidFile $pidFileB -ProjectRoot $checkoutB
+    if (-not (Get-Process -Id $processBLegacy.Id -ErrorAction SilentlyContinue)) {
+        throw 'Fail-closed PID recovery killed a relative command that could not prove checkout ownership.'
+    }
+    if (Test-Path -LiteralPath $pidFileB) {
+        throw 'Rejected stale/unprovable PID metadata was not removed.'
     }
 
     Write-Host 'Windows managed MCP cross-checkout ownership checks passed.'

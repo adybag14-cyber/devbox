@@ -15,6 +15,39 @@ const projectRoot = path.resolve(scriptDir, "..", "..");
 const serverPath = path.join(projectRoot, "src", "server.js");
 const binaryPath = path.join(projectRoot, "rust-mcp", "target", "debug", process.platform === "win32" ? "devbox-mcp.exe" : "devbox-mcp");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const fetchHealthBefore = async (url, deadline) => {
+  const remainingMs = Math.max(1, deadline - Date.now());
+  const signal = AbortSignal.timeout(Math.min(1_000, remainingMs));
+  const response = await fetch(url, { signal });
+  const body = await response.text();
+  return { ok: response.ok, body };
+};
+
+const closeAuditSides = async (jsSide, rustSide) => {
+  const results = await Promise.allSettled([
+    jsSide?.close?.(),
+    rustSide?.close?.(),
+  ]);
+  const failures = results
+    .map((result, index) => ({ result, side: index === 0 ? "JavaScript" : "Rust" }))
+    .filter(({ result }) => result.status === "rejected")
+    .map(({ result, side }) => new Error(`${side} audit cleanup failed: ${result.reason?.stack || result.reason}`));
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "One or more result-parity audit sides failed cleanup.");
+  }
+};
+
+{
+  let rustClosed = false;
+  await assert.rejects(
+    closeAuditSides(
+      { close: async () => { throw new Error("synthetic JS cleanup failure"); } },
+      { close: async () => { rustClosed = true; } },
+    ),
+    /result-parity audit sides failed cleanup/u,
+  );
+  assert.equal(rustClosed, true, "Rust cleanup must run even when JavaScript cleanup rejects");
+}
 const fixtureRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-result-fixture-"));
 const jsStateRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-result-js-state-"));
 const rustStateRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-result-rust-state-"));
@@ -136,7 +169,8 @@ const startRust = async () => {
       const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
       if (early) throw new Error(`Rust server exited ${JSON.stringify(early.result)}\n${stderr}`);
       try {
-        if ((await fetch(new URL("healthz", baseUrl))).ok) {
+        const health = await fetchHealthBefore(new URL("healthz", baseUrl), deadline);
+        if (health.ok && health.body === "ok") {
           ready = true;
           break;
         }
@@ -408,12 +442,27 @@ try {
   const rustCancelled = await rust.client.callTool({ name: "devbox_job_status", arguments: { job_id: rustProgramId, wait_seconds: 10, terminal_only: true } });
   compareResults("devbox_job_status", jsCancelled, rustCancelled);
 } finally {
-  if (js) await js.close();
-  if (rust) await rust.close();
-  await rm(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  await rm(jsStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  await rm(rustStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  await rm(ghConfigRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  let sideCleanupError;
+  try {
+    await closeAuditSides(js, rust);
+  } catch (error) {
+    sideCleanupError = error;
+  }
+  const directoryCleanup = await Promise.allSettled([
+    rm(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+    rm(jsStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+    rm(rustStateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+    rm(ghConfigRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
+  ]);
+  const directoryFailures = directoryCleanup
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason);
+  if (sideCleanupError || directoryFailures.length > 0) {
+    throw new AggregateError(
+      [sideCleanupError, ...directoryFailures].filter(Boolean),
+      "Result-parity audit cleanup failed.",
+    );
+  }
 }
 console.log(JSON.stringify({ ok: differences.length === 0, callCount: comparedCalls, differingCallCount: differences.length, differingCalls: differences.map((entry) => entry.name), differences }, null, 2));
 process.exitCode = differences.length === 0 ? 0 : 2;

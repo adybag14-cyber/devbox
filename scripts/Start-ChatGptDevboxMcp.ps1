@@ -608,11 +608,8 @@ function Test-IsOwnedServerCommandLine {
         return $false
     }
 
-    $text = ([string]$CommandLine).Replace('/', '\').ToLowerInvariant()
     if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-        $isLegacyJs = $text.Contains('src\server.js') -and $text.Contains('.env.runtime')
-        $isRust = $text.Contains('rust-mcp\target\release\devbox-mcp.exe')
-        return ($isLegacyJs -or $isRust)
+        return $false
     }
 
     $normalizedRoot = Resolve-McpComparablePath -Path $ProjectRoot
@@ -669,9 +666,9 @@ function Find-OwnedServerProcess {
         $pidText = (Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
         if ($pidText -match '^\d+$') {
             $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
-            # A checkout-local PID file is the ownership authority for legacy
-            # relative JS launches. The command still has to be an MCP shape.
-            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+            # PID metadata is only a lookup hint. The process command line must
+            # still prove checkout ownership with absolute checkout-local paths.
+            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine) -ProjectRoot $ProjectRoot)) {
                 return $candidate
             }
         }
@@ -716,14 +713,14 @@ function Stop-ExistingServerIfOwned {
     # PID still exists after four seconds. Re-check ownership before issuing one
     # final force-stop so PID reuse can never cause an unrelated process kill.
     $stillOwned = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction SilentlyContinue
-    if ($stillOwned -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$stillOwned.CommandLine))) {
+    if ($stillOwned -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$stillOwned.CommandLine) -ProjectRoot $ProjectRoot)) {
         Assert-StartupDeadline -Phase 'stopping-existing-mcp'
         Stop-Process -Id $ownedPid -Force -ErrorAction SilentlyContinue
         Start-Sleep -Milliseconds 500
     }
 
     $finalProcess = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction SilentlyContinue
-    if ($finalProcess -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$finalProcess.CommandLine))) {
+    if ($finalProcess -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$finalProcess.CommandLine) -ProjectRoot $ProjectRoot)) {
         throw "Failed to stop owned MCP server PID $ownedPid within the bounded stop window. CommandLine: $($finalProcess.CommandLine)"
     }
 
@@ -1785,7 +1782,7 @@ Write-Host "MCP implementation: $mcpImplementation"
     if ($script:startupMcpPid) {
         try {
             $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$script:startupMcpPid) -ErrorAction SilentlyContinue
-            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine) -ProjectRoot $root)) {
                 Stop-Process -Id ([int]$script:startupMcpPid) -Force -ErrorAction SilentlyContinue
             }
         } catch {

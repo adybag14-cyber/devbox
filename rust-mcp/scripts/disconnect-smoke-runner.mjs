@@ -22,6 +22,13 @@ const reservePort = () => new Promise((resolve, reject) => {
 });
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const fetchHealthBefore = async (url, deadline) => {
+  const remainingMs = Math.max(1, deadline - Date.now());
+  const signal = AbortSignal.timeout(Math.min(1_000, remainingMs));
+  const response = await fetch(url, { signal });
+  const body = await response.text();
+  return { ok: response.ok, body };
+};
 const processAlive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -73,8 +80,8 @@ try {
     const early = await Promise.race([exited.then((result) => ({ result })), sleep(100).then(() => null)]);
     if (early) throw new Error(`disconnect smoke server exited early ${JSON.stringify(early.result)}\n${stdout}\n${stderr}`);
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/healthz`);
-      if (response.ok && (await response.text()) === "ok") {
+      const health = await fetchHealthBefore(`http://127.0.0.1:${port}/healthz`, deadline);
+      if (health.ok && health.body === "ok") {
         ready = true;
         break;
       }

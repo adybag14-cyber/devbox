@@ -26,6 +26,50 @@ export const resolveCargoCommand = (env = process.env) => String(env.CARGO_EXE ?
 
 const appendBounded = (existing, chunk) => `${existing}${chunk}`.slice(-MAX_PREFLIGHT_OUTPUT_CHARS);
 
+const waitForChildExit = (child, timeoutMs) => {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let timer;
+    const onExit = () => {
+      if (timer) clearTimeout(timer);
+      resolve(true);
+    };
+    child.once("exit", onExit);
+    timer = setTimeout(() => {
+      child.off("exit", onExit);
+      resolve(child.exitCode !== null || child.signalCode !== null);
+    }, timeoutMs);
+    timer.unref?.();
+  });
+};
+
+const terminateProcessTree = async (child) => {
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;
+  if (process.platform === "win32") {
+    await new Promise((resolve) => {
+      let killer;
+      try {
+        killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      } catch {
+        resolve();
+        return;
+      }
+      killer.once("error", () => resolve());
+      killer.once("exit", () => resolve());
+    });
+    await waitForChildExit(child, 2_000);
+    return;
+  }
+
+  try { process.kill(-child.pid, "SIGTERM"); } catch {}
+  if (await waitForChildExit(child, 1_000)) return;
+  try { process.kill(-child.pid, "SIGKILL"); } catch {}
+  await waitForChildExit(child, 1_000);
+};
+
 export const runCheckedProcess = (file, args, {
   cwd,
   env = process.env,
@@ -37,6 +81,7 @@ export const runCheckedProcess = (file, args, {
   let stderr = "";
   let child;
   let settled = false;
+  let timedOut = false;
   let timer;
   const finish = (callback, value) => {
     if (settled) return;
@@ -45,7 +90,13 @@ export const runCheckedProcess = (file, args, {
     callback(value);
   };
   try {
-    child = spawn(file, args, { cwd, env, stdio, windowsHide: true });
+    child = spawn(file, args, {
+      cwd,
+      env,
+      stdio,
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
   } catch (error) {
     finish(reject, new Error(`${label} could not start: ${error instanceof Error ? error.message : String(error)}`));
     return;
@@ -58,6 +109,7 @@ export const runCheckedProcess = (file, args, {
     finish(reject, new Error(`${label} could not start: ${error.message}`));
   });
   child.once("exit", (code, signal) => {
+    if (timedOut) return;
     if (code === 0) {
       finish(resolve, { stdout, stderr, exitCode: 0 });
       return;
@@ -69,10 +121,11 @@ export const runCheckedProcess = (file, args, {
   const effectiveTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
     ? timeoutMs
     : DEFAULT_PREFLIGHT_TIMEOUT_MS;
-  timer = setTimeout(() => {
+  timer = setTimeout(async () => {
+    timedOut = true;
     const detail = [stderr.trim(), stdout.trim()].filter(Boolean).join("\n");
     const suffix = detail ? `\n${detail}` : "";
-    try { child.kill(); } catch {}
+    await terminateProcessTree(child);
     finish(reject, new Error(`${label} timed out after ${effectiveTimeoutMs} ms.${suffix}`));
   }, effectiveTimeoutMs);
   timer.unref?.();

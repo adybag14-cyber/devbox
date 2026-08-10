@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import {
   getMcpLaunchSpec,
@@ -114,6 +114,42 @@ test("checked preflight terminates stalled processes at its deadline", async () 
     }),
     /deadline-test timed out after 50 ms/u,
   );
+});
+
+test("checked preflight timeout terminates spawned descendants", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-preflight-tree-"));
+  const pidFile = path.join(root, "descendant.pid");
+  const script = [
+    "const fs=require('fs');",
+    "const {spawn}=require('child_process');",
+    "const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});",
+    "fs.writeFileSync(process.argv[1],String(child.pid));",
+    "setInterval(()=>{},1000);",
+  ].join("");
+  try {
+    await assert.rejects(
+      runCheckedProcess(process.execPath, ["-e", script, pidFile], {
+        label: "tree-deadline-test",
+        timeoutMs: 500,
+      }),
+      /tree-deadline-test timed out/u,
+    );
+    const descendantPid = Number.parseInt((await readFile(pidFile, "utf8")).trim(), 10);
+    assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+    let alive = true;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      try {
+        process.kill(descendantPid, 0);
+      } catch {
+        alive = false;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(alive, false, `descendant PID ${descendantPid} survived preflight timeout`);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("JS rollback preflight does not invoke Cargo", async () => {

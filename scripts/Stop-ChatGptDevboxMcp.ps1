@@ -253,11 +253,8 @@ function Test-IsOwnedServerCommandLine {
         return $false
     }
 
-    $text = ([string]$CommandLine).Replace('/', '\').ToLowerInvariant()
     if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
-        $isLegacyJs = $text.Contains('src\server.js') -and $text.Contains('.env.runtime')
-        $isRust = $text.Contains('rust-mcp\target\release\devbox-mcp.exe')
-        return ($isLegacyJs -or $isRust)
+        return $false
     }
 
     $normalizedRoot = Resolve-McpComparablePath -Path $ProjectRoot
@@ -351,7 +348,7 @@ function Find-OwnedServerProcess {
         $pidText = Get-Content $PidFile -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($pidText -match '^\d+$') {
             $candidate = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$pidText) -ErrorAction SilentlyContinue
-            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine))) {
+            if ($candidate -and (Test-IsOwnedServerCommandLine -CommandLine ([string]$candidate.CommandLine) -ProjectRoot $ProjectRoot)) {
                 return $candidate
             }
         }
