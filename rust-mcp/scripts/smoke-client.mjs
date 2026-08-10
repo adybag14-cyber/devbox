@@ -446,6 +446,7 @@ try {
 
   const fixtureDir = await mkdtemp(path.join(os.tmpdir(), "devbox-rust-mcp-smoke-"));
   const fixturePath = path.join(fixtureDir, "exact-bytes.bin");
+  const legacyWindowsFixturePath = process.platform === "win32" ? fixturePath : path.win32.normalize(fixturePath);
   const devboxTextPath = path.join(fixtureDir, "devbox-text.txt");
   const devboxExactPath = path.join(fixtureDir, "devbox-exact.bin");
   try {
@@ -560,7 +561,7 @@ try {
     assert.equal(write.structuredContent?.ok, true);
     assert.equal(write.structuredContent?.data?.bytes_written, 8);
     assert.equal(write.structuredContent?.data?.verified, true);
-    assert.deepEqual(await readFile(fixturePath), Buffer.from([0x00, 0xff, 0x61, 0x6c, 0x70, 0x68, 0x61, 0x0a]));
+    assert.deepEqual(await readFile(legacyWindowsFixturePath), Buffer.from([0x00, 0xff, 0x61, 0x6c, 0x70, 0x68, 0x61, 0x0a]));
 
     const read = await client.callTool({
       name: "windows_host_read_large_file",
@@ -573,6 +574,7 @@ try {
     assert.equal(read.structuredContent?.data?.next_offset_bytes, 5);
     assert.ok(!read.content?.[0]?.text?.includes("/2FscA=="), "raw base64 must not be duplicated into MCP text content");
   } finally {
+    if (process.platform !== "win32") await rm(legacyWindowsFixturePath, { force: true });
     await rm(fixtureDir, { recursive: true, force: true });
   }
 
