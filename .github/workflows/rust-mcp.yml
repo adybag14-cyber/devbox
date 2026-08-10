@@ -52,5 +52,15 @@ jobs:
         run: cargo test --manifest-path rust-mcp/Cargo.toml --locked
       - name: Build Rust MCP shadow binary
         run: cargo build --manifest-path rust-mcp/Cargo.toml --locked
+      - name: Verify exact JavaScript-to-Rust tool schema parity (host)
+        run: node rust-mcp/scripts/schema-parity-audit.mjs
+      - name: Verify exact JavaScript-to-Rust tool schema parity (Docker profile)
+        env:
+          SCHEMA_PARITY_RUNTIME_MODE: docker
+        run: node rust-mcp/scripts/schema-parity-audit.mjs
+      - name: Verify JavaScript-to-Rust observable result parity
+        env:
+          RUST_MCP_RESULT_SKIP_DISPLAY: "1"
+        run: node rust-mcp/scripts/result-parity-audit.mjs
       - name: Run JavaScript MCP SDK interoperability smoke
         run: node rust-mcp/scripts/smoke-runner.mjs

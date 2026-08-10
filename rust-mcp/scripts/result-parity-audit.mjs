@@ -274,10 +274,12 @@ try {
     compareResults(name, jsResult, rustResult);
   }
 
-  for (const name of ["host_capture_display", "windows_host_capture_display"]) {
-    const jsResult = await js.client.callTool({ name, arguments: { quality: 80 } });
-    const rustResult = await rust.client.callTool({ name, arguments: { quality: 80 } });
-    compareCaptureResults(name, jsResult, rustResult);
+  if (process.env.RUST_MCP_RESULT_SKIP_DISPLAY !== "1") {
+    for (const name of ["host_capture_display", "windows_host_capture_display"]) {
+      const jsResult = await js.client.callTool({ name, arguments: { quality: 80 } });
+      const rustResult = await rust.client.callTool({ name, arguments: { quality: 80 } });
+      compareCaptureResults(name, jsResult, rustResult);
+    }
   }
 
   if (process.env.RUST_MCP_RESULT_CAPTURE_PID) {
