@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -44,10 +44,14 @@ const waitForHealth = async (url) => {
 const port = await reservePort();
 const baseUrl = new URL(`http://127.0.0.1:${port}/`);
 const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "devbox-rust-contention-"));
+const shimDir = path.join(runtimeDir, "bin");
+await mkdir(shimDir, { recursive: true });
+await writeFile(path.join(shimDir, "rg.cmd"), "@echo off\r\necho ripgrep-ci-shim 1.0\r\n", "utf8");
 const server = spawn(binaryPath, [], {
   cwd: projectRoot,
   env: {
     ...process.env,
+    PATH: `${shimDir};${process.env.PATH ?? ""}`,
     DEVBOX_PROJECT_ROOT: runtimeDir,
     HOST_WORKSPACE_PATH: projectRoot,
     HOST: "127.0.0.1",
