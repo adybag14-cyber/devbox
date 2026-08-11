@@ -699,13 +699,19 @@ impl DevboxMcp {
                 );
             }
         };
-        let (guardian, startup) = tokio::join!(
+        let (guardian, startup, job_maintenance) = tokio::join!(
             read_guardian_status_snapshot(&self.config),
             read_json_snapshot(
                 self.config
                     .project_root
                     .join("run")
                     .join("startup-state.json")
+            ),
+            read_json_snapshot(
+                self.config
+                    .project_root
+                    .join("run")
+                    .join("job-maintenance.json")
             ),
         );
         let mut data = info.as_object().cloned().unwrap_or_default();
@@ -723,27 +729,28 @@ impl DevboxMcp {
         );
         data.insert("guardian".to_owned(), guardian.unwrap_or(Value::Null));
         data.insert("startup".to_owned(), startup.unwrap_or(Value::Null));
+        data.insert(
+            "jobMaintenance".to_owned(),
+            job_maintenance.unwrap_or(Value::Null),
+        );
         data.insert("execution".to_owned(), json!(execution));
         data.insert("performance".to_owned(), self.performance.snapshot());
+        data.insert(
+            "activeRequests".to_owned(),
+            json!(self.active_requests.active_count()),
+        );
+        #[cfg(windows)]
+        data.insert(
+            "processProbe".to_owned(),
+            crate::windows_process::metrics_snapshot(),
+        );
         if info.get("running").and_then(Value::as_bool) == Some(true) {
-            match self
-                .runtime
-                .get_versions(false, cancellation.child_token())
-                .await
-            {
-                Ok(versions) => {
-                    data.insert("versions".to_owned(), json!(versions));
-                }
-                Err(error) => {
-                    return ToolEnvelope::error(
-                        format!(
-                            "Failed to fetch {} status: {error}",
-                            self.config.runtime_label()
-                        ),
-                        None,
-                    );
-                }
-            }
+            let versions = self.runtime.cached_versions().await;
+            data.insert(
+                "versions".to_owned(),
+                versions.clone().map_or(Value::Null, |value| json!(value)),
+            );
+            data.insert("versionsCached".to_owned(), json!(versions.is_some()));
         }
         ToolEnvelope::success(
             format!("Fetched {} status.", self.config.runtime_label()),
@@ -1375,7 +1382,7 @@ impl DevboxMcp {
                     &request.job_id,
                     Duration::from_secs(request.wait_seconds),
                     request.terminal_only,
-                    Duration::from_millis(250),
+                    Duration::from_millis(500),
                     &cancellation,
                 )
                 .await
@@ -2254,6 +2261,57 @@ struct HttpState {
     gateway: Arc<GatewayState>,
 }
 
+fn spawn_job_maintenance(handler: &DevboxMcp, config: &Config, cancellation: CancellationToken) {
+    let maintenance_store = handler.jobs.store().clone();
+    let maintenance_state_path = config.project_root.join("run").join("job-maintenance.json");
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => return,
+                _ = interval.tick() => {
+                    let started = Instant::now();
+                    match maintenance_store.reconcile_maintenance_batch(100).await {
+                        Ok(summary) => {
+                            let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                            tracing::debug!(
+                                discovered = summary.discovered,
+                                scanned = summary.scanned,
+                                batch_limited = summary.batch_limited,
+                                interrupted = summary.interrupted,
+                                terminal = summary.terminal,
+                                deleted = summary.deleted,
+                                errors = summary.errors,
+                                duration_ms,
+                                "Rust MCP job maintenance pass completed"
+                            );
+                            let _ = write_json_snapshot(
+                                &maintenance_state_path,
+                                &json!({
+                                    "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
+                                    "durationMs": duration_ms,
+                                    "summary": summary,
+                                }),
+                            ).await;
+                        },
+                        Err(error) => {
+                            tracing::warn!(%error, "Rust MCP job maintenance pass failed");
+                            let _ = write_json_snapshot(
+                                &maintenance_state_path,
+                                &json!({
+                                    "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
+                                    "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                                    "error": error.to_string(),
+                                }),
+                            ).await;
+                        },
+                    }
+                }
+            }
+        }
+    });
+}
+
 pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Router {
     let handler = DevboxMcp::new(config.clone());
     let warm_runtime = handler.runtime.clone();
@@ -2271,29 +2329,7 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
             tracing::warn!(%error, "Failed to warm Rust host execution state");
         }
     });
-    let maintenance_store = handler.jobs.store().clone();
-    let maintenance_cancellation = cancellation.child_token();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-        loop {
-            tokio::select! {
-                () = maintenance_cancellation.cancelled() => return,
-                _ = interval.tick() => {
-                    match maintenance_store.reconcile_all().await {
-                        Ok(summary) => tracing::debug!(
-                            scanned = summary.scanned,
-                            interrupted = summary.interrupted,
-                            terminal = summary.terminal,
-                            deleted = summary.deleted,
-                            errors = summary.errors,
-                            "Rust MCP job maintenance pass completed"
-                        ),
-                        Err(error) => tracing::warn!(%error, "Rust MCP job maintenance pass failed"),
-                    }
-                }
-            }
-        }
-    });
+    spawn_job_maintenance(&handler, &config, cancellation.child_token());
     let service_handler = handler.clone();
     let transport_config = StreamableHttpServerConfig::default()
         .with_allowed_hosts(transport_allowed_hosts(&config))
@@ -2360,7 +2396,10 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
 ///
 /// # Errors
 /// Returns an error when the configured listener cannot be bound or inspected.
-pub async fn serve(config: Arc<Config>, cancellation: CancellationToken) -> Result<SocketAddr> {
+pub async fn serve(
+    config: Arc<Config>,
+    cancellation: CancellationToken,
+) -> Result<(SocketAddr, tokio::task::JoinHandle<std::io::Result<()>>)> {
     let address = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&address)
         .await
@@ -2369,18 +2408,15 @@ pub async fn serve(config: Arc<Config>, cancellation: CancellationToken) -> Resu
         .local_addr()
         .context("read Rust MCP listener address")?;
     let router = build_router(config, cancellation.clone());
-    tokio::spawn(async move {
-        if let Err(error) = axum::serve(
+    let task = tokio::spawn(async move {
+        axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(cancellation.cancelled_owned())
         .await
-        {
-            tracing::error!(%error, "Rust MCP HTTP server stopped with an error");
-        }
     });
-    Ok(local)
+    Ok((local, task))
 }
 
 fn resolved_program_path(program: &str, windows: bool) -> String {
@@ -2420,6 +2456,20 @@ fn resolved_program_path(program: &str, windows: bool) -> String {
         }
     }
     program.to_owned()
+}
+
+async fn write_json_snapshot(path: &std::path::Path, value: &Value) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
+    tokio::fs::write(&temporary, bytes).await?;
+    if tokio::fs::rename(&temporary, path).await.is_err() {
+        tokio::fs::remove_file(path).await.ok();
+        tokio::fs::rename(&temporary, path).await?;
+    }
+    Ok(())
 }
 
 async fn read_json_snapshot(path: PathBuf) -> Option<Value> {
@@ -2493,6 +2543,7 @@ async fn root_metadata(
     let mut body = serde_json::Map::from_iter([
         ("name".to_owned(), json!(state.config.server_name())),
         ("version".to_owned(), json!(env!("CARGO_PKG_VERSION"))),
+        ("build".to_owned(), crate::provenance::snapshot()),
         (
             "auth_mode".to_owned(),
             json!(state.config.auth_mode.as_str()),

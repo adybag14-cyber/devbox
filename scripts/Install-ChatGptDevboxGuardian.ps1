@@ -26,7 +26,7 @@ $wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
 $userId = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
 $logonTaskName = "$TaskPrefix-Logon"
 $keepAliveTaskName = "$TaskPrefix-KeepAlive"
-$elevatedStartTaskName = 'ChatGptDevboxMcp-ElevatedStart'
+$elevatedStartTaskName = if ($TaskPrefix -eq 'ChatGptDevboxGuardian') { 'ChatGptDevboxMcp-ElevatedStart' } else { "$TaskPrefix-McpElevatedStart" }
 $startScript = Join-Path $PSScriptRoot 'Start-ChatGptDevboxMcp.ps1'
 
 foreach ($path in @($runDir, $guardianDir)) {
@@ -262,15 +262,20 @@ $hiddenArgs = @('//B', '//NoLogo', ('"{0}"' -f $hiddenLauncher)) -join ' '
 $powerShellExe = Resolve-DevboxPowerShellExecutable
 
 $action = New-ScheduledTaskAction -Execute $wscriptExe -Argument $hiddenArgs
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+$triggers = @(
+    (New-ScheduledTaskTrigger -AtStartup),
+    (New-ScheduledTaskTrigger -AtLogOn -User $userId)
+)
 $settingsSet = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -MultipleInstances IgnoreNew
+    -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1)
 $principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
 
-Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $trigger -Settings $settingsSet -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $triggers -Settings $settingsSet -Principal $principal -Force | Out-Null
 
 $taskCommand = ('"{0}" {1}' -f $wscriptExe, $hiddenArgs)
 $startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')

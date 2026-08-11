@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { execFile, spawn } from "node:child_process";
@@ -39,6 +39,38 @@ export const resolveWindowsPowerShellExecutable = (environment = process.env) =>
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const defaultProjectRoot = path.resolve(scriptDir, "..");
+
+const GUARDIAN_LOG_MAX_BYTES = 4 * 1024 * 1024;
+const GUARDIAN_LOG_ROTATIONS = 3;
+const REPAIR_LOG_FILE_LIMIT = 100;
+
+const rotateLogIfNeeded = async (filePath, maxBytes = GUARDIAN_LOG_MAX_BYTES, rotations = GUARDIAN_LOG_ROTATIONS) => {
+  const current = await stat(filePath).catch(() => null);
+  if (!current || current.size < maxBytes || rotations < 1) return;
+  await rm(`${filePath}.${rotations}`, { force: true }).catch(() => {});
+  for (let index = rotations - 1; index >= 1; index -= 1) {
+    await rename(`${filePath}.${index}`, `${filePath}.${index + 1}`).catch(() => {});
+  }
+  await rename(filePath, `${filePath}.1`).catch(() => {});
+};
+
+const appendRotatingLog = async (filePath, text) => {
+  await rotateLogIfNeeded(filePath);
+  await appendFile(filePath, text, "utf8");
+};
+
+const pruneRepairLogs = async (directory, limit = REPAIR_LOG_FILE_LIMIT) => {
+  const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
+  const files = [];
+  for (const entry of entries) {
+    if (!entry.isFile() || !/-(?:stdout|stderr)\.log$/u.test(entry.name)) continue;
+    const fullPath = path.join(directory, entry.name);
+    const metadata = await stat(fullPath).catch(() => null);
+    if (metadata) files.push({ fullPath, mtimeMs: metadata.mtimeMs });
+  }
+  files.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  await Promise.all(files.slice(limit).map(({ fullPath }) => rm(fullPath, { force: true }).catch(() => {})));
+};
 
 const parseArgs = (argv) => {
   const options = {
@@ -837,6 +869,7 @@ const main = async () => {
   const options = parseArgs(process.argv.slice(2));
   const paths = createPaths(options.projectRoot);
   await mkdir(paths.repairsDir, { recursive: true });
+  await pruneRepairLogs(paths.repairsDir);
   if (!(await acquireGuardianLock(paths.lock, options.projectRoot))) {
     return;
   }
@@ -865,7 +898,7 @@ const main = async () => {
   let hostPressureSamplePromise = null;
 
   const log = async (level, message) => {
-    await appendFile(paths.log, `${new Date().toISOString()} [${level}] ${message}\n`, "utf8");
+    await appendRotatingLog(paths.log, `${new Date().toISOString()} [${level}] ${message}\n`);
   };
 
   const probe = async () => {
@@ -1393,7 +1426,7 @@ const runMain = () => main().catch(async (error) => {
   })();
   const paths = createPaths(options.projectRoot);
   await mkdir(paths.guardianDir, { recursive: true });
-  await appendFile(paths.log, `${new Date().toISOString()} [FATAL] ${error.stack || error.message}\n`, "utf8");
+  await appendRotatingLog(paths.log, `${new Date().toISOString()} [FATAL] ${error.stack || error.message}\n`);
   console.error(error.stack || error.message);
   process.exitCode = 1;
 });

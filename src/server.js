@@ -19,6 +19,7 @@ import {
   execReadOnlyInDevbox,
   getDevboxInfo,
   getDevboxGithubAuthStatus,
+  getCachedDevboxVersions,
   getDevboxVersions,
   hostCommandTitle,
   hostTitle,
@@ -797,7 +798,9 @@ const buildServer = ({ requestSignal } = {}) => {
         };
 
         if (info.running) {
-          data.versions = await getDevboxVersions();
+          const versions = getCachedDevboxVersions();
+          data.versions = versions;
+          data.versionsCached = versions !== null;
         }
 
         return successResult(`Fetched ${runtimeLabel} status.`, { data });

@@ -1,5 +1,6 @@
 use std::{
     path::{Path, PathBuf},
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -52,7 +53,12 @@ pub struct JobPaths {
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ReconcileSummary {
+    /// Job directories discovered during this maintenance pass.
+    pub discovered: u64,
+    /// Jobs whose status was actually reconciled during this pass.
     pub scanned: u64,
+    #[serde(rename = "batchLimited")]
+    pub batch_limited: bool,
     pub interrupted: u64,
     pub active: u64,
     pub terminal: u64,
@@ -109,6 +115,7 @@ pub struct LegacyCompaction {
 #[derive(Debug, Clone)]
 pub struct JobStore {
     config: JobStoreConfig,
+    maintenance_cursor: Arc<Mutex<Option<String>>>,
 }
 
 impl JobStore {
@@ -116,6 +123,7 @@ impl JobStore {
     pub fn new(config: JobStoreConfig) -> Self {
         Self {
             config: config.normalized(),
+            maintenance_cursor: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -237,17 +245,21 @@ impl JobStore {
             return self.reconcile_cancelled(paths, object).await;
         }
 
-        let runner_pid = u32_field(&object, "runnerPid");
-        let runner_alive = match runner_pid {
-            Some(pid) => process_alive(pid).await,
-            None => false,
-        };
         let heartbeat = read_heartbeat(paths).await?;
         let heartbeat_age = heartbeat.age;
         let status_age = status_age(&object);
         let heartbeat_stale = heartbeat_age.map_or(status_age >= self.config.orphan_stale, |age| {
             age >= self.config.orphan_stale
         });
+        let runner_pid = u32_field(&object, "runnerPid");
+        // A fresh heartbeat is stronger and cheaper evidence of runner liveness than
+        // interrogating the Windows process table on every status poll. Only fall
+        // back to an OS liveness check once the heartbeat is stale.
+        let runner_alive = match (runner_pid, heartbeat_stale) {
+            (Some(_), false) => true,
+            (Some(pid), true) => process_alive(pid).await,
+            (None, _) => false,
+        };
         if !runner_alive && heartbeat_stale {
             return self
                 .interrupt_orphan(paths, object, heartbeat.value, heartbeat_age)
@@ -343,23 +355,68 @@ impl JobStore {
     /// # Errors
     /// Returns an error only when the jobs root itself cannot be created/read. Per-job failures are counted.
     pub async fn reconcile_all(&self) -> Result<ReconcileSummary> {
+        self.reconcile_maintenance_batch(usize::MAX).await
+    }
+
+    /// Reconcile a bounded slice of known jobs so maintenance cost cannot grow linearly
+    /// with the entire retained history on every minute tick.
+    ///
+    /// The directory names are cheap to enumerate, while status/log inspection is capped
+    /// to `max_jobs`. The cursor is shared by all clones in this MCP process so successive
+    /// passes advance through the retained set instead of repeatedly starting at job zero.
+    ///
+    /// # Errors
+    /// Returns an error when the jobs root cannot be enumerated. Per-job failures are counted.
+    pub async fn reconcile_maintenance_batch(&self, max_jobs: usize) -> Result<ReconcileSummary> {
         fs::create_dir_all(&self.config.root).await?;
         let mut reader = fs::read_dir(&self.config.root).await?;
-        let mut summary = ReconcileSummary::default();
+        let mut ids = Vec::new();
         while let Some(entry) = reader.next_entry().await? {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if validate_job_id(&name).is_err() {
-                continue;
+            if validate_job_id(&name).is_ok() {
+                ids.push(name);
             }
+        }
+        ids.sort_unstable();
+        let mut summary = ReconcileSummary {
+            discovered: u64::try_from(ids.len()).unwrap_or(u64::MAX),
+            ..ReconcileSummary::default()
+        };
+        if ids.is_empty() || max_jobs == 0 {
+            return Ok(summary);
+        }
+
+        let cursor = self
+            .maintenance_cursor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        let start = cursor
+            .as_deref()
+            .and_then(|value| ids.iter().position(|id| id.as_str() > value))
+            .unwrap_or(0);
+        let limit = max_jobs.min(ids.len());
+        let end = start.saturating_add(limit).min(ids.len());
+        for id in &ids[start..end] {
             summary.scanned = summary.scanned.saturating_add(1);
             if self
-                .reconcile_one_for_maintenance(&name, &mut summary)
+                .reconcile_one_for_maintenance(id, &mut summary)
                 .await
                 .is_err()
             {
                 summary.errors = summary.errors.saturating_add(1);
             }
         }
+        summary.batch_limited = end < ids.len();
+        let next_cursor = if end >= ids.len() {
+            None
+        } else {
+            ids.get(end.saturating_sub(1)).cloned()
+        };
+        *self
+            .maintenance_cursor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = next_cursor;
         Ok(summary)
     }
 
@@ -434,22 +491,34 @@ impl JobStore {
         poll: Duration,
         cancellation: &CancellationToken,
     ) -> Result<Value> {
-        let first = self.get_status(job_id).await?;
         let bounded = wait.min(self.config.max_wait);
-        if bounded.is_zero() || is_terminal(status_name(&first)) {
+        if bounded.is_zero() {
+            return self.get_status(job_id).await;
+        }
+        let started = tokio::time::Instant::now();
+        let deadline = started + bounded;
+        let first = tokio::time::timeout_at(deadline, self.get_status(job_id))
+            .await
+            .map_err(|_| anyhow::anyhow!("Job status wait exceeded its {bounded:?} deadline while reading the initial state."))??;
+        if is_terminal(status_name(&first)) {
             return Ok(first);
         }
         let initial = status_name(&first).to_owned();
-        let started = tokio::time::Instant::now();
         let mut current = first;
-        while started.elapsed() < bounded {
-            let remaining = bounded.saturating_sub(started.elapsed());
-            let delay = poll.max(Duration::from_millis(50)).min(remaining);
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let delay = poll.max(Duration::from_millis(50)).min(deadline - now);
             tokio::select! {
                 () = tokio::time::sleep(delay) => {},
                 () = cancellation.cancelled() => bail!("Job status wait cancelled by the MCP client."),
             }
-            current = self.get_status(job_id).await?;
+            current = match tokio::time::timeout_at(deadline, self.get_status(job_id)).await {
+                Ok(result) => result?,
+                Err(_) => break,
+            };
             let name = status_name(&current);
             if is_terminal(name) || (!terminal_only && name != initial) {
                 return Ok(current);
@@ -1092,6 +1161,67 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(status["status"], "running");
+    }
+
+    #[tokio::test]
+    async fn long_poll_timeout_is_a_hard_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path());
+        let id = "job-deadline123";
+        write_status(
+            &store,
+            id,
+            json!({
+                "id": id,
+                "status": "running",
+                "createdAtUtc": utc_now(),
+                "runnerPid": std::process::id()
+            }),
+        )
+        .await;
+        let started = std::time::Instant::now();
+        let status = store
+            .wait_status(
+                id,
+                Duration::from_millis(120),
+                true,
+                Duration::from_millis(20),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status["waitTimedOut"], true);
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        assert!(started.elapsed() < Duration::from_millis(500));
+    }
+
+    #[tokio::test]
+    async fn maintenance_reconciles_bounded_rotating_batches() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path());
+        for index in 0..5 {
+            let id = format!("job-batch{index:04}");
+            write_status(
+                &store,
+                &id,
+                json!({
+                    "id": id,
+                    "status": "succeeded",
+                    "createdAtUtc": utc_now(),
+                    "completedAtUtc": utc_now(),
+                }),
+            )
+            .await;
+        }
+        let first = store.reconcile_maintenance_batch(2).await.unwrap();
+        let second = store.reconcile_maintenance_batch(2).await.unwrap();
+        let third = store.reconcile_maintenance_batch(2).await.unwrap();
+        assert_eq!(first.discovered, 5);
+        assert_eq!(first.scanned, 2);
+        assert_eq!(second.scanned, 2);
+        assert_eq!(third.scanned, 1);
+        assert!(first.batch_limited);
+        assert!(!third.batch_limited);
     }
 
     #[tokio::test]

@@ -16,6 +16,7 @@ pub mod oauth;
 pub mod output;
 pub mod performance;
 pub mod process;
+pub mod provenance;
 pub mod request_control;
 pub mod result;
 pub mod runtime;
@@ -30,6 +31,8 @@ pub use server::{DevboxMcp, build_router};
 
 #[cfg(windows)]
 pub mod windows_capture;
+#[cfg(windows)]
+pub mod windows_process;
 pub mod windows_shell;
 
 #[cfg(any(not(windows), test))]

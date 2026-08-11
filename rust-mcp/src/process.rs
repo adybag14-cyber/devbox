@@ -579,13 +579,13 @@ pub(crate) async fn terminate_process_tree(pid: u32) {
     if pid == 0 {
         return;
     }
-    let _ = Command::new("taskkill.exe")
+    let mut command = Command::new("taskkill.exe");
+    command
         .args(["/pid", &pid.to_string(), "/t", "/f"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await;
+        .stderr(Stdio::null());
+    let _ = tokio::time::timeout(Duration::from_secs(5), command.status()).await;
 }
 
 #[cfg(unix)]

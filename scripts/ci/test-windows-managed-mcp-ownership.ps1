@@ -117,6 +117,18 @@ try {
         }
     }
 
+    # Versioned immutable Rust binaries are checkout-owned only when they live
+    # directly below that checkout's run\bin directory and match the deployment name.
+    $versionedRust = Join-Path $checkoutB 'run\bin\devbox-mcp-621656c746f5-0123456789ABCDEF.exe'
+    $versionedCommand = ('"{0}"' -f $versionedRust)
+    if (-not (Test-IsOwnedServerCommandLine -CommandLine $versionedCommand -ProjectRoot $checkoutB)) {
+        throw 'Versioned Rust MCP path was not recognized as checkout-owned.'
+    }
+    $outsideVersioned = Join-Path $checkoutA 'run\bin\devbox-mcp-621656c746f5-0123456789ABCDEF.exe'
+    if (Test-IsOwnedServerCommandLine -CommandLine ('"{0}"' -f $outsideVersioned) -ProjectRoot $checkoutB) {
+        throw 'Versioned Rust MCP from another checkout was incorrectly claimed.'
+    }
+
     # Reproduce the production incident: checkout A has a legacy relative JS MCP,
     # while checkout B has no PID file. B must never discover or stop A.
     $processA = Start-DummyMcp -Path $checkoutA

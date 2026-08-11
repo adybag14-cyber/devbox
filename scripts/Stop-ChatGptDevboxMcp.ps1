@@ -163,6 +163,10 @@ function Get-EnvValue {
         [string]$Name
     )
 
+    if ([string]::IsNullOrWhiteSpace($FilePath) -or -not (Test-Path -LiteralPath $FilePath)) {
+        return ""
+    }
+
     $match = Select-String -Path $FilePath -Pattern ("^{0}=(.*)$" -f [regex]::Escape($Name)) -ErrorAction SilentlyContinue
     if (-not $match) {
         return ""

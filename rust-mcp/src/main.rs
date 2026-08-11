@@ -33,15 +33,35 @@ async fn main() -> Result<()> {
     }
 
     let cancellation = CancellationToken::new();
-    let address = devbox_mcp::server::serve(config.clone(), cancellation.clone()).await?;
+    let (address, mut http_task) =
+        devbox_mcp::server::serve(config.clone(), cancellation.clone()).await?;
     tracing::info!(%address, name = %config.server_name(), "Rust Devbox MCP listening");
 
-    tokio::select! {
-        result = tokio::signal::ctrl_c() => result?,
-        result = termination_signal() => result?,
-        () = cancellation.cancelled() => {},
+    let shutdown_requested = tokio::select! {
+        result = &mut http_task => {
+            match result {
+                Ok(Ok(())) => anyhow::bail!("Rust MCP HTTP server exited unexpectedly."),
+                Ok(Err(error)) => return Err(error.into()),
+                Err(error) => return Err(anyhow::anyhow!("Rust MCP HTTP server task failed: {error}")),
+            }
+        },
+        result = tokio::signal::ctrl_c() => { result?; true },
+        result = termination_signal() => { result?; true },
+        () = cancellation.cancelled() => true,
+    };
+    if shutdown_requested {
+        cancellation.cancel();
+        match tokio::time::timeout(std::time::Duration::from_secs(10), &mut http_task).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(error))) => return Err(error.into()),
+            Ok(Err(error)) => {
+                return Err(anyhow::anyhow!(
+                    "Rust MCP HTTP server task failed during shutdown: {error}"
+                ));
+            }
+            Err(_) => anyhow::bail!("Rust MCP HTTP server did not stop within 10 seconds."),
+        }
     }
-    cancellation.cancel();
     Ok(())
 }
 
