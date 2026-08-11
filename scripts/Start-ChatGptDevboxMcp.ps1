@@ -340,6 +340,17 @@ function Assert-StartupDeadline {
     }
 }
 
+function Reset-StartupDeadlineWindow {
+    param(
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+        [Parameter(Mandatory = $true)][string]$Phase
+    )
+
+    $bounded = [Math]::Max(30, $TimeoutSeconds)
+    $script:startupDeadlineUtc = [DateTime]::UtcNow.AddSeconds($bounded)
+    Write-StartupPhase -Phase $Phase -Extra @{ DeadlineWindowSeconds = $bounded }
+}
+
 function Enter-ChatGptDevboxLifecycleMutex {
     param(
         [Parameter(Mandatory = $true)][string]$RunDir,
@@ -1483,6 +1494,13 @@ $startupTimeoutSeconds = if ($startupTimeoutRaw -match '^\d+$') {
     900
 }
 
+$preflightTimeoutRaw = Get-EnvValue -FilePath $envFile -Name 'DEVBOX_MCP_PREFLIGHT_TIMEOUT_SECONDS'
+$preflightTimeoutSeconds = if ($preflightTimeoutRaw -match '^\d+$') {
+    [Math]::Min(1800, [Math]::Max(30, [int]$preflightTimeoutRaw))
+} else {
+    [Math]::Min(1800, [Math]::Max(600, $startupTimeoutSeconds))
+}
+
 Enter-ChatGptDevboxLifecycleMutex -RunDir $runDir -SelectedRuntime $selectedRuntimeEarly -TimeoutSeconds $startupTimeoutSeconds
 try {
 Ensure-Directory -Path $runDir
@@ -1628,9 +1646,13 @@ if ($selectedRuntime -eq 'host') {
 
 Write-StartupPhase -Phase 'writing-runtime-config'
 Write-RuntimeEnvFile -SourceEnvFile $envFile -RuntimeEnvFile $runtimeEnvFile -Overrides $overrides
+Reset-StartupDeadlineWindow -TimeoutSeconds $preflightTimeoutSeconds -Phase 'preflighting-mcp-replacement'
 Assert-StartupDeadline -Phase 'preflighting-mcp-replacement'
-Write-StartupPhase -Phase 'preflighting-mcp-replacement'
 $launchSpec = Assert-McpReplacementReady -Implementation $mcpImplementation -ProjectRoot $root -RuntimeEnvFile $runtimeEnvFile
+# Candidate compilation/parity is deliberately outside the downtime budget: the
+# previous MCP remains live until this point. Start a fresh strict cutover window
+# immediately before stopping the owned origin.
+Reset-StartupDeadlineWindow -TimeoutSeconds $startupTimeoutSeconds -Phase 'cutover-ready'
 Assert-StartupDeadline -Phase 'stopping-existing-mcp'
 Write-StartupPhase -Phase 'stopping-existing-mcp'
 Stop-ExistingServerIfOwned -PidFile $pidFile -ProjectRoot $root
