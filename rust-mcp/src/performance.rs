@@ -214,6 +214,7 @@ fn process_memory_snapshot() -> Value {
     json!({
         "rss": resident_memory_bytes(),
         "private": private_memory_bytes(),
+        "allocator": crate::allocator_metrics::snapshot(),
         "heapTotal": 0,
         "heapUsed": 0,
         "external": 0,
@@ -379,5 +380,12 @@ mod tests {
         for key in ["rss", "heapTotal", "heapUsed", "external", "arrayBuffers"] {
             assert!(memory.get(key).is_some());
         }
+        let allocator = &memory["allocator"];
+        assert_eq!(
+            allocator["backend"],
+            "std::alloc::System tracked requested bytes"
+        );
+        assert!(allocator["peakRequestedBytes"].as_u64().unwrap_or(0) > 0);
+        assert!(allocator["allocationCalls"].as_u64().unwrap_or(0) > 0);
     }
 }
