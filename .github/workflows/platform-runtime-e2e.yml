@@ -61,6 +61,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
@@ -102,6 +104,8 @@ jobs:
             family: pacman
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Validate distro runtime and MCP bridge
         run: sh scripts/ci/run-linux-distro-container-e2e.sh "${{ matrix.image }}" "${{ matrix.family }}"
 
@@ -111,6 +115,8 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Validate full Termux bootstrap, TUI, launcher, Guardian and MCP bridge
         env:
           TERMUX_DOCKER_IMAGE: termux/termux-docker:x86_64

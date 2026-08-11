@@ -186,10 +186,10 @@ impl RuntimeExecutor {
 
     /// Return the most recently warmed version snapshot without executing external programs.
     pub async fn cached_versions(&self) -> Option<Vec<String>> {
-        self.versions_cache
-            .lock()
-            .await
+        let cache = self.versions_cache.lock().await;
+        cache
             .as_ref()
+            .filter(|entry| Instant::now() < entry.expires_at)
             .map(|entry| entry.value.clone())
     }
 
@@ -562,7 +562,13 @@ fn resolve_windows_program_path(program: &str) -> Option<PathBuf> {
     }
     let path = std::env::var_os("PATH")?;
     let has_extension = supplied.extension().is_some();
-    let extensions = [".exe", ".com", ".cmd", ".bat", ".ps1"];
+    let extensions = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned())
+        .split(';')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
     for directory in std::env::split_paths(&path) {
         if has_extension {
             let candidate = directory.join(program);
@@ -571,7 +577,7 @@ fn resolve_windows_program_path(program: &str) -> Option<PathBuf> {
             }
             continue;
         }
-        for extension in extensions {
+        for extension in &extensions {
             let candidate = directory.join(format!("{program}{extension}"));
             if candidate.is_file() {
                 return Some(candidate);

@@ -355,7 +355,16 @@ impl JobStore {
     /// # Errors
     /// Returns an error only when the jobs root itself cannot be created/read. Per-job failures are counted.
     pub async fn reconcile_all(&self) -> Result<ReconcileSummary> {
-        self.reconcile_maintenance_batch(usize::MAX).await
+        *self
+            .maintenance_cursor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        let result = self.reconcile_maintenance_batch(usize::MAX).await;
+        *self
+            .maintenance_cursor
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        result
     }
 
     /// Reconcile a bounded slice of known jobs so maintenance cost cannot grow linearly
@@ -497,9 +506,17 @@ impl JobStore {
         }
         let started = tokio::time::Instant::now();
         let deadline = started + bounded;
-        let first = tokio::time::timeout_at(deadline, self.get_status(job_id))
+        let paths = self.paths(job_id)?;
+        let raw = tokio::time::timeout_at(deadline, read_json(&paths.status))
             .await
-            .map_err(|_| anyhow::anyhow!("Job status wait exceeded its {bounded:?} deadline while reading the initial state."))??;
+            .map_err(|_| anyhow::anyhow!("Job status wait exceeded its {bounded:?} deadline before an initial state could be read."))??;
+        let first =
+            match tokio::time::timeout_at(deadline, self.reconcile_status(&paths, raw.clone()))
+                .await
+            {
+                Ok(result) => result?,
+                Err(_) => return Ok(mark_wait_timed_out(raw, bounded)),
+            };
         if is_terminal(status_name(&first)) {
             return Ok(first);
         }
@@ -524,11 +541,7 @@ impl JobStore {
                 return Ok(current);
             }
         }
-        if let Some(object) = current.as_object_mut() {
-            object.insert("waitTimedOut".to_owned(), json!(true));
-            object.insert("waitedMs".to_owned(), json!(duration_ms(bounded)));
-        }
-        Ok(current)
+        Ok(mark_wait_timed_out(current, bounded))
     }
 
     /// Read bounded stdout/stderr tails across the configured rotation chain.
@@ -583,7 +596,9 @@ impl JobStore {
         cancelled.insert("completedAtUtc".to_owned(), json!(completed.clone()));
         cancelled.insert("cancelRequested".to_owned(), json!(true));
         create_marker_once(&paths.cancel, &format!("{completed}\n")).await?;
-        if let Some(pid) = u32_field(&cancelled, "runnerPid").filter(|_| runner_alive) {
+        if let Some(pid) = u32_field(&cancelled, "runnerPid").filter(|_| runner_alive)
+            && process_alive(pid).await
+        {
             terminate_job_runner_gracefully(pid, &paths.status).await;
         }
         cancelled.insert("runnerAlive".to_owned(), json!(false));
@@ -789,6 +804,14 @@ async fn create_marker_once(path: &Path, content: &str) -> Result<()> {
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => Err(error.into()),
     }
+}
+
+fn mark_wait_timed_out(mut value: Value, bounded: Duration) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("waitTimedOut".to_owned(), json!(true));
+        object.insert("waitedMs".to_owned(), json!(duration_ms(bounded)));
+    }
+    value
 }
 
 async fn read_tail(path: &Path, max_chars: usize) -> Result<String> {

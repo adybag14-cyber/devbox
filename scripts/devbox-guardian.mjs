@@ -1259,6 +1259,7 @@ const main = async () => {
       RepairPolicy: repairPolicy,
     };
     await writeJsonAtomic(paths.lastRepair, result);
+    await pruneRepairLogs(paths.repairsDir).catch(() => {});
     const outcomeSummary = timedOut
       ? `repair timed out after ${commandElapsedMs} ms (signal ${signal ?? "none"})`
       : `repair failed or did not restore readiness (exit ${exitCode})`;

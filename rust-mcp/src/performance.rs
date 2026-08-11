@@ -23,7 +23,7 @@ struct TimedSample {
     value_ms: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct PerformanceWindow {
     delays: VecDeque<TimedSample>,
     drifts: VecDeque<TimedSample>,
@@ -88,12 +88,13 @@ fn spawn_sampler(inner: &PerformanceInner) {
                         window.drifts.push_back(TimedSample { at: now.into_std(), value_ms: drift_ms });
                         expected_drift = now + DRIFT_INTERVAL;
                     }
-                    let cutoff = Instant::now().checked_sub(FIVE_MINUTES).unwrap_or_else(Instant::now);
-                    while window.delays.front().is_some_and(|sample| sample.at < cutoff) {
-                        window.delays.pop_front();
-                    }
-                    while window.drifts.front().is_some_and(|sample| sample.at < cutoff) {
-                        window.drifts.pop_front();
+                    if let Some(cutoff) = Instant::now().checked_sub(FIVE_MINUTES) {
+                        while window.delays.front().is_some_and(|sample| sample.at < cutoff) {
+                            window.delays.pop_front();
+                        }
+                        while window.drifts.front().is_some_and(|sample| sample.at < cutoff) {
+                            window.drifts.pop_front();
+                        }
                     }
                     drop(window);
                     expected_sample += SAMPLE_INTERVAL;
@@ -143,11 +144,10 @@ async fn persist_snapshot(path: &std::path::Path, snapshot: &Value) -> std::io::
 
 fn snapshot_value(state: &Arc<Mutex<PerformanceWindow>>, started_at: Instant) -> Value {
     let now = Instant::now();
-    let window = lock_window(state);
+    let window = lock_window(state).clone();
     let short = window_snapshot(&window, now, SHORT_WINDOW);
     let one_minute = window_snapshot(&window, now, ONE_MINUTE);
     let five_minute = window_snapshot(&window, now, FIVE_MINUTES);
-    drop(window);
     json!({
         "eventLoop": {
             "sampledAtUtc": Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
@@ -170,18 +170,18 @@ fn snapshot_value(state: &Arc<Mutex<PerformanceWindow>>, started_at: Instant) ->
 }
 
 fn window_snapshot(window: &PerformanceWindow, now: Instant, duration: Duration) -> Value {
-    let cutoff = now.checked_sub(duration).unwrap_or(now);
+    let cutoff = now.checked_sub(duration);
     let mut delays = window
         .delays
         .iter()
-        .filter(|sample| sample.at >= cutoff)
+        .filter(|sample| cutoff.is_none_or(|cutoff| sample.at >= cutoff))
         .map(|sample| sample.value_ms)
         .collect::<Vec<_>>();
     delays.sort_by(f64::total_cmp);
     let timer_drift_max_ms = window
         .drifts
         .iter()
-        .filter(|sample| sample.at >= cutoff)
+        .filter(|sample| cutoff.is_none_or(|cutoff| sample.at >= cutoff))
         .map(|sample| sample.value_ms)
         .fold(0.0_f64, f64::max);
     json!({

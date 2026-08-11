@@ -142,7 +142,7 @@ try {
   assert.ok(statusMs < 1_500, `devbox_status was unexpectedly slow: ${statusMs}ms`);
   assert.equal(status.structuredContent?.data?.processProbe?.backend, "win32-openprocess");
 
-  for (const program of ["npm", "rg"]) {
+  for (const program of ["npm", "npx", "rg"]) {
     const result = await client.callTool({
       name: "devbox_run_program",
       arguments: { program, args: ["--version"], working_dir: projectRoot, timeout_seconds: 15, max_output_chars: 4_096 },

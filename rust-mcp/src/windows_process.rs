@@ -9,7 +9,7 @@ use std::{
 
 use serde_json::{Value, json};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, WAIT_TIMEOUT},
+    Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError, WAIT_TIMEOUT},
     System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
 };
 
@@ -27,11 +27,12 @@ pub fn process_alive(pid: u32) -> bool {
         unsafe {
             let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
             if handle.is_null() {
-                return false;
+                GetLastError() == ERROR_ACCESS_DENIED
+            } else {
+                let result = WaitForSingleObject(handle, 0);
+                let _ = CloseHandle(handle);
+                result == WAIT_TIMEOUT
             }
-            let result = WaitForSingleObject(handle, 0);
-            let _ = CloseHandle(handle);
-            result == WAIT_TIMEOUT
         }
     };
     let nanos = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);

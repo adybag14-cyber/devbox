@@ -22,7 +22,10 @@ fn build_snapshot() -> Value {
         "buildUnixSeconds": env!("DEVBOX_BUILD_UNIX_SECONDS"),
         "rustc": env!("DEVBOX_BUILD_RUSTC"),
         "binarySha256": binary_sha256,
-        "executable": executable.map(|path| path.to_string_lossy().into_owned()),
+        "executableName": executable
+            .as_deref()
+            .and_then(std::path::Path::file_name)
+            .map(|name| name.to_string_lossy().into_owned()),
         "deploymentGeneration": std::env::var("DEVBOX_DEPLOYMENT_GENERATION").ok(),
     })
 }
