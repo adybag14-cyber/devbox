@@ -46,7 +46,7 @@ pub fn metrics_snapshot() -> Value {
     let count = PROBE_COUNT.load(Ordering::Relaxed);
     let total = PROBE_TOTAL_NS.load(Ordering::Relaxed);
     let max = PROBE_MAX_NS.load(Ordering::Relaxed);
-    let average = Duration::from_nanos(if count == 0 { 0 } else { total / count });
+    let average = Duration::from_nanos(total.checked_div(count).unwrap_or(0));
     let maximum = Duration::from_nanos(max);
     json!({
         "count": count,
