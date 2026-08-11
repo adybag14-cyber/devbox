@@ -5,6 +5,7 @@ $startPath = Join-Path $root 'scripts\Start-ChatGptDevboxMcp.ps1'
 $stopPath = Join-Path $root 'scripts\Stop-ChatGptDevboxMcp.ps1'
 $ownershipPath = Join-Path $root 'scripts\DevboxMcpOwnership.ps1'
 $installPath = Join-Path $root 'scripts\Install-ChatGptDevboxGuardian.ps1'
+$ensureGuardianPath = Join-Path $root 'scripts\Ensure-ChatGptDevboxGuardian.ps1'
 $vbsPath = Join-Path $root 'scripts\Run-Start-ChatGptDevboxMcp.vbs'
 
 function Assert-Contains {
@@ -23,6 +24,7 @@ $start = Get-Content -LiteralPath $startPath -Raw
 $stop = Get-Content -LiteralPath $stopPath -Raw
 $ownership = Get-Content -LiteralPath $ownershipPath -Raw
 $install = Get-Content -LiteralPath $installPath -Raw
+$ensureGuardian = Get-Content -LiteralPath $ensureGuardianPath -Raw
 $vbs = Get-Content -LiteralPath $vbsPath -Raw
 
 Assert-Contains $start '$script:lifecycleMutex.WaitOne(0, $false)' 'Lifecycle mutex must reject concurrent starts instead of queueing them.'
@@ -74,8 +76,13 @@ Assert-Contains $start 'Stop-Process -Id ([int]$script:startupMcpPid) -Force' 'F
 Assert-Before $start 'Set-Content -Path $pidFile -Value $process.Id -Encoding ASCII' '$localUrl = "http://127.0.0.1:$port"' 'MCP PID must be persisted before health validation begins.'
 Assert-Contains $vbs 'shell.Run(command, 0, True)' 'Scheduled-task VBS must wait for the real startup child and propagate its exit code.'
 Assert-Contains $install '-ExecutionTimeLimit (New-TimeSpan -Minutes 10)' 'Elevated startup task must have a bounded execution time.'
+Assert-Contains $install 'if ($LASTEXITCODE -ne 0)' 'Guardian installation must fail when the Ensure process fails.'
+Assert-Contains $ensureGuardian "'-File', ('`"{0}`"' -f `$guardianScript)" 'Guardian direct launch must quote a watcher path containing spaces.'
+Assert-Contains $ensureGuardian 'Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden' 'Guardian Ensure must launch the watcher directly through the resolved PowerShell executable.'
+Assert-Contains $ensureGuardian 'function Get-LiveGuardianSupervisorProcess' 'Guardian Ensure must identify a verified orphan supervisor separately from the watcher.'
+Assert-Contains $ensureGuardian 'guardian watcher failed to start persistently' 'Guardian Ensure must require a persistent watcher before reporting success.'
 
-foreach ($file in @($startPath, $stopPath, $ownershipPath, $installPath)) {
+foreach ($file in @($startPath, $stopPath, $ownershipPath, $installPath, $ensureGuardianPath)) {
     $tokens = $null
     $errors = $null
     [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null
@@ -90,8 +97,9 @@ if (Test-Path $legacy) {
     $escapedStop = $stopPath.Replace("'", "''")
     $escapedOwnership = $ownershipPath.Replace("'", "''")
     $escapedInstall = $installPath.Replace("'", "''")
+    $escapedEnsureGuardian = $ensureGuardianPath.Replace("'", "''")
     $command = @"
-`$ErrorActionPreference='Stop'; foreach(`$f in @('$escapedStart','$escapedStop','$escapedOwnership','$escapedInstall')) { `$t=`$null; `$e=`$null; [System.Management.Automation.Language.Parser]::ParseFile(`$f,[ref]`$t,[ref]`$e) | Out-Null; if(`$e.Count -gt 0) { throw (`$e | Out-String) } }
+`$ErrorActionPreference='Stop'; foreach(`$f in @('$escapedStart','$escapedStop','$escapedOwnership','$escapedInstall','$escapedEnsureGuardian')) { `$t=`$null; `$e=`$null; [System.Management.Automation.Language.Parser]::ParseFile(`$f,[ref]`$t,[ref]`$e) | Out-Null; if(`$e.Count -gt 0) { throw (`$e | Out-String) } }
 "@
     & $legacy -NoLogo -NoProfile -NonInteractive -Command $command
     if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 parse validation failed with exit code $LASTEXITCODE." }

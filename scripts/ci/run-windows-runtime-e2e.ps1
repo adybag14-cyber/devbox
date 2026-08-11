@@ -70,6 +70,13 @@ try {
     $firstHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
     Start-Sleep -Seconds 12
     $secondHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
+    if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'Watch-ChatGptDevboxGuardian\.ps1') {
+        throw 'Guardian wrapper did not remain running.'
+    }
+    if (-not $secondHeartbeat.PSObject.Properties['GuardianPid'] -or [int]$secondHeartbeat.GuardianPid -ne $guardianPid) {
+        throw 'Heartbeat is not associated with the persistent Guardian wrapper.'
+    }
     if ([DateTime]$secondHeartbeat.ObservedAtUtc -le [DateTime]$firstHeartbeat.ObservedAtUtc) {
         throw 'Guardian heartbeat did not advance after installation.'
     }
@@ -83,22 +90,51 @@ try {
     Write-Host "Windows native lifecycle E2E passed: PID=$($state.McpProcessId) git=$($metadata.build.gitSha)"
 } finally {
     Remove-CiTasks
+    $guardianPidPath = Join-Path $root 'run\guardian\guardian.pid'
     try {
-        $guardianPidPath = Join-Path $root 'run\guardian\guardian.pid'
         if (Test-Path $guardianPidPath) {
-            $guardianPid = [int](Get-Content $guardianPidPath -ErrorAction SilentlyContinue | Select-Object -First 1)
-            if ($guardianPid -gt 0) { Stop-Process -Id $guardianPid -Force -ErrorAction SilentlyContinue }
+            $guardianPid = [int](Get-Content $guardianPidPath -ErrorAction Stop | Select-Object -First 1)
+            if ($guardianPid -gt 0) {
+                $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
+                if ($guardianProcess -and ([string]$guardianProcess.CommandLine) -match 'Watch-ChatGptDevboxGuardian\.ps1') {
+                    Stop-Process -Id $guardianPid -Force -ErrorAction Stop
+                }
+            }
         }
-        $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'
+    } catch {
+        Write-Warning ("Guardian wrapper cleanup failed: {0}" -f $_.Exception.Message)
+    }
+
+    $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'
+    try {
         if (Test-Path $heartbeatPath) {
-            $heartbeat = Get-Content $heartbeatPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+            $heartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
             $supervisorPid = [int]$heartbeat.SupervisorPid
-            if ($supervisorPid -gt 0) { Stop-Process -Id $supervisorPid -Force -ErrorAction SilentlyContinue }
+            if ($supervisorPid -gt 0) {
+                $supervisorProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $supervisorPid) -ErrorAction SilentlyContinue
+                if ($supervisorProcess -and ([string]$supervisorProcess.CommandLine) -match 'devbox-guardian\.mjs') {
+                    Stop-Process -Id $supervisorPid -Force -ErrorAction Stop
+                }
+            }
         }
-        Remove-Item (Join-Path $root 'run\guardian\guardian.lock') -Force -ErrorAction SilentlyContinue
-        Remove-Item $guardianPidPath -Force -ErrorAction SilentlyContinue
-    } catch {}
-    try { & (Join-Path $root 'scripts\Stop-ChatGptDevboxMcp.ps1') -ErrorAction SilentlyContinue | Out-Null } catch {}
+    } catch {
+        Write-Warning ("Guardian supervisor cleanup failed: {0}" -f $_.Exception.Message)
+    }
+
+    foreach ($stalePath in @((Join-Path $root 'run\guardian\guardian.lock'), $guardianPidPath)) {
+        try {
+            Remove-Item $stalePath -Force -ErrorAction Stop
+        } catch [System.Management.Automation.ItemNotFoundException] {
+        } catch {
+            Write-Warning ("Guardian state cleanup failed for {0}: {1}" -f $stalePath, $_.Exception.Message)
+        }
+    }
+
+    try {
+        & (Join-Path $root 'scripts\Stop-ChatGptDevboxMcp.ps1') -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Warning ("MCP cleanup failed: {0}" -f $_.Exception.Message)
+    }
     if ($hadEnv) {
         [IO.File]::WriteAllText($envPath, $envBackup, [Text.UTF8Encoding]::new($false))
     } else {
