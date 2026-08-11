@@ -47,7 +47,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", features = ["process", "signal"] }
+nix = { version = "0.31", features = ["process", "signal"] }
 
 [lints.rust]
 unsafe_code = "deny"
