@@ -26,7 +26,7 @@
     "@modelcontextprotocol/sdk": "1.28.0",
     "express": "5.1.0",
     "jose": "^6.1.0",
-    "zod": "4.1.11"
+    "zod": "4.4.3"
   },
   "engines": {
     "node": ">=18"
