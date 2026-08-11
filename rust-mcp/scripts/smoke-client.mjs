@@ -196,9 +196,15 @@ try {
   assert.equal(statusData.performance?.process?.memory?.rss >= 0, true);
   assert.equal(statusData.performance?.eventLoop?.p95Ms >= 0, true);
   assert.match(statusData.performance?.eventLoop?.sampledAtUtc || "", /^\d{4}-\d{2}-\d{2}T/);
-  assert.ok(Array.isArray(statusData.versions));
-  for (const program of process.platform === "win32" ? ["node", "npm", "git", "gh", "python"] : ["node", "npm", "git", "gh", "python3", "rg"]) {
-    assert.ok(statusData.versions.some((line) => line.startsWith(`${program}=`)), `missing version status for ${program}`);
+  assert.equal(typeof statusData.versionsCached, "boolean");
+  assert.ok(statusData.versions === null || Array.isArray(statusData.versions));
+  if (statusData.versionsCached) {
+    assert.ok(Array.isArray(statusData.versions));
+    for (const program of process.platform === "win32" ? ["node", "npm", "git", "gh", "python"] : ["node", "npm", "git", "gh", "python3", "rg"]) {
+      assert.ok(statusData.versions.some((line) => line.startsWith(`${program}=`)), `missing version status for ${program}`);
+    }
+  } else {
+    assert.equal(statusData.versions, null);
   }
 
   for (const toolName of ["host_status", "windows_host_status"]) {
