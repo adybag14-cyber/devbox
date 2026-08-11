@@ -60,6 +60,20 @@ try {
         if ($guardianTask.Settings.RestartCount -lt 3) { throw 'Guardian CI task restart policy is missing.' }
     }
 
+    $guardianPidPath = Join-Path $root 'run\guardian\guardian.pid'
+    $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'
+    $guardianPid = [int](Get-Content $guardianPidPath -ErrorAction Stop | Select-Object -First 1)
+    $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
+    if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'Watch-ChatGptDevboxGuardian\.ps1') {
+        throw 'Guardian installer did not leave a persistent Watch-ChatGptDevboxGuardian process running.'
+    }
+    $firstHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    Start-Sleep -Seconds 12
+    $secondHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    if ([DateTime]$secondHeartbeat.ObservedAtUtc -le [DateTime]$firstHeartbeat.ObservedAtUtc) {
+        throw 'Guardian heartbeat did not advance after installation.'
+    }
+
     & node (Join-Path $root 'scripts\devbox-guardian.mjs') --project-root $root --once --no-repair | Out-Host
     $state = Get-Content (Join-Path $root 'run\guardian\state.json') -Raw | ConvertFrom-Json
     if (-not $state.IsHealthy) { throw "Guardian did not classify native Rust runtime healthy: $($state.Reasons -join '; ')" }
@@ -69,6 +83,21 @@ try {
     Write-Host "Windows native lifecycle E2E passed: PID=$($state.McpProcessId) git=$($metadata.build.gitSha)"
 } finally {
     Remove-CiTasks
+    try {
+        $guardianPidPath = Join-Path $root 'run\guardian\guardian.pid'
+        if (Test-Path $guardianPidPath) {
+            $guardianPid = [int](Get-Content $guardianPidPath -ErrorAction SilentlyContinue | Select-Object -First 1)
+            if ($guardianPid -gt 0) { Stop-Process -Id $guardianPid -Force -ErrorAction SilentlyContinue }
+        }
+        $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'
+        if (Test-Path $heartbeatPath) {
+            $heartbeat = Get-Content $heartbeatPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+            $supervisorPid = [int]$heartbeat.SupervisorPid
+            if ($supervisorPid -gt 0) { Stop-Process -Id $supervisorPid -Force -ErrorAction SilentlyContinue }
+        }
+        Remove-Item (Join-Path $root 'run\guardian\guardian.lock') -Force -ErrorAction SilentlyContinue
+        Remove-Item $guardianPidPath -Force -ErrorAction SilentlyContinue
+    } catch {}
     try { & (Join-Path $root 'scripts\Stop-ChatGptDevboxMcp.ps1') -ErrorAction SilentlyContinue | Out-Null } catch {}
     if ($hadEnv) {
         [IO.File]::WriteAllText($envPath, $envBackup, [Text.UTF8Encoding]::new($false))

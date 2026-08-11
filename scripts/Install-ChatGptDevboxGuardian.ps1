@@ -307,6 +307,9 @@ $elevatedSettings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask -TaskName $elevatedStartTaskName -Action $elevatedAction -Settings $elevatedSettings -Principal $interactivePrincipal -Force | Out-Null
 
 & $powerShellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Guardian ensure process failed with exit code $LASTEXITCODE."
+}
 Start-Sleep -Seconds 5
 
 $taskInfo = @(
