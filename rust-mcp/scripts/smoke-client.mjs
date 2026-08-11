@@ -196,6 +196,11 @@ try {
   assert.equal(statusData.performance?.process?.memory?.rss >= 0, true);
   assert.equal(statusData.performance?.eventLoop?.p95Ms >= 0, true);
   assert.match(statusData.performance?.eventLoop?.sampledAtUtc || "", /^\d{4}-\d{2}-\d{2}T/);
+  const allocator = statusData.performance?.process?.memory?.allocator;
+  assert.equal(allocator?.backend, "std::alloc::System tracked requested bytes");
+  assert.equal(Number.isFinite(allocator?.currentRequestedBytes), true);
+  assert.equal(allocator?.peakRequestedBytes > 0, true);
+  assert.equal(allocator?.allocationCalls > 0, true);
   assert.equal(typeof statusData.versionsCached, "boolean");
   assert.ok(statusData.versions === null || Array.isArray(statusData.versions));
   if (statusData.versionsCached) {

@@ -1,3 +1,4 @@
+pub mod allocator_metrics;
 pub mod capture;
 pub mod config;
 pub mod contract;

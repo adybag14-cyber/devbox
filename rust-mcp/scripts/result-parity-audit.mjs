@@ -290,7 +290,10 @@ const normalizeImplementationDiagnostics = (name, value) => {
     delete data.performance.eventLoop.oneMinute;
     delete data.performance.eventLoop.fiveMinute;
   }
-  if (data.performance?.process?.memory) delete data.performance.process.memory.private;
+  if (data.performance?.process?.memory) {
+    delete data.performance.process.memory.private;
+    delete data.performance.process.memory.allocator;
+  }
   if (data.performance?.process) delete data.performance.process.platform;
   return cloned;
 };
