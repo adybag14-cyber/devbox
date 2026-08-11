@@ -340,6 +340,17 @@ function Assert-StartupDeadline {
     }
 }
 
+function Reset-StartupDeadlineWindow {
+    param(
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds,
+        [Parameter(Mandatory = $true)][string]$Phase
+    )
+
+    $bounded = [Math]::Max(30, $TimeoutSeconds)
+    $script:startupDeadlineUtc = [DateTime]::UtcNow.AddSeconds($bounded)
+    Write-StartupPhase -Phase $Phase -Extra @{ DeadlineWindowSeconds = $bounded }
+}
+
 function Enter-ChatGptDevboxLifecycleMutex {
     param(
         [Parameter(Mandatory = $true)][string]$RunDir,
@@ -1007,21 +1018,78 @@ function Assert-McpReplacementReady {
         }
         $cargoExe = Resolve-CargoExecutable -ConfiguredPath $configuredCargo
         $manifestPath = Join-Path $ProjectRoot 'rust-mcp\Cargo.toml'
-        $targetDir = Join-Path $ProjectRoot 'rust-mcp\target'
-        $binaryPath = Join-Path $targetDir 'release\devbox-mcp.exe'
+        $runDir = Join-Path $ProjectRoot 'run'
+        $versionedBinDir = Join-Path $runDir 'bin'
+        $currentManifestPath = Join-Path $versionedBinDir 'current-rust.json'
+        Ensure-Directory -Path $versionedBinDir
+
+        $gitSha = (& git -C $ProjectRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+        if ([string]::IsNullOrWhiteSpace($gitSha)) {
+            $gitSha = 'unknown'
+        }
+        $trackedDirty = ((& git -C $ProjectRoot status --porcelain --untracked-files=no 2>$null | Out-String).Trim()).Length -gt 0
+
+        # Fast boot path: only reuse a candidate that previously passed the complete
+        # local/public startup gate and matches the current committed source tree.
+        if (-not $trackedDirty -and (Test-Path $currentManifestPath)) {
+            try {
+                $current = Get-Content $currentManifestPath -Raw | ConvertFrom-Json
+                if ($current.GitSha -eq $gitSha -and $current.FilePath -and (Test-Path ([string]$current.FilePath))) {
+                    $candidateHash = (Get-FileHash -LiteralPath ([string]$current.FilePath) -Algorithm SHA256).Hash
+                    if ($candidateHash -eq [string]$current.Sha256) {
+                        $previousErrorActionPreference = $ErrorActionPreference
+                        try {
+                            $ErrorActionPreference = 'Continue'
+                            $parityOutput = & ([string]$current.FilePath) '--parity-report' 2>&1 | Out-String
+                            if ($LASTEXITCODE -eq 0) {
+                                return [pscustomobject]@{
+                                    Implementation = 'rust'
+                                    FilePath = [string]$current.FilePath
+                                    ArgumentList = @()
+                                    Generation = [string]$current.Generation
+                                    GitSha = $gitSha
+                                    Sha256 = $candidateHash
+                                    CandidateManifestPath = $currentManifestPath
+                                    Reused = $true
+                                }
+                            }
+                        } finally {
+                            $ErrorActionPreference = $previousErrorActionPreference
+                        }
+                    }
+                }
+            } catch {
+                # A stale/corrupt manifest is never fatal; rebuild below while the old MCP stays live.
+            }
+        }
+
+        $generation = ('{0}-{1}' -f ([DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff')), $PID)
+        $targetDir = Join-Path $runDir (Join-Path 'rust-build' $generation)
+        $builtBinary = Join-Path $targetDir 'release\devbox-mcp.exe'
+        Ensure-Directory -Path $targetDir
         Push-Location $ProjectRoot
         $previousErrorActionPreference = $ErrorActionPreference
         try {
-            # Native Cargo and Rust binaries legitimately write progress to stderr. Keep
-            # those streams capturable even when PSNativeCommandUseErrorActionPreference
-            # is enabled, then rely on LASTEXITCODE for the actual success contract.
+            # Build into a unique target directory. This never overwrites the live EXE,
+            # so Windows file locks held by the MCP or detached job runners cannot break deployment.
             $ErrorActionPreference = 'Continue'
             $buildOutput = & $cargoExe 'build' '--manifest-path' $manifestPath '--target-dir' $targetDir '--release' '--locked' 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
                 throw "Rust MCP release preflight failed before the existing MCP was stopped. Output:`n$buildOutput`nTemporary rollback: DEVBOX_MCP_IMPLEMENTATION=js."
             }
+            if (-not (Test-Path $builtBinary)) {
+                throw "Rust MCP release build succeeded but the binary was not found at $builtBinary. The existing MCP was not stopped."
+            }
+            $hash = (Get-FileHash -LiteralPath $builtBinary -Algorithm SHA256).Hash
+            $shortSha = if ($gitSha.Length -ge 12) { $gitSha.Substring(0, 12) } else { $gitSha }
+            $hashPrefix = $hash.Substring(0, 16)
+            $binaryPath = Join-Path $versionedBinDir ("devbox-mcp-{0}-{1}.exe" -f $shortSha, $hashPrefix)
             if (-not (Test-Path $binaryPath)) {
-                throw "Rust MCP release build succeeded but the binary was not found at $binaryPath. The existing MCP was not stopped."
+                Copy-Item -LiteralPath $builtBinary -Destination $binaryPath -Force
+            }
+            $stagedHash = (Get-FileHash -LiteralPath $binaryPath -Algorithm SHA256).Hash
+            if ($stagedHash -ne $hash) {
+                throw "Versioned Rust MCP staging hash mismatch at $binaryPath. The existing MCP was not stopped."
             }
             $parityOutput = & $binaryPath '--parity-report' 2>&1 | Out-String
             if ($LASTEXITCODE -ne 0) {
@@ -1030,11 +1098,17 @@ function Assert-McpReplacementReady {
         } finally {
             $ErrorActionPreference = $previousErrorActionPreference
             Pop-Location
+            Remove-Item $targetDir -Recurse -Force -ErrorAction SilentlyContinue
         }
         return [pscustomobject]@{
             Implementation = 'rust'
             FilePath = $binaryPath
             ArgumentList = @()
+            Generation = $generation
+            GitSha = $gitSha
+            Sha256 = $hash
+            CandidateManifestPath = $currentManifestPath
+            Reused = $false
         }
     }
 
@@ -1420,6 +1494,13 @@ $startupTimeoutSeconds = if ($startupTimeoutRaw -match '^\d+$') {
     900
 }
 
+$preflightTimeoutRaw = Get-EnvValue -FilePath $envFile -Name 'DEVBOX_MCP_PREFLIGHT_TIMEOUT_SECONDS'
+$preflightTimeoutSeconds = if ($preflightTimeoutRaw -match '^\d+$') {
+    [Math]::Min(1800, [Math]::Max(30, [int]$preflightTimeoutRaw))
+} else {
+    [Math]::Min(1800, [Math]::Max(600, $startupTimeoutSeconds))
+}
+
 Enter-ChatGptDevboxLifecycleMutex -RunDir $runDir -SelectedRuntime $selectedRuntimeEarly -TimeoutSeconds $startupTimeoutSeconds
 try {
 Ensure-Directory -Path $runDir
@@ -1565,9 +1646,13 @@ if ($selectedRuntime -eq 'host') {
 
 Write-StartupPhase -Phase 'writing-runtime-config'
 Write-RuntimeEnvFile -SourceEnvFile $envFile -RuntimeEnvFile $runtimeEnvFile -Overrides $overrides
+Reset-StartupDeadlineWindow -TimeoutSeconds $preflightTimeoutSeconds -Phase 'preflighting-mcp-replacement'
 Assert-StartupDeadline -Phase 'preflighting-mcp-replacement'
-Write-StartupPhase -Phase 'preflighting-mcp-replacement'
 $launchSpec = Assert-McpReplacementReady -Implementation $mcpImplementation -ProjectRoot $root -RuntimeEnvFile $runtimeEnvFile
+# Candidate compilation/parity is deliberately outside the downtime budget: the
+# previous MCP remains live until this point. Start a fresh strict cutover window
+# immediately before stopping the owned origin.
+Reset-StartupDeadlineWindow -TimeoutSeconds $startupTimeoutSeconds -Phase 'cutover-ready'
 Assert-StartupDeadline -Phase 'stopping-existing-mcp'
 Write-StartupPhase -Phase 'stopping-existing-mcp'
 Stop-ExistingServerIfOwned -PidFile $pidFile -ProjectRoot $root
@@ -1593,6 +1678,9 @@ if ($launchArguments.Count -gt 0) {
 $childEnvironment = Read-RuntimeEnvValues -FilePath $runtimeEnvFile
 if ($mcpImplementation -eq 'rust') {
     $childEnvironment['DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE'] = '1'
+    if ($launchSpec.Generation) {
+        $childEnvironment['DEVBOX_DEPLOYMENT_GENERATION'] = [string]$launchSpec.Generation
+    }
 }
 $previousChildEnvironment = Set-TemporaryProcessEnvironment -Values $childEnvironment
 try {
@@ -1650,12 +1738,30 @@ if ($Public) {
     Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl -HostCloudflaredPidFile $hostTunnelPidFile
 }
 
+if ($mcpImplementation -eq 'rust' -and $launchSpec.CandidateManifestPath) {
+    Write-JsonStateFile -Path ([string]$launchSpec.CandidateManifestPath) -Value @{
+        GitSha = [string]$launchSpec.GitSha
+        Sha256 = [string]$launchSpec.Sha256
+        Generation = [string]$launchSpec.Generation
+        FilePath = [string]$launchSpec.FilePath
+        PromotedAtUtc = [DateTime]::UtcNow.ToString('o')
+    }
+    # Keep the current candidate plus two recent rollback candidates. Older locked
+    # binaries are harmless and will be retried on the next successful start.
+    $keep = @(Get-ChildItem (Split-Path -Parent ([string]$launchSpec.CandidateManifestPath)) -Filter 'devbox-mcp-*.exe' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3 -ExpandProperty FullName)
+    Get-ChildItem (Split-Path -Parent ([string]$launchSpec.CandidateManifestPath)) -Filter 'devbox-mcp-*.exe' -File -ErrorAction SilentlyContinue |
+        Where-Object { $keep -notcontains $_.FullName } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+}
+
 $script:startupSucceeded = $true
 Write-StartupPhase -Phase 'ready' -Status 'ready' -Extra @{
     McpProcessId = [int]$process.Id
     LocalUrl = $localUrl
     PublicBaseUrl = $publicBaseUrl
     SelectedRuntime = $selectedRuntime
+    DeploymentGeneration = $(if ($launchSpec.Generation) { [string]$launchSpec.Generation } else { $null })
+    GitSha = $(if ($launchSpec.GitSha) { [string]$launchSpec.GitSha } else { $null })
 }
 
 Write-Host "Local MCP URL: $localUrl"

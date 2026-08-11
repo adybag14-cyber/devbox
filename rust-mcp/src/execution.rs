@@ -19,6 +19,7 @@ use tokio_util::sync::CancellationToken;
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CLAIM_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 const CORRUPT_SLOT_STALE: Duration = Duration::from_secs(5 * 60);
+const CORRUPT_QUEUE_TICKET_STALE: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const WINDOWS_SLOT_IO_RETRY_ATTEMPTS: usize = 100;
 #[cfg(windows)]
@@ -195,6 +196,9 @@ pub struct ExecutionSlotSnapshot {
     pub occupied_slots: Vec<Value>,
     pub watch_occupied: usize,
     pub watch_slots: Vec<Value>,
+    /// Cross-process admission tickets currently waiting for execution/watch capacity.
+    pub global_queued: usize,
+    pub global_queued_by_class: BTreeMap<String, usize>,
     pub local_process: LocalMetricsSnapshot,
 }
 
@@ -238,6 +242,17 @@ struct OwnedSlot {
     index: usize,
 }
 
+#[derive(Debug)]
+struct QueueTicket {
+    path: PathBuf,
+}
+
+impl Drop for QueueTicket {
+    fn drop(&mut self) {
+        remove_slot_file_sync(&self.path);
+    }
+}
+
 #[derive(Debug, Clone)]
 struct AcquirePlan {
     pool: String,
@@ -279,6 +294,16 @@ impl AcquirePlan {
             reserved,
             usable_slots,
             requested_weight,
+        }
+    }
+
+    fn queue_class(&self, kind: ExecutionKind) -> String {
+        if self.pool == "watch" {
+            "watch".to_owned()
+        } else if kind == ExecutionKind::Interactive {
+            "execution-interactive".to_owned()
+        } else {
+            "execution-background".to_owned()
         }
     }
 }
@@ -381,9 +406,26 @@ impl ExecutionScheduler {
             .queue_timeout
             .unwrap_or(self.config.queue_timeout)
             .max(Duration::from_millis(1));
+        let plan = AcquirePlan::new(&self.config, &request);
+        let ticket = match create_queue_ticket(
+            &self.config.root,
+            &plan.queue_class(request.kind),
+            &request,
+            timeout,
+        )
+        .await
+        {
+            Ok(ticket) => ticket,
+            Err(error) => {
+                let mut metrics = lock_metrics(&self.metrics);
+                metrics.queued = metrics.queued.saturating_sub(1);
+                return Err(error);
+            }
+        };
         let outcome = self
-            .acquire_inner(&request, cancellation, started, timeout)
+            .acquire_inner(&request, &plan, &ticket, cancellation, started, timeout)
             .await;
+        drop(ticket);
 
         match outcome {
             Ok((owned, pool, resource_class, weight)) => {
@@ -441,21 +483,30 @@ impl ExecutionScheduler {
     async fn acquire_inner(
         &self,
         request: &AcquireRequest,
+        plan: &AcquirePlan,
+        ticket: &QueueTicket,
         cancellation: &CancellationToken,
         started: Instant,
         timeout: Duration,
     ) -> Result<(Vec<OwnedSlot>, String, ResourceClass, usize)> {
-        let plan = AcquirePlan::new(&self.config, request);
         loop {
             if cancellation.is_cancelled() {
                 return Err(ExecutionQueueCancelledError.into());
             }
             let elapsed = started.elapsed();
             if elapsed >= timeout {
-                return Err(timeout_error(request, &plan, elapsed, false).into());
+                return Err(timeout_error(request, plan, elapsed, false).into());
+            }
+            if !queue_ticket_is_head(&self.config.root, ticket).await? {
+                cancellable_sleep(
+                    CLAIM_RETRY_INTERVAL.min(timeout.saturating_sub(elapsed)),
+                    cancellation,
+                )
+                .await?;
+                continue;
             }
             if let Some(owned) = self
-                .claim_slots_once(request, &plan, cancellation, started, timeout)
+                .claim_slots_once(request, plan, cancellation, started, timeout)
                 .await?
             {
                 return Ok((
@@ -467,7 +518,7 @@ impl ExecutionScheduler {
             }
             let elapsed = started.elapsed();
             if elapsed >= timeout {
-                return Err(timeout_error(request, &plan, elapsed, false).into());
+                return Err(timeout_error(request, plan, elapsed, false).into());
             }
             cancellable_sleep(
                 POLL_INTERVAL.min(timeout.saturating_sub(elapsed)),
@@ -602,10 +653,12 @@ impl ExecutionScheduler {
     /// Returns an error when the slot directory cannot be read or an owner cannot be inspected.
     pub async fn snapshot(&self) -> Result<ExecutionSlotSnapshot> {
         fs::create_dir_all(&self.config.root).await?;
-        let (occupied_slots, watch_slots) = tokio::try_join!(
+        let (occupied_slots, watch_slots, queued) = tokio::try_join!(
             read_pool_entries(&self.config.root, "execution"),
-            read_pool_entries(&self.config.root, "watch")
+            read_pool_entries(&self.config.root, "watch"),
+            read_queue_snapshot(&self.config.root)
         )?;
+        let global_queued = queued.values().copied().sum();
         Ok(ExecutionSlotSnapshot {
             max_concurrent: self.config.max_concurrent,
             reserved_interactive: self.config.reserved_interactive,
@@ -619,6 +672,8 @@ impl ExecutionScheduler {
             occupied_slots,
             watch_occupied: watch_slots.len(),
             watch_slots,
+            global_queued,
+            global_queued_by_class: queued,
             local_process: metrics_snapshot(&self.metrics),
         })
     }
@@ -696,6 +751,203 @@ fn pool_for(kind: ExecutionKind, resource_class: ResourceClass) -> String {
     } else {
         "execution".to_owned()
     }
+}
+
+async fn create_queue_ticket(
+    root: &Path,
+    class: &str,
+    request: &AcquireRequest,
+    timeout: Duration,
+) -> Result<QueueTicket> {
+    let queue_root = root.join("queue");
+    fs::create_dir_all(&queue_root).await?;
+    let token = unique_token();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let path = queue_root.join(format!("{class}-{nanos:032}-{token}.json"));
+    let value = json!({
+        "token": token,
+        "pid": std::process::id(),
+        "class": class,
+        "kind": request.kind.as_str(),
+        "resourceClass": request.resource_class.as_str(),
+        "weight": request.weight,
+        "label": request.label,
+        "queuedAtUtc": utc_now(),
+        "queueTimeoutMs": duration_ms(timeout),
+    });
+    write_queue_ticket_atomic(&path, &value).await?;
+    Ok(QueueTicket { path })
+}
+
+async fn queue_ticket_is_head(root: &Path, ticket: &QueueTicket) -> Result<bool> {
+    let queue_root = root.join("queue");
+    let own_name = ticket
+        .path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_owned();
+    // Timestamp starts after the class prefix. Prefix matching is sufficient and
+    // avoids trusting mutable JSON content for queue ordering.
+    let prefix = if own_name.starts_with("execution-interactive-") {
+        "execution-interactive-"
+    } else if own_name.starts_with("execution-background-") {
+        "execution-background-"
+    } else {
+        "watch-"
+    };
+    loop {
+        let mut reader = match fs::read_dir(&queue_root).await {
+            Ok(reader) => reader,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(error) => return Err(error.into()),
+        };
+        let mut head: Option<(String, PathBuf)> = None;
+        while let Some(entry) = reader.next_entry().await? {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(prefix)
+                || !Path::new(&name)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+            {
+                continue;
+            }
+            if head.as_ref().is_none_or(|(current, _)| name < *current) {
+                head = Some((name, entry.path()));
+            }
+        }
+        let Some((name, path)) = head else {
+            return Ok(true);
+        };
+        if name == own_name {
+            return Ok(true);
+        }
+        let owner = fs::read(&path)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        if owner.is_none() {
+            let fresh = fs::metadata(&path)
+                .await
+                .ok()
+                .and_then(|metadata| metadata.modified().ok())
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|age| age < CORRUPT_QUEUE_TICKET_STALE);
+            if fresh {
+                return Ok(false);
+            }
+            remove_slot_file(&path).await.ok();
+            continue;
+        }
+        if queue_ticket_expired(&name, prefix, owner.as_ref().expect("owner checked above")) {
+            remove_slot_file(&path).await.ok();
+            continue;
+        }
+        let alive = owner
+            .as_ref()
+            .and_then(|value| value.get("pid"))
+            .and_then(Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .is_some_and(process_alive_now);
+        if alive {
+            return Ok(false);
+        }
+        // Dead queue owners must never permanently block later tickets.
+        remove_slot_file(&path).await.ok();
+    }
+}
+
+fn process_alive_now(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        crate::windows_process::process_alive(pid)
+    }
+    #[cfg(unix)]
+    {
+        use nix::{sys::signal::kill, unistd::Pid};
+        i32::try_from(pid)
+            .ok()
+            .is_some_and(|pid| kill(Pid::from_raw(pid), None).is_ok())
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+fn queue_ticket_expired(name: &str, prefix: &str, owner: &Value) -> bool {
+    let timeout_ms = owner
+        .get("queueTimeoutMs")
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| duration_ms(CORRUPT_SLOT_STALE));
+    let Some(timestamp) = name
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.split('-').next())
+        .and_then(|value| value.parse::<u128>().ok())
+    else {
+        return false;
+    };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let age_ns = now.saturating_sub(timestamp);
+    let expiry_budget_ns = u128::from(timeout_ms).saturating_mul(1_000_000);
+    age_ns > expiry_budget_ns.saturating_add(1_000_000_000)
+}
+
+async fn write_queue_ticket_atomic(path: &Path, value: &Value) -> Result<()> {
+    let parent = path.parent().context("queue ticket path has no parent")?;
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("ticket");
+    let temporary = parent.join(format!(".{file_name}.{}.tmp", unique_token()));
+    let mut bytes = serde_json::to_vec(value)?;
+    bytes.push(b'\n');
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .await?;
+    file.write_all(&bytes).await?;
+    file.flush().await?;
+    drop(file);
+    if let Err(error) = fs::rename(&temporary, path).await {
+        fs::remove_file(&temporary).await.ok();
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+async fn read_queue_snapshot(root: &Path) -> Result<BTreeMap<String, usize>> {
+    let queue_root = root.join("queue");
+    let mut result = BTreeMap::new();
+    let mut reader = match fs::read_dir(&queue_root).await {
+        Ok(reader) => reader,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(result),
+        Err(error) => return Err(error.into()),
+    };
+    while let Some(entry) = reader.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let class = if name.starts_with("execution-interactive-") {
+            Some("execution-interactive")
+        } else if name.starts_with("execution-background-") {
+            Some("execution-background")
+        } else if name.starts_with("watch-") {
+            Some("watch")
+        } else {
+            None
+        };
+        if let Some(class) = class {
+            *result.entry(class.to_owned()).or_insert(0) += 1;
+        }
+    }
+    Ok(result)
 }
 
 fn slot_path(root: &Path, pool: &str, index: usize) -> PathBuf {
@@ -1054,21 +1306,8 @@ pub(crate) async fn process_alive(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-pub(crate) async fn process_alive(pid: u32) -> bool {
-    if pid == std::process::id() {
-        return true;
-    }
-    let output = tokio::process::Command::new("tasklist.exe")
-        .args(["/fi", &format!("PID eq {pid}"), "/fo", "csv", "/nh"])
-        .output()
-        .await;
-    let Ok(output) = output else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
-    }
-    String::from_utf8_lossy(&output.stdout).contains(&format!(",\"{pid}\","))
+pub(crate) fn process_alive(pid: u32) -> std::future::Ready<bool> {
+    std::future::ready(crate::windows_process::process_alive(pid))
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1275,6 +1514,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn expired_queue_head_is_reclaimed_even_when_pid_is_alive() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let queue_root = root.join("queue");
+        fs::create_dir_all(&queue_root).await.unwrap();
+        let old_nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+            .saturating_sub(5_000_000_000);
+        let stale = queue_root.join(format!("execution-background-{old_nanos:032}-stale.json"));
+        fs::write(
+            &stale,
+            serde_json::to_vec(&json!({
+                "pid": std::process::id(),
+                "queueTimeoutMs": 100,
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let request = AcquireRequest::background("later", ResourceClass::Light, 1);
+        let ticket = create_queue_ticket(
+            root,
+            "execution-background",
+            &request,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert!(queue_ticket_is_head(root, &ticket).await.unwrap());
+        assert!(!stale.exists(), "expired queue head should be reclaimed");
+    }
+
+    #[tokio::test]
+    async fn fifo_ticket_prevents_later_light_job_from_overtaking_heavy_waiter() {
+        let temp = tempfile::tempdir().unwrap();
+        let scheduler = scheduler(temp.path(), 2, 0, 1);
+        let mut blocker = scheduler
+            .acquire(
+                AcquireRequest::background("blocker", ResourceClass::Light, 1),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let heavy_scheduler = scheduler.clone();
+        let heavy = tokio::spawn(async move {
+            heavy_scheduler
+                .acquire(
+                    AcquireRequest::background("heavy-first", ResourceClass::Heavy, 2),
+                    &CancellationToken::new(),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let light_scheduler = scheduler.clone();
+        let light = tokio::spawn(async move {
+            light_scheduler
+                .acquire(
+                    AcquireRequest::background("light-later", ResourceClass::Light, 1),
+                    &CancellationToken::new(),
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        blocker.release().await.unwrap();
+        let mut heavy_lease = tokio::time::timeout(Duration::from_secs(1), heavy)
+            .await
+            .expect("heavy waiter should acquire first")
+            .unwrap()
+            .unwrap();
+        assert_eq!(heavy_lease.weight, 2);
+        assert!(
+            !light.is_finished(),
+            "later light request overtook FIFO heavy waiter"
+        );
+        heavy_lease.release().await.unwrap();
+        let mut light_lease = tokio::time::timeout(Duration::from_secs(1), light)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        light_lease.release().await.unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_process_liveness_uses_native_probe() {
+        assert!(process_alive(std::process::id()).await);
+        let snapshot = crate::windows_process::metrics_snapshot();
+        assert_eq!(snapshot["backend"], "win32-openprocess");
+        assert!(snapshot["count"].as_u64().unwrap_or_default() > 0);
+    }
+
+    #[tokio::test]
     async fn concurrent_heavy_claims_never_exceed_weighted_capacity() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1292,7 +1626,7 @@ mod tests {
                 let mut lease = scheduler
                     .acquire(
                         AcquireRequest {
-                            queue_timeout: Some(Duration::from_secs(2)),
+                            queue_timeout: Some(Duration::from_secs(10)),
                             ..AcquireRequest::background(
                                 format!("heavy-{index}"),
                                 ResourceClass::Heavy,

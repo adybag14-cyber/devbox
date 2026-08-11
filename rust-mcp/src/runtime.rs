@@ -160,22 +160,37 @@ impl RuntimeExecutor {
         force: bool,
         cancellation: CancellationToken,
     ) -> Result<Vec<String>, RuntimeExecError> {
-        let mut cache = self.versions_cache.lock().await;
-        if !force
-            && let Some(entry) = cache.as_ref()
-            && Instant::now() < entry.expires_at
         {
-            return Ok(entry.value.clone());
+            let cache = self.versions_cache.lock().await;
+            if !force
+                && let Some(entry) = cache.as_ref()
+                && Instant::now() < entry.expires_at
+            {
+                return Ok(entry.value.clone());
+            }
         }
+        // External version probes must never run while the cache mutex is held. A
+        // duplicate stale refresh is cheaper than serializing unrelated status calls
+        // behind a slow executable or Docker probe.
         let value = match self.config.runtime_mode {
             RuntimeMode::Host => self.load_host_versions(cancellation).await,
             RuntimeMode::Docker => self.load_docker_versions(cancellation).await?,
         };
+        let mut cache = self.versions_cache.lock().await;
         *cache = Some(VersionCacheEntry {
             value: value.clone(),
             expires_at: Instant::now() + Duration::from_millis(self.config.devbox_version_cache_ms),
         });
         Ok(value)
+    }
+
+    /// Return the most recently warmed version snapshot without executing external programs.
+    pub async fn cached_versions(&self) -> Option<Vec<String>> {
+        let cache = self.versions_cache.lock().await;
+        cache
+            .as_ref()
+            .filter(|entry| Instant::now() < entry.expires_at)
+            .map(|entry| entry.value.clone())
     }
 
     async fn load_host_versions(&self, cancellation: CancellationToken) -> Vec<String> {
@@ -335,14 +350,18 @@ impl RuntimeExecutor {
         if !self.config.host_exec_enabled {
             return Err(RuntimeExecError::HostExecDisabled);
         }
-        let executable = if request.program == "node" {
-            self.config.node_exe.clone()
+        #[cfg(windows)]
+        let (executable, arguments) =
+            resolve_windows_host_program(&self.config, &request.program, &request.args);
+        #[cfg(not(windows))]
+        let (executable, arguments) = if request.program == "node" {
+            (self.config.node_exe.clone(), request.args.clone())
         } else {
-            request.program.clone()
+            (request.program.clone(), request.args.clone())
         };
         spawn_process(
             &executable,
-            &request.args,
+            &arguments,
             ProcessOptions {
                 cwd: Some(request.working_dir),
                 timeout: Some(request.timeout),
@@ -496,10 +515,76 @@ impl RuntimeExecutor {
 pub fn normalize_program(program: &str) -> String {
     let basename = program.rsplit(['\\', '/']).next().unwrap_or_default();
     let normalized = basename.to_ascii_lowercase();
+    for suffix in [".exe", ".com", ".cmd", ".bat", ".ps1"] {
+        if let Some(value) = normalized.strip_suffix(suffix) {
+            return value.to_owned();
+        }
+    }
     normalized
-        .strip_suffix(".exe")
-        .unwrap_or(&normalized)
-        .to_owned()
+}
+
+#[cfg(windows)]
+fn resolve_windows_host_program(
+    config: &Config,
+    program: &str,
+    args: &[String],
+) -> (String, Vec<String>) {
+    if program.eq_ignore_ascii_case("node") {
+        return (config.node_exe.clone(), args.to_vec());
+    }
+    let path = resolve_windows_program_path(program).unwrap_or_else(|| PathBuf::from(program));
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension == "ps1" {
+        let mut wrapped = vec![
+            "-NoLogo".to_owned(),
+            "-NoProfile".to_owned(),
+            "-NonInteractive".to_owned(),
+            "-ExecutionPolicy".to_owned(),
+            "Bypass".to_owned(),
+            "-File".to_owned(),
+            path.to_string_lossy().into_owned(),
+        ];
+        wrapped.extend(args.iter().cloned());
+        return (config.power_shell_exe.clone(), wrapped);
+    }
+    (path.to_string_lossy().into_owned(), args.to_vec())
+}
+
+#[cfg(windows)]
+fn resolve_windows_program_path(program: &str) -> Option<PathBuf> {
+    let supplied = PathBuf::from(program);
+    if supplied.components().count() > 1 && supplied.is_file() {
+        return Some(supplied);
+    }
+    let path = std::env::var_os("PATH")?;
+    let has_extension = supplied.extension().is_some();
+    let extensions = std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned())
+        .split(';')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for directory in std::env::split_paths(&path) {
+        if has_extension {
+            let candidate = directory.join(program);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            continue;
+        }
+        for extension in &extensions {
+            let candidate = directory.join(format!("{program}{extension}"));
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(any(not(windows), test))]
@@ -656,6 +741,45 @@ mod tests {
             .unwrap();
         assert_eq!(output.exit_code, 0);
         assert!(output.stdout.starts_with("rustc "));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_direct_program_resolves_npm_command_shim() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = (*test_config(temp.path())).clone();
+        config.host_program_allowlist.push("npm".to_owned());
+        config.devbox_program_allowlist.push("npm".to_owned());
+        let executor = RuntimeExecutor::new(Arc::new(config));
+        let resolved =
+            resolve_windows_program_path("npm").expect("npm shim should resolve from PATH");
+        assert!(matches!(
+            resolved
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("cmd" | "exe" | "com" | "ps1")
+        ));
+        let output = executor
+            .run_program(
+                ProgramRequest {
+                    program: "npm".to_owned(),
+                    args: vec!["--version".to_owned()],
+                    input: None,
+                    working_dir: temp.path().to_path_buf(),
+                    timeout: Duration::from_secs(15),
+                    user: String::new(),
+                    max_capture_chars: Some(4096),
+                    output_tx: None,
+                    pid_tx: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .expect("npm direct shim execution");
+        assert_eq!(output.exit_code, 0);
+        assert!(!output.stdout.trim().is_empty());
     }
 
     #[tokio::test]

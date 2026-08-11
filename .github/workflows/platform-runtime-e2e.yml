@@ -22,6 +22,31 @@ permissions:
   contents: read
 
 jobs:
+  windows-native:
+    name: Native Windows Guardian + Rust MCP E2E
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install JavaScript dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Select Rust 1.97.1
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
+          rustc --version
+          cargo --version
+      - name: Validate native Windows launcher, Guardian tasks and Rust MCP lifecycle
+        shell: pwsh
+        run: ./scripts/ci/run-windows-runtime-e2e.ps1
+
   macos-native:
     name: Native macOS E2E (${{ matrix.arch }})
     strategy:
@@ -35,8 +60,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
           cache: npm
@@ -76,7 +103,9 @@ jobs:
             image: archlinux:base
             family: pacman
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Validate distro runtime and MCP bridge
         run: sh scripts/ci/run-linux-distro-container-e2e.sh "${{ matrix.image }}" "${{ matrix.family }}"
 
@@ -85,7 +114,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Validate full Termux bootstrap, TUI, launcher, Guardian and MCP bridge
         env:
           TERMUX_DOCKER_IMAGE: termux/termux-docker:x86_64

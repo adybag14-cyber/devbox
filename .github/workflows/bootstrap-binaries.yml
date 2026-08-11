@@ -66,7 +66,9 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Select stable Rust
         run: rustup default stable
       - name: Format check
@@ -98,7 +100,7 @@ jobs:
           "./${{ matrix.tui_output }}" --cloudflare-help --no-color | tee cloudflare-help.txt
           grep -F "${{ matrix.cloudflare_hint }}" cloudflare-help.txt
       - name: Upload binaries
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ${{ matrix.artifact }}
           path: |
@@ -110,7 +112,9 @@ jobs:
     name: devbox-setup-linux-aarch64
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Select stable Rust
         run: rustup default stable
       - name: Format and test
@@ -131,7 +135,7 @@ jobs:
           ./devbox-tui-linux-aarch64 --cloudflare-help --no-color | tee cloudflare-help-arm64.txt
           grep -F "pkg.cloudflare.com/cloudflare-main.gpg" cloudflare-help-arm64.txt
       - name: Upload ARM64 binaries
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: devbox-setup-linux-aarch64
           path: |
@@ -144,7 +148,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Select stable Rust
         run: rustup default stable
       - name: Install Android Rust targets
@@ -190,7 +196,7 @@ jobs:
           chmod +x release-assets/devbox-*
           file release-assets/*
       - name: Upload Android binaries
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: devbox-setup-android
           path: release-assets/*
@@ -204,7 +210,7 @@ jobs:
 
     steps:
       - name: Download all binaries
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           pattern: devbox-setup-*
           path: release-assets

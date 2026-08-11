@@ -136,6 +136,7 @@ export const getDevboxVersions = async ({ force = false } = {}) => {
   });
   return versionsCachePromise;
 };
+export const getCachedDevboxVersions = () => (versionsCache && Date.now() < versionsCache.expiresAt ? versionsCache.value : null);
 export const listFilesInDevbox = (options) => (isDockerRuntime ? listFilesInDockerDevbox(options) : listFilesInHostRuntime(options));
 export const readFileInDevbox = (options) => (isDockerRuntime ? readFileInDockerDevbox(options) : readFileInHostRuntime(options));
 export const readLargeFileInDevbox = (options) => (isDockerRuntime ? readLargeFileInDockerDevbox(options) : readLargeFileInHostRuntime(options));

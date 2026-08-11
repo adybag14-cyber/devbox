@@ -42,10 +42,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
           cache: npm
@@ -72,6 +72,9 @@ jobs:
           ./scripts/ci/test-windows-managed-mcp-ownership.ps1
       - name: Build Rust MCP shadow binary
         run: cargo build --manifest-path rust-mcp/Cargo.toml --locked
+      - name: Reproduce Windows watcher contention and hard-deadline contract
+        if: runner.os == 'Windows'
+        run: node rust-mcp/scripts/windows-contention-smoke-runner.mjs
       - name: Run Rust HTTP, auth, and disconnect regression smokes
         run: |
           node rust-mcp/scripts/config-parity-smoke-runner.mjs
@@ -102,3 +105,17 @@ jobs:
         run: node rust-mcp/scripts/result-parity-audit.mjs
       - name: Run JavaScript MCP SDK interoperability smoke
         run: node rust-mcp/scripts/smoke-runner.mjs
+
+  dependency-audit:
+    name: Rust dependency security audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Audit Rust lockfile against RustSec
+        working-directory: rust-mcp
+        run: cargo audit

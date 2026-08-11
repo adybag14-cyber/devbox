@@ -24,9 +24,10 @@ $settingsPath = Join-Path $runDir 'guardian.settings.json'
 $desiredStatePath = Join-Path $runDir 'guardian.desired-state.json'
 $wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
 $userId = '{0}\{1}' -f $env:USERDOMAIN, $env:USERNAME
+$startupTaskName = "$TaskPrefix-Startup"
 $logonTaskName = "$TaskPrefix-Logon"
 $keepAliveTaskName = "$TaskPrefix-KeepAlive"
-$elevatedStartTaskName = 'ChatGptDevboxMcp-ElevatedStart'
+$elevatedStartTaskName = if ($TaskPrefix -eq 'ChatGptDevboxGuardian') { 'ChatGptDevboxMcp-ElevatedStart' } else { "$TaskPrefix-McpElevatedStart" }
 $startScript = Join-Path $PSScriptRoot 'Start-ChatGptDevboxMcp.ps1'
 
 foreach ($path in @($runDir, $guardianDir)) {
@@ -254,7 +255,7 @@ Write-JsonFile -Path $desiredStatePath -Value @{
     Source = 'Install-ChatGptDevboxGuardian.ps1'
 }
 
-foreach ($taskName in @($logonTaskName, $keepAliveTaskName, $elevatedStartTaskName)) {
+foreach ($taskName in @($startupTaskName, $logonTaskName, $keepAliveTaskName, $elevatedStartTaskName)) {
     Remove-TaskIfPresent -TaskName $taskName
 }
 
@@ -262,15 +263,23 @@ $hiddenArgs = @('//B', '//NoLogo', ('"{0}"' -f $hiddenLauncher)) -join ' '
 $powerShellExe = Resolve-DevboxPowerShellExecutable
 
 $action = New-ScheduledTaskAction -Execute $wscriptExe -Argument $hiddenArgs
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+$startupTrigger = New-ScheduledTaskTrigger -AtStartup
+$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
 $settingsSet = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
-    -MultipleInstances IgnoreNew
-$principal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
+    -MultipleInstances IgnoreNew `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1)
+$interactivePrincipal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
+$startupPrincipal = New-ScheduledTaskPrincipal -UserId $userId -LogonType S4U -RunLevel Highest
 
-Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $trigger -Settings $settingsSet -Principal $principal -Force | Out-Null
+# Boot recovery must not depend on an existing desktop session. S4U runs under
+# the same user identity without storing a password; the ordinary logon task
+# remains Interactive so desktop/session-sensitive host tools retain their behavior.
+Register-ScheduledTask -TaskName $startupTaskName -Action $action -Trigger $startupTrigger -Settings $settingsSet -Principal $startupPrincipal -Force | Out-Null
+Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $logonTrigger -Settings $settingsSet -Principal $interactivePrincipal -Force | Out-Null
 
 $taskCommand = ('"{0}" {1}' -f $wscriptExe, $hiddenArgs)
 $startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')
@@ -295,18 +304,19 @@ $elevatedSettings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
-Register-ScheduledTask -TaskName $elevatedStartTaskName -Action $elevatedAction -Settings $elevatedSettings -Principal $principal -Force | Out-Null
+Register-ScheduledTask -TaskName $elevatedStartTaskName -Action $elevatedAction -Settings $elevatedSettings -Principal $interactivePrincipal -Force | Out-Null
 
 & $powerShellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
 Start-Sleep -Seconds 5
 
 $taskInfo = @(
-    Get-ScheduledTaskInfo -TaskName $logonTaskName | Select-Object @{Name = 'TaskName'; Expression = { $logonTaskName } }, LastRunTime, NextRunTime, LastTaskResult
+    Get-ScheduledTaskInfo -TaskName $startupTaskName | Select-Object @{Name = 'TaskName'; Expression = { $startupTaskName } }, LastRunTime, NextRunTime, LastTaskResult
+Get-ScheduledTaskInfo -TaskName $logonTaskName | Select-Object @{Name = 'TaskName'; Expression = { $logonTaskName } }, LastRunTime, NextRunTime, LastTaskResult
     Get-ScheduledTaskInfo -TaskName $keepAliveTaskName | Select-Object @{Name = 'TaskName'; Expression = { $keepAliveTaskName } }, LastRunTime, NextRunTime, LastTaskResult
     Get-ScheduledTaskInfo -TaskName $elevatedStartTaskName | Select-Object @{Name = 'TaskName'; Expression = { $elevatedStartTaskName } }, LastRunTime, NextRunTime, LastTaskResult
 )
 
-Get-ScheduledTask -TaskName $logonTaskName, $keepAliveTaskName, $elevatedStartTaskName |
+Get-ScheduledTask -TaskName $startupTaskName, $logonTaskName, $keepAliveTaskName, $elevatedStartTaskName |
     Select-Object TaskName, State, @{Name = 'RunLevel'; Expression = { $_.Principal.RunLevel } } |
     Format-Table -AutoSize
 

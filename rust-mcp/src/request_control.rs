@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Write as _,
     sync::{Arc, Mutex, PoisonError},
 };
 
@@ -12,6 +13,7 @@ use axum::{
 };
 use rmcp::{RoleServer, model::NumberOrString, service::RequestContext};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -27,7 +29,7 @@ pub struct McpRequestIdentity {
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 struct ActiveRequestKey {
-    authorization: String,
+    authorization_digest: String,
     session_id: String,
     peer: String,
     user_agent: String,
@@ -57,6 +59,11 @@ impl ActiveRequestRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn active_count(&self) -> usize {
+        self.lock_entries().values().map(HashMap::len).sum()
     }
 
     #[must_use]
@@ -188,13 +195,26 @@ fn request_key(
     request_id: &str,
 ) -> ActiveRequestKey {
     ActiveRequestKey {
-        authorization: header_text(headers, "authorization"),
+        authorization_digest: authorization_digest(headers),
         session_id: header_text(headers, "mcp-session-id"),
         peer: peer.unwrap_or_default().to_owned(),
         user_agent: header_text(headers, "user-agent"),
         request_id_type,
         request_id: request_id.to_owned(),
     }
+}
+
+fn authorization_digest(headers: &HeaderMap) -> String {
+    let value = header_text(headers, "authorization");
+    if value.is_empty() {
+        return String::new();
+    }
+    let digest = Sha256::digest(value.as_bytes());
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(&mut encoded, "{byte:02x}");
+    }
+    encoded
 }
 
 fn header_text(headers: &HeaderMap, name: &str) -> String {
@@ -235,8 +255,14 @@ mod tests {
     fn forwarded_for_header_cannot_spoof_request_identity() {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "203.0.113.99".parse().expect("header"));
+        headers.insert(
+            "authorization",
+            "Bearer secret-value".parse().expect("header"),
+        );
         let key = request_key(&headers, Some("127.0.0.1"), "number", "7");
         assert_eq!(key.peer, "127.0.0.1");
+        assert_eq!(key.authorization_digest.len(), 64);
+        assert!(!key.authorization_digest.contains("secret-value"));
     }
 
     #[test]

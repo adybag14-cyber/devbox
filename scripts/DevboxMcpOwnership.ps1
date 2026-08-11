@@ -80,6 +80,7 @@ function Test-IsOwnedServerCommandLine {
     $expectedServer = "$normalizedRoot\src\server.js"
     $expectedRuntimeEnv = "$normalizedRoot\.env.runtime"
     $expectedRust = "$normalizedRoot\rust-mcp\target\release\devbox-mcp.exe"
+    $expectedVersionedRustDir = "$normalizedRoot\run\bin"
     $arguments = @(Split-WindowsCommandLine -CommandLine ([string]$CommandLine))
     if ($arguments.Count -eq 0) {
         return $false
@@ -93,6 +94,16 @@ function Test-IsOwnedServerCommandLine {
     }
     if ($executable -eq $expectedRust) {
         return $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($executable)) {
+        $executableDirectory = [IO.Path]::GetDirectoryName($executable)
+        $executableName = [IO.Path]::GetFileName($executable)
+        if (
+            $executableDirectory -eq $expectedVersionedRustDir -and
+            $executableName -match '^devbox-mcp-[a-z0-9]+-[a-f0-9]{16}\.exe$'
+        ) {
+            return $true
+        }
     }
 
     $serverMatches = $false

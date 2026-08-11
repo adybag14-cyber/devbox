@@ -576,16 +576,21 @@ fn terminate_process_tree_on_drop(_pid: u32) {}
 
 #[cfg(windows)]
 pub(crate) async fn terminate_process_tree(pid: u32) {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
     if pid == 0 {
         return;
     }
-    let _ = Command::new("taskkill.exe")
+    let mut command = Command::new("taskkill.exe");
+    command
         .args(["/pid", &pid.to_string(), "/t", "/f"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .await;
+        .as_std_mut()
+        .creation_flags(CREATE_NO_WINDOW);
+    let _ = tokio::time::timeout(Duration::from_secs(5), command.status()).await;
 }
 
 #[cfg(unix)]

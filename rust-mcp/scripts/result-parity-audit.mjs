@@ -275,6 +275,26 @@ const calls = [
   ["devbox_recreate", {}],
 ];
 
+const normalizeImplementationDiagnostics = (name, value) => {
+  if (name !== "devbox_status" || !value || typeof value !== "object") return value;
+  const cloned = structuredClone(value);
+  const data = cloned?.data;
+  if (!data || typeof data !== "object") return cloned;
+  for (const key of ["activeRequests", "jobMaintenance", "processProbe", "versions", "versionsCached"]) delete data[key];
+  if (data.execution && typeof data.execution === "object") {
+    delete data.execution.global_queued;
+    delete data.execution.global_queued_by_class;
+  }
+  if (data.performance?.eventLoop) {
+    delete data.performance.eventLoop.sampleCount;
+    delete data.performance.eventLoop.oneMinute;
+    delete data.performance.eventLoop.fiveMinute;
+  }
+  if (data.performance?.process?.memory) delete data.performance.process.memory.private;
+  if (data.performance?.process) delete data.performance.process.platform;
+  return cloned;
+};
+
 const normalizeText = (name, result) => (result.content || []).map((entry) => {
   if (entry.type !== "text") return { type: entry.type };
   let text = normalizeJobIds(entry.text);
@@ -283,7 +303,9 @@ const normalizeText = (name, result) => (result.content || []).map((entry) => {
     const summary = text.slice(0, split);
     const raw = text.slice(split + 2);
     try {
-      return { type: "text", text: `${summary}\n\n${JSON.stringify(normalizeTextValue(JSON.parse(raw)), null, 2)}` };
+      const parsed = JSON.parse(raw);
+      const normalized = normalizeImplementationDiagnostics(name, { data: parsed }).data;
+      return { type: "text", text: `${summary}\n\n${JSON.stringify(normalizeTextValue(normalized), null, 2)}` };
     } catch {}
   }
   text = text
@@ -298,7 +320,7 @@ const normalizeText = (name, result) => (result.content || []).map((entry) => {
 
 const normalizedResult = (name, result) => ({
   isError: result.isError ?? false,
-  structuredContent: stable(result.structuredContent),
+  structuredContent: stable(normalizeImplementationDiagnostics(name, result.structuredContent)),
   content: normalizeText(name, result),
 });
 
