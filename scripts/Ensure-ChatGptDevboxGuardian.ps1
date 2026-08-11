@@ -16,12 +16,12 @@ $powerShellResolver = Join-Path $PSScriptRoot 'Resolve-DevboxPowerShell.ps1'
 . $powerShellResolver
 $powerShellExe = Resolve-DevboxPowerShellExecutable
 $guardianScript = Join-Path $ProjectRoot 'scripts\Watch-ChatGptDevboxGuardian.ps1'
+$supervisorScript = Join-Path $ProjectRoot 'scripts\devbox-guardian.mjs'
 $guardianDir = Join-Path $ProjectRoot 'run\guardian'
 $guardianPidPath = Join-Path $guardianDir 'guardian.pid'
 $heartbeatPath = Join-Path $guardianDir 'heartbeat.json'
 $ensureLogPath = Join-Path $guardianDir 'ensure.log'
 $staleObservationPath = Join-Path $guardianDir 'ensure-stale-observation.json'
-$hiddenLauncher = Join-Path $PSScriptRoot 'Run-ChatGptDevboxGuardian.vbs'
 $guardianSourcePaths = @(
     $guardianScript,
     $powerShellResolver,
@@ -61,23 +61,29 @@ function Get-LiveGuardianProcess {
         }
     }
 
-    if (Test-Path $heartbeatPath) {
-        try {
-            $heartbeat = Get-Content -Path $heartbeatPath -Raw | ConvertFrom-Json
-            if ($heartbeat.PSObject.Properties['SupervisorPid'] -and ([string]$heartbeat.SupervisorPid) -match '^\d+$') {
-                $supervisor = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$heartbeat.SupervisorPid) -ErrorAction SilentlyContinue
-                if ($supervisor -and ([string]$supervisor.CommandLine) -match 'devbox-guardian\.mjs') {
-                    return $supervisor
-                }
-            }
-        } catch {
-        }
-    }
-
     $escapedScriptPath = [regex]::Escape($guardianScript)
     return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
         Where-Object { ([string]$_.CommandLine) -match $escapedScriptPath } |
         Select-Object -First 1
+}
+
+function Get-LiveGuardianSupervisorProcess {
+    if (-not (Test-Path $heartbeatPath)) {
+        return $null
+    }
+    try {
+        $heartbeat = Get-Content -Path $heartbeatPath -Raw | ConvertFrom-Json
+        if (-not $heartbeat.PSObject.Properties['SupervisorPid'] -or ([string]$heartbeat.SupervisorPid) -notmatch '^\d+$') {
+            return $null
+        }
+        $supervisor = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f [int]$heartbeat.SupervisorPid) -ErrorAction SilentlyContinue
+        $escapedSupervisorPath = [regex]::Escape($supervisorScript)
+        if ($supervisor -and ([string]$supervisor.CommandLine) -match $escapedSupervisorPath -and ([string]$supervisor.CommandLine) -notmatch 'codex\.js|@openai/codex') {
+            return $supervisor
+        }
+    } catch {
+    }
+    return $null
 }
 
 function Test-GuardianSourceFresh {
@@ -217,6 +223,12 @@ if ($existing) {
 
 if (-not $existing) {
     Clear-StaleHeartbeatObservation
+    $orphanSupervisor = Get-LiveGuardianSupervisorProcess
+    if ($orphanSupervisor) {
+        Write-EnsureLog -Level 'WARN' -Message ("guardian watcher is missing; stopping orphan supervisor pid={0}" -f $orphanSupervisor.ProcessId)
+        Stop-Process -Id ([int]$orphanSupervisor.ProcessId) -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+    }
 }
 
 if (-not (Test-Path $guardianScript)) {
@@ -224,23 +236,25 @@ if (-not (Test-Path $guardianScript)) {
     exit 1
 }
 
-if (-not (Test-Path $hiddenLauncher)) {
-    Write-EnsureLog -Level 'ERROR' -Message ("hidden launcher missing: {0}" -f $hiddenLauncher)
-    exit 1
-}
+$arguments = @(
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-ExecutionPolicy', 'Bypass',
+    '-WindowStyle', 'Hidden',
+    '-File', ('"{0}"' -f $guardianScript)
+)
 
-$wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
-$arguments = @('//B', '//NoLogo', $hiddenLauncher)
-
-Write-EnsureLog -Message 'guardian not running; starting detached guardian process'
-Start-Process -FilePath $wscriptExe -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+Write-EnsureLog -Message 'guardian not running; starting detached guardian process directly'
+Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden | Out-Null
 Start-Sleep -Seconds 4
 
 $started = Get-LiveGuardianProcess
-if (-not $started) {
-    Write-EnsureLog -Level 'ERROR' -Message 'guardian failed to start'
+$escapedWatcherPath = [regex]::Escape($guardianScript)
+if (-not $started -or ([string]$started.CommandLine) -notmatch $escapedWatcherPath) {
+    Write-EnsureLog -Level 'ERROR' -Message 'guardian watcher failed to start persistently'
     exit 1
 }
 
-Write-EnsureLog -Message ("guardian running pid={0}" -f $started.ProcessId)
+Write-EnsureLog -Message ("guardian watcher running pid={0}" -f $started.ProcessId)
 exit 0

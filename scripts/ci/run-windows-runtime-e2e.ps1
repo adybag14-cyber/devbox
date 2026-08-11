@@ -60,6 +60,27 @@ try {
         if ($guardianTask.Settings.RestartCount -lt 3) { throw 'Guardian CI task restart policy is missing.' }
     }
 
+    $guardianPidPath = Join-Path $root 'run\guardian\guardian.pid'
+    $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'
+    $guardianPid = [int](Get-Content $guardianPidPath -ErrorAction Stop | Select-Object -First 1)
+    $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
+    if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'Watch-ChatGptDevboxGuardian\.ps1') {
+        throw 'Guardian installer did not leave a persistent Watch-ChatGptDevboxGuardian process running.'
+    }
+    $firstHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    Start-Sleep -Seconds 12
+    $secondHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
+    if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'Watch-ChatGptDevboxGuardian\.ps1') {
+        throw 'Guardian wrapper did not remain running.'
+    }
+    if (-not $secondHeartbeat.PSObject.Properties['GuardianPid'] -or [int]$secondHeartbeat.GuardianPid -ne $guardianPid) {
+        throw 'Heartbeat is not associated with the persistent Guardian wrapper.'
+    }
+    if ([DateTime]$secondHeartbeat.ObservedAtUtc -le [DateTime]$firstHeartbeat.ObservedAtUtc) {
+        throw 'Guardian heartbeat did not advance after installation.'
+    }
+
     & node (Join-Path $root 'scripts\devbox-guardian.mjs') --project-root $root --once --no-repair | Out-Host
     $state = Get-Content (Join-Path $root 'run\guardian\state.json') -Raw | ConvertFrom-Json
     if (-not $state.IsHealthy) { throw "Guardian did not classify native Rust runtime healthy: $($state.Reasons -join '; ')" }
@@ -69,7 +90,51 @@ try {
     Write-Host "Windows native lifecycle E2E passed: PID=$($state.McpProcessId) git=$($metadata.build.gitSha)"
 } finally {
     Remove-CiTasks
-    try { & (Join-Path $root 'scripts\Stop-ChatGptDevboxMcp.ps1') -ErrorAction SilentlyContinue | Out-Null } catch {}
+    $guardianPidPath = Join-Path $root 'run\guardian\guardian.pid'
+    try {
+        if (Test-Path $guardianPidPath) {
+            $guardianPid = [int](Get-Content $guardianPidPath -ErrorAction Stop | Select-Object -First 1)
+            if ($guardianPid -gt 0) {
+                $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
+                if ($guardianProcess -and ([string]$guardianProcess.CommandLine) -match 'Watch-ChatGptDevboxGuardian\.ps1') {
+                    Stop-Process -Id $guardianPid -Force -ErrorAction Stop
+                }
+            }
+        }
+    } catch {
+        Write-Warning ("Guardian wrapper cleanup failed: {0}" -f $_.Exception.Message)
+    }
+
+    $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'
+    try {
+        if (Test-Path $heartbeatPath) {
+            $heartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
+            $supervisorPid = [int]$heartbeat.SupervisorPid
+            if ($supervisorPid -gt 0) {
+                $supervisorProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $supervisorPid) -ErrorAction SilentlyContinue
+                if ($supervisorProcess -and ([string]$supervisorProcess.CommandLine) -match 'devbox-guardian\.mjs') {
+                    Stop-Process -Id $supervisorPid -Force -ErrorAction Stop
+                }
+            }
+        }
+    } catch {
+        Write-Warning ("Guardian supervisor cleanup failed: {0}" -f $_.Exception.Message)
+    }
+
+    foreach ($stalePath in @((Join-Path $root 'run\guardian\guardian.lock'), $guardianPidPath)) {
+        try {
+            Remove-Item $stalePath -Force -ErrorAction Stop
+        } catch [System.Management.Automation.ItemNotFoundException] {
+        } catch {
+            Write-Warning ("Guardian state cleanup failed for {0}: {1}" -f $stalePath, $_.Exception.Message)
+        }
+    }
+
+    try {
+        & (Join-Path $root 'scripts\Stop-ChatGptDevboxMcp.ps1') -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Warning ("MCP cleanup failed: {0}" -f $_.Exception.Message)
+    }
     if ($hadEnv) {
         [IO.File]::WriteAllText($envPath, $envBackup, [Text.UTF8Encoding]::new($false))
     } else {
