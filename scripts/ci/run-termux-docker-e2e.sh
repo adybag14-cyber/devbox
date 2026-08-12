@@ -20,8 +20,19 @@ docker run --rm \
     test -n \"\${PREFIX:-}\"
     case \"\$PREFIX\" in *com.termux/files/usr*) ;; *) echo 'Not a Termux PREFIX' >&2; exit 1 ;; esac
 
-    pkg update -y
-    pkg install -y nodejs git python ripgrep curl ca-certificates rust clang
+    configure_termux_main_repo() {
+      repo="\$1"
+      printf 'deb %s stable main\n' "\$repo" > "\$PREFIX/etc/apt/sources.list"
+      rm -rf "\$PREFIX/var/lib/apt/lists"/*
+      apt-get update
+    }
+
+    echo '=== Pin deterministic Termux main repository ==='
+    if ! configure_termux_main_repo https://packages.termux.dev/apt/termux-main; then
+      echo 'Primary Termux repository update failed; retrying Cloudflare-backed canonical mirror' >&2
+      configure_termux_main_repo https://packages-cf.termux.dev/apt/termux-main
+    fi
+    apt-get install -y nodejs git python ripgrep curl ca-certificates rust clang
 
     echo '=== Termux toolchain ==='
     node --version
