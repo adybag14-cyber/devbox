@@ -65,7 +65,16 @@ jobs:
       - name: Run strict Clippy
         run: cargo clippy --manifest-path rust-mcp/Cargo.toml --all-targets -- -D warnings
       - name: Run Rust tests
-        run: cargo test --manifest-path rust-mcp/Cargo.toml --locked
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Windows hosted runners can stall many simultaneous native child launches.
+            # Keep unit subprocess tests deterministic; the dedicated contention smoke below
+            # remains the explicit concurrent scheduler/watcher regression gate.
+            cargo test --manifest-path rust-mcp/Cargo.toml --locked -- --test-threads=2
+          else
+            cargo test --manifest-path rust-mcp/Cargo.toml --locked
+          fi
       - name: Validate Windows managed cutover contracts
         if: runner.os == 'Windows'
         shell: pwsh
