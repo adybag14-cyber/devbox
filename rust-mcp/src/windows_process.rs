@@ -83,7 +83,10 @@ pub fn process_matches_instance(pid: u32, expected: Option<u64>) -> bool {
     if !process_alive(pid) {
         return false;
     }
-    expected.is_none_or(|expected| process_instance(pid) == Some(expected))
+    match (expected, process_instance(pid)) {
+        (Some(expected), Some(actual)) => expected == actual,
+        _ => true,
+    }
 }
 
 #[must_use]
@@ -99,4 +102,22 @@ pub fn metrics_snapshot() -> Value {
         "maxMs": maximum.as_secs_f64() * 1_000.0,
         "backend": "win32-openprocess",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_process_matching_uses_instance_only_when_both_are_known() {
+        let pid = std::process::id();
+        assert!(process_matches_instance(pid, None));
+        if let Some(instance) = process_instance(pid) {
+            assert!(process_matches_instance(pid, Some(instance)));
+            assert!(!process_matches_instance(
+                pid,
+                Some(instance.wrapping_add(1))
+            ));
+        }
+    }
 }

@@ -235,6 +235,7 @@ Important `.env` values:
 - `POWERSHELL_FALLBACK_EXE` (optional Windows fallback override; defaults to Windows PowerShell 5.1)
 - `HOST_SHELL`
 - `HOST_PROGRAM_ALLOWLIST` adds entries to the canonical host defaults; use `HOST_PROGRAM_ALLOWLIST_EXTRA` for explicit local additions, and set `HOST_PROGRAM_ALLOWLIST_REPLACE=true` only when intentionally replacing the canonical defaults
+  - Migration note: older deployments treated `HOST_PROGRAM_ALLOWLIST` as a full replacement. If you intentionally narrowed the defaults, set `HOST_PROGRAM_ALLOWLIST_REPLACE=true`; otherwise the configured entries are now merged with the canonical safe defaults.
 - `DEVBOX_PROGRAM_ALLOWLIST` controls the structured `devbox_run_program` fast path; in host mode the executable must also be allowed by `HOST_PROGRAM_ALLOWLIST`
 - `HOST_SEARCH_BACKEND=auto|rg|js` selects host search acceleration; `auto` prefers ripgrep
 - `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune the light/heavy execution pool

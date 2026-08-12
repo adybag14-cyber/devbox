@@ -105,8 +105,9 @@ if (Test-Path $legacy) {
     $escapedOwnership = $ownershipPath.Replace("'", "''")
     $escapedInstall = $installPath.Replace("'", "''")
     $escapedEnsureGuardian = $ensureGuardianPath.Replace("'", "''")
+    $escapedWatchGuardian = $watchGuardianPath.Replace("'", "''")
     $command = @"
-`$ErrorActionPreference='Stop'; foreach(`$f in @('$escapedStart','$escapedStop','$escapedOwnership','$escapedInstall','$escapedEnsureGuardian')) { `$t=`$null; `$e=`$null; [System.Management.Automation.Language.Parser]::ParseFile(`$f,[ref]`$t,[ref]`$e) | Out-Null; if(`$e.Count -gt 0) { throw (`$e | Out-String) } }
+`$ErrorActionPreference='Stop'; foreach(`$f in @('$escapedStart','$escapedStop','$escapedOwnership','$escapedInstall','$escapedEnsureGuardian','$escapedWatchGuardian')) { `$t=`$null; `$e=`$null; [System.Management.Automation.Language.Parser]::ParseFile(`$f,[ref]`$t,[ref]`$e) | Out-Null; if(`$e.Count -gt 0) { throw (`$e | Out-String) } }
 "@
     & $legacy -NoLogo -NoProfile -NonInteractive -Command $command
     if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 parse validation failed with exit code $LASTEXITCODE." }

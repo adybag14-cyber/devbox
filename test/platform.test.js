@@ -55,6 +55,10 @@ test("configured host allowlist is additive unless replacement is explicit", () 
     mergeHostProgramAllowlist({ defaults, configured: [], replace: true }),
     defaults,
   );
+  assert.deepEqual(
+    mergeHostProgramAllowlist({ defaults, configured: [" Git ", "CURL", "git"], extra: [" Curl "] }),
+    ["git", "rg", "curl"],
+  );
 });
 
 test("resolveHostShell prefers SHELL on posix and PowerShell on Windows", () => {

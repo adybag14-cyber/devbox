@@ -522,6 +522,20 @@ async fn capture_stream<R>(
             Ok(count) => count,
         };
         let bytes = &buffer[..count];
+        let previous_len = local.len();
+        append_stream_utf8(&mut local, &mut pending_utf8, bytes);
+        if let Some(limit) = max_capture_chars {
+            retain_tail_chars(&mut local, limit);
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone_from(&local);
+        } else if local.len() > previous_len {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_str(&local[previous_len..]);
+        }
         if let Some(tx) = output_tx.as_ref() {
             let _ = tx
                 .send(OutputChunk {
@@ -530,14 +544,6 @@ async fn capture_stream<R>(
                 })
                 .await;
         }
-        append_stream_utf8(&mut local, &mut pending_utf8, bytes);
-        if let Some(limit) = max_capture_chars {
-            retain_tail_chars(&mut local, limit);
-        }
-        captured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone_from(&local);
     }
     if !pending_utf8.is_empty() {
         local.push_str(&String::from_utf8_lossy(&pending_utf8));
@@ -644,12 +650,15 @@ fn terminate_spawned_tree(pid: u32, job: Option<&crate::windows_job::WindowsJob>
     if pid == 0 {
         return;
     }
+    let root_instance = crate::windows_process::process_instance(pid);
     if let Some(job) = job {
         let _ = job.terminate(1);
     }
     // Always sweep the native process tree as well. A child could theoretically
     // create a descendant in the tiny interval between CreateProcess and Job Object assignment.
-    crate::windows_job::terminate_process_tree_fallback(pid, 1);
+    // Carry the pre-termination creation fingerprint because the Job Object may already
+    // have ended the root process before this fallback traversal begins.
+    crate::windows_job::terminate_process_tree_fallback_with_instance(pid, root_instance, 1);
 }
 
 #[cfg(unix)]

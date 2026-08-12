@@ -903,10 +903,6 @@ fn owner_process_alive(owner: &Value) -> bool {
 
 #[cfg(not(windows))]
 fn process_alive_now(pid: u32) -> bool {
-    #[cfg(windows)]
-    {
-        crate::windows_process::process_alive(pid)
-    }
     #[cfg(unix)]
     {
         use nix::{sys::signal::kill, unistd::Pid};

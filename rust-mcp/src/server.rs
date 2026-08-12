@@ -2289,6 +2289,7 @@ fn spawn_job_maintenance(handler: &DevboxMcp, config: &Config, cancellation: Can
                             let value = match maintenance_store.reconcile_maintenance_batch(100).await {
                                 Ok(summary) => {
                                     let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                                    heartbeat.tick();
                                     json!({ "sampledAtUtc": chrono::Utc::now().to_rfc3339(), "durationMs": duration_ms, "summary": summary })
                                 }
                                 Err(error) => {
@@ -2297,7 +2298,6 @@ fn spawn_job_maintenance(handler: &DevboxMcp, config: &Config, cancellation: Can
                                 }
                             };
                             let _ = write_json_snapshot(&maintenance_state_path, &value).await;
-                            heartbeat.tick();
                         }
                     }
                 }
@@ -2312,7 +2312,7 @@ fn spawn_version_refresh(handler: &DevboxMcp, cancellation: CancellationToken) {
         .config
         .devbox_version_cache_ms
         .saturating_div(2)
-        .clamp(1_000, 120_000);
+        .clamp(30_000, 120_000);
     handler.background.spawn_supervised(
         "version-refresh",
         cancellation,
@@ -2320,6 +2320,7 @@ fn spawn_version_refresh(handler: &DevboxMcp, cancellation: CancellationToken) {
             let runtime = runtime.clone();
             async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(refresh_ms));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         () = cancellation.cancelled() => return Ok(()),
@@ -2420,6 +2421,9 @@ pub async fn serve(
     config: Arc<Config>,
     cancellation: CancellationToken,
 ) -> Result<(SocketAddr, tokio::task::JoinHandle<std::io::Result<()>>)> {
+    tokio::fs::create_dir_all(&config.jobs_root)
+        .await
+        .with_context(|| format!("create Rust MCP jobs root {}", config.jobs_root.display()))?;
     let address = format!("{}:{}", config.host, config.port);
     let listener = tokio::net::TcpListener::bind(&address)
         .await
@@ -2558,12 +2562,12 @@ fn snapshot_age_ms(timestamp: Option<&str>) -> Option<u64> {
 
 async fn readyz(State(state): State<HttpState>) -> Response {
     let checks = tokio::time::timeout(Duration::from_millis(750), async {
-        let jobs = tokio::fs::create_dir_all(&state.config.jobs_root)
+        let jobs = tokio::fs::metadata(&state.config.jobs_root)
             .await
-            .is_ok();
+            .is_ok_and(|metadata| metadata.is_dir() && !metadata.permissions().readonly());
         let scheduler = state.handler.scheduler.snapshot().await.is_ok();
-        let tool_count = state.handler.tool_router.list_all().len();
-        let tool_contract = tool_count == crate::contract::TARGET_TOOL_NAMES.len();
+        let tool_contract =
+            state.handler.tool_router.list_all().len() == crate::contract::TARGET_TOOL_NAMES.len();
         let background = state.handler.background.snapshot();
         let critical = [
             "performance-sampler",
@@ -2579,21 +2583,16 @@ async fn readyz(State(state): State<HttpState>) -> Response {
                     .and_then(Value::as_u64)
                     .is_some_and(|age| age < 180_000)
         });
-        (
-            jobs,
-            scheduler,
-            tool_contract,
-            tool_count,
-            tasks,
-            background,
-        )
+        jobs && scheduler && tool_contract && tasks
     })
     .await;
-    match checks {
-        Ok((jobs, scheduler, tool_contract, tool_count, tasks, _background)) if jobs && scheduler && tool_contract && tasks => (StatusCode::OK, Json(json!({"ok": true, "jobStoreReady": jobs, "schedulerReady": scheduler, "toolContractComplete": tool_contract, "toolCount": tool_count, "backgroundTasksHealthy": tasks}))).into_response(),
-        Ok((jobs, scheduler, tool_contract, tool_count, tasks, _background)) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "jobStoreReady": jobs, "schedulerReady": scheduler, "toolContractComplete": tool_contract, "toolCount": tool_count, "backgroundTasksHealthy": tasks}))).into_response(),
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "readiness check timed out"}))).into_response(),
-    }
+    let ok = matches!(checks, Ok(true));
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+    (status, Json(json!({ "ok": ok }))).into_response()
 }
 
 async fn healthz() -> &'static str {
@@ -3430,73 +3429,12 @@ mod tests {
     #[tokio::test]
     async fn host_large_file_tools_keep_base64_out_of_text_content() {
         let temp = tempfile::tempdir().expect("temp dir");
-        let config = Arc::new(Config {
-            project_root: temp.path().to_path_buf(),
-            host: "127.0.0.1".to_owned(),
-            port: 0,
-            auth_mode: crate::AuthMode::None,
-            runtime_mode: RuntimeMode::Host,
-            platform: crate::Platform::detect(),
-            public_base_url: None,
-            gateway_bridge: crate::config::GatewayBridgeConfig {
-                enabled: false,
-                origins: vec![
-                    "https://chatgpt.com".to_owned(),
-                    "https://chat.openai.com".to_owned(),
-                ],
-            },
-            oauth_state_file_path: temp.path().join("oauth-state.json"),
-            cloudflare_access_team_domain: None,
-            cloudflare_access_aud: String::new(),
-            cloudflare_access_jwks_url: None,
-            host_workspace_path: temp.path().to_path_buf(),
-            devbox_workspace_path: temp.path().to_path_buf(),
-            devbox_container_name: "chatgpt-devbox-runtime".to_owned(),
-            devbox_image_name: "chatgpt-devbox-runtime:local".to_owned(),
-            devbox_tmp_volume_name: "chatgpt-devbox-runtime-tmp".to_owned(),
-            devbox_retired_container_grace_ms: 300_000,
-            devbox_auto_start: true,
-            devbox_version_cache_ms: 120_000,
-            docker_command_timeout_ms: 120_000,
-            devbox_default_user: "root".to_owned(),
-            host_default_workdir: temp.path().to_path_buf(),
-            host_shell: "unused".to_owned(),
-            power_shell_exe: "pwsh".to_owned(),
-            power_shell_fallback_exe: "powershell.exe".to_owned(),
-            node_exe: "node".to_owned(),
-            host_program_allowlist: vec!["node".to_owned()],
-            host_search_backend: crate::config::HostSearchBackend::Auto,
-            devbox_program_allowlist: vec!["node".to_owned()],
-            host_exec_enabled: true,
-            allow_windows_host_exec_uac: false,
-            execution_slot_root: temp.path().join("execution-slots"),
-            jobs_root: temp.path().join("jobs"),
-            mcp_performance_state_path: temp.path().join("mcp-performance.json"),
-            usage_log: crate::config::UsageLogConfig {
-                max_bytes: 16 * 1024 * 1024,
-                rotations: 3,
-            },
-            mcp_json_body_limit_bytes: 16 * 1024 * 1024,
-            exec_max_concurrent: 6,
-            exec_reserved_interactive: 1,
-            exec_queue_timeout_ms: 15_000,
-            background_queue_timeout_ms: 300_000,
-            watch_max_concurrent: 4,
-            exec_heavy_weight: 2,
-            job_log_max_bytes: 32 * 1024 * 1024,
-            job_log_rotations: 2,
-            job_heartbeat_ms: 5_000,
-            job_orphan_stale_ms: 15_000,
-            job_retention_hours: 168,
-            job_store_max_bytes: 2 * 1024 * 1024 * 1024,
-            job_store_max_terminal_jobs: 5_000,
-            screen_capture_attempt_timeout_ms: 8_000,
-            screen_capture_retries: 1,
-            screen_capture_queue_timeout_ms: 5_000,
-            max_wait_seconds: 300.0,
-            command_output_limit_chars: 65_536,
-            max_mcp_transfer_chars: 4_000_000,
-        });
+        let mut config = crate::config::test_config(temp.path());
+        config.devbox_default_user = "root".to_owned();
+        config.host_shell = "unused".to_owned();
+        config.host_program_allowlist = vec!["node".to_owned()];
+        config.devbox_program_allowlist = vec!["node".to_owned()];
+        let config = Arc::new(config);
         let server = DevboxMcp::new(config);
         let write = server
             .windows_host_write_large_file(Parameters(HostLargeWriteRequest {
@@ -3590,7 +3528,7 @@ mod tests {
 
     #[test]
     fn command_error_trimming_uses_javascript_utf16_units_and_marker() {
-        let input = format!("{}END", "ðŸ˜€".repeat(80));
+        let input = format!("{}END", "😀".repeat(80));
         let (trimmed, truncated) = trim_javascript_text(&input, 100);
         assert!(truncated);
         assert!(trimmed.encode_utf16().count() <= 100);

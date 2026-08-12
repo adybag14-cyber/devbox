@@ -82,10 +82,21 @@ impl Drop for WindowsJob {
 /// Native fallback used if a process could not be assigned to a Job Object.
 /// Descendants are terminated before the root to reduce the chance of orphaning children.
 pub fn terminate_process_tree_fallback(root_pid: u32, exit_code: u32) {
+    let root_created = crate::windows_process::process_instance(root_pid);
+    terminate_process_tree_fallback_with_instance(root_pid, root_created, exit_code);
+}
+
+/// Native fallback with a caller-captured root creation fingerprint. This is used after
+/// Job Object termination, when the root process may already have exited and its PID may recycle.
+pub fn terminate_process_tree_fallback_with_instance(
+    root_pid: u32,
+    root_created: Option<u64>,
+    exit_code: u32,
+) {
     if root_pid == 0 {
         return;
     }
-    let descendants = descendant_pids(root_pid);
+    let descendants = descendant_pids(root_pid, root_created);
     for pid in descendants
         .into_iter()
         .rev()
@@ -105,7 +116,11 @@ fn terminate_pid(pid: u32, exit_code: u32) {
     }
 }
 
-fn descendant_pids(root_pid: u32) -> Vec<u32> {
+fn creation_is_safe(root_created: Option<u64>, child_created: Option<u64>) -> bool {
+    root_created.is_none_or(|root| child_created.is_some_and(|child| child >= root))
+}
+
+fn descendant_pids(root_pid: u32, root_created: Option<u64>) -> Vec<u32> {
     unsafe {
         let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
         if snapshot == INVALID_HANDLE_VALUE {
@@ -132,7 +147,11 @@ fn descendant_pids(root_pid: u32) -> Vec<u32> {
         while let Some(parent) = stack.pop() {
             if let Some(items) = children.get(&parent) {
                 for &child in items {
-                    if child != root_pid && seen.insert(child) {
+                    let creation_safe = creation_is_safe(
+                        root_created,
+                        crate::windows_process::process_instance(child),
+                    );
+                    if child != root_pid && creation_safe && seen.insert(child) {
                         result.push(child);
                         stack.push(child);
                     }
@@ -140,5 +159,19 @@ fn descendant_pids(root_pid: u32) -> Vec<u32> {
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::creation_is_safe;
+
+    #[test]
+    fn descendant_creation_filter_rejects_older_or_unknown_children_when_root_is_known() {
+        assert!(creation_is_safe(None, None));
+        assert!(creation_is_safe(Some(100), Some(100)));
+        assert!(creation_is_safe(Some(100), Some(101)));
+        assert!(!creation_is_safe(Some(100), Some(99)));
+        assert!(!creation_is_safe(Some(100), None));
     }
 }

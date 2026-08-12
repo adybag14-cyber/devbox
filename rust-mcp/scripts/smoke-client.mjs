@@ -192,7 +192,7 @@ try {
 
   // The smoke server uses a 2s version TTL. Waiting beyond the TTL proves the
   // supervised refresher keeps status populated without status launching probes.
-  await new Promise((resolve) => setTimeout(resolve, 2_500));
+  await new Promise((resolve) => setTimeout(resolve, 32_000));
   const status = await client.callTool({ name: "devbox_status", arguments: {} });
   assert.equal(status.isError, false);
   assert.equal(status.structuredContent?.ok, true);

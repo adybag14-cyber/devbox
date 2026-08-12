@@ -61,6 +61,7 @@ pub struct UsageLogger {
     sink: Arc<UsageLogSink>,
     tx: mpsc::Sender<Value>,
     metrics: Arc<UsageQueueMetrics>,
+    cancellation: Option<CancellationToken>,
 }
 
 impl UsageLogger {
@@ -86,8 +87,18 @@ impl UsageLogger {
                     }
                 }
             });
+        } else {
+            tracing::warn!(
+                path = %sink.path.display(),
+                "usage-log writer could not start because no Tokio runtime handle is available"
+            );
         }
-        Self { sink, tx, metrics }
+        Self {
+            sink,
+            tx,
+            metrics,
+            cancellation: None,
+        }
     }
 
     #[must_use]
@@ -109,9 +120,10 @@ impl UsageLogger {
         let receiver = Arc::new(Mutex::new(rx));
         let writer_sink = sink.clone();
         let writer_metrics = metrics.clone();
+        let cancellation = CancellationToken::new();
         background.spawn_supervised(
             task_name,
-            CancellationToken::new(),
+            cancellation.clone(),
             move |cancellation, heartbeat| {
                 let receiver = receiver.clone();
                 let sink = writer_sink.clone();
@@ -126,6 +138,7 @@ impl UsageLogger {
                             }
                         };
                         let Some(event) = event else {
+                            cancellation.cancelled().await;
                             return Ok(());
                         };
                         if sink.append(&event).await.is_err() {
@@ -136,7 +149,12 @@ impl UsageLogger {
                 }
             },
         );
-        Self { sink, tx, metrics }
+        Self {
+            sink,
+            tx,
+            metrics,
+            cancellation: Some(cancellation),
+        }
     }
 
     /// Queue telemetry without blocking the tool or HTTP request on filesystem I/O.
@@ -168,6 +186,14 @@ impl UsageLogger {
     /// Returns filesystem or serialization errors from the underlying usage-log sink.
     pub async fn append(&self, event: &Value) -> Result<()> {
         self.sink.append(event).await
+    }
+}
+
+impl Drop for UsageLogger {
+    fn drop(&mut self) {
+        if let Some(cancellation) = self.cancellation.as_ref() {
+            cancellation.cancel();
+        }
     }
 }
 
@@ -818,6 +844,27 @@ fn elapsed_ms(duration: Duration) -> u64 {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn supervised_writer_stops_without_restart_when_logger_is_dropped() {
+        let temp = tempfile::tempdir().unwrap();
+        let background = BackgroundTaskRegistry::new();
+        {
+            let logger = UsageLogger::new_supervised(
+                temp.path().join("usage.jsonl"),
+                4096,
+                1,
+                "usage-test-writer",
+                &background,
+            );
+            logger.enqueue(json!({"event": 1}));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(650)).await;
+        let snapshot = background.snapshot();
+        assert_eq!(snapshot["usage-test-writer"]["starts"], 1);
+        assert_eq!(snapshot["usage-test-writer"]["running"], false);
+    }
+
     #[test]
     fn sensitive_arguments_are_redacted_and_large_values_are_bounded() {
         let mut arguments = JsonObject::new();
@@ -851,7 +898,12 @@ mod tests {
         });
         let metrics = Arc::new(UsageQueueMetrics::default());
         let (tx, _rx) = mpsc::channel(1);
-        let logger = UsageLogger { sink, tx, metrics };
+        let logger = UsageLogger {
+            sink,
+            tx,
+            metrics,
+            cancellation: None,
+        };
         logger.enqueue(json!({"event": 1}));
         logger.enqueue(json!({"event": 2}));
         let snapshot = logger.metrics_snapshot();

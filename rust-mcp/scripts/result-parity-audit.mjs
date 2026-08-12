@@ -296,6 +296,10 @@ const normalizeImplementationDiagnostics = (name, value) => {
     delete data.execution.global_queued;
     delete data.execution.global_queued_by_class;
   }
+  if (data.performance && typeof data.performance === "object") {
+    delete data.performance.cachedAgeMs;
+    delete data.performance.stale;
+  }
   if (data.performance?.eventLoop) {
     delete data.performance.eventLoop.sampleCount;
     delete data.performance.eventLoop.oneMinute;
@@ -305,7 +309,10 @@ const normalizeImplementationDiagnostics = (name, value) => {
     delete data.performance.process.memory.private;
     delete data.performance.process.memory.allocator;
   }
-  if (data.performance?.process) delete data.performance.process.platform;
+  if (data.performance?.process) {
+    delete data.performance.process.platform;
+    delete data.performance.process.cpuTotalMs;
+  }
   return cloned;
 };
 

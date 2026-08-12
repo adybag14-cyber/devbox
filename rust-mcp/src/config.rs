@@ -451,7 +451,7 @@ fn load_program_configuration(
         if host_configured.is_empty() {
             host_defaults
         } else {
-            host_configured
+            merge_program_allowlists(Vec::new(), host_configured)
         }
     } else {
         merge_program_allowlists(host_defaults, host_configured.into_iter().chain(host_extra))
@@ -863,6 +863,77 @@ fn parse_bool_env(name: &str, fallback: bool) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn test_config(root: &Path) -> Config {
+    Config {
+        project_root: root.to_path_buf(),
+        host: "127.0.0.1".to_owned(),
+        port: 0,
+        auth_mode: AuthMode::None,
+        runtime_mode: RuntimeMode::Host,
+        platform: Platform::detect(),
+        public_base_url: None,
+        gateway_bridge: GatewayBridgeConfig {
+            enabled: false,
+            origins: vec![
+                "https://chatgpt.com".to_owned(),
+                "https://chat.openai.com".to_owned(),
+            ],
+        },
+        oauth_state_file_path: root.join("oauth-state.json"),
+        cloudflare_access_team_domain: None,
+        cloudflare_access_aud: String::new(),
+        cloudflare_access_jwks_url: None,
+        host_workspace_path: root.to_path_buf(),
+        devbox_workspace_path: root.to_path_buf(),
+        devbox_container_name: "chatgpt-devbox-runtime".to_owned(),
+        devbox_image_name: "chatgpt-devbox-runtime:local".to_owned(),
+        devbox_tmp_volume_name: "chatgpt-devbox-runtime-tmp".to_owned(),
+        devbox_retired_container_grace_ms: 300_000,
+        devbox_auto_start: true,
+        devbox_version_cache_ms: 120_000,
+        docker_command_timeout_ms: 120_000,
+        devbox_default_user: String::new(),
+        host_default_workdir: root.to_path_buf(),
+        host_shell: if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }.to_owned(),
+        power_shell_exe: if cfg!(windows) { "pwsh.exe" } else { "" }.to_owned(),
+        power_shell_fallback_exe: if cfg!(windows) { "powershell.exe" } else { "" }.to_owned(),
+        node_exe: "node".to_owned(),
+        host_program_allowlist: Vec::new(),
+        devbox_program_allowlist: Vec::new(),
+        host_search_backend: HostSearchBackend::Auto,
+        host_exec_enabled: true,
+        allow_windows_host_exec_uac: false,
+        execution_slot_root: root.join("execution-slots"),
+        jobs_root: root.join("jobs"),
+        mcp_performance_state_path: root.join("mcp-performance.json"),
+        usage_log: UsageLogConfig {
+            max_bytes: 16 * 1024 * 1024,
+            rotations: 3,
+        },
+        mcp_json_body_limit_bytes: 16 * 1024 * 1024,
+        exec_max_concurrent: 6,
+        exec_reserved_interactive: 1,
+        exec_queue_timeout_ms: 15_000,
+        background_queue_timeout_ms: 300_000,
+        watch_max_concurrent: 4,
+        exec_heavy_weight: 2,
+        job_log_max_bytes: 32 * 1024 * 1024,
+        job_log_rotations: 2,
+        job_heartbeat_ms: 5_000,
+        job_orphan_stale_ms: 15_000,
+        job_retention_hours: 168,
+        job_store_max_bytes: 2 * 1024 * 1024 * 1024,
+        job_store_max_terminal_jobs: 5_000,
+        screen_capture_attempt_timeout_ms: 8_000,
+        screen_capture_retries: 1,
+        screen_capture_queue_timeout_ms: 5_000,
+        max_wait_seconds: 300.0,
+        command_output_limit_chars: 65_536,
+        max_mcp_transfer_chars: 4_000_000,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -873,6 +944,15 @@ mod tests {
             vec!["git".to_owned(), "custom".to_owned(), "CUSTOM".to_owned()],
         );
         assert_eq!(merged, vec!["git", "rg", "curl", "custom"]);
+    }
+
+    #[test]
+    fn host_allowlist_replacement_normalizes_case_and_whitespace() {
+        let replaced = merge_program_allowlists(
+            Vec::new(),
+            vec![" Git ".to_owned(), "CURL".to_owned(), "git".to_owned()],
+        );
+        assert_eq!(replaced, vec!["git", "curl"]);
     }
 
     #[test]

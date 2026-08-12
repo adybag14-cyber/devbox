@@ -2,11 +2,15 @@ use std::{
     collections::BTreeMap,
     future::Future,
     sync::{Arc, Mutex, PoisonError},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
 use tokio_util::sync::CancellationToken;
+
+const RESTART_BACKOFF_INITIAL: Duration = Duration::from_millis(500);
+const RESTART_BACKOFF_MAX: Duration = Duration::from_secs(30);
+const RESTART_BACKOFF_RESET_AFTER: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -53,6 +57,7 @@ impl BackgroundTaskRegistry {
         let registry = self.clone();
         let factory = Arc::new(factory);
         tokio::spawn(async move {
+            let mut restart_delay = RESTART_BACKOFF_INITIAL;
             loop {
                 if cancellation.is_cancelled() {
                     registry.mark_stopped(name, None);
@@ -65,6 +70,7 @@ impl BackgroundTaskRegistry {
                 };
                 heartbeat.tick();
                 let child_cancel = cancellation.child_token();
+                let started = Instant::now();
                 let mut task = tokio::spawn(factory(child_cancel.clone(), heartbeat));
                 let failure = tokio::select! {
                     () = cancellation.cancelled() => {
@@ -81,9 +87,15 @@ impl BackgroundTaskRegistry {
                     },
                 };
                 registry.mark_stopped(name, failure);
+                let delay = restart_delay;
+                restart_delay = if started.elapsed() >= RESTART_BACKOFF_RESET_AFTER {
+                    RESTART_BACKOFF_INITIAL
+                } else {
+                    restart_delay.saturating_mul(2).min(RESTART_BACKOFF_MAX)
+                };
                 tokio::select! {
                     () = cancellation.cancelled() => return,
-                    () = tokio::time::sleep(Duration::from_millis(500)) => {},
+                    () = tokio::time::sleep(delay) => {},
                 }
             }
         });

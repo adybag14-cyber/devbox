@@ -608,73 +608,13 @@ mod tests {
     #[test]
     fn create_args_match_javascript_order() {
         let root = PathBuf::from("C:/workspace");
-        let config = Config {
-            project_root: root.clone(),
-            host: "127.0.0.1".to_owned(),
-            port: 0,
-            auth_mode: crate::AuthMode::None,
-            runtime_mode: RuntimeMode::Docker,
-            platform: crate::Platform::detect(),
-            public_base_url: None,
-            gateway_bridge: crate::config::GatewayBridgeConfig {
-                enabled: false,
-                origins: vec![
-                    "https://chatgpt.com".to_owned(),
-                    "https://chat.openai.com".to_owned(),
-                ],
-            },
-            oauth_state_file_path: root.join("oauth-state.json"),
-            cloudflare_access_team_domain: None,
-            cloudflare_access_aud: String::new(),
-            cloudflare_access_jwks_url: None,
-            host_workspace_path: root.clone(),
-            devbox_workspace_path: PathBuf::from("/workspace"),
-            devbox_container_name: "box".to_owned(),
-            devbox_image_name: "img:1".to_owned(),
-            devbox_tmp_volume_name: "box-tmp".to_owned(),
-            devbox_retired_container_grace_ms: 300_000,
-            devbox_auto_start: true,
-            devbox_version_cache_ms: 120_000,
-            docker_command_timeout_ms: 120_000,
-            devbox_default_user: "root".to_owned(),
-            host_default_workdir: root.clone(),
-            host_shell: "pwsh".to_owned(),
-            power_shell_exe: "pwsh".to_owned(),
-            power_shell_fallback_exe: "powershell.exe".to_owned(),
-            node_exe: "node".to_owned(),
-            host_program_allowlist: vec![],
-            host_search_backend: crate::config::HostSearchBackend::Auto,
-            devbox_program_allowlist: vec![],
-            host_exec_enabled: true,
-            allow_windows_host_exec_uac: false,
-            execution_slot_root: root.join("slots"),
-            jobs_root: root.join("jobs"),
-            mcp_performance_state_path: root.join("mcp-performance.json"),
-            usage_log: crate::config::UsageLogConfig {
-                max_bytes: 16 * 1024 * 1024,
-                rotations: 3,
-            },
-            mcp_json_body_limit_bytes: 16 * 1024 * 1024,
-            exec_max_concurrent: 6,
-            exec_reserved_interactive: 1,
-            exec_queue_timeout_ms: 15_000,
-            background_queue_timeout_ms: 300_000,
-            watch_max_concurrent: 4,
-            exec_heavy_weight: 2,
-            job_log_max_bytes: 32 * 1024 * 1024,
-            job_log_rotations: 2,
-            job_heartbeat_ms: 5_000,
-            job_orphan_stale_ms: 15_000,
-            job_retention_hours: 168,
-            job_store_max_bytes: 2 * 1024 * 1024 * 1024,
-            job_store_max_terminal_jobs: 5_000,
-            screen_capture_attempt_timeout_ms: 8_000,
-            screen_capture_retries: 1,
-            screen_capture_queue_timeout_ms: 5_000,
-            max_wait_seconds: 300.0,
-            command_output_limit_chars: 65_536,
-            max_mcp_transfer_chars: 4_000_000,
-        };
+        let mut config = crate::config::test_config(&root);
+        config.runtime_mode = RuntimeMode::Docker;
+        config.devbox_workspace_path = PathBuf::from("/workspace");
+        config.devbox_container_name = "box".to_owned();
+        config.devbox_image_name = "img:1".to_owned();
+        config.devbox_tmp_volume_name = "box-tmp".to_owned();
+        config.devbox_default_user = "root".to_owned();
         let args = create_container_args(&config);
         assert_eq!(
             args,

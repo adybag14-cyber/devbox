@@ -538,6 +538,7 @@ impl JobStore {
                 .clone()
         };
         let mut total_bytes = 0_u64;
+        let mut terminal_bytes = 0_u64;
         let mut terminal = Vec::<(OffsetDateTime, String, u64)>::new();
         for id in ids {
             let paths = self.paths(&id)?;
@@ -547,6 +548,7 @@ impl JobStore {
                 continue;
             };
             if is_terminal(status_name(&status)) {
+                terminal_bytes = terminal_bytes.saturating_add(bytes);
                 let timestamp = status
                     .get("completedAtUtc")
                     .and_then(Value::as_str)
@@ -572,12 +574,29 @@ impl JobStore {
             return Ok(());
         }
         terminal.sort_by_key(|item| item.0);
-        let target_bytes = self.config.max_store_bytes.saturating_mul(9) / 10;
+        let active_bytes = total_bytes.saturating_sub(terminal_bytes);
+        let target_terminal_bytes = if self.config.max_store_bytes == 0 {
+            u64::MAX
+        } else if active_bytes >= self.config.max_store_bytes {
+            // Active jobs are not evictable. If they alone exceed the hard quota,
+            // deleting all terminal history cannot solve the pressure condition.
+            terminal_bytes
+        } else {
+            let low_water_total = self.config.max_store_bytes.saturating_mul(9) / 10;
+            let target_total = if active_bytes < low_water_total {
+                low_water_total
+            } else {
+                self.config.max_store_bytes
+            };
+            target_total.saturating_sub(active_bytes)
+        };
         let target_jobs = self.config.max_terminal_jobs.saturating_mul(9) / 10;
         let mut retained = terminal.len();
+        let mut retained_terminal_bytes = terminal_bytes;
         let mut deleted = HashSet::new();
         for (_, id, bytes) in terminal {
-            let bytes_ok = self.config.max_store_bytes == 0 || total_bytes <= target_bytes;
+            let bytes_ok = self.config.max_store_bytes == 0
+                || retained_terminal_bytes <= target_terminal_bytes;
             let jobs_ok = self.config.max_terminal_jobs == 0 || retained <= target_jobs;
             if bytes_ok && jobs_ok {
                 break;
@@ -585,6 +604,7 @@ impl JobStore {
             let paths = self.paths(&id)?;
             if fs::remove_dir_all(&paths.dir).await.is_ok() {
                 total_bytes = total_bytes.saturating_sub(bytes);
+                retained_terminal_bytes = retained_terminal_bytes.saturating_sub(bytes);
                 retained = retained.saturating_sub(1);
                 deleted.insert(id);
                 summary.deleted = summary.deleted.saturating_add(1);
@@ -1514,6 +1534,40 @@ mod tests {
         assert!(summary.quota_deleted >= 1);
         assert!(store.paths("job-quotaact3").unwrap().dir.exists());
         assert!(!store.paths("job-quotaold1").unwrap().dir.exists());
+    }
+
+    #[tokio::test]
+    async fn active_byte_pressure_does_not_erase_terminal_history_when_it_cannot_help() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = store(temp.path()).config().clone();
+        config.max_store_bytes = 1;
+        config.max_terminal_jobs = 10;
+        let store = JobStore::new(config);
+        for (id, status) in [
+            ("job-pressure-active", "running"),
+            ("job-pressure-term", "succeeded"),
+        ] {
+            let paths = write_status(
+                &store,
+                id,
+                json!({
+                    "id": id,
+                    "status": status,
+                    "createdAtUtc": "2026-01-01T00:00:00Z",
+                    "completedAtUtc": if status == "running" { Value::Null } else { json!("2026-01-01T00:00:00Z") },
+                    "runnerPid": if status == "running" { json!(std::process::id()) } else { Value::Null },
+                }),
+            )
+            .await;
+            fs::write(&paths.stdout, vec![b'x'; 4096]).await.unwrap();
+        }
+        store.refresh_maintenance_index().await.unwrap();
+        let mut summary = ReconcileSummary::default();
+        store.apply_store_quota(&mut summary).await.unwrap();
+        assert!(summary.quota_pressure);
+        assert_eq!(summary.quota_deleted, 0);
+        assert!(store.paths("job-pressure-active").unwrap().dir.exists());
+        assert!(store.paths("job-pressure-term").unwrap().dir.exists());
     }
 
     #[tokio::test]
