@@ -274,10 +274,10 @@ fn decorate_cache_freshness(mut snapshot: Value, age: Duration) -> Value {
     snapshot
 }
 
-fn process_cpu_total_ms(platform: &Value) -> Option<f64> {
+fn process_cpu_total_ms(platform: &Value) -> Option<u64> {
     #[cfg(windows)]
     {
-        platform.get("cpuTotalMs").and_then(Value::as_f64)
+        platform.get("cpuTotalMs").and_then(Value::as_u64)
     }
     #[cfg(unix)]
     {
@@ -291,7 +291,7 @@ fn process_cpu_total_ms(platform: &Value) -> Option<f64> {
             .user_time()
             .num_microseconds()
             .saturating_add(usage.system_time().num_microseconds());
-        Some(micros as f64 / 1_000.0)
+        u64::try_from(micros.saturating_div(1_000)).ok()
     }
     #[cfg(not(any(windows, unix)))]
     {
@@ -402,10 +402,7 @@ mod windows_memory {
     #![allow(unsafe_code)]
 
     use serde_json::{Value, json};
-    use std::{
-        mem::{size_of, zeroed},
-        time::Duration,
-    };
+    use std::mem::{size_of, zeroed};
     use windows_sys::Win32::System::{
         ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
         Threading::GetCurrentProcess,
@@ -462,9 +459,9 @@ mod windows_memory {
             ) != 0
             {
                 let ticks = filetime_ticks(kernel).saturating_add(filetime_ticks(user));
-                Duration::from_nanos(ticks.saturating_mul(100)).as_secs_f64() * 1_000.0
+                ticks / 10_000
             } else {
-                0.0
+                0
             };
             let pid = std::process::id();
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
