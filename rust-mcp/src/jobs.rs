@@ -830,7 +830,7 @@ struct OrphanCleanup {
 
 async fn cleanup_orphan_child(
     child_pid: Option<u32>,
-    child_process_instance: Option<u64>,
+    _child_process_instance: Option<u64>,
     heartbeat_age: Option<Duration>,
     runtime_mode: &str,
 ) -> OrphanCleanup {
@@ -843,7 +843,7 @@ async fn cleanup_orphan_child(
         return result;
     };
     #[cfg(windows)]
-    if !crate::windows_process::process_matches_instance(pid, child_process_instance) {
+    if !crate::windows_process::process_matches_instance(pid, _child_process_instance) {
         result.skipped = Some("child-process-instance-no-longer-matches".to_owned());
         return result;
     }
