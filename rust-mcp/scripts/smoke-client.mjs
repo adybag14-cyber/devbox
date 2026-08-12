@@ -206,6 +206,10 @@ try {
   assert.equal(statusData.performance?.process?.memory?.rss >= 0, true);
   assert.equal(statusData.performance?.eventLoop?.p95Ms >= 0, true);
   assert.match(statusData.performance?.eventLoop?.sampledAtUtc || "", /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(statusData.usageTelemetry?.tool?.enqueued > 0, true);
+  assert.equal(statusData.usageTelemetry?.tool?.dropped, 0);
+  assert.equal(statusData.usageTelemetry?.tool?.writeFailures, 0);
+  assert.equal(statusData.backgroundTasks?.["usage-tool-writer"]?.running, true);
   const allocator = statusData.performance?.process?.memory?.allocator;
   assert.equal(allocator?.backend, "std::alloc::System tracked requested bytes");
   assert.equal(Number.isFinite(allocator?.currentRequestedBytes), true);
