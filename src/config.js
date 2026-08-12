@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadEnvFile } from "./env.js";
-import { defaultHostProgramAllowlist, detectPlatform, resolveHostShell, resolveRuntimeMode } from "./platform.js";
+import { defaultHostProgramAllowlist, detectPlatform, mergeHostProgramAllowlist, resolveHostShell, resolveRuntimeMode } from "./platform.js";
 
 const parseInteger = (value, fallback) => {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -114,7 +114,15 @@ const powerShellFallbackExe = platform.isWindows
   ? [configuredPowerShellFallbackExe, legacyWindowsPowerShellExe].find(isUsablePowerShellCandidate) || "powershell.exe"
   : "";
 const hostShell = process.env.HOST_SHELL?.trim() || (platform.isWindows ? powerShellExe : resolveHostShell(process.env, platform));
-const hostProgramAllowlist = parseCsv(process.env.HOST_PROGRAM_ALLOWLIST, defaultHostProgramAllowlist(platform));
+const hostProgramDefaults = defaultHostProgramAllowlist(platform);
+const hostProgramConfigured = parseCsv(process.env.HOST_PROGRAM_ALLOWLIST, []);
+const hostProgramExtra = parseCsv(process.env.HOST_PROGRAM_ALLOWLIST_EXTRA, []);
+const hostProgramAllowlist = mergeHostProgramAllowlist({
+  defaults: hostProgramDefaults,
+  configured: hostProgramConfigured,
+  extra: hostProgramExtra,
+  replace: parseBoolean(process.env.HOST_PROGRAM_ALLOWLIST_REPLACE, false),
+});
 const defaultDevboxProgramAllowlist = runtimeMode === "host"
   ? hostProgramAllowlist
   : ["bash", "sh", "git", "gh", "node", "npm", "npx", "python", "python3", "pip", "pip3", "rg", "curl"];

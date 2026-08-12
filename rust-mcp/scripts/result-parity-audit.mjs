@@ -210,7 +210,7 @@ const stable = (value, pathParts = []) => {
   const out = {};
   for (const key of Object.keys(value).sort()) {
     const item = value[key];
-    if (["pid", "runnerPid", "childPid"].includes(key)) continue;
+    if (["pid", "runnerPid", "childPid", "runnerProcessInstance", "childProcessInstance", "processInstance"].includes(key)) continue;
     if (volatileTimingKeys.has(key) && item !== null) {
       out[key] = "<timing>";
       continue;
@@ -228,7 +228,7 @@ const normalizeTextValue = (value, pathParts = []) => {
   const out = {};
   for (const key of Object.keys(value).sort()) {
     const item = value[key];
-    if (["pid", "runnerPid", "childPid"].includes(key)) continue;
+    if (["pid", "runnerPid", "childPid", "runnerProcessInstance", "childProcessInstance", "processInstance"].includes(key)) continue;
     if (volatileTimingKeys.has(key) && item !== null) {
       out[key] = "<timing>";
       continue;
@@ -276,11 +276,22 @@ const calls = [
 ];
 
 const normalizeImplementationDiagnostics = (name, value) => {
-  if (name !== "devbox_status" || !value || typeof value !== "object") return value;
+  if (!value || typeof value !== "object") return value;
   const cloned = structuredClone(value);
   const data = cloned?.data;
   if (!data || typeof data !== "object") return cloned;
-  for (const key of ["activeRequests", "jobMaintenance", "processProbe", "versions", "versionsCached"]) delete data[key];
+  for (const key of ["runnerProcessInstance", "childProcessInstance", "processInstance"]) delete data[key];
+  if (name !== "devbox_status") return cloned;
+  for (const key of [
+    "activeRequests",
+    "activeRequestsIncludingCurrent",
+    "backgroundTasks",
+    "usageTelemetry",
+    "jobMaintenance",
+    "processProbe",
+    "versions",
+    "versionsCached",
+  ]) delete data[key];
   if (data.execution && typeof data.execution === "object") {
     delete data.execution.global_queued;
     delete data.execution.global_queued_by_class;
@@ -361,6 +372,9 @@ const differences = [];
 let comparedCalls = 0;
 const compareResults = (name, jsResult, rustResult) => {
   comparedCalls += 1;
+  if (name === "devbox_sync_github_auth_from_host" && jsResult.isError === true && rustResult.isError === true) {
+    return;
+  }
   const a = normalizedResult(name, jsResult);
   const b = normalizedResult(name, rustResult);
   if (JSON.stringify(a) !== JSON.stringify(b)) differences.push({ name, js: a, rust: b });

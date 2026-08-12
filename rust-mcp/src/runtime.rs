@@ -10,7 +10,10 @@ use std::{
 use futures::future::join_all;
 #[cfg(windows)]
 use tokio::sync::OnceCell;
-use tokio::sync::{Mutex, mpsc::UnboundedSender};
+use tokio::sync::{
+    Mutex,
+    mpsc::{Sender, UnboundedSender},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -27,7 +30,7 @@ pub struct ProgramRequest {
     pub timeout: Duration,
     pub user: String,
     pub max_capture_chars: Option<usize>,
-    pub output_tx: Option<UnboundedSender<OutputChunk>>,
+    pub output_tx: Option<Sender<OutputChunk>>,
     pub pid_tx: Option<UnboundedSender<u32>>,
 }
 
@@ -38,7 +41,7 @@ pub struct ShellRequest {
     pub timeout: Duration,
     pub user: String,
     pub max_capture_chars: Option<usize>,
-    pub output_tx: Option<UnboundedSender<OutputChunk>>,
+    pub output_tx: Option<Sender<OutputChunk>>,
     pub pid_tx: Option<UnboundedSender<u32>>,
 }
 
@@ -201,6 +204,9 @@ impl RuntimeExecutor {
                 ("git", &["--version"]),
                 ("gh", &["--version"]),
                 ("python", &["--version"]),
+                ("pwsh", &["--version"]),
+                ("rg", &["--version"]),
+                ("curl", &["--version"]),
             ]
         } else {
             vec![
@@ -687,6 +693,8 @@ mod tests {
             job_heartbeat_ms: 5_000,
             job_orphan_stale_ms: 15_000,
             job_retention_hours: 168,
+            job_store_max_bytes: 2 * 1024 * 1024 * 1024,
+            job_store_max_terminal_jobs: 5_000,
             screen_capture_attempt_timeout_ms: 8_000,
             screen_capture_retries: 1,
             screen_capture_queue_timeout_ms: 5_000,

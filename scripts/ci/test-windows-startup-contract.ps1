@@ -6,6 +6,7 @@ $stopPath = Join-Path $root 'scripts\Stop-ChatGptDevboxMcp.ps1'
 $ownershipPath = Join-Path $root 'scripts\DevboxMcpOwnership.ps1'
 $installPath = Join-Path $root 'scripts\Install-ChatGptDevboxGuardian.ps1'
 $ensureGuardianPath = Join-Path $root 'scripts\Ensure-ChatGptDevboxGuardian.ps1'
+$watchGuardianPath = Join-Path $root 'scripts\Watch-ChatGptDevboxGuardian.ps1'
 $vbsPath = Join-Path $root 'scripts\Run-Start-ChatGptDevboxMcp.vbs'
 
 function Assert-Contains {
@@ -25,11 +26,15 @@ $stop = Get-Content -LiteralPath $stopPath -Raw
 $ownership = Get-Content -LiteralPath $ownershipPath -Raw
 $install = Get-Content -LiteralPath $installPath -Raw
 $ensureGuardian = Get-Content -LiteralPath $ensureGuardianPath -Raw
+$watchGuardian = Get-Content -LiteralPath $watchGuardianPath -Raw
 $vbs = Get-Content -LiteralPath $vbsPath -Raw
 
 Assert-Contains $start '$script:lifecycleMutex.WaitOne(0, $false)' 'Lifecycle mutex must reject concurrent starts instead of queueing them.'
 Assert-Contains $start "Join-Path `$RunDir 'startup-state.json'" 'Startup phase journal is missing.'
 Assert-Contains $start "Write-StartupPhase -Phase 'waiting-local-health'" 'Local-health phase journaling is missing.'
+Assert-Contains $start '/readyz' 'Managed startup must gate candidate acceptance on operational readiness, not only liveness.'
+Assert-Contains $start 'FirstPromotedAtUtc' 'Rust candidate provenance must preserve first promotion time.'
+Assert-Contains $start 'LastStartedAtUtc' 'Rust candidate provenance must distinguish process restart time from promotion time.'
 Assert-Contains $start "Write-StartupPhase -Phase 'waiting-public-health'" 'Public-health phase journaling is missing.'
 Assert-Contains $start 'Assert-StartupDeadline' 'Startup deadline enforcement is missing.'
 Assert-Contains $start "Assert-StartupDeadline -Phase 'stopping-existing-mcp'" 'Owned MCP stop must honor the startup deadline.'
@@ -81,8 +86,10 @@ Assert-Contains $ensureGuardian "'-File', ('`"{0}`"' -f `$guardianScript)" 'Guar
 Assert-Contains $ensureGuardian 'Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden' 'Guardian Ensure must launch the watcher directly through the resolved PowerShell executable.'
 Assert-Contains $ensureGuardian 'function Get-LiveGuardianSupervisorProcess' 'Guardian Ensure must identify a verified orphan supervisor separately from the watcher.'
 Assert-Contains $ensureGuardian 'guardian watcher failed to start persistently' 'Guardian Ensure must require a persistent watcher before reporting success.'
+Assert-Contains $watchGuardian 'function Get-GuardianMutexName' 'Guardian mutex ownership must be scoped to the project root.'
+Assert-Contains $watchGuardian 'Global\ChatGptDevboxGuardian-' 'Guardian mutex must use a root-derived namespace.'
 
-foreach ($file in @($startPath, $stopPath, $ownershipPath, $installPath, $ensureGuardianPath)) {
+foreach ($file in @($startPath, $stopPath, $ownershipPath, $installPath, $ensureGuardianPath, $watchGuardianPath)) {
     $tokens = $null
     $errors = $null
     [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$tokens, [ref]$errors) | Out-Null

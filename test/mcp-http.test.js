@@ -399,6 +399,17 @@ const assertSseProbeResponse = async (response, errorMessage) => {
   await reader?.cancel();
 };
 
+test("GET /readyz reports operational readiness without exposing detailed diagnostics", async (t) => {
+  const { port } = await startServer(t);
+  const response = await fetch(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(5000) });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.ok, true);
+  assert.equal(body.jobStoreReady, true);
+  assert.equal(body.runtimeReady, true);
+  assert.equal(Object.hasOwn(body, "runtimeMode"), false);
+});
+
 test("GET / returns an SSE content type for stream probes", async (t) => {
   const { port, stdout, stderr } = await startServer(t);
 

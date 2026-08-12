@@ -922,9 +922,10 @@ const main = async () => {
     const publicEnabled = settings.Public === true || Boolean(publicBaseUrl);
     const mcpProcess = await findMcpProcess(paths.runDir);
     const localBaseUrl = `http://127.0.0.1:${port}`;
-    const [localHealth, publicHealth, mcpPerformance] = await Promise.all([
-      testHealth(`${localBaseUrl}/healthz`),
-      publicEnabled ? testHealth(`${publicBaseUrl}/healthz`) : Promise.resolve(null),
+    const [localLiveness, localHealth, publicHealth, mcpPerformance] = await Promise.all([
+      testHealth(`${localBaseUrl}/livez`),
+      testHealth(`${localBaseUrl}/readyz`),
+      publicEnabled ? testHealth(`${publicBaseUrl}/readyz`) : Promise.resolve(null),
       readMcpPerformanceState(options.projectRoot, environment),
     ]);
     const pressureIntervalMs = Math.max(10000, Number.parseInt(environment.GUARDIAN_HOST_PRESSURE_SAMPLE_MS ?? "60000", 10) || 60000);
@@ -1100,6 +1101,7 @@ const main = async () => {
       McpProcessId: mcpProcess.pid,
       McpElevated: mcpElevated,
       RequireMcpElevated: requireMcpElevated,
+      LocalLiveness: localLiveness,
       LocalHealth: localHealth,
       PublicHealth: publicHealth,
       McpPerformance: mcpPerformance,

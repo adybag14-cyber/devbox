@@ -20,10 +20,18 @@ use rmcp::{
 };
 use serde_json::{Map, Value, json};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use tokio::{io::AsyncWriteExt as _, sync::Mutex};
+use tokio::{
+    io::AsyncWriteExt as _,
+    sync::{Mutex, mpsc},
+};
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::{oauth::OAuthRequestInfo, request_control::DisconnectCancellation};
+use crate::{
+    background::BackgroundTaskRegistry, oauth::OAuthRequestInfo,
+    request_control::DisconnectCancellation,
+};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_USAGE_PREVIEW_CHARS: usize = 240;
 const MAX_TOOL_SUMMARY_CHARS: usize = 4_096;
@@ -34,24 +42,136 @@ struct UsageLogState {
 }
 
 #[derive(Debug)]
-pub struct UsageLogger {
+struct UsageLogSink {
     path: PathBuf,
     max_bytes: u64,
     rotations: usize,
     state: Mutex<UsageLogState>,
 }
 
+#[derive(Debug, Default)]
+struct UsageQueueMetrics {
+    enqueued: AtomicU64,
+    dropped: AtomicU64,
+    write_failures: AtomicU64,
+}
+
+#[derive(Debug)]
+pub struct UsageLogger {
+    sink: Arc<UsageLogSink>,
+    tx: mpsc::Sender<Value>,
+    metrics: Arc<UsageQueueMetrics>,
+}
+
 impl UsageLogger {
     #[must_use]
     pub fn new(path: PathBuf, max_bytes: u64, rotations: usize) -> Self {
-        Self {
+        let sink = Arc::new(UsageLogSink {
             path,
             max_bytes,
             rotations,
             state: Mutex::new(UsageLogState { bytes: None }),
+        });
+        let metrics = Arc::new(UsageQueueMetrics::default());
+        let (tx, mut rx) = mpsc::channel::<Value>(1024);
+        let writer_sink = sink.clone();
+        let writer_metrics = metrics.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    if writer_sink.append(&event).await.is_err() {
+                        writer_metrics
+                            .write_failures
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            });
+        }
+        Self { sink, tx, metrics }
+    }
+
+    #[must_use]
+    pub fn new_supervised(
+        path: PathBuf,
+        max_bytes: u64,
+        rotations: usize,
+        task_name: &'static str,
+        background: &BackgroundTaskRegistry,
+    ) -> Self {
+        let sink = Arc::new(UsageLogSink {
+            path,
+            max_bytes,
+            rotations,
+            state: Mutex::new(UsageLogState { bytes: None }),
+        });
+        let metrics = Arc::new(UsageQueueMetrics::default());
+        let (tx, rx) = mpsc::channel::<Value>(1024);
+        let receiver = Arc::new(Mutex::new(rx));
+        let writer_sink = sink.clone();
+        let writer_metrics = metrics.clone();
+        background.spawn_supervised(
+            task_name,
+            CancellationToken::new(),
+            move |cancellation, heartbeat| {
+                let receiver = receiver.clone();
+                let sink = writer_sink.clone();
+                let metrics = writer_metrics.clone();
+                async move {
+                    loop {
+                        let event = {
+                            let mut rx = receiver.lock().await;
+                            tokio::select! {
+                                () = cancellation.cancelled() => return Ok(()),
+                                event = rx.recv() => event,
+                            }
+                        };
+                        let Some(event) = event else {
+                            return Ok(());
+                        };
+                        if sink.append(&event).await.is_err() {
+                            metrics.write_failures.fetch_add(1, Ordering::Relaxed);
+                        }
+                        heartbeat.tick();
+                    }
+                }
+            },
+        );
+        Self { sink, tx, metrics }
+    }
+
+    /// Queue telemetry without blocking the tool or HTTP request on filesystem I/O.
+    pub fn enqueue(&self, event: Value) {
+        match self.tx.try_send(event) {
+            Ok(()) => {
+                self.metrics.enqueued.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                self.metrics.dropped.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> Value {
+        json!({
+            "enqueued": self.metrics.enqueued.load(Ordering::Relaxed),
+            "dropped": self.metrics.dropped.load(Ordering::Relaxed),
+            "writeFailures": self.metrics.write_failures.load(Ordering::Relaxed),
+            "capacityEvents": self.tx.max_capacity(),
+            "queuedEvents": self.tx.max_capacity().saturating_sub(self.tx.capacity()),
+        })
+    }
+
+    /// Direct append retained for deterministic rotation tests and maintenance utilities.
+    ///
+    /// # Errors
+    /// Returns filesystem or serialization errors from the underlying usage-log sink.
+    pub async fn append(&self, event: &Value) -> Result<()> {
+        self.sink.append(event).await
+    }
+}
+
+impl UsageLogSink {
     /// Append one compact JSON object and rotate before crossing the configured byte limit.
     ///
     /// # Errors
@@ -121,18 +241,27 @@ pub struct UsageService {
 
 impl UsageService {
     #[must_use]
-    pub fn new(project_root: &Path, max_bytes: u64, rotations: usize) -> Self {
+    pub fn new(
+        project_root: &Path,
+        max_bytes: u64,
+        rotations: usize,
+        background: &BackgroundTaskRegistry,
+    ) -> Self {
         let run = project_root.join("run");
         Self {
-            tool: Arc::new(UsageLogger::new(
+            tool: Arc::new(UsageLogger::new_supervised(
                 run.join("tool-usage.jsonl"),
                 max_bytes,
                 rotations,
+                "usage-tool-writer",
+                background,
             )),
-            http: Arc::new(UsageLogger::new(
+            http: Arc::new(UsageLogger::new_supervised(
                 run.join("http-usage.jsonl"),
                 max_bytes,
                 rotations,
+                "usage-http-writer",
+                background,
             )),
         }
     }
@@ -145,6 +274,14 @@ impl UsageService {
     #[must_use]
     pub fn http_logger(&self) -> Arc<UsageLogger> {
         self.http.clone()
+    }
+
+    #[must_use]
+    pub fn metrics_snapshot(&self) -> Value {
+        json!({
+            "tool": self.tool.metrics_snapshot(),
+            "http": self.http.metrics_snapshot(),
+        })
     }
 }
 
@@ -210,7 +347,7 @@ impl HttpUsageGuard {
         self.disconnect.take();
         let logger = self.logger.clone();
         let event = self.event("finished", Some(status));
-        spawn_usage_append(logger, event);
+        spawn_usage_append(&logger, event);
     }
 
     fn abort_in_background(&mut self) {
@@ -227,7 +364,7 @@ impl HttpUsageGuard {
         self.completed = true;
         let logger = self.logger.clone();
         let event = self.event("client_aborted", None);
-        spawn_usage_append(logger, event);
+        spawn_usage_append(&logger, event);
     }
 
     fn event(&self, outcome: &str, status: Option<StatusCode>) -> Value {
@@ -299,12 +436,8 @@ impl Drop for LoggedBodyStream {
     }
 }
 
-fn spawn_usage_append(logger: Arc<UsageLogger>, event: Value) {
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(async move {
-            logger.append(&event).await.ok();
-        });
-    }
+fn spawn_usage_append(logger: &UsageLogger, event: Value) {
+    logger.enqueue(event);
 }
 
 fn header_text(headers: &HeaderMap, name: header::HeaderName) -> String {
@@ -352,7 +485,7 @@ impl Drop for ToolUsageDropGuard {
             return;
         }
         spawn_usage_append(
-            self.logger.clone(),
+            &self.logger,
             self.invocation
                 .throw_event("MCP HTTP client disconnected before the tool result was delivered."),
         );
@@ -705,6 +838,26 @@ mod tests {
         assert!(summary.get("requestId").is_none());
         assert!(!summary.to_string().contains("super-secret-value"));
         assert!(!summary.to_string().contains("nested-secret-value"));
+    }
+
+    #[tokio::test]
+    async fn telemetry_enqueue_is_bounded_and_never_waits_for_disk() {
+        let temp = tempfile::tempdir().expect("temp");
+        let sink = Arc::new(UsageLogSink {
+            path: temp.path().join("usage.jsonl"),
+            max_bytes: 1024,
+            rotations: 1,
+            state: Mutex::new(UsageLogState { bytes: None }),
+        });
+        let metrics = Arc::new(UsageQueueMetrics::default());
+        let (tx, _rx) = mpsc::channel(1);
+        let logger = UsageLogger { sink, tx, metrics };
+        logger.enqueue(json!({"event": 1}));
+        logger.enqueue(json!({"event": 2}));
+        let snapshot = logger.metrics_snapshot();
+        assert_eq!(snapshot["enqueued"], 1);
+        assert_eq!(snapshot["dropped"], 1);
+        assert_eq!(snapshot["queuedEvents"], 1);
     }
 
     #[tokio::test]

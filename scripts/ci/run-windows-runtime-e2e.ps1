@@ -43,10 +43,43 @@ try {
     $env:PUBLIC_BASE_URL = ''
 
     & (Join-Path $root 'scripts\Start-ChatGptDevboxMcp.ps1') -Runtime host
-    $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/healthz" -UseBasicParsing -TimeoutSec 5
+    $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/readyz" -UseBasicParsing -TimeoutSec 5
     if ($health.StatusCode -ne 200 -or $health.Content -notmatch 'ok') { throw 'Rust MCP health gate failed.' }
 
+    $trackedDirty = ((& git -C $root status --porcelain --untracked-files=no | Out-String).Trim()).Length -gt 0
+    if (-not $trackedDirty) {
+        $currentRustManifestPath = Join-Path $root 'run\bin\current-rust.json'
+        $firstManifest = Get-Content $currentRustManifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        Start-Sleep -Seconds 1
+        & (Join-Path $root 'scripts\Start-ChatGptDevboxMcp.ps1') -Runtime host
+        $secondManifest = Get-Content $currentRustManifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ([string]$secondManifest.PromotedAtUtc -ne [string]$firstManifest.PromotedAtUtc) {
+            throw 'Restarting the same immutable Rust candidate changed PromotedAtUtc.'
+        }
+        if ([string]$secondManifest.FirstPromotedAtUtc -ne [string]$firstManifest.FirstPromotedAtUtc) {
+            throw 'Restarting the same immutable Rust candidate changed FirstPromotedAtUtc.'
+        }
+        if ([DateTime]$secondManifest.LastStartedAtUtc -le [DateTime]$firstManifest.LastStartedAtUtc) {
+            throw 'Restarting the same immutable Rust candidate did not advance LastStartedAtUtc.'
+        }
+        $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/readyz" -UseBasicParsing -TimeoutSec 5
+        if ($health.StatusCode -ne 200) { throw 'Rust MCP readiness failed after same-candidate restart.' }
+
+    } else {
+        Write-Host 'Skipping same-candidate restart provenance assertion because the local checkout has tracked modifications.'
+    }
+
+    $guardianDir = Join-Path $root 'run\guardian'
+    New-Item -ItemType Directory -Path $guardianDir -Force | Out-Null
+    $staleGuardianArtifact = Join-Path $guardianDir 'ci-stale-artifact.tmp'
+    [IO.File]::WriteAllText($staleGuardianArtifact, 'stale', [Text.UTF8Encoding]::new($false))
+    (Get-Item $staleGuardianArtifact).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-8)
+    $ensureLog = Join-Path $guardianDir 'ensure.log'
+    [IO.File]::WriteAllText($ensureLog, ('x' * (1MB + 1024)), [Text.UTF8Encoding]::new($false))
+
     & (Join-Path $root 'scripts\Install-ChatGptDevboxGuardian.ps1') -Runtime host -TaskPrefix $taskPrefix | Out-Host
+    if (Test-Path $staleGuardianArtifact) { throw 'Guardian Ensure did not prune stale atomic-write debris.' }
+    if (-not (Test-Path "$ensureLog.1")) { throw 'Guardian Ensure did not rotate the oversized auxiliary log.' }
     $startupTask = Get-ScheduledTask -TaskName "$taskPrefix-Startup"
     $logonTask = Get-ScheduledTask -TaskName "$taskPrefix-Logon"
     $startupTriggerTypes = @($startupTask.Triggers | ForEach-Object { $_.CimClass.CimClassName })
@@ -141,6 +174,8 @@ try {
         Remove-Item $envPath -Force -ErrorAction SilentlyContinue
     }
     Remove-Item $runtimeEnv -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $root 'run\guardian\ci-stale-artifact.tmp') -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $root 'run\guardian\ensure.log.1') -Force -ErrorAction SilentlyContinue
     foreach ($name in $isolatedEnvNames) {
         [Environment]::SetEnvironmentVariable($name, $previousProcessEnvironment[$name], 'Process')
     }

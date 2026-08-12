@@ -44,6 +44,13 @@ export const defaultHostProgramAllowlist = (platform) =>
     ? ["powershell", "pwsh", "cmd", "git", "gh", "docker", "node", "npm", "npx", "python", "py", "pip", "rg", "curl", "winget"]
     : ["bash", "sh", "git", "gh", "node", "npm", "npx", "python", "python3", "pip", "pip3", "rg", "curl"];
 
+export const mergeHostProgramAllowlist = ({ defaults = [], configured = [], extra = [], replace = false } = {}) => {
+  const normalize = (items) => items.map((value) => String(value).trim().toLowerCase()).filter(Boolean);
+  const base = replace && configured.length > 0 ? normalize(configured) : normalize(defaults);
+  const additions = replace ? [] : [...normalize(configured), ...normalize(extra)];
+  return [...new Set([...base, ...additions])];
+};
+
 export const resolveHostShell = (env = process.env, platform = detectPlatform(env)) => {
   if (platform?.isWindows) {
     return String(env.HOST_SHELL ?? env.POWERSHELL_EXE ?? "powershell.exe").trim() || "powershell.exe";

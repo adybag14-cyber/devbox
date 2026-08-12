@@ -170,7 +170,7 @@ Fix: re-run scripts\Install-ChatGptDevboxGuardian.ps1 from an elevated PowerShel
     for ($i = 0; $i -lt 45; $i++) {
         Start-Sleep -Seconds 2
         try {
-            $response = Invoke-WebRequest -Uri "$localUrl/healthz" -UseBasicParsing -TimeoutSec 5
+            $response = Invoke-WebRequest -Uri "$localUrl/readyz" -UseBasicParsing -TimeoutSec 5
             if ($response.Content -match 'ok') {
                 Write-Host "Elevated MCP is healthy at $localUrl"
                 return
@@ -1162,7 +1162,7 @@ function Wait-ForHealthyPublicEndpoint {
         [string]$HostCloudflaredPidFile = ''
     )
 
-    $healthUrl = "$($PublicBaseUrl.TrimEnd('/'))/healthz"
+    $healthUrl = "$($PublicBaseUrl.TrimEnd('/'))/readyz"
     for ($i = 0; $i -lt 30; $i++) {
         Assert-StartupDeadline -Phase 'waiting-public-health'
         Start-Sleep -Seconds 2
@@ -1701,7 +1701,7 @@ for ($i = 0; $i -lt 30; $i++) {
     Assert-StartupDeadline -Phase 'waiting-local-health'
     Start-Sleep -Seconds 2
     try {
-        $response = Invoke-WebRequest -Uri "$localUrl/healthz" -UseBasicParsing -TimeoutSec 5
+        $response = Invoke-WebRequest -Uri "$localUrl/readyz" -UseBasicParsing -TimeoutSec 5
         if ($response.Content -match "ok") {
             break
         }
@@ -1711,7 +1711,7 @@ for ($i = 0; $i -lt 30; $i++) {
 
 Assert-StartupDeadline -Phase 'waiting-local-health'
 try {
-    $health = Invoke-WebRequest -Uri "$localUrl/healthz" -UseBasicParsing -TimeoutSec 5
+    $health = Invoke-WebRequest -Uri "$localUrl/readyz" -UseBasicParsing -TimeoutSec 5
     if ($health.Content -notmatch "ok") {
         throw "Health probe did not return ok."
     }
@@ -1739,12 +1739,38 @@ if ($Public) {
 }
 
 if ($mcpImplementation -eq 'rust' -and $launchSpec.CandidateManifestPath) {
-    Write-JsonStateFile -Path ([string]$launchSpec.CandidateManifestPath) -Value @{
+    $startedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $promotedAtUtc = $startedAtUtc
+    $firstPromotedAtUtc = $startedAtUtc
+    $manifestPath = [string]$launchSpec.CandidateManifestPath
+    if (Test-Path -LiteralPath $manifestPath) {
+        try {
+            $previousManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $sameCandidate =
+                ([string]$previousManifest.GitSha -eq [string]$launchSpec.GitSha) -and
+                ([string]$previousManifest.Sha256 -eq [string]$launchSpec.Sha256) -and
+                ([string]$previousManifest.Generation -eq [string]$launchSpec.Generation) -and
+                ([string]$previousManifest.FilePath -eq [string]$launchSpec.FilePath)
+            if ($sameCandidate) {
+                if ($previousManifest.PromotedAtUtc) { $promotedAtUtc = [string]$previousManifest.PromotedAtUtc }
+                if ($previousManifest.FirstPromotedAtUtc) {
+                    $firstPromotedAtUtc = [string]$previousManifest.FirstPromotedAtUtc
+                } elseif ($previousManifest.PromotedAtUtc) {
+                    $firstPromotedAtUtc = [string]$previousManifest.PromotedAtUtc
+                }
+            }
+        } catch {
+            # A corrupt previous manifest must not prevent a successfully validated candidate from promotion.
+        }
+    }
+    Write-JsonStateFile -Path $manifestPath -Value @{
         GitSha = [string]$launchSpec.GitSha
         Sha256 = [string]$launchSpec.Sha256
         Generation = [string]$launchSpec.Generation
         FilePath = [string]$launchSpec.FilePath
-        PromotedAtUtc = [DateTime]::UtcNow.ToString('o')
+        PromotedAtUtc = $promotedAtUtc
+        FirstPromotedAtUtc = $firstPromotedAtUtc
+        LastStartedAtUtc = $startedAtUtc
     }
     # Keep the current candidate plus two recent rollback candidates. Older locked
     # binaries are harmless and will be retried on the next successful start.
@@ -1762,6 +1788,7 @@ Write-StartupPhase -Phase 'ready' -Status 'ready' -Extra @{
     SelectedRuntime = $selectedRuntime
     DeploymentGeneration = $(if ($launchSpec.Generation) { [string]$launchSpec.Generation } else { $null })
     GitSha = $(if ($launchSpec.GitSha) { [string]$launchSpec.GitSha } else { $null })
+    LastStartedAtUtc = [DateTime]::UtcNow.ToString('o')
 }
 
 Write-Host "Local MCP URL: $localUrl"
@@ -1809,7 +1836,7 @@ Write-Host "MCP implementation: $mcpImplementation"
     if (-not $TunnelOnly -and $selectedRuntime -eq 'host' -and $Public) {
         $originStillHealthy = $false
         try {
-            $originCheck = Invoke-WebRequest -Uri "http://127.0.0.1:$port/healthz" -UseBasicParsing -TimeoutSec 3
+            $originCheck = Invoke-WebRequest -Uri "http://127.0.0.1:$port/readyz" -UseBasicParsing -TimeoutSec 3
             $originStillHealthy = $originCheck.Content -match 'ok'
         } catch {
         }

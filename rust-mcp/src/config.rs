@@ -198,6 +198,8 @@ pub struct Config {
     pub job_heartbeat_ms: u64,
     pub job_orphan_stale_ms: u64,
     pub job_retention_hours: u64,
+    pub job_store_max_bytes: u64,
+    pub job_store_max_terminal_jobs: usize,
     pub screen_capture_attempt_timeout_ms: u64,
     pub screen_capture_retries: usize,
     pub screen_capture_queue_timeout_ms: u64,
@@ -211,6 +213,12 @@ struct OauthConfiguration {
     cloudflare_team_domain: Option<String>,
     cloudflare_aud: String,
     cloudflare_jwks_url: Option<String>,
+}
+
+struct ScreenCaptureConfiguration {
+    attempt_timeout_ms: u64,
+    retries: usize,
+    queue_timeout_ms: u64,
 }
 
 struct ProgramConfiguration {
@@ -268,6 +276,7 @@ impl Config {
             .unwrap_or_else(|| project_root.join("run").join("execution-slots"));
         let jobs_root =
             env_path("MCP_JOBS_ROOT").unwrap_or_else(|| project_root.join("run").join("jobs"));
+        let screen_capture = load_screen_capture_configuration();
         Ok(Self {
             project_root: project_root.clone(),
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_owned()),
@@ -317,15 +326,11 @@ impl Config {
             job_heartbeat_ms: parse_env("MCP_JOB_HEARTBEAT_MS", 5_000_u64),
             job_orphan_stale_ms: parse_env("MCP_JOB_ORPHAN_STALE_MS", 15_000_u64),
             job_retention_hours: parse_env("MCP_JOB_RETENTION_HOURS", 168_u64),
-            screen_capture_attempt_timeout_ms: parse_env(
-                "SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS",
-                8_000_u64,
-            ),
-            screen_capture_retries: parse_env("SCREEN_CAPTURE_RETRIES", 1_usize),
-            screen_capture_queue_timeout_ms: parse_env(
-                "SCREEN_CAPTURE_QUEUE_TIMEOUT_MS",
-                5_000_u64,
-            ),
+            job_store_max_bytes: parse_env("MCP_JOB_STORE_MAX_BYTES", 2_u64 * 1024 * 1024 * 1024),
+            job_store_max_terminal_jobs: parse_env("MCP_JOB_STORE_MAX_TERMINAL_JOBS", 5_000_usize),
+            screen_capture_attempt_timeout_ms: screen_capture.attempt_timeout_ms,
+            screen_capture_retries: screen_capture.retries,
+            screen_capture_queue_timeout_ms: screen_capture.queue_timeout_ms,
             max_wait_seconds: f64::from(parse_env("MCP_WAIT_MAX_SECONDS", 300_u16).max(1)),
             command_output_limit_chars: parse_command_output_limit(),
             max_mcp_transfer_chars: parse_transfer_limit(),
@@ -411,6 +416,14 @@ fn load_devbox_default_user(runtime_mode: RuntimeMode) -> String {
         })
 }
 
+fn load_screen_capture_configuration() -> ScreenCaptureConfiguration {
+    ScreenCaptureConfiguration {
+        attempt_timeout_ms: parse_env("SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS", 8_000_u64),
+        retries: parse_env("SCREEN_CAPTURE_RETRIES", 1_usize),
+        queue_timeout_ms: parse_env("SCREEN_CAPTURE_QUEUE_TIMEOUT_MS", 5_000_u64),
+    }
+}
+
 fn load_program_configuration(
     platform: &Platform,
     runtime_mode: RuntimeMode,
@@ -431,10 +444,18 @@ fn load_program_configuration(
                 default_host_shell(platform)
             }
         });
-    let host_program_allowlist = parse_csv_env(
-        "HOST_PROGRAM_ALLOWLIST",
-        default_host_program_allowlist(platform),
-    );
+    let host_defaults = default_host_program_allowlist(platform);
+    let host_configured = parse_csv_env("HOST_PROGRAM_ALLOWLIST", Vec::new());
+    let host_extra = parse_csv_env("HOST_PROGRAM_ALLOWLIST_EXTRA", Vec::new());
+    let host_program_allowlist = if parse_bool_env("HOST_PROGRAM_ALLOWLIST_REPLACE", false) {
+        if host_configured.is_empty() {
+            host_defaults
+        } else {
+            host_configured
+        }
+    } else {
+        merge_program_allowlists(host_defaults, host_configured.into_iter().chain(host_extra))
+    };
     let devbox_program_allowlist = parse_csv_env(
         "DEVBOX_PROGRAM_ALLOWLIST",
         if runtime_mode == RuntimeMode::Host {
@@ -510,6 +531,19 @@ fn default_power_shell_fallback(platform: &Platform) -> String {
 fn usable_executable_candidate(candidate: &str) -> bool {
     let candidate = candidate.trim();
     !candidate.is_empty() && (!Path::new(candidate).is_absolute() || Path::new(candidate).is_file())
+}
+
+fn merge_program_allowlists<I>(mut base: Vec<String>, extra: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    for value in extra {
+        let value = value.trim().to_ascii_lowercase();
+        if !value.is_empty() && !base.iter().any(|existing| existing == &value) {
+            base.push(value);
+        }
+    }
+    base
 }
 
 fn default_host_program_allowlist(platform: &Platform) -> Vec<String> {
@@ -831,6 +865,15 @@ fn parse_bool_env(name: &str, fallback: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_allowlist_merge_preserves_defaults_and_deduplicates_additions() {
+        let merged = merge_program_allowlists(
+            vec!["git".to_owned(), "rg".to_owned(), "curl".to_owned()],
+            vec!["git".to_owned(), "custom".to_owned(), "CUSTOM".to_owned()],
+        );
+        assert_eq!(merged, vec!["git", "rg", "curl", "custom"]);
+    }
 
     #[test]
     fn host_search_backend_rejects_unknown_values() {

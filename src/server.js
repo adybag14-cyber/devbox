@@ -2200,6 +2200,24 @@ app.get("/", async (_req, res) => {
 app.get("/healthz", (_req, res) => {
   res.type("text/plain").send("ok");
 });
+app.get("/livez", (_req, res) => {
+  res.type("text/plain").send("ok");
+});
+app.get("/readyz", async (_req, res) => {
+  try {
+    const jobsRoot = path.join(runDir, "jobs");
+    await mkdir(jobsRoot, { recursive: true });
+    const devbox = await getDevboxInfo();
+    const ready = devbox?.running === true;
+    res.status(ready ? 200 : 503).json({
+      ok: ready,
+      jobStoreReady: true,
+      runtimeReady: ready,
+    });
+  } catch (error) {
+    res.status(503).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
 
 if (legacyProtectedResourceMetadata) {
   app.get("/.well-known/oauth-protected-resource/mcp", (_req, res) => {

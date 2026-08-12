@@ -41,6 +41,15 @@ const assertShellResult = (result, { readOnly } = {}) => {
 const healthResponse = await fetch(new URL("healthz", baseUrl));
 assert.equal(healthResponse.status, 200);
 assert.equal(await healthResponse.text(), "ok");
+const liveResponse = await fetch(new URL("livez", baseUrl));
+assert.equal(liveResponse.status, 200);
+assert.equal(await liveResponse.text(), "ok");
+const readyResponse = await fetch(new URL("readyz", baseUrl));
+assert.equal(readyResponse.status, 200);
+const ready = await readyResponse.json();
+assert.equal(ready.ok, true);
+assert.equal(ready.toolContractComplete, true);
+assert.equal(ready.toolCount, 37);
 
 const metadataResponse = await fetch(baseUrl);
 assert.equal(metadataResponse.status, 200);
@@ -181,6 +190,9 @@ try {
   );
   assert.ok(Date.now() - processCancelStarted < 4_000, "cancelled child process should terminate promptly");
 
+  // The smoke server uses a 2s version TTL. Waiting beyond the TTL proves the
+  // supervised refresher keeps status populated without status launching probes.
+  await new Promise((resolve) => setTimeout(resolve, 2_500));
   const status = await client.callTool({ name: "devbox_status", arguments: {} });
   assert.equal(status.isError, false);
   assert.equal(status.structuredContent?.ok, true);
@@ -201,16 +213,18 @@ try {
   assert.equal(Number.isFinite(allocator?.currentRequestedBytes), true);
   assert.equal(allocator?.peakRequestedBytes > 0, true);
   assert.equal(allocator?.allocationCalls > 0, true);
-  assert.equal(typeof statusData.versionsCached, "boolean");
-  assert.ok(statusData.versions === null || Array.isArray(statusData.versions));
-  if (statusData.versionsCached) {
-    assert.ok(Array.isArray(statusData.versions));
-    for (const program of process.platform === "win32" ? ["node", "npm", "git", "gh", "python"] : ["node", "npm", "git", "gh", "python3", "rg"]) {
-      assert.ok(statusData.versions.some((line) => line.startsWith(`${program}=`)), `missing version status for ${program}`);
-    }
-  } else {
-    assert.equal(statusData.versions, null);
+  assert.equal(statusData.versionsCached, true);
+  assert.ok(Array.isArray(statusData.versions));
+  for (const program of process.platform === "win32"
+    ? ["node", "npm", "git", "gh", "python", "pwsh", "rg", "curl"]
+    : ["node", "npm", "git", "gh", "python3", "rg"]) {
+    assert.ok(statusData.versions.some((line) => line.startsWith(`${program}=`)), `missing refreshed version status for ${program}`);
   }
+  assert.equal(statusData.activeRequests, 0);
+  assert.equal(statusData.activeRequestsIncludingCurrent >= 1, true);
+  assert.equal(statusData.backgroundTasks?.["version-refresh"]?.running, true);
+  assert.equal(statusData.backgroundTasks?.["job-maintenance"]?.running, true);
+  assert.equal(statusData.usageTelemetry?.tool?.dropped >= 0, true);
 
   for (const toolName of ["host_status", "windows_host_status"]) {
     const hostStatus = await client.callTool({ name: toolName, arguments: {} });

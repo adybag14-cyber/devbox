@@ -10,7 +10,7 @@ publish = false
 [dependencies]
 anyhow = "1.0"
 axum = "0.8"
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 futures = "0.3"
 dotenvy = "0.15"
@@ -22,12 +22,12 @@ rmcp = { version = "3.1.2", features = ["transport-streamable-http-server"] }
 schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
-sha2 = "0.10"
+sha2 = "0.11"
 tokio = { version = "1.48", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tokio-util = "0.7"
-time = { version = "0.3.47", features = ["formatting", "parsing"] }
+time = { version = "0.3.55", features = ["formatting", "parsing"] }
 tempfile = "3.23"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.7", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = "2.5"
@@ -39,6 +39,7 @@ windows-sys = { version = "0.61", features = [
   "Win32_Graphics_Dwm",
   "Win32_Graphics_Gdi",
   "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
   "Win32_System_ProcessStatus",
   "Win32_System_Threading",
   "Win32_Storage_Xps",
@@ -47,7 +48,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30", features = ["process", "signal"] }
+nix = { version = "0.31", features = ["process", "signal"] }
 
 [lints.rust]
 unsafe_code = "deny"

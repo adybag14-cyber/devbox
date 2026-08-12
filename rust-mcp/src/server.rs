@@ -38,6 +38,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::{
     AuthMode, Config, RuntimeMode,
+    background::BackgroundTaskRegistry,
     capture::CaptureService,
     docker_files::{DockerFileBackend, DockerListOptions},
     execution::{AcquireRequest, ExecutionScheduler, SchedulerConfig},
@@ -72,6 +73,7 @@ pub struct DevboxMcp {
     performance: Arc<PerformanceMonitor>,
     usage: Arc<UsageService>,
     active_requests: Arc<ActiveRequestRegistry>,
+    background: Arc<BackgroundTaskRegistry>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -94,13 +96,16 @@ impl DevboxMcp {
             lifecycle.clone(),
         ));
         let capture = Arc::new(CaptureService::new(config.clone()));
+        let background = Arc::new(BackgroundTaskRegistry::new());
         let performance = Arc::new(PerformanceMonitor::new(
             config.mcp_performance_state_path.clone(),
+            &background,
         ));
         let usage = Arc::new(UsageService::new(
             &config.project_root,
             config.usage_log.max_bytes,
             config.usage_log.rotations,
+            &background,
         ));
         let active_requests = Arc::new(ActiveRequestRegistry::new());
         Self {
@@ -113,6 +118,7 @@ impl DevboxMcp {
             performance,
             usage,
             active_requests,
+            background,
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -707,12 +713,7 @@ impl DevboxMcp {
                     .join("run")
                     .join("startup-state.json")
             ),
-            read_json_snapshot(
-                self.config
-                    .project_root
-                    .join("run")
-                    .join("job-maintenance.json")
-            ),
+            read_job_maintenance_snapshot(&self.config),
         );
         let mut data = info.as_object().cloned().unwrap_or_default();
         data.insert(
@@ -734,10 +735,18 @@ impl DevboxMcp {
             job_maintenance.unwrap_or(Value::Null),
         );
         data.insert("execution".to_owned(), json!(execution));
-        data.insert("performance".to_owned(), self.performance.snapshot());
+        let performance = self.performance.snapshot();
+        data.insert("performance".to_owned(), performance);
+        data.insert("backgroundTasks".to_owned(), self.background.snapshot());
+        data.insert("usageTelemetry".to_owned(), self.usage.metrics_snapshot());
+        let active_including_current = self.active_requests.active_count();
+        data.insert(
+            "activeRequestsIncludingCurrent".to_owned(),
+            json!(active_including_current),
+        );
         data.insert(
             "activeRequests".to_owned(),
-            json!(self.active_requests.active_count()),
+            json!(active_including_current.saturating_sub(1)),
         );
         #[cfg(windows)]
         data.insert(
@@ -2264,61 +2273,70 @@ struct HttpState {
 fn spawn_job_maintenance(handler: &DevboxMcp, config: &Config, cancellation: CancellationToken) {
     let maintenance_store = handler.jobs.store().clone();
     let maintenance_state_path = config.project_root.join("run").join("job-maintenance.json");
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(60));
-        loop {
-            tokio::select! {
-                () = cancellation.cancelled() => return,
-                _ = interval.tick() => {
-                    let started = Instant::now();
-                    match maintenance_store.reconcile_maintenance_batch(100).await {
-                        Ok(summary) => {
-                            let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                            tracing::debug!(
-                                discovered = summary.discovered,
-                                scanned = summary.scanned,
-                                batch_limited = summary.batch_limited,
-                                interrupted = summary.interrupted,
-                                terminal = summary.terminal,
-                                deleted = summary.deleted,
-                                errors = summary.errors,
-                                duration_ms,
-                                "Rust MCP job maintenance pass completed"
-                            );
-                            let _ = write_json_snapshot(
-                                &maintenance_state_path,
-                                &json!({
-                                    "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
-                                    "durationMs": duration_ms,
-                                    "summary": summary,
-                                }),
-                            ).await;
-                        },
-                        Err(error) => {
-                            tracing::warn!(%error, "Rust MCP job maintenance pass failed");
-                            let _ = write_json_snapshot(
-                                &maintenance_state_path,
-                                &json!({
-                                    "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
-                                    "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                                    "error": error.to_string(),
-                                }),
-                            ).await;
-                        },
+    handler.background.spawn_supervised(
+        "job-maintenance",
+        cancellation,
+        move |cancellation, heartbeat| {
+            let maintenance_store = maintenance_store.clone();
+            let maintenance_state_path = maintenance_state_path.clone();
+            async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(60));
+                loop {
+                    tokio::select! {
+                        () = cancellation.cancelled() => return Ok(()),
+                        _ = interval.tick() => {
+                            let started = Instant::now();
+                            let value = match maintenance_store.reconcile_maintenance_batch(100).await {
+                                Ok(summary) => {
+                                    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                                    json!({ "sampledAtUtc": chrono::Utc::now().to_rfc3339(), "durationMs": duration_ms, "summary": summary })
+                                }
+                                Err(error) => {
+                                    tracing::warn!(%error, "Rust MCP job maintenance pass failed");
+                                    json!({ "sampledAtUtc": chrono::Utc::now().to_rfc3339(), "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX), "error": error.to_string() })
+                                }
+                            };
+                            let _ = write_json_snapshot(&maintenance_state_path, &value).await;
+                            heartbeat.tick();
+                        }
                     }
                 }
             }
-        }
-    });
+        },
+    );
+}
+
+fn spawn_version_refresh(handler: &DevboxMcp, cancellation: CancellationToken) {
+    let runtime = handler.runtime.clone();
+    let refresh_ms = handler
+        .config
+        .devbox_version_cache_ms
+        .saturating_div(2)
+        .clamp(1_000, 120_000);
+    handler.background.spawn_supervised(
+        "version-refresh",
+        cancellation,
+        move |cancellation, heartbeat| {
+            let runtime = runtime.clone();
+            async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(refresh_ms));
+                loop {
+                    tokio::select! {
+                        () = cancellation.cancelled() => return Ok(()),
+                        _ = interval.tick() => {
+                            let _ = runtime.get_versions(true, cancellation.child_token()).await;
+                            heartbeat.tick();
+                        }
+                    }
+                }
+            }
+        },
+    );
 }
 
 pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Router {
     let handler = DevboxMcp::new(config.clone());
-    let warm_runtime = handler.runtime.clone();
-    let warm_cancellation = cancellation.child_token();
-    tokio::spawn(async move {
-        let _ = warm_runtime.get_versions(false, warm_cancellation).await;
-    });
+    spawn_version_refresh(&handler, cancellation.child_token());
     let warm_host_runtime = handler.runtime.clone();
     let warm_host_cancellation = cancellation.child_token();
     tokio::spawn(async move {
@@ -2364,6 +2382,8 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
                 .delete(mcp_delete),
         )
         .route("/healthz", get(healthz))
+        .route("/livez", get(healthz))
+        .route("/readyz", get(readyz))
         .route(
             "/mcp",
             get(mcp_sse_probe).post_service(mcp).delete(mcp_delete),
@@ -2478,7 +2498,7 @@ async fn read_json_snapshot(path: PathBuf) -> Option<Value> {
 }
 
 async fn read_guardian_status_snapshot(config: &Config) -> Option<Value> {
-    let state = read_json_snapshot(
+    let snapshot = read_json_snapshot(
         config
             .project_root
             .join("run")
@@ -2486,21 +2506,94 @@ async fn read_guardian_status_snapshot(config: &Config) -> Option<Value> {
             .join("state.json"),
     )
     .await?;
+    let age_ms = snapshot_age_ms(snapshot.get("ObservedAtUtc").and_then(Value::as_str));
+    let is_stale = age_ms.is_none_or(|age| age > 30_000);
+    let mut reasons = snapshot
+        .get("Reasons")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    if is_stale && let Some(items) = reasons.as_array_mut() {
+        items.push(json!("guardian state snapshot is stale"));
+    }
     Some(json!({
-        "observedAtUtc": state.get("ObservedAtUtc").cloned().unwrap_or(Value::Null),
-        "isHealthy": state.get("IsHealthy").cloned().unwrap_or(Value::Null),
-        "needsRepair": state.get("NeedsRepair").cloned().unwrap_or(Value::Null),
-        "mcpElevated": state.get("McpElevated").cloned().unwrap_or(Value::Null),
-        "publicTunnelHealthy": state.get("PublicTunnelHealthy").cloned().unwrap_or(Value::Null),
-        "cloudflaredRunning": state.get("CloudflaredRunning").cloned().unwrap_or(Value::Null),
-        "cloudflaredMetrics": state.get("CloudflaredMetrics").cloned().unwrap_or(Value::Null),
-        "cloudflaredMetricsDelta": state.get("CloudflaredMetricsDelta").cloned().unwrap_or(Value::Null),
-        "tunnelTransportHealthy": state.get("TunnelTransportHealthy").cloned().unwrap_or(Value::Null),
-        "tunnelTransportDegraded": state.get("TunnelTransportDegraded").cloned().unwrap_or(json!(false)),
-        "tunnelTransportReasons": state.get("TunnelTransportReasons").cloned().unwrap_or_else(|| json!([])),
-        "readiness": state.get("Readiness").cloned().unwrap_or(Value::Null),
-        "reasons": state.get("Reasons").cloned().unwrap_or_else(|| json!([])),
+        "observedAtUtc": snapshot.get("ObservedAtUtc").cloned().unwrap_or(Value::Null),
+        "ageMs": age_ms,
+        "stale": is_stale,
+        "isHealthy": if is_stale { json!(false) } else { snapshot.get("IsHealthy").cloned().unwrap_or(Value::Null) },
+        "needsRepair": snapshot.get("NeedsRepair").cloned().unwrap_or(Value::Null),
+        "mcpElevated": snapshot.get("McpElevated").cloned().unwrap_or(Value::Null),
+        "publicTunnelHealthy": snapshot.get("PublicTunnelHealthy").cloned().unwrap_or(Value::Null),
+        "cloudflaredRunning": snapshot.get("CloudflaredRunning").cloned().unwrap_or(Value::Null),
+        "cloudflaredMetrics": snapshot.get("CloudflaredMetrics").cloned().unwrap_or(Value::Null),
+        "cloudflaredMetricsDelta": snapshot.get("CloudflaredMetricsDelta").cloned().unwrap_or(Value::Null),
+        "tunnelTransportHealthy": snapshot.get("TunnelTransportHealthy").cloned().unwrap_or(Value::Null),
+        "tunnelTransportDegraded": snapshot.get("TunnelTransportDegraded").cloned().unwrap_or(json!(false)),
+        "tunnelTransportReasons": snapshot.get("TunnelTransportReasons").cloned().unwrap_or_else(|| json!([])),
+        "readiness": snapshot.get("Readiness").cloned().unwrap_or(Value::Null),
+        "reasons": reasons,
     }))
+}
+
+async fn read_job_maintenance_snapshot(config: &Config) -> Option<Value> {
+    let mut snapshot =
+        read_json_snapshot(config.project_root.join("run").join("job-maintenance.json")).await?;
+    let age_ms = snapshot_age_ms(snapshot.get("sampledAtUtc").and_then(Value::as_str));
+    let is_stale = age_ms.is_none_or(|age| age > 150_000);
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("ageMs".to_owned(), json!(age_ms));
+        object.insert("stale".to_owned(), json!(is_stale));
+    }
+    Some(snapshot)
+}
+
+fn snapshot_age_ms(timestamp: Option<&str>) -> Option<u64> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(timestamp?)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let age = chrono::Utc::now()
+        .signed_duration_since(timestamp)
+        .num_milliseconds();
+    u64::try_from(age.max(0)).ok()
+}
+
+async fn readyz(State(state): State<HttpState>) -> Response {
+    let checks = tokio::time::timeout(Duration::from_millis(750), async {
+        let jobs = tokio::fs::create_dir_all(&state.config.jobs_root)
+            .await
+            .is_ok();
+        let scheduler = state.handler.scheduler.snapshot().await.is_ok();
+        let tool_count = state.handler.tool_router.list_all().len();
+        let tool_contract = tool_count == crate::contract::TARGET_TOOL_NAMES.len();
+        let background = state.handler.background.snapshot();
+        let critical = [
+            "performance-sampler",
+            "performance-persistence",
+            "job-maintenance",
+            "version-refresh",
+        ];
+        let tasks = critical.iter().all(|name| {
+            let task = &background[*name];
+            task.get("running").and_then(Value::as_bool) == Some(true)
+                && task
+                    .get("lastTickAgeMs")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|age| age < 180_000)
+        });
+        (
+            jobs,
+            scheduler,
+            tool_contract,
+            tool_count,
+            tasks,
+            background,
+        )
+    })
+    .await;
+    match checks {
+        Ok((jobs, scheduler, tool_contract, tool_count, tasks, _background)) if jobs && scheduler && tool_contract && tasks => (StatusCode::OK, Json(json!({"ok": true, "jobStoreReady": jobs, "schedulerReady": scheduler, "toolContractComplete": tool_contract, "toolCount": tool_count, "backgroundTasksHealthy": tasks}))).into_response(),
+        Ok((jobs, scheduler, tool_contract, tool_count, tasks, _background)) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "jobStoreReady": jobs, "schedulerReady": scheduler, "toolContractComplete": tool_contract, "toolCount": tool_count, "backgroundTasksHealthy": tasks}))).into_response(),
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({"ok": false, "error": "readiness check timed out"}))).into_response(),
+    }
 }
 
 async fn healthz() -> &'static str {
@@ -3395,6 +3488,8 @@ mod tests {
             job_heartbeat_ms: 5_000,
             job_orphan_stale_ms: 15_000,
             job_retention_hours: 168,
+            job_store_max_bytes: 2 * 1024 * 1024 * 1024,
+            job_store_max_terminal_jobs: 5_000,
             screen_capture_attempt_timeout_ms: 8_000,
             screen_capture_retries: 1,
             screen_capture_queue_timeout_ms: 5_000,
@@ -3495,7 +3590,7 @@ mod tests {
 
     #[test]
     fn command_error_trimming_uses_javascript_utf16_units_and_marker() {
-        let input = format!("{}END", "😀".repeat(80));
+        let input = format!("{}END", "ðŸ˜€".repeat(80));
         let (trimmed, truncated) = trim_javascript_text(&input, 100);
         assert!(truncated);
         assert!(trimmed.encode_utf16().count() <= 100);

@@ -139,9 +139,10 @@ if ($null -eq $process) {{
 Set-Content -LiteralPath '{}' -Value ([string]$process.Id) -Encoding ascii
 if (-not $process.WaitForExit({})) {{
   try {{
-    & taskkill.exe /PID $process.Id /T /F *> $null
+    $process.Kill($true)
     $process.WaitForExit()
   }} catch {{
+    try {{ $process.Kill() }} catch {{ }}
   }}
   throw 'Command timed out after {} ms.'
 }}
@@ -268,7 +269,8 @@ mod tests {
         assert!(launcher.contains("Start-Process"));
         assert!(launcher.contains("-Verb RunAs"));
         assert!(launcher.contains("WaitForExit(30000)"));
-        assert!(launcher.contains("taskkill.exe /PID $process.Id /T /F"));
+        assert!(launcher.contains("$process.Kill($true)"));
+        assert!(!launcher.contains("taskkill.exe"));
         assert!(launcher.contains("elevated-pid.txt"));
         let wrapper = elevated_wrapper(
             Path::new(r"C:\Temp\it's\command.ps1"),

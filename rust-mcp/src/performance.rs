@@ -1,13 +1,15 @@
 use std::{
     collections::VecDeque,
     path::PathBuf,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, RwLock},
     time::{Duration, Instant},
 };
 
 use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
+
+use crate::background::BackgroundTaskRegistry;
 
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
 const DRIFT_INTERVAL: Duration = Duration::from_secs(1);
@@ -16,6 +18,8 @@ const MAX_SAMPLES: usize = 15_000;
 const SHORT_WINDOW: Duration = Duration::from_secs(10);
 const ONE_MINUTE: Duration = Duration::from_secs(60);
 const FIVE_MINUTES: Duration = Duration::from_secs(300);
+const HISTORY_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const HISTORY_ROTATIONS: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
 struct TimedSample {
@@ -32,6 +36,7 @@ struct PerformanceWindow {
 #[derive(Debug)]
 struct PerformanceInner {
     state: Arc<Mutex<PerformanceWindow>>,
+    cached: Arc<RwLock<Value>>,
     started_at: Instant,
     cancellation: CancellationToken,
 }
@@ -49,83 +54,109 @@ pub struct PerformanceMonitor {
 
 impl PerformanceMonitor {
     #[must_use]
-    pub fn new(state_path: PathBuf) -> Self {
+    pub fn new(state_path: PathBuf, background: &BackgroundTaskRegistry) -> Self {
+        let state = Arc::new(Mutex::new(PerformanceWindow::default()));
+        let started_at = Instant::now();
+        let cached = Arc::new(RwLock::new(snapshot_value(&state, started_at)));
         let inner = Arc::new(PerformanceInner {
-            state: Arc::new(Mutex::new(PerformanceWindow::default())),
-            started_at: Instant::now(),
+            state,
+            cached,
+            started_at,
             cancellation: CancellationToken::new(),
         });
-        spawn_sampler(&inner);
-        spawn_persistence(&inner, state_path);
+        spawn_sampler(&inner, background);
+        spawn_persistence(&inner, state_path, background);
         Self { inner }
     }
 
     #[must_use]
     pub fn snapshot(&self) -> Value {
-        snapshot_value(&self.inner.state, self.inner.started_at)
+        self.inner
+            .cached
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 }
 
-fn spawn_sampler(inner: &PerformanceInner) {
+fn spawn_sampler(inner: &PerformanceInner, background: &BackgroundTaskRegistry) {
     let state = inner.state.clone();
-    let cancellation = inner.cancellation.child_token();
-    tokio::spawn(async move {
-        let mut expected_sample = tokio::time::Instant::now() + SAMPLE_INTERVAL;
-        let mut expected_drift = tokio::time::Instant::now() + DRIFT_INTERVAL;
-        loop {
-            tokio::select! {
-                () = cancellation.cancelled() => return,
-                () = tokio::time::sleep_until(expected_sample) => {
-                    let now = tokio::time::Instant::now();
-                    let delay_ms = now.saturating_duration_since(expected_sample).as_secs_f64() * 1_000.0;
-                    let mut window = lock_window(&state);
-                    window.delays.push_back(TimedSample { at: now.into_std(), value_ms: delay_ms });
-                    while window.delays.len() > MAX_SAMPLES {
-                        window.delays.pop_front();
-                    }
-                    if now >= expected_drift {
-                        let drift_ms = now.saturating_duration_since(expected_drift).as_secs_f64() * 1_000.0;
-                        window.drifts.push_back(TimedSample { at: now.into_std(), value_ms: drift_ms });
-                        expected_drift = now + DRIFT_INTERVAL;
-                    }
-                    if let Some(cutoff) = Instant::now().checked_sub(FIVE_MINUTES) {
-                        while window.delays.front().is_some_and(|sample| sample.at < cutoff) {
-                            window.delays.pop_front();
+    background.spawn_supervised(
+        "performance-sampler",
+        inner.cancellation.child_token(),
+        move |cancellation, heartbeat| {
+            let state = state.clone();
+            async move {
+                let mut expected_sample = tokio::time::Instant::now() + SAMPLE_INTERVAL;
+                let mut expected_drift = tokio::time::Instant::now() + DRIFT_INTERVAL;
+                loop {
+                    tokio::select! {
+                        () = cancellation.cancelled() => return Ok(()),
+                        () = tokio::time::sleep_until(expected_sample) => {
+                            let now = tokio::time::Instant::now();
+                            let delay_ms = now.saturating_duration_since(expected_sample).as_secs_f64() * 1_000.0;
+                            let mut window = lock_window(&state);
+                            window.delays.push_back(TimedSample { at: now.into_std(), value_ms: delay_ms });
+                            while window.delays.len() > MAX_SAMPLES { window.delays.pop_front(); }
+                            if now >= expected_drift {
+                                let drift_ms = now.saturating_duration_since(expected_drift).as_secs_f64() * 1_000.0;
+                                window.drifts.push_back(TimedSample { at: now.into_std(), value_ms: drift_ms });
+                                expected_drift = now + DRIFT_INTERVAL;
+                                heartbeat.tick();
+                            }
+                            if let Some(cutoff) = Instant::now().checked_sub(FIVE_MINUTES) {
+                                while window.delays.front().is_some_and(|sample| sample.at < cutoff) { window.delays.pop_front(); }
+                                while window.drifts.front().is_some_and(|sample| sample.at < cutoff) { window.drifts.pop_front(); }
+                            }
+                            drop(window);
+                            expected_sample += SAMPLE_INTERVAL;
+                            if now.saturating_duration_since(expected_sample) > Duration::from_secs(1) { expected_sample = now + SAMPLE_INTERVAL; }
                         }
-                        while window.drifts.front().is_some_and(|sample| sample.at < cutoff) {
-                            window.drifts.pop_front();
-                        }
-                    }
-                    drop(window);
-                    expected_sample += SAMPLE_INTERVAL;
-                    if now.saturating_duration_since(expected_sample) > Duration::from_secs(1) {
-                        expected_sample = now + SAMPLE_INTERVAL;
                     }
                 }
             }
-        }
-    });
+        },
+    );
 }
 
-fn spawn_persistence(inner: &PerformanceInner, state_path: PathBuf) {
+fn spawn_persistence(
+    inner: &PerformanceInner,
+    state_path: PathBuf,
+    background: &BackgroundTaskRegistry,
+) {
     let state = inner.state.clone();
+    let cached = inner.cached.clone();
     let started_at = inner.started_at;
-    let cancellation = inner.cancellation.child_token();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(PERSIST_INTERVAL);
-        interval.tick().await;
-        loop {
-            tokio::select! {
-                () = cancellation.cancelled() => return,
-                _ = interval.tick() => {
-                    let snapshot = snapshot_value(&state, started_at);
-                    if let Err(error) = persist_snapshot(&state_path, &snapshot).await {
-                        tracing::debug!(%error, path = %state_path.display(), "failed to persist Rust MCP performance snapshot");
+    let history_path = state_path.with_file_name("mcp-performance-history.jsonl");
+    background.spawn_supervised(
+        "performance-persistence",
+        inner.cancellation.child_token(),
+        move |cancellation, heartbeat| {
+            let state = state.clone();
+            let cached = cached.clone();
+            let state_path = state_path.clone();
+            let history_path = history_path.clone();
+            async move {
+                let mut interval = tokio::time::interval(PERSIST_INTERVAL);
+                loop {
+                    tokio::select! {
+                        () = cancellation.cancelled() => return Ok(()),
+                        _ = interval.tick() => {
+                            let snapshot = snapshot_value(&state, started_at);
+                            *cached.write().unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
+                            if let Err(error) = persist_snapshot(&state_path, &snapshot).await {
+                                tracing::debug!(%error, path = %state_path.display(), "failed to persist Rust MCP performance snapshot");
+                            }
+                            if let Err(error) = append_history(&history_path, &snapshot).await {
+                                tracing::debug!(%error, path = %history_path.display(), "failed to append Rust MCP performance history");
+                            }
+                            heartbeat.tick();
+                        }
                     }
                 }
             }
-        }
-    });
+        },
+    );
 }
 
 async fn persist_snapshot(path: &std::path::Path, snapshot: &Value) -> std::io::Result<()> {
@@ -140,6 +171,52 @@ async fn persist_snapshot(path: &std::path::Path, snapshot: &Value) -> std::io::
         tokio::fs::rename(&temporary, path).await?;
     }
     Ok(())
+}
+
+async fn append_history(path: &std::path::Path, snapshot: &Value) -> std::io::Result<()> {
+    use tokio::io::AsyncWriteExt as _;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if tokio::fs::metadata(path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0)
+        >= HISTORY_MAX_BYTES
+    {
+        let oldest = history_rotation_path(path, HISTORY_ROTATIONS);
+        tokio::fs::remove_file(&oldest).await.ok();
+        for index in (1..HISTORY_ROTATIONS).rev() {
+            let from = history_rotation_path(path, index);
+            let to = history_rotation_path(path, index + 1);
+            if tokio::fs::rename(&from, &to).await.is_err() {}
+        }
+        let _ = tokio::fs::rename(path, history_rotation_path(path, 1)).await;
+    }
+    let compact = json!({
+        "sampledAtUtc": snapshot.pointer("/eventLoop/sampledAtUtc"),
+        "pid": snapshot.pointer("/process/pid"),
+        "p95Ms": snapshot.pointer("/eventLoop/p95Ms"),
+        "p99Ms": snapshot.pointer("/eventLoop/p99Ms"),
+        "maxMs": snapshot.pointer("/eventLoop/maxMs"),
+        "timerDriftMaxMs": snapshot.pointer("/eventLoop/timerDriftMaxMs"),
+        "rss": snapshot.pointer("/process/memory/rss"),
+        "private": snapshot.pointer("/process/memory/private"),
+        "allocatorCurrent": snapshot.pointer("/process/memory/allocator/currentRequestedBytes"),
+        "cpuTotalMs": snapshot.pointer("/process/platform/cpuTotalMs"),
+    });
+    let mut bytes = serde_json::to_vec(&compact).map_err(std::io::Error::other)?;
+    bytes.push(b'\n');
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    file.write_all(&bytes).await
+}
+
+fn history_rotation_path(path: &std::path::Path, index: usize) -> PathBuf {
+    PathBuf::from(format!("{}.{index}", path.display()))
 }
 
 fn snapshot_value(state: &Arc<Mutex<PerformanceWindow>>, started_at: Instant) -> Value {
