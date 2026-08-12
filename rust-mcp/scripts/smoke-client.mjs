@@ -47,9 +47,7 @@ assert.equal(await liveResponse.text(), "ok");
 const readyResponse = await fetch(new URL("readyz", baseUrl));
 assert.equal(readyResponse.status, 200);
 const ready = await readyResponse.json();
-assert.equal(ready.ok, true);
-assert.equal(ready.toolContractComplete, true);
-assert.equal(ready.toolCount, 37);
+assert.deepEqual(ready, { ok: true });
 
 const metadataResponse = await fetch(baseUrl);
 assert.equal(metadataResponse.status, 200);
