@@ -213,15 +213,19 @@ impl RuntimeExecutor {
             ]
         };
         let probes = candidates.into_iter().map(|(program, args)| {
+            let arguments = args
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect::<Vec<_>>();
+            #[cfg(windows)]
+            let (executable, arguments) =
+                resolve_windows_host_program(&self.config, program, &arguments);
+            #[cfg(not(windows))]
             let executable = if program == "node" {
                 self.config.node_exe.clone()
             } else {
                 program.to_owned()
             };
-            let arguments = args
-                .iter()
-                .map(|value| (*value).to_owned())
-                .collect::<Vec<_>>();
             let cwd = self.config.host_default_workdir.clone();
             let cancellation = cancellation.child_token();
             async move {
@@ -741,6 +745,22 @@ mod tests {
             .unwrap();
         assert_eq!(output.exit_code, 0);
         assert!(output.stdout.starts_with("rustc "));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_version_probe_resolves_npm_command_shim() {
+        let temp = tempfile::tempdir().unwrap();
+        let executor = RuntimeExecutor::new(test_config(temp.path()));
+        let versions = executor
+            .get_versions(true, CancellationToken::new())
+            .await
+            .expect("Windows host version probes should complete");
+        let npm = versions
+            .iter()
+            .find(|line| line.starts_with("npm="))
+            .expect("npm version entry should be present");
+        assert_ne!(npm, "npm=unavailable");
     }
 
     #[cfg(windows)]
