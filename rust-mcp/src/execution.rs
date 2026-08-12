@@ -1576,7 +1576,14 @@ mod tests {
     #[tokio::test]
     async fn fifo_ticket_prevents_later_light_job_from_overtaking_heavy_waiter() {
         let temp = tempfile::tempdir().unwrap();
-        let scheduler = scheduler(temp.path(), 2, 0, 1);
+        let scheduler = ExecutionScheduler::new(SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 2,
+            reserved_interactive: 0,
+            watch_max_concurrent: 1,
+            queue_timeout: Duration::from_secs(2),
+            heavy_weight: 2,
+        });
         let mut blocker = scheduler
             .acquire(
                 AcquireRequest::background("blocker", ResourceClass::Light, 1),
