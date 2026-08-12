@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use regex::{Regex, RegexBuilder};
 use serde_json::Value;
-use tokio::{fs, sync::mpsc::unbounded_channel};
+use tokio::{fs, sync::mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -106,7 +106,7 @@ impl SearchService {
         let (program, args, cwd) = self.process_command(args);
         let process_cancel = cancellation.child_token();
         let task_cancel = process_cancel.clone();
-        let (tx, mut rx) = unbounded_channel();
+        let (tx, mut rx) = mpsc::channel(128);
         let max_capture_chars = self.config.max_mcp_transfer_chars.clamp(1, 65_536);
         let timeout = request.timeout;
         let task = tokio::spawn(async move {

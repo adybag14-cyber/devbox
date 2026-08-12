@@ -3,18 +3,19 @@ use std::{
     ffi::OsString,
     path::PathBuf,
     process::{ExitStatus, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::{Child, Command},
-    sync::mpsc::UnboundedSender,
+    sync::mpsc::{Sender, UnboundedSender},
 };
 use tokio_util::sync::CancellationToken;
 
 pub const MAX_PROCESS_ERROR_MESSAGE_CHARS: usize = 4096;
+const POST_EXIT_PIPE_DRAIN: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputStream {
@@ -36,7 +37,7 @@ pub struct ProcessOptions {
     pub termination_grace: Duration,
     pub max_capture_chars: Option<usize>,
     pub input: Option<Vec<u8>>,
-    pub output_tx: Option<UnboundedSender<OutputChunk>>,
+    pub output_tx: Option<Sender<OutputChunk>>,
     pub pid_tx: Option<UnboundedSender<u32>>,
 }
 
@@ -86,11 +87,18 @@ impl std::fmt::Display for ProcessError {
 
 impl std::error::Error for ProcessError {}
 
+struct CaptureTask {
+    task: tokio::task::JoinHandle<()>,
+    captured: Arc<Mutex<String>>,
+}
+
 struct SpawnedProcess {
     child: Child,
     pid: u32,
-    stdout_task: tokio::task::JoinHandle<String>,
-    stderr_task: tokio::task::JoinHandle<String>,
+    stdout_task: CaptureTask,
+    stderr_task: CaptureTask,
+    #[cfg(windows)]
+    job: Option<crate::windows_job::WindowsJob>,
 }
 
 #[derive(Debug)]
@@ -109,9 +117,21 @@ enum ForcedFailure {
 struct ProcessTreeDropGuard {
     pid: u32,
     armed: bool,
+    #[cfg(windows)]
+    job: Option<crate::windows_job::WindowsJob>,
 }
 
 impl ProcessTreeDropGuard {
+    #[cfg(windows)]
+    const fn new(pid: u32, job: Option<crate::windows_job::WindowsJob>) -> Self {
+        Self {
+            pid,
+            armed: pid > 0,
+            job,
+        }
+    }
+
+    #[cfg(not(windows))]
     const fn new(pid: u32) -> Self {
         Self {
             pid,
@@ -127,6 +147,9 @@ impl ProcessTreeDropGuard {
 impl Drop for ProcessTreeDropGuard {
     fn drop(&mut self) {
         if self.armed {
+            #[cfg(windows)]
+            terminate_process_tree_on_drop(self.pid, self.job.as_ref());
+            #[cfg(not(windows))]
             terminate_process_tree_on_drop(self.pid);
         }
     }
@@ -148,10 +171,15 @@ pub async fn spawn_process(
 ) -> Result<ProcessOutput, ProcessError> {
     let started = Instant::now();
     let mut spawned = start_process(file, args, &options, started)?;
+    #[cfg(windows)]
+    let mut drop_guard = ProcessTreeDropGuard::new(spawned.pid, spawned.job.take());
+    #[cfg(not(windows))]
     let mut drop_guard = ProcessTreeDropGuard::new(spawned.pid);
     let (status, forced_failure) = wait_for_process(
         &mut spawned.child,
         spawned.pid,
+        #[cfg(windows)]
+        drop_guard.job.as_ref(),
         options.timeout,
         options.termination_grace,
         cancellation,
@@ -159,12 +187,9 @@ pub async fn spawn_process(
     .await;
     drop_guard.disarm();
 
-    if status.is_none() {
-        spawned.stdout_task.abort();
-        spawned.stderr_task.abort();
-    }
-    let stdout = join_capture(spawned.stdout_task).await;
-    let stderr = join_capture(spawned.stderr_task).await;
+    let drain = status.map(|_| POST_EXIT_PIPE_DRAIN);
+    let stdout = join_capture(spawned.stdout_task, drain).await;
+    let stderr = join_capture(spawned.stderr_task, drain).await;
     classify_process_result(
         file,
         args,
@@ -202,6 +227,18 @@ fn start_process(
         .spawn()
         .map_err(|error| launch_error(file, args, error.to_string(), started))?;
     let pid = child.id().unwrap_or(0);
+    #[cfg(windows)]
+    let job = if pid > 0 {
+        match crate::windows_job::WindowsJob::assign(pid) {
+            Ok(job) => Some(job),
+            Err(error) => {
+                tracing::warn!(pid, %error, "failed to assign Windows child to Job Object; native process-tree fallback will be used");
+                None
+            }
+        }
+    } else {
+        None
+    };
     if pid > 0
         && let Some(pid_tx) = options.pid_tx.as_ref()
     {
@@ -224,23 +261,25 @@ fn start_process(
             started,
         )
     })?;
-    let stdout_task = tokio::spawn(capture_stream(
+    let stdout_task = start_capture_task(
         stdout,
         OutputStream::Stdout,
         options.max_capture_chars,
         options.output_tx.clone(),
-    ));
-    let stderr_task = tokio::spawn(capture_stream(
+    );
+    let stderr_task = start_capture_task(
         stderr,
         OutputStream::Stderr,
         options.max_capture_chars,
         options.output_tx.clone(),
-    ));
+    );
     Ok(SpawnedProcess {
         child,
         pid,
         stdout_task,
         stderr_task,
+        #[cfg(windows)]
+        job,
     })
 }
 
@@ -260,6 +299,7 @@ fn start_stdin_writer(stdin: Option<tokio::process::ChildStdin>, input: Option<V
 async fn wait_for_process(
     child: &mut Child,
     pid: u32,
+    #[cfg(windows)] job: Option<&crate::windows_job::WindowsJob>,
     timeout: Option<Duration>,
     termination_grace: Duration,
     cancellation: CancellationToken,
@@ -285,6 +325,9 @@ async fn wait_for_process(
     match outcome {
         WaitOutcome::Exited(status) => (status.ok(), None),
         WaitOutcome::Cancelled => {
+            #[cfg(windows)]
+            terminate_spawned_tree(pid, job);
+            #[cfg(not(windows))]
             terminate_process_tree(pid).await;
             (
                 wait_after_termination(&mut wait, termination_grace).await,
@@ -292,6 +335,9 @@ async fn wait_for_process(
             )
         }
         WaitOutcome::TimedOut(timeout) => {
+            #[cfg(windows)]
+            terminate_spawned_tree(pid, job);
+            #[cfg(not(windows))]
             terminate_process_tree(pid).await;
             (
                 wait_after_termination(&mut wait, termination_grace).await,
@@ -437,16 +483,37 @@ pub fn summarize_process_failure(file: &str, code: i32, stdout: &str, stderr: &s
     }
 }
 
+fn start_capture_task<R>(
+    reader: R,
+    stream: OutputStream,
+    max_capture_chars: Option<usize>,
+    output_tx: Option<Sender<OutputChunk>>,
+) -> CaptureTask
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    let captured = Arc::new(Mutex::new(String::new()));
+    let shared = captured.clone();
+    let task = tokio::spawn(capture_stream(
+        reader,
+        stream,
+        max_capture_chars,
+        output_tx,
+        shared,
+    ));
+    CaptureTask { task, captured }
+}
+
 async fn capture_stream<R>(
     mut reader: R,
     stream: OutputStream,
     max_capture_chars: Option<usize>,
-    output_tx: Option<UnboundedSender<OutputChunk>>,
-) -> String
-where
+    output_tx: Option<Sender<OutputChunk>>,
+    captured: Arc<Mutex<String>>,
+) where
     R: AsyncRead + Unpin,
 {
-    let mut captured = String::new();
+    let mut local = String::new();
     let mut buffer = vec![0_u8; 16 * 1024];
     let mut pending_utf8 = Vec::with_capacity(4);
     loop {
@@ -455,24 +522,38 @@ where
             Ok(count) => count,
         };
         let bytes = &buffer[..count];
-        if let Some(tx) = output_tx.as_ref() {
-            let _ = tx.send(OutputChunk {
-                stream,
-                bytes: Arc::from(bytes),
-            });
-        }
-        append_stream_utf8(&mut captured, &mut pending_utf8, bytes);
+        let previous_len = local.len();
+        append_stream_utf8(&mut local, &mut pending_utf8, bytes);
         if let Some(limit) = max_capture_chars {
-            retain_tail_chars(&mut captured, limit);
+            retain_tail_chars(&mut local, limit);
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone_from(&local);
+        } else if local.len() > previous_len {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push_str(&local[previous_len..]);
+        }
+        if let Some(tx) = output_tx.as_ref() {
+            let _ = tx
+                .send(OutputChunk {
+                    stream,
+                    bytes: Arc::from(bytes),
+                })
+                .await;
         }
     }
     if !pending_utf8.is_empty() {
-        captured.push_str(&String::from_utf8_lossy(&pending_utf8));
+        local.push_str(&String::from_utf8_lossy(&pending_utf8));
         if let Some(limit) = max_capture_chars {
-            retain_tail_chars(&mut captured, limit);
+            retain_tail_chars(&mut local, limit);
         }
     }
-    captured
+    *captured
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = local;
 }
 
 fn append_stream_utf8(captured: &mut String, pending: &mut Vec<u8>, bytes: &[u8]) {
@@ -503,8 +584,24 @@ fn append_stream_utf8(captured: &mut String, pending: &mut Vec<u8>, bytes: &[u8]
     }
 }
 
-async fn join_capture(task: tokio::task::JoinHandle<String>) -> String {
-    task.await.unwrap_or_default()
+async fn join_capture(mut capture: CaptureTask, timeout: Option<Duration>) -> String {
+    if let Some(timeout) = timeout {
+        if tokio::time::timeout(timeout, &mut capture.task)
+            .await
+            .is_err()
+        {
+            capture.task.abort();
+            let _ = capture.task.await;
+        }
+    } else {
+        capture.task.abort();
+        let _ = capture.task.await;
+    }
+    capture
+        .captured
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 fn retain_tail_chars(value: &mut String, max_chars: usize) {
@@ -544,20 +641,24 @@ fn configure_process_group(command: &mut Command) {
 fn configure_process_group(_command: &mut Command) {}
 
 #[cfg(windows)]
-fn terminate_process_tree_on_drop(pid: u32) {
-    use std::os::windows::process::CommandExt as _;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+fn terminate_process_tree_on_drop(pid: u32, job: Option<&crate::windows_job::WindowsJob>) {
+    terminate_spawned_tree(pid, job);
+}
+
+#[cfg(windows)]
+fn terminate_spawned_tree(pid: u32, job: Option<&crate::windows_job::WindowsJob>) {
     if pid == 0 {
         return;
     }
-    let mut command = std::process::Command::new("taskkill.exe");
-    command
-        .args(["/pid", &pid.to_string(), "/t", "/f"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW);
-    let _ = command.spawn();
+    let root_instance = crate::windows_process::process_instance(pid);
+    if let Some(job) = job {
+        let _ = job.terminate(1);
+    }
+    // Always sweep the native process tree as well. A child could theoretically
+    // create a descendant in the tiny interval between CreateProcess and Job Object assignment.
+    // Carry the pre-termination creation fingerprint because the Job Object may already
+    // have ended the root process before this fallback traversal begins.
+    crate::windows_job::terminate_process_tree_fallback_with_instance(pid, root_instance, 1);
 }
 
 #[cfg(unix)]
@@ -576,21 +677,7 @@ fn terminate_process_tree_on_drop(_pid: u32) {}
 
 #[cfg(windows)]
 pub(crate) async fn terminate_process_tree(pid: u32) {
-    use std::os::windows::process::CommandExt as _;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
-    if pid == 0 {
-        return;
-    }
-    let mut command = Command::new("taskkill.exe");
-    command
-        .args(["/pid", &pid.to_string(), "/t", "/f"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .as_std_mut()
-        .creation_flags(CREATE_NO_WINDOW);
-    let _ = tokio::time::timeout(Duration::from_secs(5), command.status()).await;
+    crate::windows_job::terminate_process_tree_fallback(pid, 1);
 }
 
 #[cfg(unix)]
@@ -729,6 +816,65 @@ mod tests {
         assert!(
             !process_is_alive(pid).await,
             "dropped process future left PID {pid} alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_exit_is_not_blocked_by_grandchild_inheriting_pipes() {
+        let script = "const {spawn}=require('node:child_process'); const c=spawn(process.execPath,['-e','setTimeout(()=>{},3000)'],{stdio:['ignore','inherit','inherit']}); c.unref(); process.stdout.write('parent-done');";
+        let started = Instant::now();
+        let output = spawn_process(
+            "node",
+            &["-e".to_owned(), script.to_owned()],
+            ProcessOptions {
+                timeout: Some(Duration::from_secs(5)),
+                ..ProcessOptions::default()
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("parent process should complete without waiting for inherited grandchild pipes");
+        assert_eq!(output.exit_code, 0);
+        assert!(output.stdout.contains("parent-done"));
+        assert!(started.elapsed() < Duration::from_millis(2500));
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_timeout_terminates_job_object_descendants() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_path = temp.path().join("descendant.pid");
+        let pid_path_js = pid_path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('\'', "\\'");
+        let script = format!(
+            "const fs=require('node:fs'); const {{spawn}}=require('node:child_process'); const c=spawn(process.execPath,['-e','setTimeout(()=>{{}},30000)'],{{stdio:['ignore','ignore','ignore']}}); fs.writeFileSync('{pid_path_js}',String(c.pid)); setTimeout(()=>{{}},30000);"
+        );
+        let error = spawn_process(
+            "node",
+            &["-e".to_owned(), script],
+            ProcessOptions {
+                timeout: Some(Duration::from_millis(1200)),
+                ..ProcessOptions::default()
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("parent should time out");
+        assert!(error.timed_out);
+        let child_pid = std::fs::read_to_string(&pid_path)
+            .expect("parent should persist descendant pid before timeout")
+            .trim()
+            .parse::<u32>()
+            .expect("valid descendant pid");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && crate::windows_process::process_alive(child_pid) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !crate::windows_process::process_alive(child_pid),
+            "Job Object timeout left descendant PID {child_pid} alive"
         );
     }
 

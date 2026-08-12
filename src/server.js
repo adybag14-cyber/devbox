@@ -73,6 +73,8 @@ import {
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runDir = path.join(projectRoot, "run");
+const jobsRoot = path.join(runDir, "jobs");
+const jobsRootReady = mkdir(jobsRoot, { recursive: true });
 const guardianDesiredStatePath = path.join(runDir, "guardian.desired-state.json");
 const toolUsageLogPath = path.join(runDir, "tool-usage.jsonl");
 const httpUsageLogPath = path.join(runDir, "http-usage.jsonl");
@@ -2199,6 +2201,27 @@ app.get("/", async (_req, res) => {
 
 app.get("/healthz", (_req, res) => {
   res.type("text/plain").send("ok");
+});
+app.get("/livez", (_req, res) => {
+  res.type("text/plain").send("ok");
+});
+app.get("/readyz", async (_req, res) => {
+  try {
+    if (!Number.isFinite(config.dockerCommandTimeoutMs) || config.dockerCommandTimeoutMs <= 0) {
+      throw new Error("DOCKER_COMMAND_TIMEOUT_MS must be greater than zero for readiness checks.");
+    }
+    await jobsRootReady;
+    const jobsMetadata = await stat(jobsRoot);
+    if (!jobsMetadata.isDirectory()) {
+      throw new Error("Job store path is not a directory.");
+    }
+    const devbox = await getDevboxInfo();
+    const ready = devbox?.running === true;
+    res.status(ready ? 200 : 503).json({ ok: ready });
+  } catch (error) {
+    console.warn("Readiness probe failed", error);
+    res.status(503).json({ ok: false });
+  }
 });
 
 if (legacyProtectedResourceMetadata) {

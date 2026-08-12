@@ -43,7 +43,7 @@ docker run --rm \
     cat /etc/os-release || true
     echo '=== toolchain ==='
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-init.sh
-    sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.97.1 --no-modify-path
+    sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.91.1 --no-modify-path
     rm -f /tmp/rustup-init.sh
     export PATH="\$HOME/.cargo/bin:\$PATH"
     node --version

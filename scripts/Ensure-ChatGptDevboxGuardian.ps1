@@ -22,6 +22,9 @@ $guardianPidPath = Join-Path $guardianDir 'guardian.pid'
 $heartbeatPath = Join-Path $guardianDir 'heartbeat.json'
 $ensureLogPath = Join-Path $guardianDir 'ensure.log'
 $staleObservationPath = Join-Path $guardianDir 'ensure-stale-observation.json'
+$ensureLogMaxBytes = 1MB
+$ensureLogRotations = 3
+$guardianArtifactRetentionDays = 7
 $guardianSourcePaths = @(
     $guardianScript,
     $powerShellResolver,
@@ -33,12 +36,37 @@ if (-not (Test-Path $guardianDir)) {
     New-Item -ItemType Directory -Path $guardianDir | Out-Null
 }
 
+function Rotate-EnsureLogIfNeeded {
+    if (-not (Test-Path -LiteralPath $ensureLogPath)) { return }
+    $length = (Get-Item -LiteralPath $ensureLogPath -ErrorAction SilentlyContinue).Length
+    if ($length -lt $ensureLogMaxBytes) { return }
+    $oldest = "$ensureLogPath.$ensureLogRotations"
+    Remove-Item -LiteralPath $oldest -Force -ErrorAction SilentlyContinue
+    for ($index = $ensureLogRotations - 1; $index -ge 1; $index--) {
+        $from = "$ensureLogPath.$index"
+        $to = "$ensureLogPath.$($index + 1)"
+        if (Test-Path -LiteralPath $from) { Move-Item -LiteralPath $from -Destination $to -Force -ErrorAction SilentlyContinue }
+    }
+    Move-Item -LiteralPath $ensureLogPath -Destination "$ensureLogPath.1" -Force -ErrorAction SilentlyContinue
+}
+
+function Remove-StaleGuardianArtifacts {
+    $cutoff = [DateTime]::UtcNow.AddDays(-$guardianArtifactRetentionDays)
+    Get-ChildItem -LiteralPath $guardianDir -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            ($_.Name -like '*.tmp' -or $_.Name -like '*.bak') -and
+            $_.LastWriteTimeUtc -lt $cutoff
+        } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+}
+
 function Write-EnsureLog {
     param(
         [Parameter(Mandatory = $true)][string]$Message,
         [string]$Level = 'INFO'
     )
 
+    Rotate-EnsureLogIfNeeded
     $line = '{0} [{1}] {2}' -f ([DateTime]::UtcNow.ToString('o')), $Level.ToUpperInvariant(), $Message
     Add-Content -Path $ensureLogPath -Value $line -Encoding UTF8
 }
@@ -180,6 +208,8 @@ function Test-GuardianHeartbeatFresh {
         return $false
     }
 }
+
+Remove-StaleGuardianArtifacts
 
 $existing = Get-LiveGuardianProcess
 $heartbeatFresh = Test-GuardianHeartbeatFresh

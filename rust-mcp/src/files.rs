@@ -517,7 +517,7 @@ fn normalize_expected_sha256(value: Option<&str>) -> Result<Option<String>> {
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::hex::lower_hex(Sha256::digest(bytes))
 }
 
 async fn sha256_file(path: &Path) -> Result<String> {
@@ -534,7 +534,7 @@ async fn sha256_file(path: &Path) -> Result<String> {
         }
         hasher.update(&buffer[..count]);
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(crate::hex::lower_hex(hasher.finalize()))
 }
 
 async fn verify_suffix(path: &Path, previous_file_size: u64, payload: &[u8]) -> Result<bool> {

@@ -2,7 +2,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicU32, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -31,16 +31,19 @@ struct HeartbeatState {
     runtime_mode: String,
     status: Arc<RwLock<String>>,
     child_pid: Arc<AtomicU32>,
+    child_process_instance: Arc<AtomicU64>,
 }
 
 impl HeartbeatState {
     async fn write(&self) {
         let status = self.status.read().await.clone();
         let child_pid = self.child_pid.load(Ordering::Relaxed);
+        let child_process_instance = self.child_process_instance.load(Ordering::Relaxed);
         let heartbeat = json!({
             "pid": std::process::id(),
             "status": status,
             "childPid": (child_pid > 0).then_some(child_pid),
+            "childProcessInstance": (child_process_instance > 0).then_some(child_process_instance),
             "runtimeMode": self.runtime_mode,
             "updatedAtUtc": utc_now(),
         });
@@ -60,6 +63,12 @@ impl HeartbeatState {
 
     async fn set_child_pid(&self, pid: u32) {
         self.child_pid.store(pid, Ordering::Relaxed);
+        #[cfg(windows)]
+        let instance = crate::windows_process::process_instance(pid).unwrap_or(0);
+        #[cfg(not(windows))]
+        let instance = 0;
+        self.child_process_instance
+            .store(instance, Ordering::Relaxed);
         self.write().await;
     }
 
@@ -84,6 +93,7 @@ impl RunnerMonitor {
             runtime_mode: request.runtime_mode.clone(),
             status: Arc::new(RwLock::new("queued".to_owned())),
             child_pid: Arc::new(AtomicU32::new(0)),
+            child_process_instance: Arc::new(AtomicU64::new(0)),
         };
         heartbeat.write().await;
         let cancellation = CancellationToken::new();
@@ -454,6 +464,17 @@ async fn execute_runtime(
     result
 }
 
+fn runner_process_instance() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        crate::windows_process::current_process_instance()
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 fn resolve_working_dir(config: &Config, request: &JobRequest) -> PathBuf {
     if !request.working_dir.trim().is_empty() {
         return PathBuf::from(request.working_dir.trim());
@@ -483,6 +504,7 @@ fn queued_status(request: &JobRequest, queued_at_utc: &str) -> Value {
         "startedAtUtc": null,
         "completedAtUtc": null,
         "runnerPid": std::process::id(),
+        "runnerProcessInstance": runner_process_instance(),
         "exitCode": null,
         "readOnly": request.read_only,
         "resourceClass": request.resource_class.as_str(),
@@ -506,6 +528,7 @@ fn running_status(
         "startedAtUtc": started_at_utc,
         "completedAtUtc": null,
         "runnerPid": std::process::id(),
+        "runnerProcessInstance": runner_process_instance(),
         "exitCode": null,
         "readOnly": request.read_only,
         "resourceClass": request.resource_class.as_str(),
@@ -536,6 +559,7 @@ fn failed_before_execution_status(
         "startedAtUtc": null,
         "completedAtUtc": utc_now(),
         "runnerPid": std::process::id(),
+        "runnerProcessInstance": runner_process_instance(),
         "exitCode": null,
         "readOnly": request.read_only,
         "resourceClass": request.resource_class.as_str(),
@@ -567,6 +591,7 @@ fn cancelled_status(
         "startedAtUtc": null,
         "completedAtUtc": utc_now(),
         "runnerPid": std::process::id(),
+        "runnerProcessInstance": runner_process_instance(),
         "exitCode": null,
         "readOnly": request.read_only,
         "resourceClass": request.resource_class.as_str(),
@@ -599,26 +624,27 @@ fn terminal_from_runtime(
         Ok(output) => (
             "succeeded",
             json!({
-                "id": request.id,
-                "status": "succeeded",
-                "mode": request.mode.as_str(),
-                "createdAtUtc": request.created_at_utc,
-                "queuedAtUtc": queued_at_utc,
-                "startedAtUtc": started_at_utc,
-                "completedAtUtc": utc_now(),
-                "runnerPid": std::process::id(),
-                "exitCode": output.exit_code,
-                "readOnly": request.read_only,
-                "resourceClass": request.resource_class.as_str(),
-                "runtimeMode": request.runtime_mode,
-                "queueWaitMs": lease.queue_wait_ms,
-                "executionSlot": lease.slot,
-                "executionSlots": lease.slots,
-                "executionPool": lease.pool,
-                "executionWeight": lease.weight,
-                "childPid": child_pid,
-                "logs": logs,
-            }),
+                    "id": request.id,
+                    "status": "succeeded",
+                    "mode": request.mode.as_str(),
+                    "createdAtUtc": request.created_at_utc,
+                    "queuedAtUtc": queued_at_utc,
+                    "startedAtUtc": started_at_utc,
+                    "completedAtUtc": utc_now(),
+                    "runnerPid": std::process::id(),
+            "runnerProcessInstance": runner_process_instance(),
+                    "exitCode": output.exit_code,
+                    "readOnly": request.read_only,
+                    "resourceClass": request.resource_class.as_str(),
+                    "runtimeMode": request.runtime_mode,
+                    "queueWaitMs": lease.queue_wait_ms,
+                    "executionSlot": lease.slot,
+                    "executionSlots": lease.slots,
+                    "executionPool": lease.pool,
+                    "executionWeight": lease.weight,
+                    "childPid": child_pid,
+                    "logs": logs,
+                }),
         ),
         Err(error) => {
             let process = match &error {
@@ -637,27 +663,28 @@ fn terminal_from_runtime(
             (
                 status,
                 json!({
-                    "id": request.id,
-                    "status": status,
-                    "mode": request.mode.as_str(),
-                    "createdAtUtc": request.created_at_utc,
-                    "queuedAtUtc": queued_at_utc,
-                    "startedAtUtc": started_at_utc,
-                    "completedAtUtc": utc_now(),
-                    "runnerPid": std::process::id(),
-                    "exitCode": process.and_then(|value| value.exit_code),
-                    "readOnly": request.read_only,
-                    "resourceClass": request.resource_class.as_str(),
-                    "runtimeMode": request.runtime_mode,
-                    "queueWaitMs": lease.queue_wait_ms,
-                    "executionSlot": lease.slot,
-                    "executionSlots": lease.slots,
-                    "executionPool": lease.pool,
-                    "executionWeight": lease.weight,
-                    "childPid": child_pid,
-                    "error": error.to_string(),
-                    "logs": logs,
-                }),
+                            "id": request.id,
+                            "status": status,
+                            "mode": request.mode.as_str(),
+                            "createdAtUtc": request.created_at_utc,
+                            "queuedAtUtc": queued_at_utc,
+                            "startedAtUtc": started_at_utc,
+                            "completedAtUtc": utc_now(),
+                            "runnerPid": std::process::id(),
+                "runnerProcessInstance": runner_process_instance(),
+                            "exitCode": process.and_then(|value| value.exit_code),
+                            "readOnly": request.read_only,
+                            "resourceClass": request.resource_class.as_str(),
+                            "runtimeMode": request.runtime_mode,
+                            "queueWaitMs": lease.queue_wait_ms,
+                            "executionSlot": lease.slot,
+                            "executionSlots": lease.slots,
+                            "executionPool": lease.pool,
+                            "executionWeight": lease.weight,
+                            "childPid": child_pid,
+                            "error": error.to_string(),
+                            "logs": logs,
+                        }),
             )
         }
     }
@@ -718,6 +745,8 @@ mod tests {
             orphan_stale: Duration::from_secs(5),
             retention: Duration::ZERO,
             max_wait: Duration::from_secs(1),
+            max_store_bytes: 1024 * 1024,
+            max_terminal_jobs: 100,
         });
         let state = HeartbeatState {
             store,
@@ -725,6 +754,7 @@ mod tests {
             runtime_mode: "host".to_owned(),
             status: Arc::new(RwLock::new("queued".to_owned())),
             child_pid: Arc::new(AtomicU32::new(0)),
+            child_process_instance: Arc::new(AtomicU64::new(0)),
         };
         tokio::time::timeout(Duration::from_secs(1), state.set_status("running"))
             .await

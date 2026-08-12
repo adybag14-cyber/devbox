@@ -22,7 +22,7 @@ struct PowerShellSpawnRequest {
     cwd: PathBuf,
     timeout: Duration,
     max_capture_chars: Option<usize>,
-    output_tx: Option<tokio::sync::mpsc::UnboundedSender<OutputChunk>>,
+    output_tx: Option<tokio::sync::mpsc::Sender<OutputChunk>>,
     pid_tx: Option<tokio::sync::mpsc::UnboundedSender<u32>>,
 }
 
@@ -206,8 +206,8 @@ impl RuntimeExecutor {
         let exit_code_text = read_text_file_or_empty(&exit_code_path).await;
         let stdout = windows_shell::clean_output(&stdout);
         let stderr = windows_shell::clean_output(&stderr);
-        emit_buffered_output(request.output_tx.as_ref(), OutputStream::Stdout, &stdout);
-        emit_buffered_output(request.output_tx.as_ref(), OutputStream::Stderr, &stderr);
+        emit_buffered_output(request.output_tx.as_ref(), OutputStream::Stdout, &stdout).await;
+        emit_buffered_output(request.output_tx.as_ref(), OutputStream::Stderr, &stderr).await;
         let Ok(exit_code) = exit_code_text.trim().parse::<i32>() else {
             return Err(RuntimeExecError::Process(ProcessError {
                 message: "The elevated PowerShell command did not report an exit code.".to_owned(),
@@ -399,8 +399,8 @@ async fn read_text_file_or_empty(path: &std::path::Path) -> String {
     tokio::fs::read_to_string(path).await.unwrap_or_default()
 }
 
-fn emit_buffered_output(
-    output_tx: Option<&tokio::sync::mpsc::UnboundedSender<OutputChunk>>,
+async fn emit_buffered_output(
+    output_tx: Option<&tokio::sync::mpsc::Sender<OutputChunk>>,
     stream: OutputStream,
     value: &str,
 ) {
@@ -410,10 +410,12 @@ fn emit_buffered_output(
     if value.is_empty() {
         return;
     }
-    let _ = output_tx.send(OutputChunk {
-        stream,
-        bytes: Arc::<[u8]>::from(value.as_bytes()),
-    });
+    let _ = output_tx
+        .send(OutputChunk {
+            stream,
+            bytes: Arc::<[u8]>::from(value.as_bytes()),
+        })
+        .await;
 }
 
 fn elapsed_ms(duration: Duration) -> u64 {

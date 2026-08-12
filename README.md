@@ -234,16 +234,17 @@ Important `.env` values:
 - `POWERSHELL_EXE` (optional Windows primary override; defaults to installed PowerShell 7)
 - `POWERSHELL_FALLBACK_EXE` (optional Windows fallback override; defaults to Windows PowerShell 5.1)
 - `HOST_SHELL`
-- `HOST_PROGRAM_ALLOWLIST`
+- `HOST_PROGRAM_ALLOWLIST` adds entries to the canonical host defaults; use `HOST_PROGRAM_ALLOWLIST_EXTRA` for explicit local additions, and set `HOST_PROGRAM_ALLOWLIST_REPLACE=true` only when intentionally replacing the canonical defaults
+  - Migration note: older deployments treated `HOST_PROGRAM_ALLOWLIST` as a full replacement. If you intentionally narrowed the defaults, set `HOST_PROGRAM_ALLOWLIST_REPLACE=true`; otherwise the configured entries are now merged with the canonical safe defaults.
 - `DEVBOX_PROGRAM_ALLOWLIST` controls the structured `devbox_run_program` fast path; in host mode the executable must also be allowed by `HOST_PROGRAM_ALLOWLIST`
 - `HOST_SEARCH_BACKEND=auto|rg|js` selects host search acceleration; `auto` prefers ripgrep
 - `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune the light/heavy execution pool
 - `MCP_WATCH_MAX_CONCURRENT` gives passive watchers such as `gh run watch` a separate pool; `MCP_EXEC_HEAVY_WEIGHT` controls how much execution capacity heavy build/browser jobs consume
-- `MCP_JOB_LOG_MAX_BYTES` and `MCP_JOB_LOG_ROTATIONS` bound detached-job stdout/stderr on disk; `MCP_JOB_HEARTBEAT_MS` and `MCP_JOB_ORPHAN_STALE_MS` control orphan detection; `MCP_JOB_RETENTION_HOURS` bounds persisted terminal-job history
+- `MCP_JOB_LOG_MAX_BYTES` and `MCP_JOB_LOG_ROTATIONS` bound detached-job stdout/stderr on disk; `MCP_JOB_HEARTBEAT_MS` and `MCP_JOB_ORPHAN_STALE_MS` control orphan detection; `MCP_JOB_RETENTION_HOURS` bounds persisted terminal-job history; `MCP_JOB_STORE_MAX_BYTES` and `MCP_JOB_STORE_MAX_TERMINAL_JOBS` apply global pressure limits that evict the oldest terminal jobs toward a low-water mark without deleting active jobs
 - `MCP_WAIT_MAX_SECONDS` bounds no-process waits; prefer `devbox_wait`, `devbox_wait_for_file`, or `devbox_job_status(wait_seconds=...)` over shell `sleep`/`Start-Sleep`
 - `SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS`, `SCREEN_CAPTURE_RETRIES`, and `SCREEN_CAPTURE_QUEUE_TIMEOUT_MS` control serialized fail-fast screenshot capture
 - `GUARDIAN_HOST_PRESSURE_SAMPLE_MS` controls diagnostic Windows CPU/memory/commit/pagefile sampling; it does not trigger repair by itself
-- `DEVBOX_VERSION_CACHE_MS` controls the short-lived `devbox_status` toolchain-version cache
+- `DEVBOX_VERSION_CACHE_MS` controls the toolchain-version cache; Rust refreshes it in a supervised background loop so `devbox_status` remains subprocess-free while normally returning fresh versions
 - `PUBLIC_BASE_URL` for public OAuth deployments
 - `ENABLE_GATEWAY_BRIDGE=true|false`
 - `GATEWAY_BRIDGE_ORIGINS=https://chatgpt.com,https://chat.openai.com`

@@ -5,6 +5,7 @@ import {
   buildHostShellArgs,
   detectPlatform,
   defaultHostProgramAllowlist,
+  mergeHostProgramAllowlist,
   resolveRuntimeMode,
   resolveHostShell,
 } from "../src/platform.js";
@@ -38,6 +39,26 @@ test("Windows host program allowlist includes direct search and HTTP tools", () 
   const allowlist = defaultHostProgramAllowlist(detectPlatform({}, "win32"));
   assert.equal(allowlist.includes("rg"), true);
   assert.equal(allowlist.includes("curl"), true);
+});
+
+test("configured host allowlist is additive unless replacement is explicit", () => {
+  const defaults = ["git", "rg", "curl"];
+  assert.deepEqual(
+    mergeHostProgramAllowlist({ defaults, configured: ["git", "custom"], extra: ["extra"] }),
+    ["git", "rg", "curl", "custom", "extra"],
+  );
+  assert.deepEqual(
+    mergeHostProgramAllowlist({ defaults, configured: ["custom"], replace: true }),
+    ["custom"],
+  );
+  assert.deepEqual(
+    mergeHostProgramAllowlist({ defaults, configured: [], replace: true }),
+    defaults,
+  );
+  assert.deepEqual(
+    mergeHostProgramAllowlist({ defaults, configured: [" Git ", "CURL", "git"], extra: [" Curl "] }),
+    ["git", "rg", "curl"],
+  );
 });
 
 test("resolveHostShell prefers SHELL on posix and PowerShell on Windows", () => {

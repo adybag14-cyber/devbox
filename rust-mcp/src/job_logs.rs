@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio::{
     fs::{self, OpenOptions},
     io::AsyncWriteExt,
-    sync::mpsc::{self, UnboundedSender},
+    sync::mpsc::{self, Sender},
     task::JoinHandle,
 };
 
@@ -32,7 +32,7 @@ pub struct JobLogSnapshots {
 }
 
 pub struct JobLogPump {
-    tx: Option<UnboundedSender<OutputChunk>>,
+    tx: Option<Sender<OutputChunk>>,
     task: JoinHandle<Result<JobLogSnapshots>>,
 }
 
@@ -49,7 +49,7 @@ impl JobLogPump {
     ) -> Result<Self> {
         let stdout = RotatingSink::open(stdout_path, max_bytes, rotations).await?;
         let stderr = RotatingSink::open(stderr_path, max_bytes, rotations).await?;
-        let (tx, mut rx) = mpsc::unbounded_channel::<OutputChunk>();
+        let (tx, mut rx) = mpsc::channel::<OutputChunk>(256);
         let task = tokio::spawn(async move {
             let mut stdout = stdout;
             let mut stderr = stderr;
@@ -75,7 +75,7 @@ impl JobLogPump {
     }
 
     #[must_use]
-    pub fn sender(&self) -> Option<UnboundedSender<OutputChunk>> {
+    pub fn sender(&self) -> Option<Sender<OutputChunk>> {
         self.tx.clone()
     }
 
@@ -250,12 +250,14 @@ mod tests {
                 stream: OutputStream::Stdout,
                 bytes: Arc::from(vec![b'a'; 9000]),
             })
+            .await
             .unwrap();
         sender
             .send(OutputChunk {
                 stream: OutputStream::Stderr,
                 bytes: Arc::from(b"warning".as_slice()),
             })
+            .await
             .unwrap();
         drop(sender);
         let snapshot = pump.finish().await.unwrap();
@@ -289,6 +291,7 @@ mod tests {
                 stream: OutputStream::Stdout,
                 bytes: Arc::from(vec![b'b'; 5000]),
             })
+            .await
             .unwrap();
         drop(sender);
         let snapshot = pump.finish().await.unwrap();

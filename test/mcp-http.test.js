@@ -88,6 +88,7 @@ const startServer = async (t, {
   maxCommandOutputChars = "65536",
   execMaxConcurrent = "16",
   execReservedInteractive = "1",
+  dockerCommandTimeoutMs = "120000",
 } = {}) => {
   const port = await getFreePort();
   const executionSlotRoot = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-mcp-slots-"));
@@ -113,6 +114,7 @@ const startServer = async (t, {
       MCP_JOBS_ROOT: jobsRoot,
       MCP_EXEC_MAX_CONCURRENT: execMaxConcurrent,
       MCP_EXEC_RESERVED_INTERACTIVE: execReservedInteractive,
+      DOCKER_COMMAND_TIMEOUT_MS: dockerCommandTimeoutMs,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -398,6 +400,21 @@ const assertSseProbeResponse = async (response, errorMessage) => {
 
   await reader?.cancel();
 };
+
+test("GET /readyz reports operational readiness without exposing detailed diagnostics", async (t) => {
+  const { port } = await startServer(t);
+  const response = await fetch(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(5000) });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.deepEqual(body, { ok: true });
+});
+
+test("GET /readyz rejects a zero Docker command timeout without leaking error details", async (t) => {
+  const { port } = await startServer(t, { dockerCommandTimeoutMs: "0" });
+  const response = await fetch(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(5000) });
+  assert.equal(response.status, 503);
+  assert.deepEqual(await response.json(), { ok: false });
+});
 
 test("GET / returns an SSE content type for stream probes", async (t) => {
   const { port, stdout, stderr } = await startServer(t);

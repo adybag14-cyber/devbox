@@ -25,7 +25,15 @@ $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 $supervisorScript = Join-Path $ProjectRoot 'scripts\devbox-guardian.mjs'
 $guardianDir = Join-Path $ProjectRoot 'run\guardian'
 $guardianLogPath = Join-Path $guardianDir 'guardian.log'
-$mutexName = 'Global\ChatGptDevboxGuardian'
+function Get-GuardianMutexName {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Root.TrimEnd('\').ToLowerInvariant())
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+    $suffix = ([BitConverter]::ToString($hash).Replace('-', '').Substring(0, 16))
+    return "Global\ChatGptDevboxGuardian-$suffix"
+}
+$mutexName = Get-GuardianMutexName -Root $ProjectRoot
 
 if (-not (Test-Path $guardianDir)) {
     New-Item -ItemType Directory -Path $guardianDir | Out-Null

@@ -17,6 +17,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+const MAX_QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const CLAIM_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 const CORRUPT_SLOT_STALE: Duration = Duration::from_secs(5 * 60);
 const CORRUPT_QUEUE_TICKET_STALE: Duration = Duration::from_secs(5);
@@ -227,6 +228,7 @@ struct Metrics {
 struct SlotOwner {
     token: String,
     pid: u32,
+    process_instance: Option<u64>,
     kind: String,
     pool: String,
     resource_class: String,
@@ -499,7 +501,7 @@ impl ExecutionScheduler {
             }
             if !queue_ticket_is_head(&self.config.root, ticket).await? {
                 cancellable_sleep(
-                    CLAIM_RETRY_INTERVAL.min(timeout.saturating_sub(elapsed)),
+                    queue_poll_interval(elapsed).min(timeout.saturating_sub(elapsed)),
                     cancellation,
                 )
                 .await?;
@@ -521,7 +523,7 @@ impl ExecutionScheduler {
                 return Err(timeout_error(request, plan, elapsed, false).into());
             }
             cancellable_sleep(
-                POLL_INTERVAL.min(timeout.saturating_sub(elapsed)),
+                queue_poll_interval(elapsed).min(timeout.saturating_sub(elapsed)),
                 cancellation,
             )
             .await?;
@@ -558,6 +560,7 @@ impl ExecutionScheduler {
             let slot_owner = SlotOwner {
                 token: token.clone(),
                 pid: std::process::id(),
+                process_instance: current_process_instance(),
                 kind: request.kind.as_str().to_owned(),
                 pool: plan.pool.clone(),
                 resource_class: plan.resource_class.as_str().to_owned(),
@@ -619,6 +622,7 @@ impl ExecutionScheduler {
             let owner = json!({
                 "token": token,
                 "pid": std::process::id(),
+                "processInstance": current_process_instance(),
                 "pool": pool,
                 "acquiredAtUtc": utc_now(),
             });
@@ -770,6 +774,7 @@ async fn create_queue_ticket(
     let value = json!({
         "token": token,
         "pid": std::process::id(),
+        "processInstance": current_process_instance(),
         "class": class,
         "kind": request.kind.as_str(),
         "resourceClass": request.resource_class.as_str(),
@@ -846,13 +851,7 @@ async fn queue_ticket_is_head(root: &Path, ticket: &QueueTicket) -> Result<bool>
             remove_slot_file(&path).await.ok();
             continue;
         }
-        let alive = owner
-            .as_ref()
-            .and_then(|value| value.get("pid"))
-            .and_then(Value::as_u64)
-            .and_then(|value| u32::try_from(value).ok())
-            .is_some_and(process_alive_now);
-        if alive {
+        if owner.as_ref().is_some_and(owner_process_alive) {
             return Ok(false);
         }
         // Dead queue owners must never permanently block later tickets.
@@ -860,11 +859,50 @@ async fn queue_ticket_is_head(root: &Path, ticket: &QueueTicket) -> Result<bool>
     }
 }
 
-fn process_alive_now(pid: u32) -> bool {
+fn queue_poll_interval(elapsed: Duration) -> Duration {
+    if elapsed < Duration::from_secs(1) {
+        POLL_INTERVAL
+    } else if elapsed < Duration::from_secs(5) {
+        Duration::from_millis(100)
+    } else if elapsed < Duration::from_secs(30) {
+        Duration::from_millis(250)
+    } else {
+        MAX_QUEUE_POLL_INTERVAL
+    }
+}
+
+fn current_process_instance() -> Option<u64> {
     #[cfg(windows)]
     {
-        crate::windows_process::process_alive(pid)
+        crate::windows_process::current_process_instance()
     }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
+fn owner_process_alive(owner: &Value) -> bool {
+    let Some(pid) = owner
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|v| u32::try_from(v).ok())
+    else {
+        return false;
+    };
+    #[cfg(windows)]
+    {
+        let instance = owner.get("processInstance").and_then(Value::as_u64);
+        crate::windows_process::process_matches_instance(pid, instance)
+    }
+    #[cfg(not(windows))]
+    {
+        process_alive_now(pid)
+    }
+}
+
+#[cfg(not(windows))]
+fn process_alive_now(pid: u32) -> bool {
     #[cfg(unix)]
     {
         use nix::{sys::signal::kill, unistd::Pid};
@@ -1042,13 +1080,7 @@ async fn remove_stale_slot(path: &Path) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
         Err(error) => return Err(error.into()),
     };
-    if let Some(pid) = owner
-        .as_ref()
-        .and_then(|value| value.get("pid"))
-        .and_then(Value::as_u64)
-        .and_then(|value| u32::try_from(value).ok())
-        && process_alive(pid).await
-    {
+    if owner.as_ref().is_some_and(owner_process_alive) {
         return Ok(false);
     }
     if owner.is_none() {
@@ -1188,14 +1220,7 @@ async fn read_pool_entries(root: &Path, pool: &str) -> Result<Vec<Value>> {
         else {
             continue;
         };
-        let alive = match value
-            .get("pid")
-            .and_then(Value::as_u64)
-            .and_then(|pid| u32::try_from(pid).ok())
-        {
-            Some(pid) => process_alive(pid).await,
-            None => false,
-        };
+        let alive = owner_process_alive(&value);
         if !alive {
             fs::remove_file(path).await.ok();
             continue;
@@ -1551,7 +1576,14 @@ mod tests {
     #[tokio::test]
     async fn fifo_ticket_prevents_later_light_job_from_overtaking_heavy_waiter() {
         let temp = tempfile::tempdir().unwrap();
-        let scheduler = scheduler(temp.path(), 2, 0, 1);
+        let scheduler = ExecutionScheduler::new(SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 2,
+            reserved_interactive: 0,
+            watch_max_concurrent: 1,
+            queue_timeout: Duration::from_secs(2),
+            heavy_weight: 2,
+        });
         let mut blocker = scheduler
             .acquire(
                 AcquireRequest::background("blocker", ResourceClass::Light, 1),

@@ -401,7 +401,7 @@ fn temporary_capture_dir() -> Result<TempDir> {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    crate::hex::lower_hex(Sha256::digest(bytes))
 }
 
 fn duration_ms(duration: Duration) -> u64 {

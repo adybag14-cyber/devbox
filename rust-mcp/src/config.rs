@@ -198,6 +198,8 @@ pub struct Config {
     pub job_heartbeat_ms: u64,
     pub job_orphan_stale_ms: u64,
     pub job_retention_hours: u64,
+    pub job_store_max_bytes: u64,
+    pub job_store_max_terminal_jobs: usize,
     pub screen_capture_attempt_timeout_ms: u64,
     pub screen_capture_retries: usize,
     pub screen_capture_queue_timeout_ms: u64,
@@ -211,6 +213,12 @@ struct OauthConfiguration {
     cloudflare_team_domain: Option<String>,
     cloudflare_aud: String,
     cloudflare_jwks_url: Option<String>,
+}
+
+struct ScreenCaptureConfiguration {
+    attempt_timeout_ms: u64,
+    retries: usize,
+    queue_timeout_ms: u64,
 }
 
 struct ProgramConfiguration {
@@ -268,6 +276,7 @@ impl Config {
             .unwrap_or_else(|| project_root.join("run").join("execution-slots"));
         let jobs_root =
             env_path("MCP_JOBS_ROOT").unwrap_or_else(|| project_root.join("run").join("jobs"));
+        let screen_capture = load_screen_capture_configuration();
         Ok(Self {
             project_root: project_root.clone(),
             host: env::var("HOST").unwrap_or_else(|_| "0.0.0.0".to_owned()),
@@ -317,15 +326,11 @@ impl Config {
             job_heartbeat_ms: parse_env("MCP_JOB_HEARTBEAT_MS", 5_000_u64),
             job_orphan_stale_ms: parse_env("MCP_JOB_ORPHAN_STALE_MS", 15_000_u64),
             job_retention_hours: parse_env("MCP_JOB_RETENTION_HOURS", 168_u64),
-            screen_capture_attempt_timeout_ms: parse_env(
-                "SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS",
-                8_000_u64,
-            ),
-            screen_capture_retries: parse_env("SCREEN_CAPTURE_RETRIES", 1_usize),
-            screen_capture_queue_timeout_ms: parse_env(
-                "SCREEN_CAPTURE_QUEUE_TIMEOUT_MS",
-                5_000_u64,
-            ),
+            job_store_max_bytes: parse_env("MCP_JOB_STORE_MAX_BYTES", 2_u64 * 1024 * 1024 * 1024),
+            job_store_max_terminal_jobs: parse_env("MCP_JOB_STORE_MAX_TERMINAL_JOBS", 5_000_usize),
+            screen_capture_attempt_timeout_ms: screen_capture.attempt_timeout_ms,
+            screen_capture_retries: screen_capture.retries,
+            screen_capture_queue_timeout_ms: screen_capture.queue_timeout_ms,
             max_wait_seconds: f64::from(parse_env("MCP_WAIT_MAX_SECONDS", 300_u16).max(1)),
             command_output_limit_chars: parse_command_output_limit(),
             max_mcp_transfer_chars: parse_transfer_limit(),
@@ -411,6 +416,14 @@ fn load_devbox_default_user(runtime_mode: RuntimeMode) -> String {
         })
 }
 
+fn load_screen_capture_configuration() -> ScreenCaptureConfiguration {
+    ScreenCaptureConfiguration {
+        attempt_timeout_ms: parse_env("SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS", 8_000_u64),
+        retries: parse_env("SCREEN_CAPTURE_RETRIES", 1_usize),
+        queue_timeout_ms: parse_env("SCREEN_CAPTURE_QUEUE_TIMEOUT_MS", 5_000_u64),
+    }
+}
+
 fn load_program_configuration(
     platform: &Platform,
     runtime_mode: RuntimeMode,
@@ -431,10 +444,18 @@ fn load_program_configuration(
                 default_host_shell(platform)
             }
         });
-    let host_program_allowlist = parse_csv_env(
-        "HOST_PROGRAM_ALLOWLIST",
-        default_host_program_allowlist(platform),
-    );
+    let host_defaults = default_host_program_allowlist(platform);
+    let host_configured = parse_csv_env("HOST_PROGRAM_ALLOWLIST", Vec::new());
+    let host_extra = parse_csv_env("HOST_PROGRAM_ALLOWLIST_EXTRA", Vec::new());
+    let host_program_allowlist = if parse_bool_env("HOST_PROGRAM_ALLOWLIST_REPLACE", false) {
+        if host_configured.is_empty() {
+            host_defaults
+        } else {
+            merge_program_allowlists(Vec::new(), host_configured)
+        }
+    } else {
+        merge_program_allowlists(host_defaults, host_configured.into_iter().chain(host_extra))
+    };
     let devbox_program_allowlist = parse_csv_env(
         "DEVBOX_PROGRAM_ALLOWLIST",
         if runtime_mode == RuntimeMode::Host {
@@ -510,6 +531,19 @@ fn default_power_shell_fallback(platform: &Platform) -> String {
 fn usable_executable_candidate(candidate: &str) -> bool {
     let candidate = candidate.trim();
     !candidate.is_empty() && (!Path::new(candidate).is_absolute() || Path::new(candidate).is_file())
+}
+
+fn merge_program_allowlists<I>(mut base: Vec<String>, extra: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    for value in extra {
+        let value = value.trim().to_ascii_lowercase();
+        if !value.is_empty() && !base.iter().any(|existing| existing == &value) {
+            base.push(value);
+        }
+    }
+    base
 }
 
 fn default_host_program_allowlist(platform: &Platform) -> Vec<String> {
@@ -829,8 +863,97 @@ fn parse_bool_env(name: &str, fallback: bool) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn test_config(root: &Path) -> Config {
+    Config {
+        project_root: root.to_path_buf(),
+        host: "127.0.0.1".to_owned(),
+        port: 0,
+        auth_mode: AuthMode::None,
+        runtime_mode: RuntimeMode::Host,
+        platform: Platform::detect(),
+        public_base_url: None,
+        gateway_bridge: GatewayBridgeConfig {
+            enabled: false,
+            origins: vec![
+                "https://chatgpt.com".to_owned(),
+                "https://chat.openai.com".to_owned(),
+            ],
+        },
+        oauth_state_file_path: root.join("oauth-state.json"),
+        cloudflare_access_team_domain: None,
+        cloudflare_access_aud: String::new(),
+        cloudflare_access_jwks_url: None,
+        host_workspace_path: root.to_path_buf(),
+        devbox_workspace_path: root.to_path_buf(),
+        devbox_container_name: "chatgpt-devbox-runtime".to_owned(),
+        devbox_image_name: "chatgpt-devbox-runtime:local".to_owned(),
+        devbox_tmp_volume_name: "chatgpt-devbox-runtime-tmp".to_owned(),
+        devbox_retired_container_grace_ms: 300_000,
+        devbox_auto_start: true,
+        devbox_version_cache_ms: 120_000,
+        docker_command_timeout_ms: 120_000,
+        devbox_default_user: String::new(),
+        host_default_workdir: root.to_path_buf(),
+        host_shell: if cfg!(windows) { "cmd.exe" } else { "/bin/sh" }.to_owned(),
+        power_shell_exe: if cfg!(windows) { "pwsh.exe" } else { "" }.to_owned(),
+        power_shell_fallback_exe: if cfg!(windows) { "powershell.exe" } else { "" }.to_owned(),
+        node_exe: "node".to_owned(),
+        host_program_allowlist: Vec::new(),
+        devbox_program_allowlist: Vec::new(),
+        host_search_backend: HostSearchBackend::Auto,
+        host_exec_enabled: true,
+        allow_windows_host_exec_uac: false,
+        execution_slot_root: root.join("execution-slots"),
+        jobs_root: root.join("jobs"),
+        mcp_performance_state_path: root.join("mcp-performance.json"),
+        usage_log: UsageLogConfig {
+            max_bytes: 16 * 1024 * 1024,
+            rotations: 3,
+        },
+        mcp_json_body_limit_bytes: 16 * 1024 * 1024,
+        exec_max_concurrent: 6,
+        exec_reserved_interactive: 1,
+        exec_queue_timeout_ms: 15_000,
+        background_queue_timeout_ms: 300_000,
+        watch_max_concurrent: 4,
+        exec_heavy_weight: 2,
+        job_log_max_bytes: 32 * 1024 * 1024,
+        job_log_rotations: 2,
+        job_heartbeat_ms: 5_000,
+        job_orphan_stale_ms: 15_000,
+        job_retention_hours: 168,
+        job_store_max_bytes: 2 * 1024 * 1024 * 1024,
+        job_store_max_terminal_jobs: 5_000,
+        screen_capture_attempt_timeout_ms: 8_000,
+        screen_capture_retries: 1,
+        screen_capture_queue_timeout_ms: 5_000,
+        max_wait_seconds: 300.0,
+        command_output_limit_chars: 65_536,
+        max_mcp_transfer_chars: 4_000_000,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_allowlist_merge_preserves_defaults_and_deduplicates_additions() {
+        let merged = merge_program_allowlists(
+            vec!["git".to_owned(), "rg".to_owned(), "curl".to_owned()],
+            vec!["git".to_owned(), "custom".to_owned(), "CUSTOM".to_owned()],
+        );
+        assert_eq!(merged, vec!["git", "rg", "curl", "custom"]);
+    }
+
+    #[test]
+    fn host_allowlist_replacement_normalizes_case_and_whitespace() {
+        let replaced = merge_program_allowlists(
+            Vec::new(),
+            vec![" Git ".to_owned(), "CURL".to_owned(), "git".to_owned()],
+        );
+        assert_eq!(replaced, vec!["git", "curl"]);
+    }
 
     #[test]
     fn host_search_backend_rejects_unknown_values() {

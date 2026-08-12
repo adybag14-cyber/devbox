@@ -23,10 +23,10 @@
     "usage:summary": "node scripts/summarize-mcp-telemetry.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.28.0",
-    "express": "5.1.0",
-    "jose": "^6.1.0",
-    "zod": "4.1.11"
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "express": "5.2.1",
+    "jose": "^6.2.8",
+    "zod": "4.4.3"
   },
   "engines": {
     "node": ">=18"

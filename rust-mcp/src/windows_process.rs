@@ -9,8 +9,11 @@ use std::{
 
 use serde_json::{Value, json};
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, ERROR_ACCESS_DENIED, GetLastError, WAIT_TIMEOUT},
-    System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject},
+    Foundation::{CloseHandle, ERROR_ACCESS_DENIED, FILETIME, GetLastError, WAIT_TIMEOUT},
+    System::Threading::{
+        GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+        WaitForSingleObject,
+    },
 };
 
 static PROBE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -42,6 +45,50 @@ pub fn process_alive(pid: u32) -> bool {
     alive
 }
 
+/// Stable process-instance fingerprint based on the Win32 creation FILETIME.
+/// A PID that has been recycled will have a different fingerprint.
+#[must_use]
+pub fn process_instance(pid: u32) -> Option<u64> {
+    if pid == 0 {
+        return None;
+    }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut created: FILETIME = std::mem::zeroed();
+        let mut exited: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(
+            handle,
+            &raw mut created,
+            &raw mut exited,
+            &raw mut kernel,
+            &raw mut user,
+        ) != 0;
+        let _ = CloseHandle(handle);
+        ok.then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+}
+
+#[must_use]
+pub fn current_process_instance() -> Option<u64> {
+    process_instance(std::process::id())
+}
+
+#[must_use]
+pub fn process_matches_instance(pid: u32, expected: Option<u64>) -> bool {
+    if !process_alive(pid) {
+        return false;
+    }
+    match (expected, process_instance(pid)) {
+        (Some(expected), Some(actual)) => expected == actual,
+        _ => true,
+    }
+}
+
 #[must_use]
 pub fn metrics_snapshot() -> Value {
     let count = PROBE_COUNT.load(Ordering::Relaxed);
@@ -55,4 +102,22 @@ pub fn metrics_snapshot() -> Value {
         "maxMs": maximum.as_secs_f64() * 1_000.0,
         "backend": "win32-openprocess",
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_process_matching_uses_instance_only_when_both_are_known() {
+        let pid = std::process::id();
+        assert!(process_matches_instance(pid, None));
+        if let Some(instance) = process_instance(pid) {
+            assert!(process_matches_instance(pid, Some(instance)));
+            assert!(!process_matches_instance(
+                pid,
+                Some(instance.wrapping_add(1))
+            ));
+        }
+    }
 }

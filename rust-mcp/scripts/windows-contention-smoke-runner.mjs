@@ -33,8 +33,8 @@ const waitForHealth = async (url) => {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(new URL("healthz", url), { signal: AbortSignal.timeout(1_000) });
-      if (response.ok && await response.text() === "ok") return;
+      const response = await fetch(new URL("readyz", url), { signal: AbortSignal.timeout(1_000) });
+      if (response.ok && (await response.json()).ok === true) return;
     } catch {}
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
@@ -106,9 +106,9 @@ try {
     while (!stopProbes) {
       const started = performance.now();
       try {
-        const response = await fetch(new URL("healthz", baseUrl), { signal: AbortSignal.timeout(1_500) });
+        const response = await fetch(new URL("readyz", baseUrl), { signal: AbortSignal.timeout(1_500) });
         assert.equal(response.status, 200);
-        assert.equal(await response.text(), "ok");
+        assert.equal((await response.json()).ok, true);
         probeSamples.push(performance.now() - started);
       } catch (error) {
         probeSamples.push(Number.POSITIVE_INFINITY);

@@ -7,6 +7,7 @@ on:
     paths:
       - "src/**"
       - "rust-mcp/**"
+      - "rust-toolchain.toml"
       - "bin/**"
       - "scripts/**"
       - "bootstrap/**"
@@ -36,11 +37,11 @@ jobs:
           cache: npm
       - name: Install JavaScript dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Select Rust 1.97.1
+      - name: Select Rust 1.91.1
         shell: pwsh
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
+          rustup toolchain install 1.91.1 --profile minimal
+          rustup default 1.91.1
           rustc --version
           cargo --version
       - name: Validate native Windows launcher, Guardian tasks and Rust MCP lifecycle
@@ -67,10 +68,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - name: Select Rust 1.97.1
+      - name: Select Rust 1.91.1
         run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
+          rustup toolchain install 1.91.1 --profile minimal
+          rustup default 1.91.1
           rustc --version
           cargo --version
       - name: Validate native macOS runtime and MCP bridge

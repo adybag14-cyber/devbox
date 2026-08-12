@@ -18,6 +18,7 @@ use crate::{execution::process_alive, process::terminate_process_tree};
 
 const MAX_LOG_READ_CHARS: usize = 100_000;
 const CHILD_IDENTITY_MAX_AGE: Duration = Duration::from_secs(60);
+const MAINTENANCE_INDEX_REFRESH: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Debug, Clone)]
 pub struct JobStoreConfig {
@@ -27,6 +28,8 @@ pub struct JobStoreConfig {
     pub orphan_stale: Duration,
     pub retention: Duration,
     pub max_wait: Duration,
+    pub max_store_bytes: u64,
+    pub max_terminal_jobs: usize,
 }
 
 impl JobStoreConfig {
@@ -67,6 +70,16 @@ pub struct ReconcileSummary {
     pub compacted_logs: u64,
     pub deleted: u64,
     pub errors: u64,
+    #[serde(rename = "cycleCompleted")]
+    pub cycle_completed: bool,
+    #[serde(rename = "storeBytes")]
+    pub store_bytes: u64,
+    #[serde(rename = "terminalRetained")]
+    pub terminal_retained: u64,
+    #[serde(rename = "quotaDeleted")]
+    pub quota_deleted: u64,
+    #[serde(rename = "quotaPressure")]
+    pub quota_pressure: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -112,10 +125,18 @@ pub struct LegacyCompaction {
     pub previous_bytes: Option<u64>,
 }
 
+#[derive(Debug, Default)]
+struct MaintenanceIndex {
+    ids: Vec<String>,
+    cursor: usize,
+    initialized: bool,
+    refreshed_at: Option<SystemTime>,
+}
+
 #[derive(Debug, Clone)]
 pub struct JobStore {
     config: JobStoreConfig,
-    maintenance_cursor: Arc<Mutex<Option<String>>>,
+    maintenance_index: Arc<Mutex<MaintenanceIndex>>,
 }
 
 impl JobStore {
@@ -123,7 +144,7 @@ impl JobStore {
     pub fn new(config: JobStoreConfig) -> Self {
         Self {
             config: config.normalized(),
-            maintenance_cursor: Arc::new(Mutex::new(None)),
+            maintenance_index: Arc::new(Mutex::new(MaintenanceIndex::default())),
         }
     }
 
@@ -156,6 +177,7 @@ impl JobStore {
             fs::remove_dir_all(&paths.dir).await.ok();
             return Err(error);
         }
+        self.note_job_created(job_id);
         Ok(paths)
     }
 
@@ -257,7 +279,7 @@ impl JobStore {
         // back to an OS liveness check once the heartbeat is stale.
         let runner_alive = match (runner_pid, heartbeat_stale) {
             (Some(_), false) => true,
-            (Some(pid), true) => process_alive(pid).await,
+            (Some(_), true) => runner_owner_alive(&object).await,
             (None, _) => false,
         };
         if !runner_alive && heartbeat_stale {
@@ -275,9 +297,10 @@ impl JobStore {
         mut object: Map<String, Value>,
     ) -> Result<Value> {
         let runner_pid = u32_field(&object, "runnerPid");
-        let runner_alive = match runner_pid {
-            Some(pid) => process_alive(pid).await,
-            None => false,
+        let runner_alive = if runner_pid.is_some() {
+            runner_owner_alive(&object).await
+        } else {
+            false
         };
         object.insert("status".to_owned(), json!("cancelled"));
         object.insert("cancelRequested".to_owned(), json!(true));
@@ -304,6 +327,11 @@ impl JobStore {
             .and_then(Value::as_u64)
             .and_then(|pid| u32::try_from(pid).ok())
             .or_else(|| u32_field(&object, "childPid"));
+        let child_process_instance = heartbeat
+            .as_ref()
+            .and_then(|value| value.get("childProcessInstance"))
+            .and_then(Value::as_u64)
+            .or_else(|| object.get("childProcessInstance").and_then(Value::as_u64));
         let runtime_mode = string_field(&object, "runtimeMode")
             .map(str::to_owned)
             .or_else(|| {
@@ -314,7 +342,13 @@ impl JobStore {
                     .map(str::to_owned)
             })
             .unwrap_or_else(|| "host".to_owned());
-        let cleanup = cleanup_orphan_child(child_pid, heartbeat_age, &runtime_mode).await;
+        let cleanup = cleanup_orphan_child(
+            child_pid,
+            child_process_instance,
+            heartbeat_age,
+            &runtime_mode,
+        )
+        .await;
 
         object.insert("status".to_owned(), json!("interrupted"));
         if object.get("completedAtUtc").is_none_or(Value::is_null) {
@@ -353,30 +387,58 @@ impl JobStore {
     /// Reconcile every known job, compact one-time legacy oversized logs, and apply retention.
     ///
     /// # Errors
-    /// Returns an error only when the jobs root itself cannot be created/read. Per-job failures are counted.
+    /// Returns an error if the jobs root or indexed job state cannot be read or maintained.
     pub async fn reconcile_all(&self) -> Result<ReconcileSummary> {
-        *self
-            .maintenance_cursor
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
-        let result = self.reconcile_maintenance_batch(usize::MAX).await;
-        *self
-            .maintenance_cursor
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = None;
-        result
+        self.refresh_maintenance_index().await?;
+        self.reconcile_maintenance_batch(usize::MAX).await
     }
 
-    /// Reconcile a bounded slice of known jobs so maintenance cost cannot grow linearly
-    /// with the entire retained history on every minute tick.
-    ///
-    /// The directory names are cheap to enumerate, while status/log inspection is capped
-    /// to `max_jobs`. The cursor is shared by all clones in this MCP process so successive
-    /// passes advance through the retained set instead of repeatedly starting at job zero.
+    /// Reconcile a bounded slice from an in-memory job index. Directory discovery is performed
+    /// once on startup and then at most hourly; jobs created by this MCP are inserted directly.
     ///
     /// # Errors
-    /// Returns an error when the jobs root cannot be enumerated. Per-job failures are counted.
+    /// Returns an error if the jobs root/index cannot be read or quota cleanup fails.
     pub async fn reconcile_maintenance_batch(&self, max_jobs: usize) -> Result<ReconcileSummary> {
+        fs::create_dir_all(&self.config.root).await?;
+        if self.maintenance_index_needs_refresh() {
+            self.refresh_maintenance_index().await?;
+        }
+        let (discovered, ids, cycle_completed) = self.next_maintenance_slice(max_jobs);
+        let mut summary = ReconcileSummary {
+            discovered: u64::try_from(discovered).unwrap_or(u64::MAX),
+            scanned: u64::try_from(ids.len()).unwrap_or(u64::MAX),
+            batch_limited: !cycle_completed,
+            cycle_completed,
+            ..ReconcileSummary::default()
+        };
+        for id in &ids {
+            if self
+                .reconcile_one_for_maintenance(id, &mut summary)
+                .await
+                .is_err()
+            {
+                summary.errors = summary.errors.saturating_add(1);
+            }
+        }
+        if cycle_completed {
+            self.apply_store_quota(&mut summary).await?;
+        }
+        Ok(summary)
+    }
+
+    fn maintenance_index_needs_refresh(&self) -> bool {
+        let index = self
+            .maintenance_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        !index.initialized
+            || index
+                .refreshed_at
+                .and_then(|at| at.elapsed().ok())
+                .is_none_or(|age| age >= MAINTENANCE_INDEX_REFRESH)
+    }
+
+    async fn refresh_maintenance_index(&self) -> Result<()> {
         fs::create_dir_all(&self.config.root).await?;
         let mut reader = fs::read_dir(&self.config.root).await?;
         let mut ids = Vec::new();
@@ -387,46 +449,172 @@ impl JobStore {
             }
         }
         ids.sort_unstable();
-        let mut summary = ReconcileSummary {
-            discovered: u64::try_from(ids.len()).unwrap_or(u64::MAX),
-            ..ReconcileSummary::default()
-        };
-        if ids.is_empty() || max_jobs == 0 {
-            return Ok(summary);
-        }
-
-        let cursor = self
-            .maintenance_cursor
+        let mut index = self
+            .maintenance_index
             .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone();
-        let start = cursor
-            .as_deref()
-            .and_then(|value| ids.iter().position(|id| id.as_str() > value))
-            .unwrap_or(0);
-        let limit = max_jobs.min(ids.len());
-        let end = start.saturating_add(limit).min(ids.len());
-        for id in &ids[start..end] {
-            summary.scanned = summary.scanned.saturating_add(1);
-            if self
-                .reconcile_one_for_maintenance(id, &mut summary)
-                .await
-                .is_err()
-            {
-                summary.errors = summary.errors.saturating_add(1);
+            .unwrap_or_else(PoisonError::into_inner);
+        index.ids = ids;
+        index.cursor = 0;
+        index.initialized = true;
+        index.refreshed_at = Some(SystemTime::now());
+        Ok(())
+    }
+
+    fn next_maintenance_slice(&self, max_jobs: usize) -> (usize, Vec<String>, bool) {
+        let mut index = self
+            .maintenance_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let discovered = index.ids.len();
+        if discovered == 0 || max_jobs == 0 {
+            return (discovered, Vec::new(), discovered == 0);
+        }
+        if index.cursor >= discovered {
+            index.cursor = 0;
+        }
+        let start = index.cursor;
+        let end = start
+            .saturating_add(max_jobs.min(discovered))
+            .min(discovered);
+        let ids = index.ids[start..end].to_vec();
+        let completed = end >= discovered;
+        index.cursor = if completed { 0 } else { end };
+        (discovered, ids, completed)
+    }
+
+    fn note_job_created(&self, job_id: &str) {
+        let mut index = self
+            .maintenance_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !index.initialized {
+            return;
+        }
+        match index
+            .ids
+            .binary_search_by(|value| value.as_str().cmp(job_id))
+        {
+            Ok(_) => {}
+            Err(at) => index.ids.insert(at, job_id.to_owned()),
+        }
+    }
+
+    fn note_job_deleted(&self, job_id: &str) {
+        let mut index = self
+            .maintenance_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Ok(at) = index
+            .ids
+            .binary_search_by(|value| value.as_str().cmp(job_id))
+        {
+            index.ids.remove(at);
+            if at < index.cursor {
+                index.cursor = index.cursor.saturating_sub(1);
             }
         }
-        summary.batch_limited = end < ids.len();
-        let next_cursor = if end >= ids.len() {
-            None
-        } else {
-            ids.get(end.saturating_sub(1)).cloned()
-        };
-        *self
-            .maintenance_cursor
+        index.cursor = index.cursor.min(index.ids.len());
+    }
+
+    fn note_jobs_deleted(&self, deleted: &std::collections::HashSet<String>) {
+        if deleted.is_empty() {
+            return;
+        }
+        let mut index = self
+            .maintenance_index
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = next_cursor;
-        Ok(summary)
+            .unwrap_or_else(PoisonError::into_inner);
+        index.ids.retain(|id| !deleted.contains(id));
+        index.cursor = index.cursor.min(index.ids.len());
+    }
+
+    async fn apply_store_quota(&self, summary: &mut ReconcileSummary) -> Result<()> {
+        use std::collections::HashSet;
+        let ids = {
+            self.maintenance_index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .ids
+                .clone()
+        };
+        let mut total_bytes = 0_u64;
+        let mut terminal_bytes = 0_u64;
+        let mut terminal = Vec::<(OffsetDateTime, String, u64)>::new();
+        for id in ids {
+            let paths = self.paths(&id)?;
+            let bytes = shallow_directory_bytes(&paths.dir).await.unwrap_or(0);
+            total_bytes = total_bytes.saturating_add(bytes);
+            let Ok(status) = read_json(&paths.status).await else {
+                continue;
+            };
+            if is_terminal(status_name(&status)) {
+                terminal_bytes = terminal_bytes.saturating_add(bytes);
+                let timestamp = status
+                    .get("completedAtUtc")
+                    .and_then(Value::as_str)
+                    .and_then(parse_utc)
+                    .or_else(|| {
+                        status
+                            .get("createdAtUtc")
+                            .and_then(Value::as_str)
+                            .and_then(parse_utc)
+                    })
+                    .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+                terminal.push((timestamp, id, bytes));
+            }
+        }
+        summary.store_bytes = total_bytes;
+        summary.terminal_retained = u64::try_from(terminal.len()).unwrap_or(u64::MAX);
+        let over_bytes =
+            self.config.max_store_bytes > 0 && total_bytes > self.config.max_store_bytes;
+        let over_jobs =
+            self.config.max_terminal_jobs > 0 && terminal.len() > self.config.max_terminal_jobs;
+        summary.quota_pressure = over_bytes || over_jobs;
+        if !summary.quota_pressure {
+            return Ok(());
+        }
+        terminal.sort_by_key(|item| item.0);
+        let active_bytes = total_bytes.saturating_sub(terminal_bytes);
+        let target_terminal_bytes = if self.config.max_store_bytes == 0 {
+            u64::MAX
+        } else if active_bytes >= self.config.max_store_bytes {
+            // Active jobs are not evictable. If they alone exceed the hard quota,
+            // deleting all terminal history cannot solve the pressure condition.
+            terminal_bytes
+        } else {
+            let low_water_total = self.config.max_store_bytes.saturating_mul(9) / 10;
+            let target_total = if active_bytes < low_water_total {
+                low_water_total
+            } else {
+                self.config.max_store_bytes
+            };
+            target_total.saturating_sub(active_bytes)
+        };
+        let target_jobs = self.config.max_terminal_jobs.saturating_mul(9) / 10;
+        let mut retained = terminal.len();
+        let mut retained_terminal_bytes = terminal_bytes;
+        let mut deleted = HashSet::new();
+        for (_, id, bytes) in terminal {
+            let bytes_ok = self.config.max_store_bytes == 0
+                || retained_terminal_bytes <= target_terminal_bytes;
+            let jobs_ok = self.config.max_terminal_jobs == 0 || retained <= target_jobs;
+            if bytes_ok && jobs_ok {
+                break;
+            }
+            let paths = self.paths(&id)?;
+            if fs::remove_dir_all(&paths.dir).await.is_ok() {
+                total_bytes = total_bytes.saturating_sub(bytes);
+                retained_terminal_bytes = retained_terminal_bytes.saturating_sub(bytes);
+                retained = retained.saturating_sub(1);
+                deleted.insert(id);
+                summary.deleted = summary.deleted.saturating_add(1);
+                summary.quota_deleted = summary.quota_deleted.saturating_add(1);
+            }
+        }
+        self.note_jobs_deleted(&deleted);
+        summary.store_bytes = total_bytes;
+        summary.terminal_retained = u64::try_from(retained).unwrap_or(u64::MAX);
+        Ok(())
     }
 
     async fn reconcile_one_for_maintenance(
@@ -450,6 +638,7 @@ impl JobStore {
         let paths = self.paths(job_id)?;
         if self.retention_expired(&status) {
             fs::remove_dir_all(&paths.dir).await?;
+            self.note_job_deleted(job_id);
             summary.deleted = summary.deleted.saturating_add(1);
             return Ok(());
         }
@@ -597,7 +786,7 @@ impl JobStore {
         cancelled.insert("cancelRequested".to_owned(), json!(true));
         create_marker_once(&paths.cancel, &format!("{completed}\n")).await?;
         if let Some(pid) = u32_field(&cancelled, "runnerPid").filter(|_| runner_alive)
-            && process_alive(pid).await
+            && runner_owner_alive(&cancelled).await
         {
             terminate_job_runner_gracefully(pid, &paths.status).await;
         }
@@ -661,6 +850,7 @@ struct OrphanCleanup {
 
 async fn cleanup_orphan_child(
     child_pid: Option<u32>,
+    child_process_instance: Option<u64>,
     heartbeat_age: Option<Duration>,
     runtime_mode: &str,
 ) -> OrphanCleanup {
@@ -672,6 +862,14 @@ async fn cleanup_orphan_child(
     let Some(pid) = child_pid else {
         return result;
     };
+    #[cfg(not(windows))]
+    let _ = child_process_instance;
+    #[cfg(windows)]
+    if !crate::windows_process::process_matches_instance(pid, child_process_instance) {
+        result.skipped = Some("child-process-instance-no-longer-matches".to_owned());
+        return result;
+    }
+    #[cfg(not(windows))]
     if !process_alive(pid).await {
         return result;
     }
@@ -975,6 +1173,40 @@ fn u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
+#[cfg(windows)]
+fn runner_owner_alive(object: &Map<String, Value>) -> std::future::Ready<bool> {
+    let alive = u32_field(object, "runnerPid").is_some_and(|pid| {
+        let instance = object.get("runnerProcessInstance").and_then(Value::as_u64);
+        crate::windows_process::process_matches_instance(pid, instance)
+    });
+    std::future::ready(alive)
+}
+
+#[cfg(not(windows))]
+async fn runner_owner_alive(object: &Map<String, Value>) -> bool {
+    let Some(pid) = u32_field(object, "runnerPid") else {
+        return false;
+    };
+    process_alive(pid).await
+}
+
+async fn shallow_directory_bytes(path: &Path) -> Result<u64> {
+    let mut total = 0_u64;
+    let mut reader = match fs::read_dir(path).await {
+        Ok(reader) => reader,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    while let Some(entry) = reader.next_entry().await? {
+        if let Ok(metadata) = entry.metadata().await
+            && metadata.is_file()
+        {
+            total = total.saturating_add(metadata.len());
+        }
+    }
+    Ok(total)
+}
+
 fn parse_utc(value: &str) -> Option<OffsetDateTime> {
     OffsetDateTime::parse(value, &Rfc3339).ok()
 }
@@ -1038,6 +1270,8 @@ mod tests {
             orphan_stale: Duration::from_millis(1),
             retention: Duration::from_secs(1),
             max_wait: Duration::from_secs(2),
+            max_store_bytes: 1024 * 1024,
+            max_terminal_jobs: 100,
         })
     }
 
@@ -1266,6 +1500,74 @@ mod tests {
         let summary = store.reconcile_all().await.unwrap();
         assert_eq!(summary.deleted, 1);
         assert!(!paths.dir.exists());
+    }
+
+    #[tokio::test]
+    async fn store_quota_evicts_oldest_terminal_jobs_but_keeps_active_jobs() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = store(temp.path()).config().clone();
+        config.max_store_bytes = 1;
+        config.max_terminal_jobs = 1;
+        let store = JobStore::new(config);
+        for (id, status, completed) in [
+            ("job-quotaold1", "succeeded", "2020-01-01T00:00:00Z"),
+            ("job-quotanew2", "succeeded", "2021-01-01T00:00:00Z"),
+            ("job-quotaact3", "running", "2022-01-01T00:00:00Z"),
+        ] {
+            write_status(
+                &store,
+                id,
+                json!({
+                    "id": id,
+                    "status": status,
+                    "createdAtUtc": completed,
+                    "completedAtUtc": if status == "running" { Value::Null } else { json!(completed) },
+                    "runnerPid": if status == "running" { json!(std::process::id()) } else { Value::Null },
+                }),
+            )
+            .await;
+        }
+        store.refresh_maintenance_index().await.unwrap();
+        let mut summary = ReconcileSummary::default();
+        store.apply_store_quota(&mut summary).await.unwrap();
+        assert!(summary.quota_pressure);
+        assert!(summary.quota_deleted >= 1);
+        assert!(store.paths("job-quotaact3").unwrap().dir.exists());
+        assert!(!store.paths("job-quotaold1").unwrap().dir.exists());
+    }
+
+    #[tokio::test]
+    async fn active_byte_pressure_does_not_erase_terminal_history_when_it_cannot_help() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = store(temp.path()).config().clone();
+        config.max_store_bytes = 1;
+        config.max_terminal_jobs = 10;
+        let store = JobStore::new(config);
+        for (id, status) in [
+            ("job-pressure-active", "running"),
+            ("job-pressure-term", "succeeded"),
+        ] {
+            let paths = write_status(
+                &store,
+                id,
+                json!({
+                    "id": id,
+                    "status": status,
+                    "createdAtUtc": "2026-01-01T00:00:00Z",
+                    "completedAtUtc": if status == "running" { Value::Null } else { json!("2026-01-01T00:00:00Z") },
+                    "runnerPid": if status == "running" { json!(std::process::id()) } else { Value::Null },
+                }),
+            )
+            .await;
+            fs::write(&paths.stdout, vec![b'x'; 4096]).await.unwrap();
+        }
+        store.refresh_maintenance_index().await.unwrap();
+        let mut summary = ReconcileSummary::default();
+        store.apply_store_quota(&mut summary).await.unwrap();
+        assert!(summary.quota_pressure);
+        assert_eq!(summary.quota_deleted, 0);
+        assert!(store.paths("job-pressure-active").unwrap().dir.exists());
+        assert!(store.paths("job-pressure-term").unwrap().dir.exists());
     }
 
     #[tokio::test]

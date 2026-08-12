@@ -373,7 +373,7 @@ async fn hash_file_sha256(path: &Path) -> Result<String> {
         }
         hash.update(&buffer[..count]);
     }
-    Ok(format!("{:x}", hash.finalize()))
+    Ok(crate::hex::lower_hex(hash.finalize()))
 }
 
 fn resolve_host_path(requested: &str, working_dir: &Path) -> PathBuf {

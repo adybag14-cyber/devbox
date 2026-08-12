@@ -1,4 +1,5 @@
 pub mod allocator_metrics;
+pub mod background;
 pub mod capture;
 pub mod config;
 pub mod contract;
@@ -7,6 +8,7 @@ pub mod execution;
 pub mod files;
 pub mod gateway;
 pub mod github_auth;
+pub mod hex;
 pub mod host_inspect;
 pub mod job_logs;
 pub mod job_manager;
@@ -32,6 +34,8 @@ pub use server::{DevboxMcp, build_router};
 
 #[cfg(windows)]
 pub mod windows_capture;
+#[cfg(windows)]
+pub mod windows_job;
 #[cfg(windows)]
 pub mod windows_process;
 pub mod windows_shell;

@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "rust-mcp/**"
+      - "rust-toolchain.toml"
       - "src/server.js"
       - "src/launcher.js"
       - "src/mcp-implementation.js"
@@ -16,6 +17,7 @@ on:
   pull_request:
     paths:
       - "rust-mcp/**"
+      - "rust-toolchain.toml"
       - "src/server.js"
       - "src/launcher.js"
       - "src/mcp-implementation.js"
@@ -51,11 +53,11 @@ jobs:
           cache: npm
       - name: Install JavaScript SDK dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Install Rust 1.97.1 with quality components
+      - name: Install Rust 1.91.1 with quality components
         shell: bash
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
-          rustup default 1.97.1
+          rustup toolchain install 1.91.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.91.1
       - name: Check JavaScript-to-Rust tool contract drift
         run: node rust-mcp/scripts/check-contract-parity.mjs
       - name: Check formatting
@@ -63,7 +65,16 @@ jobs:
       - name: Run strict Clippy
         run: cargo clippy --manifest-path rust-mcp/Cargo.toml --all-targets -- -D warnings
       - name: Run Rust tests
-        run: cargo test --manifest-path rust-mcp/Cargo.toml --locked
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            # Windows hosted runners can stall many simultaneous native child launches.
+            # Keep unit subprocess tests deterministic; the dedicated contention smoke below
+            # remains the explicit concurrent scheduler/watcher regression gate.
+            cargo test --manifest-path rust-mcp/Cargo.toml --locked -- --test-threads=2
+          else
+            cargo test --manifest-path rust-mcp/Cargo.toml --locked
+          fi
       - name: Validate Windows managed cutover contracts
         if: runner.os == 'Windows'
         shell: pwsh
@@ -105,6 +116,20 @@ jobs:
         run: node rust-mcp/scripts/result-parity-audit.mjs
       - name: Run JavaScript MCP SDK interoperability smoke
         run: node rust-mcp/scripts/smoke-runner.mjs
+
+
+  msrv:
+    name: Rust MCP MSRV (1.88.0)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install declared MSRV
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Verify declared MSRV still compiles
+        run: cargo +1.88.0 check --manifest-path rust-mcp/Cargo.toml --locked
 
   dependency-audit:
     name: Rust dependency security audit

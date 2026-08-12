@@ -229,6 +229,8 @@ pub fn job_store_config(config: &Config) -> JobStoreConfig {
         orphan_stale: Duration::from_millis(config.job_orphan_stale_ms),
         retention: Duration::from_secs(config.job_retention_hours.saturating_mul(3600)),
         max_wait: Duration::from_secs_f64(config.max_wait_seconds.max(0.1)),
+        max_store_bytes: config.job_store_max_bytes,
+        max_terminal_jobs: config.job_store_max_terminal_jobs,
     }
 }
 
