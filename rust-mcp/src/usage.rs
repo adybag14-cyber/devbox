@@ -58,6 +58,7 @@ struct UsageQueueMetrics {
 
 #[derive(Debug)]
 pub struct UsageLogger {
+    #[cfg(test)]
     sink: Arc<UsageLogSink>,
     tx: mpsc::Sender<Value>,
     metrics: Arc<UsageQueueMetrics>,
@@ -94,6 +95,7 @@ impl UsageLogger {
             );
         }
         Self {
+            #[cfg(test)]
             sink,
             tx,
             metrics,
@@ -150,6 +152,7 @@ impl UsageLogger {
             },
         );
         Self {
+            #[cfg(test)]
             sink,
             tx,
             metrics,
@@ -180,10 +183,12 @@ impl UsageLogger {
         })
     }
 
-    /// Direct append retained for deterministic rotation tests and maintenance utilities.
+    /// Direct append retained only for deterministic rotation tests. Production callers
+    /// must use [`Self::enqueue`] so telemetry can never block request/tool execution on disk I/O.
     ///
     /// # Errors
     /// Returns filesystem or serialization errors from the underlying usage-log sink.
+    #[cfg(test)]
     pub async fn append(&self, event: &Value) -> Result<()> {
         self.sink.append(event).await
     }

@@ -2243,7 +2243,7 @@ impl ServerHandler for DevboxMcp {
         let invocation =
             ToolUsageInvocation::new(request.name.as_ref(), request.arguments.as_ref(), &context);
         let logger = self.usage.tool_logger();
-        logger.append(&invocation.start_event()).await.ok();
+        logger.enqueue(invocation.start_event());
         let mut usage_guard = ToolUsageDropGuard::new(logger.clone(), invocation.clone());
         let _active_request = self.active_requests.register_context(&context);
         let result = self
@@ -2251,12 +2251,9 @@ impl ServerHandler for DevboxMcp {
             .call(ToolCallContext::new(self, request, context))
             .await;
         match &result {
-            Ok(response) => logger.append(&invocation.finish_event(response)).await.ok(),
-            Err(error) => logger
-                .append(&invocation.throw_event(&error.to_string()))
-                .await
-                .ok(),
-        };
+            Ok(response) => logger.enqueue(invocation.finish_event(response)),
+            Err(error) => logger.enqueue(invocation.throw_event(&error.to_string())),
+        }
         usage_guard.complete();
         result
     }
