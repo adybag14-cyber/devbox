@@ -265,11 +265,30 @@ struct QueueTicket {
     class: String,
     path: PathBuf,
     name: String,
+    released: bool,
+}
+
+impl QueueTicket {
+    async fn release(&mut self) -> Result<()> {
+        if self.released {
+            return Ok(());
+        }
+        match remove_slot_file(&self.path).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        refresh_queue_head(&self.root, &self.class, Duration::from_secs(1)).await?;
+        self.released = true;
+        Ok(())
+    }
 }
 
 impl Drop for QueueTicket {
     fn drop(&mut self) {
-        schedule_queue_ticket_cleanup(self.root.clone(), self.class.clone(), self.path.clone());
+        if !self.released {
+            schedule_queue_ticket_cleanup(self.root.clone(), self.class.clone(), self.path.clone());
+        }
     }
 }
 
@@ -426,7 +445,7 @@ impl ExecutionScheduler {
             .unwrap_or(self.config.queue_timeout)
             .max(Duration::from_millis(1));
         let plan = AcquirePlan::new(&self.config, &request);
-        let ticket = match create_queue_ticket(
+        let mut ticket = match create_queue_ticket(
             &self.config.root,
             &plan.queue_class(request.kind),
             &request,
@@ -441,10 +460,17 @@ impl ExecutionScheduler {
                 return Err(error);
             }
         };
-        let outcome = self
+        let mut outcome = self
             .acquire_inner(&request, &plan, &ticket, cancellation, started, timeout)
             .await;
-        drop(ticket);
+        if let Err(cleanup_error) = ticket.release().await {
+            if let Ok((owned, _, _, _)) = &outcome {
+                release_owned_files(owned).await.ok();
+                outcome = Err(cleanup_error);
+            } else {
+                tracing::warn!(%cleanup_error, "queue ticket cleanup failed after an already-failed acquisition");
+            }
+        }
 
         match outcome {
             Ok((owned, pool, resource_class, weight)) => {
@@ -815,6 +841,7 @@ async fn create_queue_ticket(
         class: class.to_owned(),
         path,
         name,
+        released: false,
     })
 }
 
