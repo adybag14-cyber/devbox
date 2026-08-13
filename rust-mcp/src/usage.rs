@@ -143,10 +143,14 @@ impl UsageLogger {
                             cancellation.cancelled().await;
                             return Ok(());
                         };
-                        if sink.append(&event).await.is_err() {
-                            metrics.write_failures.fetch_add(1, Ordering::Relaxed);
+                        heartbeat.attempt();
+                        match sink.append(&event).await {
+                            Ok(()) => heartbeat.tick(),
+                            Err(error) => {
+                                metrics.write_failures.fetch_add(1, Ordering::Relaxed);
+                                heartbeat.fail(error.to_string());
+                            }
                         }
-                        heartbeat.tick();
                     }
                 }
             },

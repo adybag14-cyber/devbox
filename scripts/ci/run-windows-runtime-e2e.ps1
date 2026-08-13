@@ -82,16 +82,21 @@ try {
     if (-not (Test-Path "$ensureLog.1")) { throw 'Guardian Ensure did not rotate the oversized auxiliary log.' }
     $startupTask = Get-ScheduledTask -TaskName "$taskPrefix-Startup"
     $logonTask = Get-ScheduledTask -TaskName "$taskPrefix-Logon"
+    $keepAliveTask = Get-ScheduledTask -TaskName "$taskPrefix-KeepAlive"
     $startupTriggerTypes = @($startupTask.Triggers | ForEach-Object { $_.CimClass.CimClassName })
     $logonTriggerTypes = @($logonTask.Triggers | ForEach-Object { $_.CimClass.CimClassName })
     if ($startupTriggerTypes -notcontains 'MSFT_TaskBootTrigger') { throw 'Guardian startup task is missing AtStartup trigger.' }
     if ($logonTriggerTypes -notcontains 'MSFT_TaskLogonTrigger') { throw 'Guardian logon task is missing AtLogon trigger.' }
     if ([string]$startupTask.Principal.LogonType -ne 'S4U') { throw "Guardian startup task must be non-interactive S4U, got $($startupTask.Principal.LogonType)." }
+    if ([string]$keepAliveTask.Principal.LogonType -ne 'S4U') { throw "Guardian keepalive task must be non-interactive S4U, got $($keepAliveTask.Principal.LogonType)." }
     if ([string]$logonTask.Principal.LogonType -ne 'Interactive') { throw "Guardian logon task must remain Interactive, got $($logonTask.Principal.LogonType)." }
-    foreach ($guardianTask in @($startupTask, $logonTask)) {
+    foreach ($guardianTask in @($startupTask, $logonTask, $keepAliveTask)) {
         if ([string]$guardianTask.Principal.RunLevel -ne 'Highest') { throw 'Guardian CI task is not Highest run level.' }
         if ($guardianTask.Settings.RestartCount -lt 3) { throw 'Guardian CI task restart policy is missing.' }
+        if ([string]$guardianTask.Actions[0].Execute -match 'wscript\.exe$') { throw 'Guardian supervision task still uses the VBS/wscript hop.' }
+        if ([string]$guardianTask.Actions[0].Execute -notmatch 'pwsh\.exe$|powershell\.exe$') { throw 'Guardian supervision task is not invoking PowerShell directly.' }
     }
+    if ([string]$keepAliveTask.Triggers[0].Repetition.Interval -ne 'PT1M') { throw 'Guardian keepalive task is not repeating every minute.' }
 
     $guardianPidPath = Join-Path $root 'run\guardian\guardian.pid'
     $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'

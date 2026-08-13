@@ -141,6 +141,55 @@ try {
   assert.equal(status.isError, false);
   assert.ok(statusMs < 1_500, `devbox_status was unexpectedly slow: ${statusMs}ms`);
   assert.equal(status.structuredContent?.data?.processProbe?.backend, "win32-openprocess");
+  assert.equal(status.structuredContent?.data?.executionStore?.ok, true);
+  assert.equal(status.structuredContent?.data?.executionStore?.jobsWritable, true);
+  assert.equal(status.structuredContent?.data?.executionStore?.schedulerWritable, true);
+  assert.ok(status.structuredContent?.data?.executionStore?.freeBytes > 0);
+
+  const heavyScript = "/* cargo test */ setTimeout(()=>{},1200)";
+  const heavyCalls = [0, 1].map(() => client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "node",
+      args: ["-e", heavyScript],
+      working_dir: projectRoot,
+      timeout_seconds: 10,
+      max_output_chars: 1_024,
+    },
+  }));
+  let weightedStatus = null;
+  const weightedDeadline = Date.now() + 2_000;
+  while (Date.now() < weightedDeadline) {
+    const candidate = await client.callTool({ name: "devbox_status", arguments: {} });
+    const execution = candidate.structuredContent?.data?.execution;
+    if (execution?.occupied === 4) {
+      weightedStatus = execution;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.ok(weightedStatus, "two synchronous heavy commands did not consume weighted capacity");
+  assert.equal(weightedStatus.occupied_slots.length, 4);
+  assert.ok(weightedStatus.occupied_slots.every((slot) => slot.resourceClass === "heavy" && slot.weight === 2));
+  for (const result of await Promise.all(heavyCalls)) assert.equal(result.isError, false);
+
+  const pressure = await client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "node",
+      args: ["-e", "const chunk='x'.repeat(1024*1024); for(let i=0;i<128;i++) process.stdout.write(chunk);"],
+      working_dir: projectRoot,
+      timeout_seconds: 30,
+      max_output_chars: 4_096,
+    },
+  });
+  assert.equal(pressure.isError, false);
+  const pressureOutput = pressure.structuredContent?.data?.output || {};
+  assert.equal(pressureOutput.stdout_capture_truncated, true);
+  assert.ok(pressureOutput.stdout_original_chars >= 128 * 1024 * 1024);
+  const pressureStatus = await client.callTool({ name: "devbox_status", arguments: {} });
+  const peakRequested = pressureStatus.structuredContent?.data?.performance?.process?.memory?.allocator?.peakRequestedBytes;
+  assert.ok(Number.isFinite(peakRequested) && peakRequested < 64 * 1024 * 1024, `foreground capture allocator peak was ${peakRequested}`);
 
   for (const program of ["npm", "npx", "rg"]) {
     const result = await client.callTool({

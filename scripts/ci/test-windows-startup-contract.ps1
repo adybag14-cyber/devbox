@@ -14,6 +14,11 @@ function Assert-Contains {
     if (-not $Text.Contains($Needle)) { throw $Message }
 }
 
+function Assert-NotContains {
+    param([string]$Text, [string]$Needle, [string]$Message)
+    if ($Text.Contains($Needle)) { throw $Message }
+}
+
 function Assert-Before {
     param([string]$Text, [string]$First, [string]$Second, [string]$Message)
     $a = $Text.IndexOf($First, [StringComparison]::Ordinal)
@@ -82,6 +87,12 @@ Assert-Before $start 'Set-Content -Path $pidFile -Value $process.Id -Encoding AS
 Assert-Contains $vbs 'shell.Run(command, 0, True)' 'Scheduled-task VBS must wait for the real startup child and propagate its exit code.'
 Assert-Contains $install '-ExecutionTimeLimit (New-TimeSpan -Minutes 10)' 'Elevated startup task must have a bounded execution time.'
 Assert-Contains $install 'if ($LASTEXITCODE -ne 0)' 'Guardian installation must fail when the Ensure process fails.'
+Assert-Contains $install 'New-ScheduledTaskAction -Execute $powerShellExe -Argument $ensureActionArgs' 'Guardian supervision tasks must invoke PowerShell directly.'
+Assert-Contains $install 'Register-ScheduledTask -TaskName $keepAliveTaskName -Action $action -Trigger $keepAliveTrigger -Settings $settingsSet -Principal $startupPrincipal' 'Guardian KeepAlive must run non-interactively under the S4U principal.'
+Assert-NotContains $install 'schtasks.exe /Create /TN $keepAliveTaskName' 'Guardian KeepAlive must not fall back to the interactive schtasks path.'
+Assert-Contains $ensureGuardian 'function Get-EnsureMutexName' 'Guardian Ensure invocations must share a project-root-scoped mutex.'
+Assert-Contains $ensureGuardian 'Global\ChatGptDevboxGuardianEnsure-' 'Guardian Ensure mutex must use a root-derived global name.'
+Assert-NotContains $ensureGuardian 'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |' 'Guardian Ensure must not enumerate every process during boot recovery.'
 Assert-Contains $ensureGuardian "'-File', ('`"{0}`"' -f `$guardianScript)" 'Guardian direct launch must quote a watcher path containing spaces.'
 Assert-Contains $ensureGuardian 'Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden' 'Guardian Ensure must launch the watcher directly through the resolved PowerShell executable.'
 Assert-Contains $ensureGuardian 'function Get-LiveGuardianSupervisorProcess' 'Guardian Ensure must identify a verified orphan supervisor separately from the watcher.'

@@ -80,6 +80,10 @@ pub struct ReconcileSummary {
     pub quota_deleted: u64,
     #[serde(rename = "quotaPressure")]
     pub quota_pressure: bool,
+    #[serde(rename = "quotaCheckedAtUtc", skip_serializing_if = "Option::is_none")]
+    pub quota_checked_at_utc: Option<String>,
+    #[serde(rename = "quotaAgeMs", skip_serializing_if = "Option::is_none")]
+    pub quota_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -133,10 +137,20 @@ struct MaintenanceIndex {
     refreshed_at: Option<SystemTime>,
 }
 
+#[derive(Debug, Default)]
+struct QuotaState {
+    sampled_at: Option<SystemTime>,
+    sampled_at_utc: Option<String>,
+    store_bytes: u64,
+    terminal_retained: u64,
+    quota_pressure: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct JobStore {
     config: JobStoreConfig,
     maintenance_index: Arc<Mutex<MaintenanceIndex>>,
+    quota_state: Arc<Mutex<QuotaState>>,
 }
 
 impl JobStore {
@@ -145,6 +159,7 @@ impl JobStore {
         Self {
             config: config.normalized(),
             maintenance_index: Arc::new(Mutex::new(MaintenanceIndex::default())),
+            quota_state: Arc::new(Mutex::new(QuotaState::default())),
         }
     }
 
@@ -420,10 +435,64 @@ impl JobStore {
                 summary.errors = summary.errors.saturating_add(1);
             }
         }
-        if cycle_completed {
-            self.apply_store_quota(&mut summary).await?;
-        }
+        self.decorate_with_cached_quota(&mut summary);
         Ok(summary)
+    }
+
+    /// Measure and enforce the global jobs-store quota independently of the retention cursor.
+    ///
+    /// # Errors
+    /// Returns an error when the job index or store cannot be inspected.
+    pub async fn enforce_store_quota(&self) -> Result<ReconcileSummary> {
+        fs::create_dir_all(&self.config.root).await?;
+        if self.maintenance_index_needs_refresh() {
+            self.refresh_maintenance_index().await?;
+        }
+        let discovered = self
+            .maintenance_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ids
+            .len();
+        let mut summary = ReconcileSummary {
+            discovered: u64::try_from(discovered).unwrap_or(u64::MAX),
+            ..ReconcileSummary::default()
+        };
+        self.apply_store_quota(&mut summary).await?;
+        Ok(summary)
+    }
+
+    fn decorate_with_cached_quota(&self, summary: &mut ReconcileSummary) {
+        let quota = self
+            .quota_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        summary.store_bytes = quota.store_bytes;
+        summary.terminal_retained = quota.terminal_retained;
+        summary.quota_pressure = quota.quota_pressure;
+        summary
+            .quota_checked_at_utc
+            .clone_from(&quota.sampled_at_utc);
+        summary.quota_age_ms = quota
+            .sampled_at
+            .and_then(|sampled| sampled.elapsed().ok())
+            .map(duration_ms);
+    }
+
+    fn record_quota_state(&self, summary: &mut ReconcileSummary) {
+        let sampled_at = SystemTime::now();
+        let sampled_at_utc = utc_now();
+        let mut quota = self
+            .quota_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        quota.sampled_at = Some(sampled_at);
+        quota.sampled_at_utc = Some(sampled_at_utc.clone());
+        quota.store_bytes = summary.store_bytes;
+        quota.terminal_retained = summary.terminal_retained;
+        quota.quota_pressure = summary.quota_pressure;
+        summary.quota_checked_at_utc = Some(sampled_at_utc);
+        summary.quota_age_ms = Some(0);
     }
 
     fn maintenance_index_needs_refresh(&self) -> bool {
@@ -571,6 +640,7 @@ impl JobStore {
             self.config.max_terminal_jobs > 0 && terminal.len() > self.config.max_terminal_jobs;
         summary.quota_pressure = over_bytes || over_jobs;
         if !summary.quota_pressure {
+            self.record_quota_state(summary);
             return Ok(());
         }
         terminal.sort_by_key(|item| item.0);
@@ -614,6 +684,7 @@ impl JobStore {
         self.note_jobs_deleted(&deleted);
         summary.store_bytes = total_bytes;
         summary.terminal_retained = u64::try_from(retained).unwrap_or(u64::MAX);
+        self.record_quota_state(summary);
         Ok(())
     }
 
@@ -862,15 +933,8 @@ async fn cleanup_orphan_child(
     let Some(pid) = child_pid else {
         return result;
     };
-    #[cfg(not(windows))]
-    let _ = child_process_instance;
-    #[cfg(windows)]
-    if !crate::windows_process::process_matches_instance(pid, child_process_instance) {
+    if !crate::process_identity::process_matches_instance(pid, child_process_instance) {
         result.skipped = Some("child-process-instance-no-longer-matches".to_owned());
-        return result;
-    }
-    #[cfg(not(windows))]
-    if !process_alive(pid).await {
         return result;
     }
     if heartbeat_age.is_none_or(|age| age > CHILD_IDENTITY_MAX_AGE) {
@@ -1173,21 +1237,12 @@ fn u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
         .and_then(|value| u32::try_from(value).ok())
 }
 
-#[cfg(windows)]
 fn runner_owner_alive(object: &Map<String, Value>) -> std::future::Ready<bool> {
     let alive = u32_field(object, "runnerPid").is_some_and(|pid| {
         let instance = object.get("runnerProcessInstance").and_then(Value::as_u64);
-        crate::windows_process::process_matches_instance(pid, instance)
+        crate::process_identity::process_matches_instance(pid, instance)
     });
     std::future::ready(alive)
-}
-
-#[cfg(not(windows))]
-async fn runner_owner_alive(object: &Map<String, Value>) -> bool {
-    let Some(pid) = u32_field(object, "runnerPid") else {
-        return false;
-    };
-    process_alive(pid).await
 }
 
 async fn shallow_directory_bytes(path: &Path) -> Result<u64> {
@@ -1481,6 +1536,38 @@ mod tests {
         assert!(!third.batch_limited);
     }
 
+    #[tokio::test]
+    async fn quota_measurement_is_independent_and_persists_across_partial_maintenance_batches() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path());
+        for index in 0..3 {
+            let id = format!("job-quota-cache{index}");
+            let paths = write_status(
+                &store,
+                &id,
+                json!({
+                    "id": id,
+                    "status": "succeeded",
+                    "createdAtUtc": utc_now(),
+                    "completedAtUtc": utc_now(),
+                }),
+            )
+            .await;
+            fs::write(&paths.stdout, vec![b'x'; 1024]).await.unwrap();
+        }
+        let quota = store.enforce_store_quota().await.unwrap();
+        assert!(quota.store_bytes >= 3 * 1024);
+        assert_eq!(quota.terminal_retained, 3);
+        assert!(quota.quota_checked_at_utc.is_some());
+        assert_eq!(quota.quota_age_ms, Some(0));
+
+        let partial = store.reconcile_maintenance_batch(1).await.unwrap();
+        assert!(partial.batch_limited);
+        assert_eq!(partial.store_bytes, quota.store_bytes);
+        assert_eq!(partial.terminal_retained, 3);
+        assert_eq!(partial.quota_checked_at_utc, quota.quota_checked_at_utc);
+        assert!(partial.quota_age_ms.is_some());
+    }
     #[tokio::test]
     async fn retention_removes_expired_terminal_job() {
         let temp = tempfile::tempdir().unwrap();

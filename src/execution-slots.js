@@ -8,6 +8,8 @@ const slotRoot = process.env.MCP_EXEC_SLOT_ROOT?.trim()
   ? path.resolve(process.env.MCP_EXEC_SLOT_ROOT.trim())
   : path.join(projectRoot, "run", "execution-slots");
 const POLL_MS = 50;
+const MAX_POLL_MS = 500;
+const pollInterval = (elapsedMs) => elapsedMs < 1000 ? POLL_MS : elapsedMs < 5000 ? 100 : elapsedMs < 30000 ? 250 : MAX_POLL_MS;
 const CORRUPT_SLOT_STALE_MS = 5 * 60 * 1000;
 
 const metrics = {
@@ -69,6 +71,24 @@ const slotPath = (pool, index) => path.join(
   slotRoot,
   `${pool === "watch" ? "watch-slot" : "slot"}-${String(index).padStart(2, "0")}.json`,
 );
+
+export const probeExecutionSlotStoreWritable = async () => {
+  await mkdir(slotRoot, { recursive: true });
+  const probePath = path.join(slotRoot, `.mcp-ready-${process.pid}-${randomUUID()}.tmp`);
+  let handle = null;
+  try {
+    handle = await open(probePath, "wx");
+    await handle.writeFile("ready\n", "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rm(probePath, { force: true });
+    return true;
+  } finally {
+    try { await handle?.close(); } catch {}
+    await rm(probePath, { force: true }).catch(() => {});
+  }
+};
 
 const removeStaleSlot = async (filePath) => {
   let owner = null;
@@ -318,7 +338,7 @@ export const acquireExecutionSlot = async ({
           },
         );
       }
-      await sleep(Math.min(POLL_MS, timeoutMs - elapsed));
+      await sleep(Math.min(pollInterval(elapsed), timeoutMs - elapsed));
     }
   } catch (error) {
     if (metrics.queued > 0) metrics.queued -= 1;

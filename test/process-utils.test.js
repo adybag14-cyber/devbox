@@ -100,6 +100,24 @@ test("spawnProcess streams full output while bounding in-memory capture for back
 
   assert.equal(streamedStdout, "abcdefgh");
   assert.equal(streamedStderr, "12345678");
-  assert.equal(result.stdout, "efgh");
-  assert.equal(result.stderr, "5678");
+  assert.equal(result.stdoutOriginalChars, 8);
+  assert.equal(result.stderrOriginalChars, 8);
+  assert.equal(result.stdoutCaptureTruncated, true);
+  assert.equal(result.stderrCaptureTruncated, true);
+  assert.match(result.stdout, /^ab[\s\S]*gh$/u);
+  assert.match(result.stderr, /^12[\s\S]*78$/u);
+});
+
+test("spawnProcess keeps very large foreground output inside a bounded capture window", async () => {
+  const megabytes = 32;
+  const result = await spawnProcess(
+    process.execPath,
+    ["-e", `const chunk='x'.repeat(1024*1024); for(let i=0;i<${megabytes};i++) process.stdout.write(chunk);`],
+    { maxCaptureChars: 8192, timeoutMs: 20000 },
+  );
+  assert.equal(result.stdoutCaptureTruncated, true);
+  assert.ok(result.stdoutOriginalChars >= megabytes * 1024 * 1024);
+  assert.ok(result.stdout.length < 10 * 1024);
+  assert.match(result.stdout, /^x[\s\S]*x$/u);
+  assert.match(result.stdout, /middle capture omitted/u);
 });

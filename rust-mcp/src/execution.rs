@@ -115,6 +115,21 @@ impl AcquireRequest {
     }
 
     #[must_use]
+    pub fn interactive_weighted(
+        label: impl Into<String>,
+        resource_class: ResourceClass,
+        weight: usize,
+    ) -> Self {
+        Self {
+            kind: ExecutionKind::Interactive,
+            resource_class,
+            weight: weight.max(1),
+            label: label.into(),
+            queue_timeout: None,
+        }
+    }
+
+    #[must_use]
     pub fn background(
         label: impl Into<String>,
         resource_class: ResourceClass,
@@ -237,7 +252,7 @@ struct SlotOwner {
     acquired_at_utc: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct OwnedSlot {
     path: PathBuf,
     token: String,
@@ -246,12 +261,15 @@ struct OwnedSlot {
 
 #[derive(Debug)]
 struct QueueTicket {
+    root: PathBuf,
+    class: String,
     path: PathBuf,
+    name: String,
 }
 
 impl Drop for QueueTicket {
     fn drop(&mut self) {
-        remove_slot_file_sync(&self.path);
+        schedule_queue_ticket_cleanup(self.root.clone(), self.class.clone(), self.path.clone());
     }
 }
 
@@ -357,9 +375,8 @@ impl Drop for ExecutionLease {
         if self.released {
             return;
         }
-        for owned in &self.owned {
-            release_owned_file_sync(owned);
-        }
+        let owned = std::mem::take(&mut self.owned);
+        schedule_owned_cleanup(owned);
         self.mark_released();
     }
 }
@@ -709,11 +726,11 @@ impl ClaimLock {
 impl Drop for ClaimLock {
     fn drop(&mut self) {
         if !self.released {
-            release_owned_file_sync(&OwnedSlot {
+            schedule_owned_cleanup(vec![OwnedSlot {
                 path: self.path.clone(),
                 token: self.token.clone(),
                 index: 0,
-            });
+            }]);
         }
     }
 }
@@ -784,58 +801,158 @@ async fn create_queue_ticket(
         "queueTimeoutMs": duration_ms(timeout),
     });
     write_queue_ticket_atomic(&path, &value).await?;
-    Ok(QueueTicket { path })
-}
-
-async fn queue_ticket_is_head(root: &Path, ticket: &QueueTicket) -> Result<bool> {
-    let queue_root = root.join("queue");
-    let own_name = ticket
-        .path
+    if let Err(error) = refresh_queue_head(&queue_root, class, timeout).await {
+        remove_slot_file(&path).await.ok();
+        return Err(error);
+    }
+    let name = path
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_owned();
-    // Timestamp starts after the class prefix. Prefix matching is sufficient and
-    // avoids trusting mutable JSON content for queue ordering.
-    let prefix = if own_name.starts_with("execution-interactive-") {
-        "execution-interactive-"
-    } else if own_name.starts_with("execution-background-") {
-        "execution-background-"
-    } else {
-        "watch-"
-    };
+    Ok(QueueTicket {
+        root: queue_root,
+        class: class.to_owned(),
+        path,
+        name,
+    })
+}
+
+async fn acquire_queue_head_lock(
+    queue_root: &Path,
+    class: &str,
+    timeout: Duration,
+) -> Result<OwnedSlot> {
+    let path = queue_root.join(format!(".{class}-head.lock"));
+    let deadline = Instant::now()
+        + timeout
+            .min(Duration::from_secs(5))
+            .max(Duration::from_millis(100));
     loop {
-        let mut reader = match fs::read_dir(&queue_root).await {
+        let token = unique_token();
+        let owner = json!({
+            "token": token,
+            "pid": std::process::id(),
+            "processInstance": current_process_instance(),
+            "class": class,
+            "acquiredAtUtc": utc_now(),
+        });
+        match create_json_new(&path, &owner).await {
+            Ok(()) => {
+                return Ok(OwnedSlot {
+                    path,
+                    token,
+                    index: 0,
+                });
+            }
+            Err(error) if is_already_exists(&error) => {
+                if remove_stale_slot(&path).await.unwrap_or(false) {
+                    continue;
+                }
+            }
+            Err(error) if is_transient_slot_error(&error) => {}
+            Err(error) => return Err(error),
+        }
+        if Instant::now() >= deadline {
+            anyhow::bail!("timed out acquiring queue-head lock for {class}");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn queue_head_path(queue_root: &Path, class: &str) -> PathBuf {
+    queue_root.join(format!(".{class}-head.json"))
+}
+
+async fn read_queue_head(queue_root: &Path, class: &str) -> Result<Option<String>> {
+    let path = queue_head_path(queue_root, class);
+    match fs::read(&path).await {
+        Ok(bytes) => Ok(serde_json::from_slice::<Value>(&bytes)
+            .ok()
+            .and_then(|value| value.get("name").and_then(Value::as_str).map(str::to_owned))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn write_queue_head(queue_root: &Path, class: &str, name: Option<&str>) -> Result<()> {
+    let path = queue_head_path(queue_root, class);
+    let Some(name) = name else {
+        match fs::remove_file(&path).await {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+    };
+    let temporary = queue_root.join(format!(".{class}-head.{}.tmp", unique_token()));
+    let bytes = serde_json::to_vec(&json!({ "name": name }))?;
+    fs::write(&temporary, bytes).await?;
+    if fs::rename(&temporary, &path).await.is_err() {
+        fs::remove_file(&path).await.ok();
+        if let Err(error) = fs::rename(&temporary, &path).await {
+            fs::remove_file(&temporary).await.ok();
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+
+async fn refresh_queue_head(
+    queue_root: &Path,
+    class: &str,
+    timeout: Duration,
+) -> Result<Option<String>> {
+    let lock = acquire_queue_head_lock(queue_root, class, timeout).await?;
+    let result = async {
+        let prefix = format!("{class}-");
+        let mut reader = match fs::read_dir(queue_root).await {
             Ok(reader) => reader,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok::<Option<String>, anyhow::Error>(None);
+            }
             Err(error) => return Err(error.into()),
         };
-        let mut head: Option<(String, PathBuf)> = None;
+        let mut head: Option<String> = None;
         while let Some(entry) = reader.next_entry().await? {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.starts_with(prefix)
+            if !name.starts_with(&prefix)
                 || !Path::new(&name)
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
             {
                 continue;
             }
-            if head.as_ref().is_none_or(|(current, _)| name < *current) {
-                head = Some((name, entry.path()));
+            if head.as_ref().is_none_or(|current| name < *current) {
+                head = Some(name);
             }
         }
-        let Some((name, path)) = head else {
-            return Ok(true);
+        write_queue_head(queue_root, class, head.as_deref()).await?;
+        Ok(head)
+    }
+    .await;
+    let release_result = release_owned_file(&lock).await;
+    match (result, release_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+async fn queue_ticket_is_head(_root: &Path, ticket: &QueueTicket) -> Result<bool> {
+    let prefix = format!("{}-", ticket.class);
+    loop {
+        let Some(head_name) = read_queue_head(&ticket.root, &ticket.class).await? else {
+            refresh_queue_head(&ticket.root, &ticket.class, Duration::from_secs(1)).await?;
+            continue;
         };
-        if name == own_name {
+        if head_name == ticket.name {
             return Ok(true);
         }
-        let owner = fs::read(&path)
+        let head_path = ticket.root.join(&head_name);
+        let owner = fs::read(&head_path)
             .await
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
         if owner.is_none() {
-            let fresh = fs::metadata(&path)
+            let fresh = fs::metadata(&head_path)
                 .await
                 .ok()
                 .and_then(|metadata| metadata.modified().ok())
@@ -844,18 +961,17 @@ async fn queue_ticket_is_head(root: &Path, ticket: &QueueTicket) -> Result<bool>
             if fresh {
                 return Ok(false);
             }
-            remove_slot_file(&path).await.ok();
+            remove_slot_file(&head_path).await.ok();
+            refresh_queue_head(&ticket.root, &ticket.class, Duration::from_secs(1)).await?;
             continue;
         }
-        if queue_ticket_expired(&name, prefix, owner.as_ref().expect("owner checked above")) {
-            remove_slot_file(&path).await.ok();
+        let owner = owner.expect("queue head owner checked above");
+        if queue_ticket_expired(&head_name, &prefix, &owner) || !owner_process_alive(&owner) {
+            remove_slot_file(&head_path).await.ok();
+            refresh_queue_head(&ticket.root, &ticket.class, Duration::from_secs(1)).await?;
             continue;
         }
-        if owner.as_ref().is_some_and(owner_process_alive) {
-            return Ok(false);
-        }
-        // Dead queue owners must never permanently block later tickets.
-        remove_slot_file(&path).await.ok();
+        return Ok(false);
     }
 }
 
@@ -872,14 +988,7 @@ fn queue_poll_interval(elapsed: Duration) -> Duration {
 }
 
 fn current_process_instance() -> Option<u64> {
-    #[cfg(windows)]
-    {
-        crate::windows_process::current_process_instance()
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+    crate::process_identity::current_process_instance()
 }
 
 fn owner_process_alive(owner: &Value) -> bool {
@@ -890,31 +999,8 @@ fn owner_process_alive(owner: &Value) -> bool {
     else {
         return false;
     };
-    #[cfg(windows)]
-    {
-        let instance = owner.get("processInstance").and_then(Value::as_u64);
-        crate::windows_process::process_matches_instance(pid, instance)
-    }
-    #[cfg(not(windows))]
-    {
-        process_alive_now(pid)
-    }
-}
-
-#[cfg(not(windows))]
-fn process_alive_now(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        use nix::{sys::signal::kill, unistd::Pid};
-        i32::try_from(pid)
-            .ok()
-            .is_some_and(|pid| kill(Pid::from_raw(pid), None).is_ok())
-    }
-    #[cfg(not(any(windows, unix)))]
-    {
-        let _ = pid;
-        false
-    }
+    let instance = owner.get("processInstance").and_then(Value::as_u64);
+    crate::process_identity::process_matches_instance(pid, instance)
 }
 
 fn queue_ticket_expired(name: &str, prefix: &str, owner: &Value) -> bool {
@@ -1137,18 +1223,6 @@ async fn release_owned_file(owned: &OwnedSlot) -> Result<()> {
     Ok(())
 }
 
-fn release_owned_file_sync(owned: &OwnedSlot) {
-    let Ok(bytes) = std::fs::read(&owned.path) else {
-        return;
-    };
-    let Ok(current) = serde_json::from_slice::<Value>(&bytes) else {
-        return;
-    };
-    if current.get("token").and_then(Value::as_str) == Some(owned.token.as_str()) {
-        remove_slot_file_sync(&owned.path);
-    }
-}
-
 async fn remove_slot_file(path: &Path) -> std::io::Result<()> {
     #[cfg(windows)]
     {
@@ -1174,24 +1248,49 @@ async fn remove_slot_file(path: &Path) -> std::io::Result<()> {
     }
 }
 
-fn remove_slot_file_sync(path: &Path) {
-    #[cfg(windows)]
-    {
-        for attempt in 0..WINDOWS_SLOT_IO_RETRY_ATTEMPTS {
-            match std::fs::remove_file(path) {
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
-                Err(error) if is_transient_slot_io(&error) => {
-                    if attempt + 1 < WINDOWS_SLOT_IO_RETRY_ATTEMPTS {
-                        std::thread::sleep(WINDOWS_SLOT_IO_RETRY_DELAY);
-                    }
-                }
-                Ok(()) | Err(_) => return,
-            }
-        }
+fn schedule_owned_cleanup(owned: Vec<OwnedSlot>) {
+    if owned.is_empty() {
+        return;
     }
-    #[cfg(not(windows))]
-    {
-        let _ = std::fs::remove_file(path);
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            if let Err(error) = release_owned_files(&owned).await {
+                tracing::warn!(%error, "asynchronous execution-slot Drop cleanup failed; stale-slot reconciliation will retry later");
+            }
+        });
+        return;
+    }
+    for entry in &owned {
+        release_owned_file_sync_once(entry);
+    }
+}
+
+fn schedule_queue_ticket_cleanup(queue_root: PathBuf, class: String, path: PathBuf) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            if let Err(error) = remove_slot_file(&path).await
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(path = %path.display(), %error, "asynchronous queue-ticket Drop cleanup failed");
+            }
+            if let Err(error) = refresh_queue_head(&queue_root, &class, Duration::from_secs(1)).await {
+                tracing::warn!(%error, class = %class, "failed to promote execution queue head after ticket cleanup");
+            }
+        });
+        return;
+    }
+    let _ = std::fs::remove_file(path);
+}
+
+fn release_owned_file_sync_once(owned: &OwnedSlot) {
+    let Ok(bytes) = std::fs::read(&owned.path) else {
+        return;
+    };
+    let Ok(current) = serde_json::from_slice::<Value>(&bytes) else {
+        return;
+    };
+    if current.get("token").and_then(Value::as_str) == Some(owned.token.as_str()) {
+        let _ = std::fs::remove_file(&owned.path);
     }
 }
 
@@ -1535,7 +1634,67 @@ mod tests {
                 .unwrap();
             assert_eq!(scheduler.snapshot().await.unwrap().occupied, 1);
         }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && scheduler.snapshot().await.unwrap().occupied != 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         assert_eq!(scheduler.snapshot().await.unwrap().occupied, 0);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn drop_cleanup_never_blocks_tokio_on_windows_file_sharing_retry() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+
+        let temp = tempfile::tempdir().unwrap();
+        let scheduler = scheduler(temp.path(), 1, 0, 1);
+        let cancellation = CancellationToken::new();
+        let lease = scheduler
+            .acquire(AcquireRequest::interactive("drop-locked"), &cancellation)
+            .await
+            .unwrap();
+        let slot_path = lease.owned[0].path.clone();
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0x1 | 0x2)
+            .open(&slot_path)
+            .unwrap();
+        let started = Instant::now();
+        drop(lease);
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "Drop blocked a Tokio worker while Windows denied slot deletion"
+        );
+        drop(locked);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && slot_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            !slot_path.exists(),
+            "async Drop cleanup never reclaimed the slot"
+        );
+    }
+
+    #[tokio::test]
+    async fn interactive_heavy_request_consumes_weighted_capacity() {
+        let temp = tempfile::tempdir().unwrap();
+        let scheduler = scheduler(temp.path(), 4, 1, 2);
+        let cancellation = CancellationToken::new();
+        let mut lease = scheduler
+            .acquire(
+                AcquireRequest::interactive_weighted("sync-heavy", ResourceClass::Heavy, 2),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(lease.kind, ExecutionKind::Interactive);
+        assert_eq!(lease.resource_class, ResourceClass::Heavy);
+        assert_eq!(lease.weight, 2);
+        assert_eq!(lease.slots.len(), 2);
+        assert_eq!(scheduler.snapshot().await.unwrap().occupied, 2);
+        lease.release().await.unwrap();
     }
 
     #[tokio::test]

@@ -62,6 +62,41 @@ const killProcessTree = (child) => {
 export const spawnProcess = (file, args, options = {}) =>
   new Promise((resolve, reject) => {
     const startedAtMs = Date.now();
+    const captureLimit = Number.isFinite(options.maxCaptureChars) ? Math.max(0, options.maxCaptureChars) : null;
+    const createCapture = () => ({ head: "", tail: "", originalChars: 0, truncated: false });
+    const stdoutCapture = createCapture();
+    const stderrCapture = createCapture();
+    const appendCapture = (state, text) => {
+      const value = String(text ?? "");
+      state.originalChars += value.length;
+      if (captureLimit === null) { state.head += value; return; }
+      if (captureLimit === 0) { state.truncated ||= value.length > 0; return; }
+      if (!state.truncated && state.originalChars <= captureLimit) { state.head += value; return; }
+      const headLimit = Math.floor(captureLimit / 2);
+      const tailLimit = captureLimit - headLimit;
+      if (!state.truncated) {
+        const combined = state.head + value;
+        state.head = combined.slice(0, headLimit);
+        state.tail = combined.slice(Math.max(0, combined.length - tailLimit));
+        state.truncated = true;
+      } else {
+        state.tail = (state.tail + value).slice(-tailLimit);
+      }
+    };
+    const captureText = (state) => {
+      if (!state.truncated) return state.head;
+      if (captureLimit === 0) return "";
+      const omitted = Math.max(0, state.originalChars - state.head.length - state.tail.length);
+      return `${state.head}\n... middle capture omitted ${omitted} characters ...\n${state.tail}`;
+    };
+    const captureDetails = () => ({
+      stdout: captureText(stdoutCapture),
+      stderr: captureText(stderrCapture),
+      stdoutOriginalChars: stdoutCapture.originalChars,
+      stderrOriginalChars: stderrCapture.originalChars,
+      stdoutCaptureTruncated: stdoutCapture.truncated,
+      stderrCaptureTruncated: stderrCapture.truncated,
+    });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -164,22 +199,17 @@ export const spawnProcess = (file, args, options = {}) =>
       timer.unref?.();
     }
 
-    const appendCaptured = (current, text) => {
-      const limit = Number.isFinite(options.maxCaptureChars) ? Math.max(0, options.maxCaptureChars) : null;
-      const combined = current + text;
-      if (limit === null || combined.length <= limit) return combined;
-      return combined.slice(Math.max(0, combined.length - limit));
-    };
-
     child.stdout.on("data", (chunk) => {
       const text = chunk.toString();
-      stdout = appendCaptured(stdout, text);
+      appendCapture(stdoutCapture, text);
+      stdout = captureText(stdoutCapture);
       try { options.onStdout?.(text); } catch {}
     });
 
     child.stderr.on("data", (chunk) => {
       const text = chunk.toString();
-      stderr = appendCaptured(stderr, text);
+      appendCapture(stderrCapture, text);
+      stderr = captureText(stderrCapture);
       try { options.onStderr?.(text); } catch {}
     });
 
@@ -219,8 +249,7 @@ export const spawnProcess = (file, args, options = {}) =>
       }
 
       settleResolve({
-        stdout,
-        stderr,
+        ...captureDetails(),
         exitCode: code,
       });
     });

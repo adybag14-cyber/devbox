@@ -240,6 +240,10 @@ impl RuntimeExecutor {
             }));
         }
         Ok(ProcessOutput {
+            stdout_original_chars: stdout.chars().count(),
+            stderr_original_chars: stderr.chars().count(),
+            stdout_capture_truncated: false,
+            stderr_capture_truncated: false,
             stdout,
             stderr,
             exit_code,

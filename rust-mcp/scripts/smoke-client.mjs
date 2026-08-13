@@ -210,6 +210,13 @@ try {
   assert.equal(statusData.usageTelemetry?.tool?.dropped, 0);
   assert.equal(statusData.usageTelemetry?.tool?.writeFailures, 0);
   assert.equal(statusData.backgroundTasks?.["usage-tool-writer"]?.running, true);
+  assert.equal(statusData.executionStore?.ok, true);
+  assert.equal(statusData.executionStore?.jobsWritable, true);
+  assert.equal(statusData.executionStore?.schedulerWritable, true);
+  assert.ok(statusData.executionStore?.freeBytes > 0);
+  assert.equal(statusData.backgroundTasks?.["execution-store-probe"]?.running, true);
+  assert.equal(statusData.backgroundTasks?.["execution-store-probe"]?.consecutiveFailures, 0);
+  assert.ok(statusData.backgroundTasks?.["execution-store-probe"]?.lastSuccessUnixMs > 0);
   const allocator = statusData.performance?.process?.memory?.allocator;
   assert.equal(allocator?.backend, "std::alloc::System tracked requested bytes");
   assert.equal(Number.isFinite(allocator?.currentRequestedBytes), true);
@@ -226,6 +233,19 @@ try {
   assert.equal(statusData.activeRequestsIncludingCurrent >= 1, true);
   assert.equal(statusData.backgroundTasks?.["version-refresh"]?.running, true);
   assert.equal(statusData.backgroundTasks?.["job-maintenance"]?.running, true);
+  assert.equal(statusData.backgroundTasks?.["job-quota"]?.running, true);
+  assert.equal(statusData.backgroundTasks?.["job-quota"]?.consecutiveFailures, 0);
+  assert.ok(statusData.backgroundTasks?.["job-quota"]?.lastSuccessUnixMs > 0);
+  assert.equal(statusData.backgroundTasks?.["incident-monitor"]?.running, true);
+  assert.equal(statusData.backgroundTasks?.["performance-persistence"]?.consecutiveFailures, 0);
+  assert.ok(statusData.backgroundTasks?.["performance-persistence"]?.lastSuccessUnixMs > 0);
+  assert.equal(statusData.backgroundTasks?.["version-refresh"]?.consecutiveFailures, 0);
+  assert.ok(statusData.backgroundTasks?.["version-refresh"]?.lastSuccessUnixMs > 0);
+  assert.ok(Array.isArray(statusData.degradedSubsystems));
+  assert.equal(statusData.degradedSubsystems.length, 0);
+  assert.equal(statusData.jobQuota?.stale, false);
+  assert.ok(statusData.jobQuota?.summary?.quotaCheckedAtUtc);
+  assert.ok(statusData.jobQuota?.summary?.storeBytes >= 0);
   assert.equal(statusData.usageTelemetry?.tool?.dropped >= 0, true);
 
   for (const toolName of ["host_status", "windows_host_status"]) {

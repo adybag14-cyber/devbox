@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -60,11 +60,13 @@ import {
 import { trimText } from "./process-utils.js";
 import { shapeProcessOutput } from "./output-shaping.js";
 import { abortableSleep, waitForPathCondition } from "./wait-utils.js";
-import { getExecutionSlotSnapshot, withExecutionSlot } from "./execution-slots.js";
+import { getExecutionSlotSnapshot, probeExecutionSlotStoreWritable, withExecutionSlot } from "./execution-slots.js";
+import { refreshExecutionStoreHealth as probeExecutionStoreHealth } from "./execution-store-health.js";
 import {
   cancelDevboxJob,
   getDevboxJobLogs,
   getDevboxJobStatus,
+  inferJobResourceClass,
   reconcileOrphanedDevboxJobs,
   startDevboxJob,
   startDevboxProgramJob,
@@ -83,6 +85,43 @@ const activeMcpRequestControllers = new Map();
 const guardianStatePath = path.join(runDir, "guardian", "state.json");
 const startupStatePath = path.join(runDir, "startup-state.json");
 const mcpPerformanceStatePath = process.env.MCP_PERFORMANCE_STATE_PATH?.trim() ? path.resolve(process.env.MCP_PERFORMANCE_STATE_PATH.trim()) : path.join(runDir, "mcp-performance.json");
+const EXECUTION_STORE_PROBE_INTERVAL_MS = 15_000;
+const EXECUTION_STORE_PROBE_STALE_MS = 45_000;
+const EXECUTION_STORE_MIN_FREE_BYTES = 512 * 1024 * 1024;
+let executionStoreHealth = { ok: false, sampledAtUtc: null, sampledAtMs: 0, error: "execution-store probe has not completed yet" };
+
+const probeWritablePath = async (root, label) => {
+  await mkdir(root, { recursive: true });
+  const probePath = path.join(root, `.mcp-ready-${label}-${process.pid}-${randomUUID()}.tmp`);
+  let handle = null;
+  try {
+    handle = await open(probePath, "wx");
+    await handle.writeFile("ready\n", "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await rm(probePath, { force: true });
+    return true;
+  } finally {
+    try { await handle?.close(); } catch {}
+    await rm(probePath, { force: true }).catch(() => {});
+  }
+};
+
+
+const runExecutionStoreProbe = async () => {
+  executionStoreHealth = await probeExecutionStoreHealth({
+    jobsRoot,
+    probeWritablePath,
+    probeExecutionSlotStoreWritable,
+    statfs,
+    minimumFreeBytes: EXECUTION_STORE_MIN_FREE_BYTES,
+  });
+  return executionStoreHealth;
+};
+const executionStoreInitialProbe = runExecutionStoreProbe();
+const executionStoreProbeTimer = setInterval(() => { void runExecutionStoreProbe(); }, EXECUTION_STORE_PROBE_INTERVAL_MS);
+executionStoreProbeTimer.unref?.();
 
 const eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
 eventLoopHistogram.enable();
@@ -190,14 +229,17 @@ const COMMAND_OUTPUT_LIMIT_CHARS = Math.max(100, config.maxTextOutputChars === n
   : Math.min(config.maxTextOutputChars, config.maxCommandOutputChars));
 const INTERACTIVE_WAIT_MAX_SECONDS = Math.min(config.mcpWaitMaxSeconds, 85);
 const WAIT_FOR_FILE_DEFAULT_SECONDS = Math.min(60, INTERACTIVE_WAIT_MAX_SECONDS);
-const withInteractiveExecution = async ({ label, signal }, callback) =>
-  withExecutionSlot({
+const withInteractiveExecution = async ({ label, signal, command = "", program = "", args = [] }, callback) => {
+  const resourceClass = inferJobResourceClass({ command, program, args, requested: "auto" });
+  const weight = resourceClass === "heavy" ? config.mcpExecHeavyWeight : 1;
+  return withExecutionSlot({
     kind: "interactive",
     label,
     maxConcurrent: config.mcpExecMaxConcurrent,
     reservedInteractive: config.mcpExecReservedInteractive,
     watchMaxConcurrent: config.mcpWatchMaxConcurrent,
-    resourceClass: "light",
+    resourceClass,
+    weight,
     queueTimeoutMs: config.mcpExecQueueTimeoutMs,
     signal,
   }, async (lease) => {
@@ -213,6 +255,7 @@ const withInteractiveExecution = async ({ label, signal }, callback) =>
       throw error;
     }
   });
+};
 
 const SENSITIVE_ARGUMENT_KEY = /(token|secret|password|authorization|cookie|content_base64|expected_sha256)/i;
 const LARGE_TEXT_ARGUMENT_KEY = /^(command|content)$/i;
@@ -683,9 +726,11 @@ const fromProcessResult = (summary, result, extra = {}) => {
     mode: outputOptions.mode,
     max_chars: maxChars,
     max_lines: outputOptions.maxLines,
-    stdout_original_chars: stdout.originalChars,
-    stderr_original_chars: stderr.originalChars,
+    stdout_original_chars: Number.isFinite(result.stdoutOriginalChars) ? result.stdoutOriginalChars : stdout.originalChars,
+    stderr_original_chars: Number.isFinite(result.stderrOriginalChars) ? result.stderrOriginalChars : stderr.originalChars,
   };
+  if (typeof result.stdoutCaptureTruncated === "boolean") outputMetadata.stdout_capture_truncated = result.stdoutCaptureTruncated;
+  if (typeof result.stderrCaptureTruncated === "boolean") outputMetadata.stderr_capture_truncated = result.stderrCaptureTruncated;
   const baseData = extra.data && typeof extra.data === "object" ? extra.data : {};
 
   return successResult(summary, {
@@ -693,7 +738,7 @@ const fromProcessResult = (summary, result, extra = {}) => {
     stdout: stdout.text || undefined,
     stderr: stderr.text || undefined,
     exitCode: result.exitCode ?? null,
-    truncated: stdout.truncated || stderr.truncated,
+    truncated: result.stdoutCaptureTruncated === true || result.stderrCaptureTruncated === true || stdout.truncated || stderr.truncated,
   });
 };
 
@@ -797,6 +842,11 @@ const buildServer = ({ requestSignal } = {}) => {
             watchMaxConcurrent: config.mcpWatchMaxConcurrent,
           }),
           performance: getMcpPerformanceSnapshot(),
+          executionStore: {
+            ...executionStoreHealth,
+            ageMs: Math.max(0, Date.now() - Number(executionStoreHealth.sampledAtMs || 0)),
+            stale: Date.now() - Number(executionStoreHealth.sampledAtMs || 0) >= EXECUTION_STORE_PROBE_STALE_MS,
+          },
         };
 
         if (info.running) {
@@ -936,13 +986,14 @@ const buildServer = ({ requestSignal } = {}) => {
     ),
     async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines, user }, extra) => {
       try {
-        return await withInteractiveExecution({ label: "devbox_exec_readonly", signal: extra?.signal }, async (lease) => {
+        return await withInteractiveExecution({ label: "devbox_exec_readonly", signal: extra?.signal, command }, async (lease) => {
           const result = await execReadOnlyInDevbox({
             command,
             workingDir,
             timeoutMs: (timeoutSeconds + 5) * 1000,
             user,
             signal: extra?.signal,
+            maxCaptureChars: Math.max(COMMAND_OUTPUT_LIMIT_CHARS * 2, Number(maxOutputChars || 0) * 2),
           });
           return fromProcessResult(`Ran a read-only shell command in the ${runtimeLabel} at ${workingDir}.`, result, {
             data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
@@ -979,13 +1030,14 @@ const buildServer = ({ requestSignal } = {}) => {
     ),
     async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines, user }, extra) => {
       try {
-        return await withInteractiveExecution({ label: "devbox_exec", signal: extra?.signal }, async (lease) => {
+        return await withInteractiveExecution({ label: "devbox_exec", signal: extra?.signal, command }, async (lease) => {
           const result = await execInDevbox({
             command,
             workingDir,
             timeoutMs: (timeoutSeconds + 5) * 1000,
             user,
             signal: extra?.signal,
+            maxCaptureChars: Math.max(COMMAND_OUTPUT_LIMIT_CHARS * 2, Number(maxOutputChars || 0) * 2),
           });
           return fromProcessResult(`Ran a shell command in the ${runtimeLabel} at ${workingDir}.`, result, {
             data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
@@ -1021,7 +1073,7 @@ const buildServer = ({ requestSignal } = {}) => {
     ),
     async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines, user }, extra) => {
       try {
-        return await withInteractiveExecution({ label: "devbox_run_program", signal: extra?.signal }, async (lease) => {
+        return await withInteractiveExecution({ label: "devbox_run_program", signal: extra?.signal, program, args }, async (lease) => {
           const result = await runProgramInDevbox({
             program,
             args,
@@ -1029,6 +1081,7 @@ const buildServer = ({ requestSignal } = {}) => {
             timeoutMs: (timeoutSeconds + 5) * 1000,
             user,
             signal: extra?.signal,
+            maxCaptureChars: Math.max(COMMAND_OUTPUT_LIMIT_CHARS * 2, Number(maxOutputChars || 0) * 2),
           });
           return fromProcessResult(`Ran ${program} directly in the ${runtimeLabel}.`, result, {
             data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
@@ -1482,12 +1535,13 @@ const buildServer = ({ requestSignal } = {}) => {
 
   const hostExecHandler = async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines }, extra) => {
     try {
-      return await withInteractiveExecution({ label: "host_exec", signal: extra?.signal }, async (lease) => {
+      return await withInteractiveExecution({ label: "host_exec", signal: extra?.signal, command }, async (lease) => {
         const result = await runHostShellCommand({
           command,
           workingDir,
           timeoutMs: (timeoutSeconds + 5) * 1000,
           signal: extra?.signal,
+          maxCaptureChars: Math.max(COMMAND_OUTPUT_LIMIT_CHARS * 2, Number(maxOutputChars || 0) * 2),
         });
         return fromProcessResult(`Ran a ${hostCommandTitle.toLowerCase()} command in ${workingDir}.`, result, {
           data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
@@ -1501,13 +1555,14 @@ const buildServer = ({ requestSignal } = {}) => {
 
   const hostRunProgramHandler = async ({ program, args, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines }, extra) => {
     try {
-      return await withInteractiveExecution({ label: "host_run_program", signal: extra?.signal }, async (lease) => {
+      return await withInteractiveExecution({ label: "host_run_program", signal: extra?.signal, program, args }, async (lease) => {
         const result = await runAllowedProgram({
           program,
           args,
           workingDir,
           timeoutMs: (timeoutSeconds + 5) * 1000,
           signal: extra?.signal,
+          maxCaptureChars: Math.max(COMMAND_OUTPUT_LIMIT_CHARS * 2, Number(maxOutputChars || 0) * 2),
         });
         return fromProcessResult(`Ran ${program} on the ${hostTitle.toLowerCase()}.`, result, {
           data: { execution: { queue_wait_ms: lease.queueWaitMs, slot: lease.slot } },
@@ -2207,16 +2262,10 @@ app.get("/livez", (_req, res) => {
 });
 app.get("/readyz", async (_req, res) => {
   try {
-    if (!Number.isFinite(config.dockerCommandTimeoutMs) || config.dockerCommandTimeoutMs <= 0) {
-      throw new Error("DOCKER_COMMAND_TIMEOUT_MS must be greater than zero for readiness checks.");
-    }
     await jobsRootReady;
-    const jobsMetadata = await stat(jobsRoot);
-    if (!jobsMetadata.isDirectory()) {
-      throw new Error("Job store path is not a directory.");
-    }
-    const devbox = await getDevboxInfo();
-    const ready = devbox?.running === true;
+    await executionStoreInitialProbe.catch(() => {});
+    const ageMs = Date.now() - Number(executionStoreHealth.sampledAtMs || 0);
+    const ready = executionStoreHealth.ok === true && ageMs < EXECUTION_STORE_PROBE_STALE_MS;
     res.status(ready ? 200 : 503).json({ ok: ready });
   } catch (error) {
     console.warn("Readiness probe failed", error);

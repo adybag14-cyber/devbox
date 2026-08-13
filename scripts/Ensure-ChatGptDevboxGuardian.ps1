@@ -12,6 +12,22 @@ if ([string]::IsNullOrWhiteSpace($ProjectRoot)) {
 }
 $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 
+function Get-EnsureMutexName {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Root.TrimEnd('\').ToLowerInvariant())
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $hash = $sha.ComputeHash($bytes) } finally { $sha.Dispose() }
+    $suffix = ([BitConverter]::ToString($hash).Replace('-', '').Substring(0, 16))
+    return "Global\ChatGptDevboxGuardianEnsure-$suffix"
+}
+$ensureMutex = New-Object System.Threading.Mutex($false, (Get-EnsureMutexName -Root $ProjectRoot))
+try {
+    $ensureMutexHeld = $ensureMutex.WaitOne(0, $false)
+} catch [System.Threading.AbandonedMutexException] {
+    $ensureMutexHeld = $true
+}
+if (-not $ensureMutexHeld) { exit 0 }
+
 $powerShellResolver = Join-Path $PSScriptRoot 'Resolve-DevboxPowerShell.ps1'
 . $powerShellResolver
 $powerShellExe = Resolve-DevboxPowerShellExecutable
@@ -89,10 +105,7 @@ function Get-LiveGuardianProcess {
         }
     }
 
-    $escapedScriptPath = [regex]::Escape($guardianScript)
-    return Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-        Where-Object { ([string]$_.CommandLine) -match $escapedScriptPath } |
-        Select-Object -First 1
+    return $null
 }
 
 function Get-LiveGuardianSupervisorProcess {
@@ -209,6 +222,7 @@ function Test-GuardianHeartbeatFresh {
     }
 }
 
+Write-EnsureLog -Message 'ensure invocation start'
 Remove-StaleGuardianArtifacts
 
 $existing = Get-LiveGuardianProcess
@@ -277,9 +291,12 @@ $arguments = @(
 
 Write-EnsureLog -Message 'guardian not running; starting detached guardian process directly'
 Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden | Out-Null
-Start-Sleep -Seconds 4
-
-$started = Get-LiveGuardianProcess
+$started = $null
+$startDeadline = [DateTime]::UtcNow.AddSeconds(5)
+do {
+    Start-Sleep -Milliseconds 250
+    $started = Get-LiveGuardianProcess
+} while (-not $started -and [DateTime]::UtcNow -lt $startDeadline)
 $escapedWatcherPath = [regex]::Escape($guardianScript)
 if (-not $started -or ([string]$started.CommandLine) -notmatch $escapedWatcherPath) {
     Write-EnsureLog -Level 'ERROR' -Message 'guardian watcher failed to start persistently'

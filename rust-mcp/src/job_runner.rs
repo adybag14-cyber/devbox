@@ -63,10 +63,7 @@ impl HeartbeatState {
 
     async fn set_child_pid(&self, pid: u32) {
         self.child_pid.store(pid, Ordering::Relaxed);
-        #[cfg(windows)]
-        let instance = crate::windows_process::process_instance(pid).unwrap_or(0);
-        #[cfg(not(windows))]
-        let instance = 0;
+        let instance = crate::process_identity::process_instance(pid).unwrap_or(0);
         self.child_process_instance
             .store(instance, Ordering::Relaxed);
         self.write().await;
@@ -465,14 +462,7 @@ async fn execute_runtime(
 }
 
 fn runner_process_instance() -> Option<u64> {
-    #[cfg(windows)]
-    {
-        crate::windows_process::current_process_instance()
-    }
-    #[cfg(not(windows))]
-    {
-        None
-    }
+    crate::process_identity::current_process_instance()
 }
 
 fn resolve_working_dir(config: &Config, request: &JobRequest) -> PathBuf {
@@ -810,6 +800,10 @@ mod tests {
             let output = crate::process::ProcessOutput {
                 stdout: "rustc".to_owned(),
                 stderr: String::new(),
+                stdout_original_chars: 5,
+                stderr_original_chars: 0,
+                stdout_capture_truncated: false,
+                stderr_capture_truncated: false,
                 exit_code: 0,
                 pid: 42,
                 elapsed_ms: 1,
