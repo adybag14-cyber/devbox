@@ -511,7 +511,9 @@ export const cancelDevboxJob = async (jobId) => {
   if (ownership.alive) {
     await killDetachedTree(Number(statusValue.runnerPid));
   }
-  return { ...cancelled, runnerAlive: false, cancellationKillSkipped: !ownership.alive };
+  return ownership.alive
+    ? { ...cancelled, runnerAlive: false }
+    : { ...cancelled, runnerAlive: false, cancellationKillSkipped: true };
 };
 
 export const asyncJobsInternals = {
