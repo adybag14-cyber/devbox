@@ -65,31 +65,34 @@ export const spawnProcess = (file, args, options = {}) =>
     const startedAtMs = Date.now();
     const captureLimit = Number.isFinite(options.maxCaptureChars) ? Math.max(0, options.maxCaptureChars) : null;
     const createCapture = () => ({ head: "", tail: "", originalChars: 0, truncated: false });
+    const codePointLength = (value) => { let count = 0; for (const _ of String(value ?? "")) count += 1; return count; };
+    const takeCodePoints = (value, limit) => Array.from(String(value ?? "")).slice(0, Math.max(0, limit)).join("");
+    const tailCodePoints = (value, limit) => limit <= 0 ? "" : Array.from(String(value ?? "")).slice(-limit).join("");
     const stdoutCapture = createCapture();
     const stderrCapture = createCapture();
     const stdoutDecoder = new StringDecoder("utf8");
     const stderrDecoder = new StringDecoder("utf8");
     const appendCapture = (state, text) => {
       const value = String(text ?? "");
-      state.originalChars += value.length;
+      state.originalChars += codePointLength(value);
       if (captureLimit === null) { state.head += value; return; }
-      if (captureLimit === 0) { state.truncated ||= value.length > 0; return; }
+      if (captureLimit === 0) { state.truncated ||= codePointLength(value) > 0; return; }
       if (!state.truncated && state.originalChars <= captureLimit) { state.head += value; return; }
       const headLimit = Math.floor(captureLimit / 2);
       const tailLimit = captureLimit - headLimit;
       if (!state.truncated) {
         const combined = state.head + value;
-        state.head = combined.slice(0, headLimit);
-        state.tail = combined.slice(Math.max(0, combined.length - tailLimit));
+        state.head = takeCodePoints(combined, headLimit);
+        state.tail = tailCodePoints(combined, tailLimit);
         state.truncated = true;
       } else {
-        state.tail = (state.tail + value).slice(-tailLimit);
+        state.tail = tailCodePoints(state.tail + value, tailLimit);
       }
     };
     const captureText = (state) => {
       if (!state.truncated) return state.head;
       if (captureLimit === 0) return "";
-      const omitted = Math.max(0, state.originalChars - state.head.length - state.tail.length);
+      const omitted = Math.max(0, state.originalChars - codePointLength(state.head) - codePointLength(state.tail));
       return `${state.head}\n... middle capture omitted ${omitted} characters ...\n${state.tail}`;
     };
     const captureDetails = () => ({

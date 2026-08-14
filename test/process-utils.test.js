@@ -93,8 +93,20 @@ test("spawnProcess preserves UTF-8 sequences split across stream chunks", async 
     { maxCaptureChars: 32 },
   );
   assert.equal(result.stdout, "🙂");
-  assert.equal(result.stdoutOriginalChars, 2);
+  assert.equal(result.stdoutOriginalChars, 1);
   assert.equal(result.stdoutCaptureTruncated, false);
+});
+
+test("bounded capture never splits astral Unicode code points", async () => {
+  const result = await spawnProcess(
+    process.execPath,
+    ["-e", "process.stdout.write('\u{1F642}A\u{1F642}B')"],
+    { maxCaptureChars: 2 },
+  );
+  assert.equal(result.stdoutOriginalChars, 4);
+  assert.equal(result.stdoutCaptureTruncated, true);
+  assert.equal(Buffer.from(result.stdout, "utf8").toString("utf8"), result.stdout);
+  assert.match(result.stdout, /^\u{1F642}[\s\S]*B$/u);
 });
 
 test("spawnProcess streams full output while bounding in-memory capture for background jobs", async () => {

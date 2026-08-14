@@ -64,6 +64,9 @@ pub fn process_matches_instance(pid: u32, expected: Option<u64>) -> bool {
     }
 }
 fn process_alive_without_identity(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
     #[cfg(windows)]
     {
         crate::windows_process::process_alive(pid)
@@ -89,6 +92,11 @@ fn process_alive_without_identity(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pid_zero_is_never_treated_as_a_live_identity_fallback() {
+        assert!(!process_matches_instance(0, None));
+    }
 
     #[test]
     fn current_process_identity_is_stable_on_supported_platforms() {
