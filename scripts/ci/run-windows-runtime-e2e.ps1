@@ -77,7 +77,15 @@ try {
     $ensureLog = Join-Path $guardianDir 'ensure.log'
     [IO.File]::WriteAllText($ensureLog, ('x' * (1MB + 1024)), [Text.UTF8Encoding]::new($false))
 
-    & (Join-Path $root 'scripts\Install-ChatGptDevboxGuardian.ps1') -Runtime host -TaskPrefix $taskPrefix | Out-Host
+    try {
+        & (Join-Path $root 'scripts\Install-ChatGptDevboxGuardian.ps1') -Runtime host -TaskPrefix $taskPrefix | Out-Host
+    } catch {
+        Write-Host '--- Guardian Ensure diagnostic tail ---'
+        Get-Content $ensureLog -Tail 80 -ErrorAction SilentlyContinue | Out-Host
+        Write-Host '--- Guardian supervisor diagnostic tail ---'
+        Get-Content (Join-Path $guardianDir 'guardian.log') -Tail 80 -ErrorAction SilentlyContinue | Out-Host
+        throw
+    }
     if (Test-Path $staleGuardianArtifact) { throw 'Guardian Ensure did not prune stale atomic-write debris.' }
     if (-not (Test-Path "$ensureLog.1")) { throw 'Guardian Ensure did not rotate the oversized auxiliary log.' }
     $startupTask = Get-ScheduledTask -TaskName "$taskPrefix-Startup"

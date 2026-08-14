@@ -290,16 +290,20 @@ $arguments = @(
 )
 
 Write-EnsureLog -Message 'guardian not running; starting detached guardian process directly'
-Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden | Out-Null
+$watcher = Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru
 $started = $null
-$startDeadline = [DateTime]::UtcNow.AddSeconds(5)
+$startDeadline = [DateTime]::UtcNow.AddSeconds(15)
 do {
     Start-Sleep -Milliseconds 250
     $started = Get-LiveGuardianProcess
+    if (-not $started -and $watcher.HasExited) {
+        Write-EnsureLog -Level 'ERROR' -Message ("guardian watcher exited during startup pid={0} exitCode={1}" -f $watcher.Id, $watcher.ExitCode)
+        exit 1
+    }
 } while (-not $started -and [DateTime]::UtcNow -lt $startDeadline)
 $escapedWatcherPath = [regex]::Escape($guardianScript)
 if (-not $started -or ([string]$started.CommandLine) -notmatch $escapedWatcherPath) {
-    Write-EnsureLog -Level 'ERROR' -Message 'guardian watcher failed to start persistently'
+    Write-EnsureLog -Level 'ERROR' -Message ("guardian watcher failed to start persistently launchedPid={0} launchedAlive={1}" -f $watcher.Id, (-not $watcher.HasExited))
     exit 1
 }
 

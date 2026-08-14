@@ -251,11 +251,20 @@ Write-JsonFile -Path $desiredStatePath -Value @{
     Source = 'Install-ChatGptDevboxGuardian.ps1'
 }
 
+$powerShellExe = Resolve-DevboxPowerShellExecutable
+
+# Prove Guardian can start before replacing the existing scheduled-task safety net.
+# This also avoids a newly registered AtStartup/StartWhenAvailable task racing the
+# installer's own Ensure invocation on machines that have already booted.
+& $powerShellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript -ProjectRoot $projectRoot | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Guardian ensure process failed with exit code $LASTEXITCODE."
+}
+
 foreach ($taskName in @($startupTaskName, $logonTaskName, $keepAliveTaskName, $elevatedStartTaskName)) {
     Remove-TaskIfPresent -TaskName $taskName
 }
 
-$powerShellExe = Resolve-DevboxPowerShellExecutable
 $ensureActionArgs = @(
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-WindowStyle', 'Hidden', '-File', ('"{0}"' -f $ensureScript),
@@ -297,11 +306,6 @@ $elevatedSettings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 Register-ScheduledTask -TaskName $elevatedStartTaskName -Action $elevatedAction -Settings $elevatedSettings -Principal $interactivePrincipal -Force | Out-Null
-
-& $powerShellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "Guardian ensure process failed with exit code $LASTEXITCODE."
-}
 
 $taskInfo = @(
     Get-ScheduledTaskInfo -TaskName $startupTaskName | Select-Object @{Name = 'TaskName'; Expression = { $startupTaskName } }, LastRunTime, NextRunTime, LastTaskResult
