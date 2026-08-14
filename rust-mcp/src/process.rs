@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::OsString,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{ExitStatus, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -107,7 +107,11 @@ struct CaptureAccumulator {
     truncated: bool,
 }
 
-pub(crate) async fn read_text_file_bounded(path: &Path, limit: Option<usize>) -> CaptureResult {
+#[cfg(any(windows, test))]
+pub(crate) async fn read_text_file_bounded(
+    path: &std::path::Path,
+    limit: Option<usize>,
+) -> CaptureResult {
     let Ok(mut file) = tokio::fs::File::open(path).await else {
         return CaptureResult {
             text: String::new(),
