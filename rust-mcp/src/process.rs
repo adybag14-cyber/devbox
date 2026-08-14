@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     ffi::OsString,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{ExitStatus, Stdio},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
@@ -92,10 +92,10 @@ impl std::fmt::Display for ProcessError {
 impl std::error::Error for ProcessError {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CaptureResult {
-    text: String,
-    original_chars: usize,
-    truncated: bool,
+pub(crate) struct CaptureResult {
+    pub(crate) text: String,
+    pub(crate) original_chars: usize,
+    pub(crate) truncated: bool,
 }
 
 #[derive(Debug)]
@@ -105,6 +105,32 @@ struct CaptureAccumulator {
     original_chars: usize,
     limit: Option<usize>,
     truncated: bool,
+}
+
+pub(crate) async fn read_text_file_bounded(path: &Path, limit: Option<usize>) -> CaptureResult {
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return CaptureResult {
+            text: String::new(),
+            original_chars: 0,
+            truncated: false,
+        };
+    };
+    let mut capture = CaptureAccumulator::new(limit);
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let mut pending_utf8 = Vec::with_capacity(4);
+    loop {
+        let count = match file.read(&mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        let mut decoded = String::new();
+        append_stream_utf8(&mut decoded, &mut pending_utf8, &buffer[..count]);
+        capture.push(&decoded);
+    }
+    if !pending_utf8.is_empty() {
+        capture.push(&String::from_utf8_lossy(&pending_utf8));
+    }
+    capture.snapshot()
 }
 
 impl CaptureAccumulator {
@@ -594,20 +620,13 @@ where
 {
     let captured = Arc::new(Mutex::new(CaptureAccumulator::new(max_capture_chars)));
     let shared = captured.clone();
-    let task = tokio::spawn(capture_stream(
-        reader,
-        stream,
-        max_capture_chars,
-        output_tx,
-        shared,
-    ));
+    let task = tokio::spawn(capture_stream(reader, stream, output_tx, shared));
     CaptureTask { task, captured }
 }
 
 async fn capture_stream<R>(
     mut reader: R,
     stream: OutputStream,
-    _max_capture_chars: Option<usize>,
     output_tx: Option<Sender<OutputChunk>>,
     captured: Arc<Mutex<CaptureAccumulator>>,
 ) where
@@ -1007,6 +1026,19 @@ mod tests {
         append_stream_utf8(&mut captured, &mut pending, b"a\xffb");
         assert!(pending.is_empty());
         assert_eq!(captured, "a�b");
+    }
+
+    #[tokio::test]
+    async fn bounded_file_capture_limits_elevated_output_files_without_reading_them_whole() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("elevated-stdout.txt");
+        tokio::fs::write(&path, "x".repeat(2 * 1024 * 1024))
+            .await
+            .unwrap();
+        let capture = read_text_file_bounded(&path, Some(8 * 1024)).await;
+        assert_eq!(capture.original_chars, 2 * 1024 * 1024);
+        assert!(capture.truncated);
+        assert!(capture.text.chars().count() < 9 * 1024);
     }
 
     #[tokio::test]

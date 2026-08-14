@@ -29,6 +29,9 @@ pub fn process_instance(pid: u32) -> Option<u64> {
 
 #[cfg(target_os = "macos")]
 #[must_use]
+/// Return a macOS process start-time identity. `sysinfo` exposes whole-second
+/// precision here, so an extremely rare PID reuse inside the same second cannot
+/// be distinguished by this token alone; callers still require PID liveness.
 pub fn process_instance(pid: u32) -> Option<u64> {
     use sysinfo::{Pid, ProcessesToUpdate, System};
     let pid = Pid::from_u32(pid);
@@ -55,10 +58,34 @@ pub fn process_matches_instance(pid: u32, expected: Option<u64>) -> bool {
     let observed = process_instance(pid);
     match (expected, observed) {
         (Some(expected), Some(observed)) => expected == observed,
-        (Some(_) | None, None) => false,
+        (Some(_), None) => false,
         (None, Some(_)) => true,
+        (None, None) => process_alive_without_identity(pid),
     }
 }
+fn process_alive_without_identity(pid: u32) -> bool {
+    #[cfg(windows)]
+    {
+        crate::windows_process::process_alive(pid)
+    }
+    #[cfg(unix)]
+    {
+        use nix::{errno::Errno, sys::signal, unistd::Pid};
+        let Ok(pid) = i32::try_from(pid) else {
+            return false;
+        };
+        matches!(
+            signal::kill(Pid::from_raw(pid), None),
+            Ok(()) | Err(Errno::EPERM)
+        )
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -71,6 +98,7 @@ mod tests {
             let second = current_process_instance().expect("current process instance repeat");
             assert_eq!(first, second);
             assert!(process_matches_instance(std::process::id(), Some(first)));
+            assert!(process_matches_instance(std::process::id(), None));
             assert!(!process_matches_instance(
                 std::process::id(),
                 Some(first.wrapping_add(1))

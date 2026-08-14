@@ -461,8 +461,8 @@ async fn execute_runtime(
     result
 }
 
-fn runner_process_instance() -> Option<u64> {
-    crate::process_identity::current_process_instance()
+fn runner_process_instance() -> Option<String> {
+    crate::process_identity::current_process_instance().map(|value| value.to_string())
 }
 
 fn resolve_working_dir(config: &Config, request: &JobRequest) -> PathBuf {

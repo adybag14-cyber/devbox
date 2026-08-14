@@ -519,7 +519,7 @@ fn is_missing_container_error(error: &anyhow::Error) -> bool {
     text.contains("no such container") || text.contains("no such object")
 }
 
-async fn replace_file_preserving_previous(
+pub(crate) async fn replace_file_preserving_previous(
     temporary: &std::path::Path,
     path: &std::path::Path,
 ) -> Result<()> {

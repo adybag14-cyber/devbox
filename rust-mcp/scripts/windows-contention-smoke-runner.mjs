@@ -65,6 +65,7 @@ const server = spawn(binaryPath, [], {
     MCP_EXEC_SLOT_ROOT: path.join(runtimeDir, "slots"),
     MCP_EXEC_MAX_CONCURRENT: "4",
     MCP_EXEC_RESERVED_INTERACTIVE: "1",
+    MCP_EXEC_HEAVY_WEIGHT: "2",
     MCP_WATCH_MAX_CONCURRENT: "4",
     MCP_JOB_HEARTBEAT_MS: "1000",
     MCP_JOB_ORPHAN_STALE_MS: "3000",

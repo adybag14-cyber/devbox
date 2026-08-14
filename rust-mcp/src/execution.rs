@@ -849,7 +849,7 @@ async fn acquire_queue_head_lock(
     queue_root: &Path,
     class: &str,
     timeout: Duration,
-) -> Result<OwnedSlot> {
+) -> Result<ClaimLock> {
     let path = queue_root.join(format!(".{class}-head.lock"));
     let deadline = Instant::now()
         + timeout
@@ -866,10 +866,10 @@ async fn acquire_queue_head_lock(
         });
         match create_json_new(&path, &owner).await {
             Ok(()) => {
-                return Ok(OwnedSlot {
+                return Ok(ClaimLock {
                     path,
                     token,
-                    index: 0,
+                    released: false,
                 });
             }
             Err(error) if is_already_exists(&error) => {
@@ -929,7 +929,7 @@ async fn refresh_queue_head(
     class: &str,
     timeout: Duration,
 ) -> Result<Option<String>> {
-    let lock = acquire_queue_head_lock(queue_root, class, timeout).await?;
+    let mut lock = acquire_queue_head_lock(queue_root, class, timeout).await?;
     let result = async {
         let prefix = format!("{class}-");
         let mut reader = match fs::read_dir(queue_root).await {
@@ -957,7 +957,7 @@ async fn refresh_queue_head(
         Ok(head)
     }
     .await;
-    let release_result = release_owned_file(&lock).await;
+    let release_result = lock.release().await;
     match (result, release_result) {
         (Ok(value), Ok(())) => Ok(value),
         (Err(error), _) | (Ok(_), Err(error)) => Err(error),
@@ -1647,6 +1647,25 @@ mod tests {
             .unwrap();
         assert_eq!(lease.slots, vec![0]);
         lease.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dropped_queue_head_lock_is_released_by_nonblocking_raii_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let queue_root = temp.path().join("queue");
+        fs::create_dir_all(&queue_root).await.unwrap();
+        let lock_path = queue_root.join(".fixture-head.lock");
+        {
+            let _lock = acquire_queue_head_lock(&queue_root, "fixture", Duration::from_secs(1))
+                .await
+                .unwrap();
+            assert!(lock_path.exists());
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline && lock_path.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!lock_path.exists(), "dropped queue-head lock was stranded");
     }
 
     #[tokio::test]

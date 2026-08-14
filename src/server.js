@@ -119,7 +119,7 @@ const runExecutionStoreProbe = async () => {
   });
   return executionStoreHealth;
 };
-const executionStoreInitialProbe = runExecutionStoreProbe();
+const executionStoreInitialProbe = runExecutionStoreProbe().catch(() => executionStoreHealth);
 const executionStoreProbeTimer = setInterval(() => { void runExecutionStoreProbe(); }, EXECUTION_STORE_PROBE_INTERVAL_MS);
 executionStoreProbeTimer.unref?.();
 
@@ -230,7 +230,8 @@ const COMMAND_OUTPUT_LIMIT_CHARS = Math.max(100, config.maxTextOutputChars === n
 const INTERACTIVE_WAIT_MAX_SECONDS = Math.min(config.mcpWaitMaxSeconds, 85);
 const WAIT_FOR_FILE_DEFAULT_SECONDS = Math.min(60, INTERACTIVE_WAIT_MAX_SECONDS);
 const withInteractiveExecution = async ({ label, signal, command = "", program = "", args = [] }, callback) => {
-  const resourceClass = inferJobResourceClass({ command, program, args, requested: "auto" });
+  const inferredResourceClass = inferJobResourceClass({ command, program, args, requested: "auto" });
+  const resourceClass = inferredResourceClass === "watch" ? "light" : inferredResourceClass;
   const weight = resourceClass === "heavy" ? config.mcpExecHeavyWeight : 1;
   return withExecutionSlot({
     kind: "interactive",

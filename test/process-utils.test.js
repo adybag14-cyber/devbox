@@ -85,6 +85,18 @@ test("stderr-derived process summaries are bounded", () => {
   assert.match(message, /error summary truncated/u);
 });
 
+
+test("spawnProcess preserves UTF-8 sequences split across stream chunks", async () => {
+  const result = await spawnProcess(
+    process.execPath,
+    ["-e", "const b=Buffer.from('🙂','utf8'); process.stdout.write(b.subarray(0,2)); setTimeout(()=>process.stdout.write(b.subarray(2)),20);"],
+    { maxCaptureChars: 32 },
+  );
+  assert.equal(result.stdout, "🙂");
+  assert.equal(result.stdoutOriginalChars, 2);
+  assert.equal(result.stdoutCaptureTruncated, false);
+});
+
 test("spawnProcess streams full output while bounding in-memory capture for background jobs", async () => {
   let streamedStdout = "";
   let streamedStderr = "";

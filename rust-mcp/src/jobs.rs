@@ -1239,8 +1239,18 @@ fn u32_field(object: &Map<String, Value>, key: &str) -> Option<u32> {
 
 fn runner_owner_alive(object: &Map<String, Value>) -> std::future::Ready<bool> {
     let alive = u32_field(object, "runnerPid").is_some_and(|pid| {
-        let instance = object.get("runnerProcessInstance").and_then(Value::as_u64);
-        crate::process_identity::process_matches_instance(pid, instance)
+        match object.get("runnerProcessInstance") {
+            Some(Value::Number(value)) => {
+                crate::process_identity::process_matches_instance(pid, value.as_u64())
+            }
+            Some(Value::String(value)) => match value.parse::<u64>() {
+                Ok(instance) => {
+                    crate::process_identity::process_matches_instance(pid, Some(instance))
+                }
+                Err(_) => crate::process_identity::process_matches_instance(pid, None),
+            },
+            _ => crate::process_identity::process_matches_instance(pid, None),
+        }
     });
     std::future::ready(alive)
 }

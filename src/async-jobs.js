@@ -82,12 +82,14 @@ const runnerOwnerState = async (paths, value) => {
   const pid = Number(value?.runnerPid);
   const processPresent = processAlive(pid);
   const heartbeat = await readHeartbeatState(paths);
-  const expectedInstance = typeof value?.runnerProcessInstance === "string" ? value.runnerProcessInstance : null;
-  const actualInstance = typeof heartbeat.value?.runnerProcessInstance === "string" ? heartbeat.value.runnerProcessInstance : null;
+  const normalizeInstance = (instance) => (typeof instance === "string" || typeof instance === "number") ? String(instance) : null;
+  const expectedInstance = normalizeInstance(value?.runnerProcessInstance);
+  const actualInstance = normalizeInstance(heartbeat.value?.runnerProcessInstance);
   const staleMs = Math.max(1000, config.mcpJobOrphanStaleMs);
   const identityMaxAgeMs = Math.max(60_000, staleMs * 4);
   const identityFresh = heartbeat.ageMs !== null && heartbeat.ageMs < identityMaxAgeMs;
-  const instanceMatches = expectedInstance === null || (identityFresh && actualInstance === expectedInstance);
+  const identityComparable = identityFresh && expectedInstance !== null && actualInstance !== null;
+  const instanceMatches = !identityComparable || actualInstance === expectedInstance;
   return {
     alive: processPresent && instanceMatches,
     processPresent,
@@ -367,39 +369,47 @@ export const reconcileOrphanedDevboxJobs = async () => {
     summary.scanned += 1;
     const paths = jobPaths(name);
     try {
-      const jobBytes = await shallowDirectoryBytes(paths.dir);
-      summary.storeBytes += jobBytes;
       const status = await getDevboxJobStatus(name);
       if (status.status === "interrupted") summary.interrupted += 1;
-      else if (TERMINAL_STATUSES.has(status.status)) summary.terminal += 1;
-      else {
+      const terminal = TERMINAL_STATUSES.has(status.status);
+      if (!terminal) {
         summary.active += 1;
+        summary.storeBytes += await shallowDirectoryBytes(paths.dir);
         continue;
       }
+      summary.terminal += 1;
 
       const terminalAtMs = Date.parse(status.completedAtUtc ?? status.createdAtUtc ?? "");
       if (retentionMs > 0 && Number.isFinite(terminalAtMs) && Date.now() - terminalAtMs >= retentionMs) {
         await rm(paths.dir, { recursive: true, force: true });
-        summary.storeBytes = Math.max(0, summary.storeBytes - jobBytes);
         summary.deleted += 1;
         continue;
       }
-      terminalForQuota.push({ name, dir: paths.dir, bytes: jobBytes, terminalAtMs: Number.isFinite(terminalAtMs) ? terminalAtMs : 0 });
 
-      const rawStatus = await readJson(paths.status);
-      if (rawStatus.maintenanceReconciledAtUtc) continue;
-      const [stdoutCompaction, stderrCompaction] = await Promise.all([
-        compactLegacyLogFile(paths.stdout),
-        compactLegacyLogFile(paths.stderr),
-      ]);
-      const compacted = stdoutCompaction.compacted || stderrCompaction.compacted;
-      if (compacted) summary.compactedLogs += 1;
-      await writeJsonAtomic(paths.status, {
-        ...rawStatus,
-        maintenanceReconciledAtUtc: new Date().toISOString(),
-        legacyLogsCompacted: compacted,
-      });
-      summary.maintained += 1;
+      let rawStatus = await readJson(paths.status);
+      let jobBytes = Number(rawStatus.maintenanceBytes);
+      if (!Number.isFinite(jobBytes) || jobBytes < 0 || !rawStatus.maintenanceReconciledAtUtc) {
+        let compacted = rawStatus.legacyLogsCompacted === true;
+        if (!rawStatus.maintenanceReconciledAtUtc) {
+          const [stdoutCompaction, stderrCompaction] = await Promise.all([
+            compactLegacyLogFile(paths.stdout),
+            compactLegacyLogFile(paths.stderr),
+          ]);
+          compacted = stdoutCompaction.compacted || stderrCompaction.compacted;
+          if (compacted) summary.compactedLogs += 1;
+          summary.maintained += 1;
+        }
+        jobBytes = await shallowDirectoryBytes(paths.dir);
+        rawStatus = {
+          ...rawStatus,
+          maintenanceReconciledAtUtc: rawStatus.maintenanceReconciledAtUtc ?? new Date().toISOString(),
+          legacyLogsCompacted: compacted,
+          maintenanceBytes: jobBytes,
+        };
+        await writeJsonAtomic(paths.status, rawStatus);
+      }
+      summary.storeBytes += jobBytes;
+      terminalForQuota.push({ name, dir: paths.dir, bytes: jobBytes, terminalAtMs: Number.isFinite(terminalAtMs) ? terminalAtMs : 0 });
     } catch {
       summary.errors += 1;
     }
@@ -409,14 +419,24 @@ export const reconcileOrphanedDevboxJobs = async () => {
   const maxBytes = Math.max(0, Number(config.mcpJobStoreMaxBytes) || 0);
   const maxJobs = Math.max(0, Number(config.mcpJobStoreMaxTerminalJobs) || 0);
   const activeBytes = Math.max(0, summary.storeBytes - terminalForQuota.reduce((sum, job) => sum + job.bytes, 0));
-  const targetBytes = maxBytes > 0 && activeBytes < maxBytes ? Math.max(0, Math.floor(maxBytes * 0.9) - activeBytes) : Number.POSITIVE_INFINITY;
+  const bytePressure = maxBytes > 0 && summary.storeBytes > maxBytes;
+  const countPressure = maxJobs > 0 && terminalForQuota.length > maxJobs;
+  const canReduceBytePressure = bytePressure && activeBytes < maxBytes;
+  const targetBytes = canReduceBytePressure ? Math.max(0, Math.floor(maxBytes * 0.9) - activeBytes) : Number.POSITIVE_INFINITY;
   const targetJobs = maxJobs > 0 ? Math.floor(maxJobs * 0.9) : Number.POSITIVE_INFINITY;
   let terminalBytes = terminalForQuota.reduce((sum, job) => sum + job.bytes, 0);
-  summary.quotaPressure = (maxBytes > 0 && summary.storeBytes > maxBytes) || (maxJobs > 0 && terminalForQuota.length > maxJobs);
-  if (summary.quotaPressure && !(maxBytes > 0 && activeBytes >= maxBytes)) {
+  summary.quotaPressure = bytePressure || countPressure;
+  if (canReduceBytePressure || countPressure) {
     for (const job of terminalForQuota) {
-      if (terminalBytes <= targetBytes && summary.terminalRetained <= targetJobs) break;
-      await rm(job.dir, { recursive: true, force: true }).catch(() => {});
+      const bytesSatisfied = !canReduceBytePressure || terminalBytes <= targetBytes;
+      const countSatisfied = summary.terminalRetained <= targetJobs;
+      if (bytesSatisfied && countSatisfied) break;
+      try {
+        await rm(job.dir, { recursive: true, force: true });
+      } catch {
+        summary.errors += 1;
+        continue;
+      }
       terminalBytes = Math.max(0, terminalBytes - job.bytes);
       summary.storeBytes = Math.max(0, summary.storeBytes - job.bytes);
       summary.terminalRetained = Math.max(0, summary.terminalRetained - 1);

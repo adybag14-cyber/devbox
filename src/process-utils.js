@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 export const MAX_PROCESS_ERROR_MESSAGE_CHARS = 4096;
 
@@ -66,6 +67,8 @@ export const spawnProcess = (file, args, options = {}) =>
     const createCapture = () => ({ head: "", tail: "", originalChars: 0, truncated: false });
     const stdoutCapture = createCapture();
     const stderrCapture = createCapture();
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
     const appendCapture = (state, text) => {
       const value = String(text ?? "");
       state.originalChars += value.length;
@@ -199,19 +202,21 @@ export const spawnProcess = (file, args, options = {}) =>
       timer.unref?.();
     }
 
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
+    const pushStdout = (text) => {
+      if (!text) return;
       appendCapture(stdoutCapture, text);
       stdout = captureText(stdoutCapture);
       try { options.onStdout?.(text); } catch {}
-    });
-
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
+    };
+    const pushStderr = (text) => {
+      if (!text) return;
       appendCapture(stderrCapture, text);
       stderr = captureText(stderrCapture);
       try { options.onStderr?.(text); } catch {}
-    });
+    };
+
+    child.stdout.on("data", (chunk) => pushStdout(stdoutDecoder.write(chunk)));
+    child.stderr.on("data", (chunk) => pushStderr(stderrDecoder.write(chunk)));
 
     child.on("error", (error) => {
       settleReject(
@@ -225,6 +230,8 @@ export const spawnProcess = (file, args, options = {}) =>
     });
 
     child.on("close", (code, signal) => {
+      pushStdout(stdoutDecoder.end());
+      pushStderr(stderrDecoder.end());
       if (timedOut) {
         settleReject(buildTimeoutError(code, signal));
         return;

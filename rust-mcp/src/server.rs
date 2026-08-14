@@ -670,7 +670,12 @@ impl DevboxMcp {
     }
 
     fn interactive_acquire(&self, label: impl Into<String>, text: &str) -> AcquireRequest {
-        let resource_class = infer_resource_class(text, "auto");
+        let inferred = infer_resource_class(text, "auto");
+        let resource_class = if inferred == ResourceClass::Watch {
+            ResourceClass::Light
+        } else {
+            inferred
+        };
         let weight = if resource_class == ResourceClass::Heavy {
             self.scheduler.config().heavy_weight
         } else {
@@ -3651,6 +3656,19 @@ mod tests {
             .expect_err("readiness write canary must fail when the root is a file");
         assert!(!error.to_string().is_empty());
         assert!(not_a_directory.is_file());
+    }
+
+    #[tokio::test]
+    async fn interactive_classifier_keeps_watch_like_sync_commands_in_execution_pool() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(crate::config::test_config(temp.path()));
+        let server = DevboxMcp::new(config);
+        let watch_like = server.interactive_acquire("sync-watch", "sleep 30");
+        assert_eq!(watch_like.resource_class, ResourceClass::Light);
+        assert_eq!(watch_like.weight, 1);
+        let heavy = server.interactive_acquire("sync-heavy", "cargo test --release");
+        assert_eq!(heavy.resource_class, ResourceClass::Heavy);
+        assert_eq!(heavy.weight, server.scheduler.config().heavy_weight);
     }
 
     #[tokio::test]
