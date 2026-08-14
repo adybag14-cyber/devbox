@@ -190,7 +190,7 @@ const volatileTimingKeys = new Set([
   "waited_ms", "waitedMs", "queue_wait_ms", "elapsed_ms", "elapsedMs",
   "average_queue_wait_ms", "max_queue_wait_ms",
   "startedAtUtc", "completedAtUtc", "createdAtUtc", "updatedAtUtc", "UpdatedAtUtc", "sampledAtUtc",
-  "queuedAtUtc", "heartbeatAgeMs", "queueWaitMs", "capture_queue_wait_ms",
+  "queuedAtUtc", "mtimeUtc", "heartbeatAgeMs", "queueWaitMs", "capture_queue_wait_ms",
 ]);
 
 const normalizeJobIds = (value) => typeof value === "string"
