@@ -292,6 +292,7 @@ const normalizeImplementationDiagnostics = (name, value) => {
     "executionStore",
     "jobQuota",
     "degradedSubsystems",
+    "operationalWarnings",
     "versions",
     "versionsCached",
   ]) delete data[key];

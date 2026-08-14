@@ -167,13 +167,48 @@ const logMetadata = async (filePath, rotations = config.mcpJobLogRotations) => {
   return { totalBytes, segments, rotated: segments.some((segment) => segment.index > 0) };
 };
 
+const normalizedProgramName = (program) => path.basename(String(program ?? "").replaceAll("\\", "/"))
+  .toLowerCase()
+  .replace(/\.(?:exe|cmd|bat|ps1)$/u, "");
+
+const inferShellResourceClass = (command) => {
+  const text = String(command ?? "").toLowerCase();
+  if (/playwright|selenium|gradlew?|mvnw?|ninja|cmake\s+--build|cargo\s+(?:build|test|bench|clippy)|rustc\s|zig\s+build|go\s+(?:build|test)|docker\s+(?:build|buildx\s+build)|pytest|npm\s+(?:(?:run\s+)?(?:build|test))|pnpm\s+(?:(?:run\s+)?(?:build|test))|yarn\s+(?:build|test)|bun\s+(?:build|test)|pip\s+wheel|python\s+-m\s+build|bazel|msbuild|dotnet\s+(?:build|test|publish)|(?:^|[;&|]\s*)make(?:\s|$)/u.test(text)) return "heavy";
+  if (/\bgh\s+run\s+watch\b|\bstart-sleep\b|\bsleep\s+\d+/u.test(text)) return "watch";
+  return "light";
+};
+
+const inferProgramResourceClass = (program, rawArgs) => {
+  const exe = normalizedProgramName(program);
+  const args = Array.isArray(rawArgs) ? rawArgs.map((value) => String(value).trim().toLowerCase()) : [];
+  const first = args[0] ?? "";
+  const second = args[1] ?? "";
+  if (exe === "gh" && first === "run" && second === "watch") return "watch";
+  if (["sleep", "start-sleep"].includes(exe)) return "watch";
+  if (["pwsh", "powershell"].includes(exe)) {
+    const at = args.findIndex((arg) => arg === "-command" || arg === "-c");
+    if (at >= 0 && args[at + 1]) return inferShellResourceClass(args[at + 1]);
+  }
+  const heavy =
+    (exe === "cargo" && ["build", "test", "bench", "clippy"].includes(first)) ||
+    ["rustc", "ninja", "make", "gmake", "mingw32-make", "bazel", "msbuild", "gradle", "gradlew", "mvn", "mvnw", "pytest", "py.test"].includes(exe) ||
+    (exe === "cmake" && args.includes("--build")) ||
+    (exe === "zig" && first === "build") ||
+    (exe === "go" && ["build", "test", "install"].includes(first)) ||
+    (exe === "docker" && (first === "build" || (first === "buildx" && second === "build") || (first === "compose" && args[2] === "build"))) ||
+    (exe === "dotnet" && ["build", "test", "publish", "pack"].includes(first)) ||
+    (["npm", "pnpm"].includes(exe) && (["build", "test"].includes(first) || (first === "run" && ["build", "test"].includes(second)))) ||
+    (["yarn", "bun"].includes(exe) && (["build", "test"].includes(first) || (first === "run" && ["build", "test"].includes(second)))) ||
+    (exe === "npx" && ["playwright", "selenium", "webpack", "vite", "tsc"].includes(first)) ||
+    (["pip", "pip3"].includes(exe) && first === "wheel") ||
+    (["python", "python3", "py"].includes(exe) && first === "-m" && (["pytest", "build"].includes(second) || (second === "pip" && args[2] === "wheel")));
+  return heavy ? "heavy" : "light";
+};
+
 export const inferJobResourceClass = ({ command = "", program = "", args = [], requested = "auto" } = {}) => {
   const explicit = String(requested ?? "auto").trim().toLowerCase();
   if (RESOURCE_CLASSES.has(explicit) && explicit !== "auto") return explicit;
-  const text = `${program} ${Array.isArray(args) ? args.join(" ") : ""} ${command}`.toLowerCase();
-  if (/playwright|selenium|gradle|ninja|cmake\s+--build|cargo\s+(?:build|test)|zig\s+build|npm\s+(?:run\s+)?build|pnpm\s+(?:run\s+)?build|yarn\s+build|bazel|msbuild|dotnet\s+build|make(?:\s|$)/u.test(text)) return "heavy";
-  if (/\bgh\s+run\s+watch\b|\bstart-sleep\b|\bsleep\s+\d+/u.test(text)) return "watch";
-  return "light";
+  return String(program ?? "").trim() ? inferProgramResourceClass(program, args) : inferShellResourceClass(command);
 };
 
 const startJobRequest = async (request) => {

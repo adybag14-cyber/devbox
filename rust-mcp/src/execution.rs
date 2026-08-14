@@ -16,6 +16,8 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::lifecycle::replace_file_preserving_previous;
+
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const MAX_QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const CLAIM_RETRY_INTERVAL: Duration = Duration::from_millis(20);
@@ -76,6 +78,7 @@ pub struct SchedulerConfig {
     pub reserved_interactive: usize,
     pub watch_max_concurrent: usize,
     pub queue_timeout: Duration,
+    pub heavy_capacity: usize,
     pub heavy_weight: usize,
 }
 
@@ -88,7 +91,11 @@ impl SchedulerConfig {
             .min(self.max_concurrent.saturating_sub(1));
         self.watch_max_concurrent = self.watch_max_concurrent.max(1);
         self.queue_timeout = self.queue_timeout.max(Duration::from_millis(1));
-        self.heavy_weight = self.heavy_weight.max(1);
+        self.heavy_weight = self.heavy_weight.max(1).min(self.max_concurrent);
+        self.heavy_capacity = self
+            .heavy_capacity
+            .max(self.heavy_weight)
+            .min(self.max_concurrent);
         self
     }
 }
@@ -206,6 +213,7 @@ pub struct LocalMetricsSnapshot {
 pub struct ExecutionSlotSnapshot {
     pub max_concurrent: usize,
     pub reserved_interactive: usize,
+    pub heavy_capacity: usize,
     pub background_capacity: usize,
     pub watch_capacity: usize,
     pub occupied: usize,
@@ -316,10 +324,16 @@ impl AcquirePlan {
         } else {
             0
         };
-        let usable_slots = if request.kind == ExecutionKind::Background && pool == "execution" {
+        let base_usable_slots = if request.kind == ExecutionKind::Background && pool == "execution"
+        {
             total.saturating_sub(reserved).max(1)
         } else {
             total
+        };
+        let usable_slots = if pool == "execution" && resource_class == ResourceClass::Heavy {
+            base_usable_slots.min(config.heavy_capacity).max(1)
+        } else {
+            base_usable_slots
         };
         let requested_weight = if pool == "watch" {
             1
@@ -709,6 +723,7 @@ impl ExecutionScheduler {
         Ok(ExecutionSlotSnapshot {
             max_concurrent: self.config.max_concurrent,
             reserved_interactive: self.config.reserved_interactive,
+            heavy_capacity: self.config.heavy_capacity,
             background_capacity: self
                 .config
                 .max_concurrent
@@ -809,11 +824,9 @@ async fn create_queue_ticket(
     let queue_root = root.join("queue");
     fs::create_dir_all(&queue_root).await?;
     let token = unique_token();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let path = queue_root.join(format!("{class}-{nanos:032}-{token}.json"));
+    let sequence = next_queue_sequence(&queue_root, class, timeout).await?;
+    let queued_at_unix_ms = unix_ms_now();
+    let path = queue_root.join(format!("{class}-{sequence:032}-{token}.json"));
     let value = json!({
         "token": token,
         "pid": std::process::id(),
@@ -823,6 +836,8 @@ async fn create_queue_ticket(
         "resourceClass": request.resource_class.as_str(),
         "weight": request.weight,
         "label": request.label,
+        "sequence": sequence.to_string(),
+        "queuedAtUnixMs": queued_at_unix_ms,
         "queuedAtUtc": utc_now(),
         "queueTimeoutMs": duration_ms(timeout),
     });
@@ -887,6 +902,42 @@ async fn acquire_queue_head_lock(
     }
 }
 
+fn queue_sequence_path(queue_root: &Path, class: &str) -> PathBuf {
+    queue_root.join(format!(".{class}-sequence.txt"))
+}
+
+async fn next_queue_sequence(queue_root: &Path, class: &str, timeout: Duration) -> Result<u128> {
+    let mut lock = acquire_queue_head_lock(queue_root, class, timeout).await?;
+    let path = queue_sequence_path(queue_root, class);
+    let current = fs::read_to_string(&path)
+        .await
+        .ok()
+        .and_then(|value| value.trim().parse::<u128>().ok());
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let next = current.unwrap_or(seed).max(seed).saturating_add(1);
+    let temporary = queue_root.join(format!(".{class}-sequence.{}.tmp", unique_token()));
+    fs::write(&temporary, format!("{next}\n")).await?;
+    let write_result = replace_file_preserving_previous(&temporary, &path).await;
+    let release_result = lock.release().await;
+    match (write_result, release_result) {
+        (Ok(()), Ok(())) => Ok(next),
+        (Err(error), _) | (Ok(()), Err(error)) => Err(error),
+    }
+}
+
+fn unix_ms_now() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX)
+}
+
 fn queue_head_path(queue_root: &Path, class: &str) -> PathBuf {
     queue_root.join(format!(".{class}-head.json"))
 }
@@ -914,14 +965,7 @@ async fn write_queue_head(queue_root: &Path, class: &str, name: Option<&str>) ->
     let temporary = queue_root.join(format!(".{class}-head.{}.tmp", unique_token()));
     let bytes = serde_json::to_vec(&json!({ "name": name }))?;
     fs::write(&temporary, bytes).await?;
-    if fs::rename(&temporary, &path).await.is_err() {
-        fs::remove_file(&path).await.ok();
-        if let Err(error) = fs::rename(&temporary, &path).await {
-            fs::remove_file(&temporary).await.ok();
-            return Err(error.into());
-        }
-    }
-    Ok(())
+    replace_file_preserving_previous(&temporary, &path).await
 }
 
 async fn refresh_queue_head(
@@ -1035,20 +1079,19 @@ fn queue_ticket_expired(name: &str, prefix: &str, owner: &Value) -> bool {
         .get("queueTimeoutMs")
         .and_then(Value::as_u64)
         .unwrap_or_else(|| duration_ms(CORRUPT_SLOT_STALE));
-    let Some(timestamp) = name
-        .strip_prefix(prefix)
-        .and_then(|rest| rest.split('-').next())
-        .and_then(|value| value.parse::<u128>().ok())
-    else {
-        return false;
-    };
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let age_ns = now.saturating_sub(timestamp);
-    let expiry_budget_ns = u128::from(timeout_ms).saturating_mul(1_000_000);
-    age_ns > expiry_budget_ns.saturating_add(1_000_000_000)
+    let now_ms = unix_ms_now();
+    let queued_ms = owner
+        .get("queuedAtUnixMs")
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            name.strip_prefix(prefix)
+                .and_then(|rest| rest.split('-').next())
+                .and_then(|value| value.parse::<u128>().ok())
+                .and_then(|timestamp_ns| u64::try_from(timestamp_ns / 1_000_000).ok())
+        });
+    queued_ms.is_some_and(|queued_ms| {
+        now_ms.saturating_sub(queued_ms) > timeout_ms.saturating_add(1_000)
+    })
 }
 
 async fn write_queue_ticket_atomic(path: &Path, value: &Value) -> Result<()> {
@@ -1095,7 +1138,20 @@ async fn read_queue_snapshot(root: &Path) -> Result<BTreeMap<String, usize>> {
             None
         };
         if let Some(class) = class {
-            *result.entry(class.to_owned()).or_insert(0) += 1;
+            let path = entry.path();
+            let prefix = format!("{class}-");
+            let owner = fs::read(&path)
+                .await
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+            let valid = owner.as_ref().is_some_and(|owner| {
+                !queue_ticket_expired(&name, &prefix, owner) && owner_process_alive(owner)
+            });
+            if valid {
+                *result.entry(class.to_owned()).or_insert(0) += 1;
+            } else if owner.is_some() {
+                remove_slot_file(&path).await.ok();
+            }
         }
     }
     Ok(result)
@@ -1477,6 +1533,7 @@ mod tests {
             reserved_interactive: reserved,
             watch_max_concurrent: watch,
             queue_timeout: Duration::from_millis(250),
+            heavy_capacity: 4,
             heavy_weight: 2,
         })
     }
@@ -1749,17 +1806,13 @@ mod tests {
         let root = temp.path();
         let queue_root = root.join("queue");
         fs::create_dir_all(&queue_root).await.unwrap();
-        let old_nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .saturating_sub(5_000_000_000);
-        let stale = queue_root.join(format!("execution-background-{old_nanos:032}-stale.json"));
+        let stale = queue_root.join(format!("execution-background-{:032}-stale.json", 1_u128));
         fs::write(
             &stale,
             serde_json::to_vec(&json!({
                 "pid": std::process::id(),
                 "queueTimeoutMs": 100,
+                "queuedAtUnixMs": unix_ms_now().saturating_sub(5_000),
             }))
             .unwrap(),
         )
@@ -1787,6 +1840,7 @@ mod tests {
             reserved_interactive: 0,
             watch_max_concurrent: 1,
             queue_timeout: Duration::from_secs(2),
+            heavy_capacity: 4,
             heavy_weight: 2,
         });
         let mut blocker = scheduler
@@ -1843,6 +1897,70 @@ mod tests {
         let snapshot = crate::windows_process::metrics_snapshot();
         assert_eq!(snapshot["backend"], "win32-openprocess");
         assert!(snapshot["count"].as_u64().unwrap_or_default() > 0);
+    }
+
+    #[tokio::test]
+    async fn rust_waiter_honors_a_live_javascript_protocol_ticket() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let scheduler = scheduler(root, 1, 0, 1);
+        let queue_root = root.join("queue");
+        fs::create_dir_all(&queue_root).await.unwrap();
+        let queue_class = "execution-background";
+        let sequence = next_queue_sequence(&queue_root, queue_class, Duration::from_secs(1))
+            .await
+            .unwrap();
+        let name = format!("{queue_class}-{sequence:032}-jsfixture.json");
+        let path = queue_root.join(&name);
+        write_queue_ticket_atomic(
+            &path,
+            &json!({
+                "token": "jsfixture",
+                "pid": std::process::id(),
+                "processInstance": null,
+                "class": queue_class,
+                "kind": "background",
+                "resourceClass": "light",
+                "weight": 1,
+                "label": "javascript-protocol-fixture",
+                "sequence": sequence.to_string(),
+                "queuedAtUnixMs": unix_ms_now(),
+                "queuedAtUtc": utc_now(),
+                "queueTimeoutMs": 2_000,
+            }),
+        )
+        .await
+        .unwrap();
+        refresh_queue_head(&queue_root, queue_class, Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        let error = scheduler
+            .acquire(
+                AcquireRequest {
+                    kind: ExecutionKind::Background,
+                    resource_class: ResourceClass::Light,
+                    weight: 1,
+                    label: "rust-later".to_owned(),
+                    queue_timeout: Some(Duration::from_millis(120)),
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .expect_err("Rust waiter must not overtake the live JS FIFO head");
+        assert!(error.downcast_ref::<ExecutionQueueTimeoutError>().is_some());
+        remove_slot_file(&path).await.unwrap();
+        refresh_queue_head(&queue_root, queue_class, Duration::from_secs(1))
+            .await
+            .unwrap();
+        let mut lease = scheduler
+            .acquire(
+                AcquireRequest::background("rust-after-js", ResourceClass::Light, 1),
+                &CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        lease.release().await.unwrap();
     }
 
     #[tokio::test]

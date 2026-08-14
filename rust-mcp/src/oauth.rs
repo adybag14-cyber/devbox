@@ -24,7 +24,7 @@ use tokio::{fs, sync::Mutex};
 use url::Url;
 use uuid::Uuid;
 
-use crate::{AuthMode, Config};
+use crate::{AuthMode, Config, lifecycle::replace_file_preserving_previous};
 
 const ACCESS_TOKEN_TTL_MS: u64 = 60 * 60 * 1_000;
 const REFRESH_TOKEN_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
@@ -837,11 +837,7 @@ impl OAuthService {
             .with_extension(format!("{}.tmp", std::process::id()));
         let bytes = serde_json::to_vec_pretty(&state.snapshot())?;
         fs::write(&temporary, bytes).await?;
-        if fs::rename(&temporary, &self.state_file).await.is_err() {
-            fs::remove_file(&self.state_file).await.ok();
-            fs::rename(&temporary, &self.state_file).await?;
-        }
-        Ok(())
+        replace_file_preserving_previous(&temporary, &self.state_file).await
     }
 }
 

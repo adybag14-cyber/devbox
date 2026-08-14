@@ -9,8 +9,8 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    background::BackgroundTaskRegistry, execution::ExecutionScheduler,
-    performance::PerformanceMonitor, request_control::ActiveRequestRegistry,
+    background::BackgroundTaskRegistry, performance::PerformanceMonitor,
+    request_control::ActiveRequestRegistry,
 };
 
 const INCIDENT_INTERVAL: Duration = Duration::from_secs(10);
@@ -21,7 +21,7 @@ const INCIDENT_ROTATIONS: usize = 3;
 pub fn spawn_incident_monitor(
     project_root: PathBuf,
     performance: Arc<PerformanceMonitor>,
-    scheduler: Arc<ExecutionScheduler>,
+    execution_snapshot: Arc<RwLock<Value>>,
     active_requests: Arc<ActiveRequestRegistry>,
     background: Arc<BackgroundTaskRegistry>,
     execution_store: Arc<RwLock<Value>>,
@@ -31,12 +31,13 @@ pub fn spawn_incident_monitor(
     registry.spawn_supervised("incident-monitor", cancellation, move |cancellation, heartbeat| {
         let path = project_root.join("run").join("mcp-incidents.jsonl");
         let performance = performance.clone();
-        let scheduler = scheduler.clone();
+        let execution_snapshot = execution_snapshot.clone();
         let active_requests = active_requests.clone();
         let background = background.clone();
         let execution_store = execution_store.clone();
         async move {
-            let mut interval = tokio::time::interval(INCIDENT_INTERVAL);
+            let first_tick = tokio::time::Instant::now() + Duration::from_secs(7);
+            let mut interval = tokio::time::interval_at(first_tick, INCIDENT_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             let mut last_incident = None::<Instant>;
             loop {
@@ -51,19 +52,27 @@ pub fn spawn_incident_monitor(
                         let anomalous = is_anomalous(&snapshot);
                         let cooled = last_incident.is_none_or(|at| at.elapsed() >= INCIDENT_COOLDOWN);
                         if anomalous && cooled {
-                            let execution = scheduler.snapshot().await.map_err(|error| error.to_string())?;
+                            let execution_cache = execution_snapshot.read().await.clone();
+                            let execution = execution_cache.get("snapshot").cloned().unwrap_or(Value::Null);
                             let incident = json!({
                                 "observedAtUtc": chrono::Utc::now().to_rfc3339(),
                                 "trigger": { "p95Ms": p95, "maxMs": max, "timerDriftMaxMs": drift },
                                 "performance": snapshot,
                                 "build": crate::provenance::snapshot(),
                                 "execution": execution,
+                                "executionSnapshot": {
+                                    "sampledAtUtc": execution_cache.get("sampledAtUtc"),
+                                    "ok": execution_cache.get("ok"),
+                                    "error": execution_cache.get("error"),
+                                },
                                 "activeRequests": active_requests.active_count(),
                                 "backgroundTasks": background.snapshot(),
                                 "executionStore": execution_store.read().await.clone(),
                             });
-                            append_rotating_jsonl(&path, &incident).await.map_err(|error| error.to_string())?;
-                            last_incident = Some(Instant::now());
+                            match append_rotating_jsonl(&path, &incident).await {
+                                Ok(()) => last_incident = Some(Instant::now()),
+                                Err(error) => heartbeat.fail(format!("incident write failed: {error}")),
+                            }
                         }
                         heartbeat.tick();
                     }

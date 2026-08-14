@@ -63,8 +63,9 @@ const server = spawn(binaryPath, [], {
     HOST_DEFAULT_WORKDIR: projectRoot,
     MCP_JOBS_ROOT: path.join(runtimeDir, "jobs"),
     MCP_EXEC_SLOT_ROOT: path.join(runtimeDir, "slots"),
-    MCP_EXEC_MAX_CONCURRENT: "4",
+    MCP_EXEC_MAX_CONCURRENT: "6",
     MCP_EXEC_RESERVED_INTERACTIVE: "1",
+    MCP_EXEC_HEAVY_CAPACITY: "4",
     MCP_EXEC_HEAVY_WEIGHT: "2",
     MCP_WATCH_MAX_CONCURRENT: "4",
     MCP_JOB_HEARTBEAT_MS: "1000",
@@ -147,13 +148,43 @@ try {
   assert.equal(status.structuredContent?.data?.executionStore?.schedulerWritable, true);
   assert.ok(status.structuredContent?.data?.executionStore?.freeBytes > 0);
 
-  const heavyScript = "/* cargo test */ setTimeout(()=>{},1200)";
-  const heavyCalls = [0, 1].map(() => client.callTool({
+  const falsePositive = client.callTool({
     name: "devbox_run_program",
     arguments: {
       program: "node",
-      args: ["-e", heavyScript],
+      args: ["-e", "/* cargo test */ setTimeout(()=>{},2200)"],
       working_dir: projectRoot,
+      timeout_seconds: 10,
+      max_output_chars: 1_024,
+    },
+  });
+  let falsePositiveStatus = null;
+  const falsePositiveDeadline = Date.now() + 4_000;
+  while (Date.now() < falsePositiveDeadline) {
+    const candidate = await client.callTool({ name: "devbox_status", arguments: {} });
+    const matching = candidate.structuredContent?.data?.execution?.occupied_slots?.find((slot) => slot.label?.startsWith("devbox_run_program:node"));
+    if (matching) {
+      falsePositiveStatus = matching;
+      break;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(falsePositiveStatus, "structured Node classifier fixture never became visible");
+  assert.equal(falsePositiveStatus.resourceClass, "light", "payload text incorrectly classified Node as heavy");
+  assert.equal((await falsePositive).isError, false);
+
+  const heavyFixture = path.join(runtimeDir, "heavy-fixture");
+  await mkdir(heavyFixture, { recursive: true });
+  await writeFile(path.join(heavyFixture, "package.json"), JSON.stringify({
+    private: true,
+    scripts: { test: "node -e \"setTimeout(()=>{},1200)\"" },
+  }), "utf8");
+  const heavyCalls = [0, 1].map(() => client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "npm",
+      args: ["test", "--silent"],
+      working_dir: heavyFixture,
       timeout_seconds: 10,
       max_output_chars: 1_024,
     },
@@ -170,8 +201,22 @@ try {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.ok(weightedStatus, "two synchronous heavy commands did not consume weighted capacity");
+  assert.equal(weightedStatus.heavy_capacity, 4);
   assert.equal(weightedStatus.occupied_slots.length, 4);
   assert.ok(weightedStatus.occupied_slots.every((slot) => slot.resourceClass === "heavy" && slot.weight === 2));
+  const lightDuringHeavyStarted = performance.now();
+  const lightDuringHeavy = await client.callTool({
+    name: "devbox_run_program",
+    arguments: {
+      program: "node",
+      args: ["-e", "process.stdout.write('light-capacity-ok')"],
+      working_dir: projectRoot,
+      timeout_seconds: 10,
+      max_output_chars: 1_024,
+    },
+  });
+  assert.equal(lightDuringHeavy.isError, false);
+  assert.ok(performance.now() - lightDuringHeavyStarted < 1_000, "heavy workload starved light interactive capacity");
   for (const result of await Promise.all(heavyCalls)) assert.equal(result.isError, false);
 
   const pressure = await client.callTool({

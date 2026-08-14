@@ -123,7 +123,7 @@ impl UsageLogger {
         let writer_sink = sink.clone();
         let writer_metrics = metrics.clone();
         let cancellation = CancellationToken::new();
-        background.spawn_supervised(
+        background.spawn_event_driven(
             task_name,
             cancellation.clone(),
             move |cancellation, heartbeat| {

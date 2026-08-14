@@ -85,9 +85,12 @@ const activeMcpRequestControllers = new Map();
 const guardianStatePath = path.join(runDir, "guardian", "state.json");
 const startupStatePath = path.join(runDir, "startup-state.json");
 const mcpPerformanceStatePath = process.env.MCP_PERFORMANCE_STATE_PATH?.trim() ? path.resolve(process.env.MCP_PERFORMANCE_STATE_PATH.trim()) : path.join(runDir, "mcp-performance.json");
-const EXECUTION_STORE_PROBE_INTERVAL_MS = 15_000;
-const EXECUTION_STORE_PROBE_STALE_MS = 45_000;
+const EXECUTION_STORE_PROBE_HEALTHY_INTERVAL_MS = 60_000;
+const EXECUTION_STORE_PROBE_RETRY_INTERVAL_MS = 10_000;
+const EXECUTION_STORE_PROBE_STALE_MS = 150_000;
 const EXECUTION_STORE_MIN_FREE_BYTES = 512 * 1024 * 1024;
+const EXECUTION_STORE_WARN_FREE_BYTES = 50 * 1024 * 1024 * 1024;
+const EXECUTION_STORE_WARN_FREE_PERCENT = 5;
 let executionStoreHealth = { ok: false, sampledAtUtc: null, sampledAtMs: 0, error: "execution-store probe has not completed yet" };
 
 const probeWritablePath = async (root, label) => {
@@ -116,12 +119,58 @@ const runExecutionStoreProbe = async () => {
     probeExecutionSlotStoreWritable,
     statfs,
     minimumFreeBytes: EXECUTION_STORE_MIN_FREE_BYTES,
+    warningFreeBytes: EXECUTION_STORE_WARN_FREE_BYTES,
+    warningFreePercent: EXECUTION_STORE_WARN_FREE_PERCENT,
   });
   return executionStoreHealth;
 };
-const executionStoreInitialProbe = runExecutionStoreProbe().catch(() => executionStoreHealth);
-const executionStoreProbeTimer = setInterval(() => { void runExecutionStoreProbe(); }, EXECUTION_STORE_PROBE_INTERVAL_MS);
-executionStoreProbeTimer.unref?.();
+let executionStoreProbeTimer = null;
+const scheduleExecutionStoreProbe = (delayMs) => {
+  executionStoreProbeTimer = setTimeout(async () => {
+    try { await runExecutionStoreProbe(); } catch {}
+    scheduleExecutionStoreProbe(executionStoreHealth.ok ? EXECUTION_STORE_PROBE_HEALTHY_INTERVAL_MS : EXECUTION_STORE_PROBE_RETRY_INTERVAL_MS);
+  }, delayMs);
+  executionStoreProbeTimer.unref?.();
+};
+const executionStoreInitialProbe = runExecutionStoreProbe()
+  .catch(() => executionStoreHealth)
+  .finally(() => scheduleExecutionStoreProbe(executionStoreHealth.ok ? EXECUTION_STORE_PROBE_HEALTHY_INTERVAL_MS : EXECUTION_STORE_PROBE_RETRY_INTERVAL_MS));
+
+const EXECUTION_SNAPSHOT_INTERVAL_MS = 1000;
+const EXECUTION_SNAPSHOT_STALE_MS = 5000;
+let executionSnapshotCache = { ok: false, sampledAtMs: 0, sampledAtUtc: null, snapshot: null, error: "scheduler snapshot has not completed yet" };
+let executionSnapshotTimer = null;
+const runExecutionSnapshot = async () => {
+  const startedAt = Date.now();
+  try {
+    const snapshot = await getExecutionSlotSnapshot({
+      maxConcurrent: config.mcpExecMaxConcurrent,
+      reservedInteractive: config.mcpExecReservedInteractive,
+      watchMaxConcurrent: config.mcpWatchMaxConcurrent,
+      heavyCapacity: config.mcpExecHeavyCapacity,
+    });
+    executionSnapshotCache = { ok: true, sampledAtMs: Date.now(), sampledAtUtc: new Date().toISOString(), durationMs: Date.now() - startedAt, snapshot, error: null };
+  } catch (error) {
+    executionSnapshotCache = { ...executionSnapshotCache, ok: false, sampledAtMs: Date.now(), sampledAtUtc: new Date().toISOString(), durationMs: Date.now() - startedAt, error: error?.message ?? String(error) };
+  }
+  return executionSnapshotCache;
+};
+const scheduleExecutionSnapshot = (delayMs) => {
+  executionSnapshotTimer = setTimeout(async () => {
+    await runExecutionSnapshot();
+    scheduleExecutionSnapshot(EXECUTION_SNAPSHOT_INTERVAL_MS);
+  }, delayMs);
+  executionSnapshotTimer.unref?.();
+};
+const executionSnapshotInitial = runExecutionSnapshot().finally(() => scheduleExecutionSnapshot(1000));
+const cachedExecutionSnapshot = async () => {
+  await executionSnapshotInitial.catch(() => {});
+  const ageMs = Date.now() - Number(executionSnapshotCache.sampledAtMs || 0);
+  if (!executionSnapshotCache.snapshot || ageMs >= EXECUTION_SNAPSHOT_STALE_MS) {
+    throw new Error("cached scheduler snapshot is unavailable or stale");
+  }
+  return executionSnapshotCache.snapshot;
+};
 
 const eventLoopHistogram = monitorEventLoopDelay({ resolution: 20 });
 eventLoopHistogram.enable();
@@ -149,7 +198,8 @@ const driftTimer = setInterval(() => {
   expectedTimerTickMs = now + 1000;
 }, 1000);
 driftTimer.unref?.();
-const eventLoopWindowTimer = setInterval(() => {
+let eventLoopWindowTimer = null;
+const persistEventLoopWindow = () => {
   const snapshot = snapshotEventLoopWindow();
   writeJsonStateFile(mcpPerformanceStatePath, {
     EventLoop: snapshot,
@@ -159,7 +209,10 @@ const eventLoopWindowTimer = setInterval(() => {
       Memory: process.memoryUsage(),
     },
   }).catch(() => {});
-}, 10000);
+  eventLoopWindowTimer = setTimeout(persistEventLoopWindow, 10000);
+  eventLoopWindowTimer.unref?.();
+};
+eventLoopWindowTimer = setTimeout(persistEventLoopWindow, 5000);
 eventLoopWindowTimer.unref?.();
 const getMcpPerformanceSnapshot = () => ({
   eventLoop: eventLoopWindow ?? {
@@ -239,6 +292,7 @@ const withInteractiveExecution = async ({ label, signal, command = "", program =
     maxConcurrent: config.mcpExecMaxConcurrent,
     reservedInteractive: config.mcpExecReservedInteractive,
     watchMaxConcurrent: config.mcpWatchMaxConcurrent,
+    heavyCapacity: config.mcpExecHeavyCapacity,
     resourceClass,
     weight,
     queueTimeoutMs: config.mcpExecQueueTimeoutMs,
@@ -837,17 +891,14 @@ const buildServer = ({ requestSignal } = {}) => {
           hostExecEnabled: config.enableHostExec,
           guardian: await readGuardianStatusSnapshot(),
           startup: await readStartupStatusSnapshot(),
-          execution: await getExecutionSlotSnapshot({
-            maxConcurrent: config.mcpExecMaxConcurrent,
-            reservedInteractive: config.mcpExecReservedInteractive,
-            watchMaxConcurrent: config.mcpWatchMaxConcurrent,
-          }),
+          execution: await cachedExecutionSnapshot(),
           performance: getMcpPerformanceSnapshot(),
           executionStore: {
             ...executionStoreHealth,
             ageMs: Math.max(0, Date.now() - Number(executionStoreHealth.sampledAtMs || 0)),
             stale: Date.now() - Number(executionStoreHealth.sampledAtMs || 0) >= EXECUTION_STORE_PROBE_STALE_MS,
           },
+          operationalWarnings: executionStoreHealth.diskPressure === "warning" ? ["disk-pressure"] : [],
         };
 
         if (info.running) {
@@ -2397,13 +2448,17 @@ export const startServer = () => {
     warmHostExecutionState().catch(() => {});
     getDevboxVersions().catch(() => {});
     reconcileOrphanedDevboxJobs().catch(() => {});
-    orphanReconcileTimer = setInterval(() => {
-      reconcileOrphanedDevboxJobs().catch(() => {});
-    }, 60000);
-    orphanReconcileTimer.unref?.();
+    const scheduleOrphanReconcile = (delayMs) => {
+      orphanReconcileTimer = setTimeout(async () => {
+        await reconcileOrphanedDevboxJobs().catch(() => {});
+        scheduleOrphanReconcile(60000);
+      }, delayMs);
+      orphanReconcileTimer.unref?.();
+    };
+    scheduleOrphanReconcile(17000);
   });
   httpServer.once("close", () => {
-    if (orphanReconcileTimer) clearInterval(orphanReconcileTimer);
+    if (orphanReconcileTimer) clearTimeout(orphanReconcileTimer);
     orphanReconcileTimer = null;
   });
   return httpServer;

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +11,7 @@ const POLL_MS = 50;
 const MAX_POLL_MS = 500;
 const pollInterval = (elapsedMs) => elapsedMs < 1000 ? POLL_MS : elapsedMs < 5000 ? 100 : elapsedMs < 30000 ? 250 : MAX_POLL_MS;
 const CORRUPT_SLOT_STALE_MS = 5 * 60 * 1000;
+const CORRUPT_QUEUE_TICKET_STALE_MS = 5000;
 
 const metrics = {
   queued: 0,
@@ -71,6 +72,205 @@ const slotPath = (pool, index) => path.join(
   slotRoot,
   `${pool === "watch" ? "watch-slot" : "slot"}-${String(index).padStart(2, "0")}.json`,
 );
+
+const queueRoot = path.join(slotRoot, "queue");
+const queueClassFor = ({ kind, pool }) => pool === "watch"
+  ? "watch"
+  : kind === "interactive" ? "execution-interactive" : "execution-background";
+const queueHeadPath = (queueClass) => path.join(queueRoot, `.${queueClass}-head.json`);
+const queueHeadLockPath = (queueClass) => path.join(queueRoot, `.${queueClass}-head.lock`);
+const queueSequencePath = (queueClass) => path.join(queueRoot, `.${queueClass}-sequence.txt`);
+const queueTicketPrefix = (queueClass) => `${queueClass}-`;
+const queueTimestampNs = () => BigInt(Date.now()) * 1_000_000n;
+
+const atomicReplaceText = async (filePath, text) => {
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(temporary, text, "utf8");
+  try {
+    await rename(temporary, filePath);
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw error;
+  }
+};
+
+const acquireQueueHeadLock = async (queueClass, { signal, deadlineMs }) => {
+  await mkdir(queueRoot, { recursive: true });
+  const filePath = queueHeadLockPath(queueClass);
+  const boundedDeadline = Math.min(deadlineMs, Date.now() + 5000);
+  while (Date.now() < boundedDeadline) {
+    if (signal?.aborted) throw abortError();
+    const token = randomUUID();
+    let handle = null;
+    try {
+      handle = await open(filePath, "wx");
+      await handle.writeFile(`${JSON.stringify({ token, pid: process.pid, processInstance: null, class: queueClass, acquiredAtUtc: new Date().toISOString() })}\n`, "utf8");
+      await handle.close();
+      handle = null;
+      let released = false;
+      return {
+        async release() {
+          if (released) return;
+          released = true;
+          try {
+            const current = JSON.parse(await readFile(filePath, "utf8"));
+            if (current?.token === token) await rm(filePath, { force: true });
+          } catch (error) {
+            if (error?.code !== "ENOENT") throw error;
+          }
+        },
+      };
+    } catch (error) {
+      try { await handle?.close(); } catch {}
+      if (error?.code !== "EEXIST") throw error;
+      if (await removeStaleSlot(filePath)) continue;
+      await sleep(10);
+    }
+  }
+  throw new Error(`timed out acquiring queue-head lock for ${queueClass}`);
+};
+
+const nextQueueSequence = async (queueClass, { signal, deadlineMs }) => {
+  const lock = await acquireQueueHeadLock(queueClass, { signal, deadlineMs });
+  try {
+    const filePath = queueSequencePath(queueClass);
+    const current = await readFile(filePath, "utf8")
+      .then((value) => BigInt(value.trim()))
+      .catch(() => null);
+    const seed = queueTimestampNs();
+    const next = (current === null || current < seed ? seed : current) + 1n;
+    await atomicReplaceText(filePath, `${next}\n`);
+    return next;
+  } finally {
+    await lock.release();
+  }
+};
+
+const refreshQueueHead = async (queueClass, { signal, deadlineMs }) => {
+  const lock = await acquireQueueHeadLock(queueClass, { signal, deadlineMs });
+  try {
+    const prefix = queueTicketPrefix(queueClass);
+    const names = (await readdir(queueRoot).catch(() => []))
+      .filter((name) => name.startsWith(prefix) && name.endsWith(".json"))
+      .sort();
+    const head = names[0] ?? null;
+    const filePath = queueHeadPath(queueClass);
+    if (head === null) {
+      await rm(filePath, { force: true }).catch(() => {});
+    } else {
+      await atomicReplaceText(filePath, `${JSON.stringify({ name: head })}\n`);
+    }
+    return head;
+  } finally {
+    await lock.release();
+  }
+};
+
+const ticketExpired = (name, owner) => {
+  const timeoutMs = Math.max(1, Number(owner?.queueTimeoutMs) || CORRUPT_SLOT_STALE_MS);
+  let queuedAtMs = Number(owner?.queuedAtUnixMs);
+  if (!Number.isFinite(queuedAtMs)) {
+    const queueClass = String(owner?.class ?? "");
+    const raw = name.startsWith(`${queueClass}-`) ? name.slice(queueClass.length + 1).split("-")[0] : "";
+    try { queuedAtMs = Number(BigInt(raw) / 1_000_000n); } catch { queuedAtMs = NaN; }
+  }
+  return Number.isFinite(queuedAtMs) && Date.now() - queuedAtMs > timeoutMs + 1000;
+};
+
+const createQueueTicket = async ({ kind, pool, resourceClass, weight, label, timeoutMs, signal, deadlineMs }) => {
+  await mkdir(queueRoot, { recursive: true });
+  const queueClass = queueClassFor({ kind, pool });
+  const sequence = await nextQueueSequence(queueClass, { signal, deadlineMs });
+  const token = randomUUID();
+  const name = `${queueClass}-${sequence.toString().padStart(32, "0")}-${token}.json`;
+  const filePath = path.join(queueRoot, name);
+  let handle = null;
+  try {
+    handle = await open(filePath, "wx");
+    await handle.writeFile(`${JSON.stringify({
+      token,
+      pid: process.pid,
+      processInstance: null,
+      class: queueClass,
+      kind,
+      resourceClass,
+      weight,
+      label,
+      sequence: sequence.toString(),
+      queuedAtUnixMs: Date.now(),
+      queuedAtUtc: new Date().toISOString(),
+      queueTimeoutMs: timeoutMs,
+    })}\n`, "utf8");
+    await handle.close();
+    handle = null;
+    await refreshQueueHead(queueClass, { signal, deadlineMs });
+  } catch (error) {
+    try { await handle?.close(); } catch {}
+    await rm(filePath, { force: true }).catch(() => {});
+    throw error;
+  }
+  let released = false;
+  return {
+    queueClass,
+    name,
+    filePath,
+    async release() {
+      if (released) return;
+      released = true;
+      await rm(filePath, { force: true }).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+      await refreshQueueHead(queueClass, { signal: null, deadlineMs: Date.now() + 1000 });
+    },
+  };
+};
+
+const queueTicketIsHead = async (ticket, { signal, deadlineMs }) => {
+  const prefix = queueTicketPrefix(ticket.queueClass);
+  for (;;) {
+    let head = await readFile(queueHeadPath(ticket.queueClass), "utf8")
+      .then((value) => JSON.parse(value)?.name ?? null)
+      .catch(() => null);
+    if (!head) {
+      head = await refreshQueueHead(ticket.queueClass, { signal, deadlineMs });
+      if (!head) continue;
+    }
+    if (head === ticket.name) return true;
+    const headPath = path.join(queueRoot, head);
+    let owner = await readFile(headPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!owner) {
+      const fresh = await stat(headPath).then((info) => Date.now() - info.mtimeMs < CORRUPT_QUEUE_TICKET_STALE_MS).catch(() => false);
+      if (fresh) return false;
+      await rm(headPath, { force: true }).catch(() => {});
+      await refreshQueueHead(ticket.queueClass, { signal, deadlineMs });
+      continue;
+    }
+    if (ticketExpired(head, owner) || !processAlive(Number(owner.pid))) {
+      await rm(headPath, { force: true }).catch(() => {});
+      await refreshQueueHead(ticket.queueClass, { signal, deadlineMs });
+      continue;
+    }
+    return false;
+  }
+};
+
+const readQueueSnapshot = async () => {
+  const result = {};
+  for (const name of await readdir(queueRoot).catch(() => [])) {
+    const queueClass = name.startsWith("execution-interactive-") ? "execution-interactive"
+      : name.startsWith("execution-background-") ? "execution-background"
+        : name.startsWith("watch-") ? "watch" : null;
+    if (!queueClass || !name.endsWith(".json")) continue;
+    const filePath = path.join(queueRoot, name);
+    const owner = await readFile(filePath, "utf8").then(JSON.parse).catch(() => null);
+    if (!owner || ticketExpired(name, owner) || !processAlive(Number(owner.pid))) {
+      if (owner) await rm(filePath, { force: true }).catch(() => {});
+      continue;
+    }
+    result[queueClass] = (result[queueClass] ?? 0) + 1;
+  }
+  return result;
+};
 
 export const probeExecutionSlotStoreWritable = async () => {
   await mkdir(slotRoot, { recursive: true });
@@ -142,6 +342,7 @@ const acquirePoolClaimLock = async (pool, { signal, deadlineMs }) => {
       await handle.writeFile(`${JSON.stringify({
         token,
         pid: process.pid,
+        processInstance: null,
         pool,
         acquiredAtUtc: new Date().toISOString(),
       })}
@@ -187,6 +388,7 @@ export const acquireExecutionSlot = async ({
   maxConcurrent = 6,
   reservedInteractive = 1,
   watchMaxConcurrent = 4,
+  heavyCapacity = 4,
   queueTimeoutMs = 15000,
   signal,
   label = "execution",
@@ -199,7 +401,11 @@ export const acquireExecutionSlot = async ({
   const reserved = pool === "execution"
     ? Math.max(0, Math.min(total - 1, Number(reservedInteractive) || 0))
     : 0;
-  const usableSlots = kind === "background" && pool === "execution" ? Math.max(1, total - reserved) : total;
+  const baseUsableSlots = kind === "background" && pool === "execution" ? Math.max(1, total - reserved) : total;
+  const normalizedHeavyCapacity = Math.max(1, Math.min(total, Number(heavyCapacity) || total));
+  const usableSlots = pool === "execution" && normalizedClass === "heavy"
+    ? Math.min(baseUsableSlots, Math.max(Number(weight) || 1, normalizedHeavyCapacity))
+    : baseUsableSlots;
   const requestedWeight = pool === "watch"
     ? 1
     : Math.max(1, Math.min(usableSlots, Number(weight) || 1));
@@ -207,15 +413,38 @@ export const acquireExecutionSlot = async ({
   const queuedAt = Date.now();
   await mkdir(slotRoot, { recursive: true });
   metrics.queued += 1;
+  const deadlineMs = queuedAt + timeoutMs;
+  let ticket = null;
 
   try {
+    ticket = await createQueueTicket({
+      kind,
+      pool,
+      resourceClass: normalizedClass,
+      weight: requestedWeight,
+      label,
+      timeoutMs,
+      signal,
+      deadlineMs,
+    });
     while (true) {
       if (signal?.aborted) {
         metrics.cancelled += 1;
         throw abortError();
       }
 
-      const deadlineMs = queuedAt + timeoutMs;
+      if (!(await queueTicketIsHead(ticket, { signal, deadlineMs }))) {
+        const elapsed = Date.now() - queuedAt;
+        if (elapsed >= timeoutMs) {
+          metrics.timedOut += 1;
+          throw new ExecutionQueueTimeoutError(
+            `Execution queue remained saturated for ${elapsed} ms. Retry shortly or use a detached job for long work.`,
+            { kind, label, pool, resource_class: normalizedClass, weight: requestedWeight, queue_wait_ms: elapsed, max_concurrent: total, reserved_interactive: reserved },
+          );
+        }
+        await sleep(Math.min(pollInterval(elapsed), timeoutMs - elapsed));
+        continue;
+      }
       const claimLock = requestedWeight > 1
         ? await acquirePoolClaimLock(pool, { signal, deadlineMs })
         : null;
@@ -249,6 +478,7 @@ export const acquireExecutionSlot = async ({
             await handle.writeFile(`${JSON.stringify({
               token,
               pid: process.pid,
+              processInstance: null,
               kind,
               pool,
               resourceClass: normalizedClass,
@@ -290,6 +520,13 @@ export const acquireExecutionSlot = async ({
       }
 
       if (owned.length === requestedWeight) {
+        try {
+          await ticket.release();
+          ticket = null;
+        } catch (error) {
+          await releaseOwnedFiles(owned).catch(() => {});
+          throw error;
+        }
         const queueWaitMs = Date.now() - queuedAt;
         metrics.queued -= 1;
         metrics.active += 1;
@@ -343,6 +580,8 @@ export const acquireExecutionSlot = async ({
   } catch (error) {
     if (metrics.queued > 0) metrics.queued -= 1;
     throw error;
+  } finally {
+    await ticket?.release().catch(() => {});
   }
 };
 
@@ -379,12 +618,17 @@ export const getExecutionSlotSnapshot = async ({
   maxConcurrent = 6,
   reservedInteractive = 1,
   watchMaxConcurrent = 4,
+  heavyCapacity = 4,
 } = {}) => {
   const total = Math.max(1, Number(maxConcurrent) || 1);
   const reserved = Math.max(0, Math.min(total - 1, Number(reservedInteractive) || 0));
   const watchTotal = Math.max(1, Number(watchMaxConcurrent) || 1);
   await mkdir(slotRoot, { recursive: true });
-  const [entries, watchEntries] = await Promise.all([readPoolEntries("execution"), readPoolEntries("watch")]);
+  const [entries, watchEntries, queued] = await Promise.all([
+    readPoolEntries("execution"),
+    readPoolEntries("watch"),
+    readQueueSnapshot(),
+  ]);
   const byClass = Object.fromEntries([...metrics.byClass.entries()].map(([name, value]) => [name, {
     active: value.active,
     acquired: value.acquired,
@@ -394,12 +638,15 @@ export const getExecutionSlotSnapshot = async ({
   return {
     max_concurrent: total,
     reserved_interactive: reserved,
+    heavy_capacity: Math.max(1, Math.min(total, Number(heavyCapacity) || total)),
     background_capacity: Math.max(1, total - reserved),
     watch_capacity: watchTotal,
     occupied: entries.length,
     occupied_slots: entries,
     watch_occupied: watchEntries.length,
     watch_slots: watchEntries,
+    global_queued: Object.values(queued).reduce((sum, value) => sum + value, 0),
+    global_queued_by_class: queued,
     local_process: {
       queued: metrics.queued,
       active: metrics.active,
@@ -413,4 +660,4 @@ export const getExecutionSlotSnapshot = async ({
   };
 };
 
-export const executionSlotInternals = { normalizeResourceClass, poolFor, processAlive, slotPath };
+export const executionSlotInternals = { normalizeResourceClass, poolFor, processAlive, slotPath, queueClassFor, ticketExpired };
