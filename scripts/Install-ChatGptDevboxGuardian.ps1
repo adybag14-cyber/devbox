@@ -273,7 +273,7 @@ $ensureActionArgs = @(
 $action = New-ScheduledTaskAction -Execute $powerShellExe -Argument $ensureActionArgs
 $startupTrigger = New-ScheduledTaskTrigger -AtStartup
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
-$keepAliveTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+$keepAliveTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10) -RepetitionInterval (New-TimeSpan -Minutes 10)
 $settingsSet = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `

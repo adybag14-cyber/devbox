@@ -46,8 +46,10 @@ use crate::{
     gateway::{GatewayRequestContext, GatewayState, transport_allowed_hosts},
     github_auth::GithubAuthService,
     host_inspect::{InspectFileRequest, inspect_host_file},
-    job_manager::{JobManager, StartProgramJob, infer_resource_class},
-    lifecycle::{LifecycleAction, LifecycleService},
+    job_manager::{
+        JobManager, StartProgramJob, infer_program_resource_class, infer_shell_resource_class,
+    },
+    lifecycle::{LifecycleAction, LifecycleService, replace_file_preserving_previous},
     oauth::OAuthService,
     output::{OutputMode, shape_process_output},
     performance::PerformanceMonitor,
@@ -75,6 +77,7 @@ pub struct DevboxMcp {
     active_requests: Arc<ActiveRequestRegistry>,
     background: Arc<BackgroundTaskRegistry>,
     execution_store_health: Arc<tokio::sync::RwLock<Value>>,
+    execution_snapshot: Arc<tokio::sync::RwLock<Value>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -87,6 +90,7 @@ impl DevboxMcp {
             reserved_interactive: config.exec_reserved_interactive,
             watch_max_concurrent: config.watch_max_concurrent,
             queue_timeout: Duration::from_millis(config.exec_queue_timeout_ms),
+            heavy_capacity: config.exec_heavy_capacity,
             heavy_weight: config.exec_heavy_weight,
         }));
         let runtime = Arc::new(RuntimeExecutor::new(config.clone()));
@@ -114,6 +118,12 @@ impl DevboxMcp {
             "sampledAtUtc": null,
             "error": "execution-store probe has not completed yet"
         })));
+        let execution_snapshot = Arc::new(tokio::sync::RwLock::new(json!({
+            "ok": false,
+            "sampledAtUtc": null,
+            "snapshot": null,
+            "error": "scheduler snapshot has not completed yet"
+        })));
         Self {
             runtime,
             jobs: Arc::new(JobManager::new(config.clone())),
@@ -126,6 +136,7 @@ impl DevboxMcp {
             active_requests,
             background,
             execution_store_health,
+            execution_snapshot,
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -670,7 +681,27 @@ impl DevboxMcp {
     }
 
     fn interactive_acquire(&self, label: impl Into<String>, text: &str) -> AcquireRequest {
-        let inferred = infer_resource_class(text, "auto");
+        let inferred = infer_shell_resource_class(text, "auto");
+        let resource_class = if inferred == ResourceClass::Watch {
+            ResourceClass::Light
+        } else {
+            inferred
+        };
+        let weight = if resource_class == ResourceClass::Heavy {
+            self.scheduler.config().heavy_weight
+        } else {
+            1
+        };
+        AcquireRequest::interactive_weighted(label, resource_class, weight)
+    }
+
+    fn interactive_program_acquire(
+        &self,
+        label: impl Into<String>,
+        program: &str,
+        args: &[String],
+    ) -> AcquireRequest {
+        let inferred = infer_program_resource_class(program, args, "auto");
         let resource_class = if inferred == ResourceClass::Watch {
             ResourceClass::Light
         } else {
@@ -715,17 +746,14 @@ impl DevboxMcp {
                 );
             }
         };
-        let execution = match self.scheduler.snapshot().await {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                return ToolEnvelope::error(
-                    format!(
-                        "Failed to fetch {} status: {error}",
-                        self.config.runtime_label()
-                    ),
-                    None,
-                );
-            }
+        let Some(execution) = cached_execution_value(&self.execution_snapshot).await else {
+            return ToolEnvelope::error(
+                format!(
+                    "Failed to fetch {} status: cached scheduler snapshot is unavailable or stale.",
+                    self.config.runtime_label()
+                ),
+                None,
+            );
         };
         let (guardian, startup, job_maintenance, job_quota) = tokio::join!(
             read_guardian_status_snapshot(&self.config),
@@ -763,10 +791,13 @@ impl DevboxMcp {
         data.insert("performance".to_owned(), performance);
         let background_snapshot = self.background.snapshot();
         data.insert("backgroundTasks".to_owned(), background_snapshot.clone());
-        data.insert(
-            "executionStore".to_owned(),
-            self.execution_store_health.read().await.clone(),
-        );
+        let execution_store = self.execution_store_health.read().await.clone();
+        let mut warnings = Vec::new();
+        if execution_store.get("diskPressure").and_then(Value::as_str) == Some("warning") {
+            warnings.push("disk-pressure");
+        }
+        data.insert("executionStore".to_owned(), execution_store);
+        data.insert("operationalWarnings".to_owned(), json!(warnings));
         data.insert(
             "degradedSubsystems".to_owned(),
             json!(background_degraded_subsystems(&background_snapshot)),
@@ -987,10 +1018,10 @@ impl DevboxMcp {
         {
             return ToolEnvelope::error("Invalid host output bounds.", None);
         }
-        let scheduling_text = format!("{} {}", request.program.trim(), request.args.join(" "));
-        let mut acquire = self.interactive_acquire(
+        let mut acquire = self.interactive_program_acquire(
             format!("host_run_program:{}", request.program.trim()),
-            &scheduling_text,
+            request.program.trim(),
+            &request.args,
         );
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
@@ -1314,10 +1345,10 @@ impl DevboxMcp {
                 None,
             );
         }
-        let scheduling_text = format!("{} {}", request.program.trim(), request.args.join(" "));
-        let mut acquire = self.interactive_acquire(
+        let mut acquire = self.interactive_program_acquire(
             format!("devbox_run_program:{}", request.program.trim()),
-            &scheduling_text,
+            request.program.trim(),
+            &request.args,
         );
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
@@ -2317,9 +2348,14 @@ struct HttpState {
     gateway: Arc<GatewayState>,
 }
 
-const EXECUTION_STORE_PROBE_INTERVAL: Duration = Duration::from_secs(15);
-const EXECUTION_STORE_PROBE_STALE_MS: u64 = 45_000;
+const EXECUTION_STORE_PROBE_HEALTHY_INTERVAL: Duration = Duration::from_secs(60);
+const EXECUTION_STORE_PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(10);
+const EXECUTION_STORE_PROBE_STALE_MS: u64 = 150_000;
 const EXECUTION_STORE_MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
+const EXECUTION_STORE_WARN_FREE_BYTES: u64 = 50 * 1024 * 1024 * 1024;
+const EXECUTION_STORE_WARN_FREE_PERCENT: f64 = 5.0;
+const SCHEDULER_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(1);
+const SCHEDULER_SNAPSHOT_STALE_MS: u64 = 5_000;
 
 async fn probe_writable_root(root: &std::path::Path, label: &str) -> Result<()> {
     tokio::fs::create_dir_all(root).await?;
@@ -2358,12 +2394,12 @@ fn spawn_execution_store_probe(
             let slot_root = slot_root.clone();
             let health = health.clone();
             async move {
-                let mut interval = tokio::time::interval(EXECUTION_STORE_PROBE_INTERVAL);
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut next_delay = Duration::ZERO;
+                let mut previous_disk: Option<(Instant, u64)> = None;
                 loop {
                     tokio::select! {
                         () = cancellation.cancelled() => return Ok(()),
-                        _ = interval.tick() => {
+                        () = tokio::time::sleep(next_delay) => {
                             heartbeat.attempt();
                             let started = Instant::now();
                             let jobs_result = probe_writable_root(&jobs_root, "jobs").await;
@@ -2396,6 +2432,20 @@ fn spawn_execution_store_probe(
                             } else {
                                 0.0
                             };
+                            let pressure = disk_pressure_level(free_bytes, total_bytes, disk_ok);
+                            let trend_per_hour = previous_disk.and_then(|(at, previous)| {
+                                let elapsed_ms = at.elapsed().as_millis();
+                                if elapsed_ms == 0 {
+                                    return None;
+                                }
+                                let delta = i128::from(free_bytes) - i128::from(previous);
+                                let per_hour = delta.saturating_mul(3_600_000)
+                                    / i128::try_from(elapsed_ms).unwrap_or(i128::MAX);
+                                Some(i64::try_from(per_hour).unwrap_or_else(|_| {
+                                    if per_hour.is_negative() { i64::MIN } else { i64::MAX }
+                                }))
+                            });
+                            previous_disk = Some((Instant::now(), free_bytes));
                             let value = json!({
                                 "ok": ok,
                                 "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
@@ -2405,10 +2455,15 @@ fn spawn_execution_store_probe(
                                 "freeBytes": free_bytes,
                                 "totalBytes": total_bytes,
                                 "freePercent": free_percent,
+                                "freeBytesTrendPerHour": trend_per_hour,
+                                "diskPressure": pressure,
+                                "warningFreeBytes": EXECUTION_STORE_WARN_FREE_BYTES,
+                                "warningFreePercent": EXECUTION_STORE_WARN_FREE_PERCENT,
                                 "minimumFreeBytes": EXECUTION_STORE_MIN_FREE_BYTES,
                                 "error": if errors.is_empty() { Value::Null } else { json!(errors.join("; ")) },
                             });
                             *health.write().await = value;
+                            next_delay = if ok { EXECUTION_STORE_PROBE_HEALTHY_INTERVAL } else { EXECUTION_STORE_PROBE_RETRY_INTERVAL };
                             if ok {
                                 heartbeat.tick();
                             } else {
@@ -2420,6 +2475,84 @@ fn spawn_execution_store_probe(
             }
         },
     );
+}
+
+fn spawn_scheduler_snapshot(handler: &DevboxMcp, cancellation: CancellationToken) {
+    let scheduler = handler.scheduler.clone();
+    let cache = handler.execution_snapshot.clone();
+    handler.background.spawn_supervised(
+        "scheduler-snapshot",
+        cancellation,
+        move |cancellation, heartbeat| {
+            let scheduler = scheduler.clone();
+            let cache = cache.clone();
+            async move {
+                let first_tick = tokio::time::Instant::now() + Duration::from_millis(25);
+                let mut interval = tokio::time::interval_at(first_tick, SCHEDULER_SNAPSHOT_INTERVAL);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        () = cancellation.cancelled() => return Ok(()),
+                        _ = interval.tick() => {
+                            heartbeat.attempt();
+                            let started = Instant::now();
+                            match scheduler.snapshot().await {
+                                Ok(snapshot) => {
+                                    *cache.write().await = json!({
+                                        "ok": true,
+                                        "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
+                                        "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                                        "snapshot": snapshot,
+                                        "error": null,
+                                    });
+                                    heartbeat.tick();
+                                }
+                                Err(error) => {
+                                    let previous = cache.read().await.get("snapshot").cloned().unwrap_or(Value::Null);
+                                    *cache.write().await = json!({
+                                        "ok": false,
+                                        "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
+                                        "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                                        "snapshot": previous,
+                                        "error": error.to_string(),
+                                    });
+                                    heartbeat.fail(error.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    );
+}
+
+async fn cached_execution_value(cache: &tokio::sync::RwLock<Value>) -> Option<Value> {
+    let value = cache.read().await;
+    let age = snapshot_age_ms(value.get("sampledAtUtc").and_then(Value::as_str))?;
+    if age >= SCHEDULER_SNAPSHOT_STALE_MS {
+        return None;
+    }
+    value
+        .get("snapshot")
+        .filter(|snapshot| !snapshot.is_null())
+        .cloned()
+}
+
+fn disk_pressure_level(free_bytes: u64, total_bytes: u64, disk_ok: bool) -> &'static str {
+    if !disk_ok || free_bytes < EXECUTION_STORE_MIN_FREE_BYTES {
+        return "critical";
+    }
+    let free_basis_points = if total_bytes > 0 {
+        u128::from(free_bytes).saturating_mul(10_000) / u128::from(total_bytes)
+    } else {
+        0
+    };
+    if free_bytes < EXECUTION_STORE_WARN_FREE_BYTES || free_basis_points < 500 {
+        "warning"
+    } else {
+        "normal"
+    }
 }
 
 fn background_degraded_subsystems(snapshot: &Value) -> Vec<String> {
@@ -2456,7 +2589,9 @@ fn spawn_job_maintenance(handler: &DevboxMcp, config: &Config, cancellation: Can
             let maintenance_store = maintenance_store.clone();
             let maintenance_state_path = maintenance_state_path.clone();
             async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(60));
+                let first_tick = tokio::time::Instant::now() + Duration::from_secs(17);
+                let mut interval = tokio::time::interval_at(first_tick, Duration::from_secs(60));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         () = cancellation.cancelled() => return Ok(()),
@@ -2497,7 +2632,14 @@ fn spawn_version_refresh(handler: &DevboxMcp, cancellation: CancellationToken) {
         move |cancellation, heartbeat| {
             let runtime = runtime.clone();
             async move {
-                let mut interval = tokio::time::interval(Duration::from_millis(refresh_ms));
+                heartbeat.attempt();
+                match runtime.get_versions(true, cancellation.child_token()).await {
+                    Ok(_) => heartbeat.tick(),
+                    Err(error) => heartbeat.fail(error.to_string()),
+                }
+                let first_tick = tokio::time::Instant::now() + Duration::from_millis(refresh_ms);
+                let mut interval =
+                    tokio::time::interval_at(first_tick, Duration::from_millis(refresh_ms));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
@@ -2518,11 +2660,12 @@ fn spawn_version_refresh(handler: &DevboxMcp, cancellation: CancellationToken) {
 
 pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Router {
     let handler = DevboxMcp::new(config.clone());
+    spawn_scheduler_snapshot(&handler, cancellation.child_token());
     spawn_execution_store_probe(&handler, &config, cancellation.child_token());
     crate::incident_task::spawn_incident_monitor(
         config.project_root.clone(),
         handler.performance.clone(),
-        handler.scheduler.clone(),
+        handler.execution_snapshot.clone(),
         handler.active_requests.clone(),
         handler.background.clone(),
         handler.execution_store_health.clone(),
@@ -2687,11 +2830,9 @@ async fn write_json_snapshot(path: &std::path::Path, value: &Value) -> std::io::
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     let bytes = serde_json::to_vec_pretty(value).map_err(std::io::Error::other)?;
     tokio::fs::write(&temporary, bytes).await?;
-    if tokio::fs::rename(&temporary, path).await.is_err() {
-        tokio::fs::remove_file(path).await.ok();
-        tokio::fs::rename(&temporary, path).await?;
-    }
-    Ok(())
+    replace_file_preserving_previous(&temporary, path)
+        .await
+        .map_err(|error| std::io::Error::other(error.to_string()))
 }
 
 async fn read_json_snapshot(path: PathBuf) -> Option<Value> {
@@ -2772,7 +2913,9 @@ fn snapshot_age_ms(timestamp: Option<&str>) -> Option<u64> {
 
 async fn readyz(State(state): State<HttpState>) -> Response {
     let checks = tokio::time::timeout(Duration::from_millis(750), async {
-        let scheduler = state.handler.scheduler.snapshot().await.is_ok();
+        let scheduler = cached_execution_value(&state.handler.execution_snapshot)
+            .await
+            .is_some();
         let tool_contract =
             state.handler.tool_router.list_all().len() == crate::contract::TARGET_TOOL_NAMES.len();
         let background = state.handler.background.snapshot();
@@ -3768,6 +3911,25 @@ mod tests {
             structured["summary"]
                 .as_str()
                 .is_some_and(|value| value.contains("medium-integrity"))
+        );
+    }
+
+    #[test]
+    fn disk_pressure_policy_warns_on_low_percentage_before_hard_failure() {
+        let eight_tb = 8_000_000_000_000_u64;
+        assert_eq!(
+            disk_pressure_level(220_000_000_000, eight_tb, true),
+            "warning"
+        );
+        assert_eq!(disk_pressure_level(600_000_000, eight_tb, true), "warning");
+        assert_eq!(disk_pressure_level(500_000_000, eight_tb, true), "critical");
+        assert_eq!(
+            disk_pressure_level(800_000_000_000, eight_tb, true),
+            "normal"
+        );
+        assert_eq!(
+            disk_pressure_level(800_000_000_000, eight_tb, false),
+            "critical"
         );
     }
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -14,7 +15,10 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{execution::process_alive, process::terminate_process_tree};
+use crate::{
+    execution::process_alive, lifecycle::replace_file_preserving_previous,
+    process::terminate_process_tree,
+};
 
 const MAX_LOG_READ_CHARS: usize = 100_000;
 const CHILD_IDENTITY_MAX_AGE: Duration = Duration::from_secs(60);
@@ -55,6 +59,10 @@ pub struct JobPaths {
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "maintenance summary is an external JSON wire shape with independent boolean flags"
+)]
 pub struct ReconcileSummary {
     /// Job directories discovered during this maintenance pass.
     pub discovered: u64,
@@ -84,6 +92,10 @@ pub struct ReconcileSummary {
     pub quota_checked_at_utc: Option<String>,
     #[serde(rename = "quotaAgeMs", skip_serializing_if = "Option::is_none")]
     pub quota_age_ms: Option<u64>,
+    #[serde(rename = "quotaScanned")]
+    pub quota_scanned: u64,
+    #[serde(rename = "quotaFullReconcile")]
+    pub quota_full_reconcile: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -147,10 +159,25 @@ struct QuotaState {
 }
 
 #[derive(Debug, Clone)]
+struct QuotaEntry {
+    bytes: u64,
+    terminal: bool,
+    completed_at: OffsetDateTime,
+}
+
+#[derive(Debug, Default)]
+struct QuotaIndex {
+    entries: BTreeMap<String, QuotaEntry>,
+    initialized: bool,
+    refreshed_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone)]
 pub struct JobStore {
     config: JobStoreConfig,
     maintenance_index: Arc<Mutex<MaintenanceIndex>>,
     quota_state: Arc<Mutex<QuotaState>>,
+    quota_index: Arc<Mutex<QuotaIndex>>,
 }
 
 impl JobStore {
@@ -160,6 +187,7 @@ impl JobStore {
             config: config.normalized(),
             maintenance_index: Arc::new(Mutex::new(MaintenanceIndex::default())),
             quota_state: Arc::new(Mutex::new(QuotaState::default())),
+            quota_index: Arc::new(Mutex::new(QuotaIndex::default())),
         }
     }
 
@@ -217,7 +245,9 @@ impl JobStore {
     /// # Errors
     /// Returns invalid-ID, serialization, or filesystem errors.
     pub async fn write_status(&self, job_id: &str, status: &Value) -> Result<()> {
-        write_json_atomic(&self.paths(job_id)?.status, status).await
+        write_json_atomic(&self.paths(job_id)?.status, status).await?;
+        self.refresh_quota_entry_if_initialized(job_id).await?;
+        Ok(())
     }
 
     /// Atomically persist the current runner heartbeat.
@@ -566,6 +596,21 @@ impl JobStore {
             Ok(_) => {}
             Err(at) => index.ids.insert(at, job_id.to_owned()),
         }
+        drop(index);
+        let mut quota = self
+            .quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if quota.initialized {
+            quota.entries.insert(
+                job_id.to_owned(),
+                QuotaEntry {
+                    bytes: 0,
+                    terminal: false,
+                    completed_at: OffsetDateTime::UNIX_EPOCH,
+                },
+            );
+        }
     }
 
     fn note_job_deleted(&self, job_id: &str) {
@@ -583,6 +628,12 @@ impl JobStore {
             }
         }
         index.cursor = index.cursor.min(index.ids.len());
+        drop(index);
+        self.quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .remove(job_id);
     }
 
     fn note_jobs_deleted(&self, deleted: &std::collections::HashSet<String>) {
@@ -595,43 +646,57 @@ impl JobStore {
             .unwrap_or_else(PoisonError::into_inner);
         index.ids.retain(|id| !deleted.contains(id));
         index.cursor = index.cursor.min(index.ids.len());
+        drop(index);
+        self.quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .retain(|id, _| !deleted.contains(id));
     }
 
     async fn apply_store_quota(&self, summary: &mut ReconcileSummary) -> Result<()> {
         use std::collections::HashSet;
-        let ids = {
-            self.maintenance_index
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .ids
-                .clone()
-        };
-        let mut total_bytes = 0_u64;
-        let mut terminal_bytes = 0_u64;
-        let mut terminal = Vec::<(OffsetDateTime, String, u64)>::new();
-        for id in ids {
-            let paths = self.paths(&id)?;
-            let bytes = shallow_directory_bytes(&paths.dir).await.unwrap_or(0);
-            total_bytes = total_bytes.saturating_add(bytes);
-            let Ok(status) = read_json(&paths.status).await else {
-                continue;
-            };
-            if is_terminal(status_name(&status)) {
-                terminal_bytes = terminal_bytes.saturating_add(bytes);
-                let timestamp = status
-                    .get("completedAtUtc")
-                    .and_then(Value::as_str)
-                    .and_then(parse_utc)
-                    .or_else(|| {
-                        status
-                            .get("createdAtUtc")
-                            .and_then(Value::as_str)
-                            .and_then(parse_utc)
-                    })
-                    .unwrap_or(OffsetDateTime::UNIX_EPOCH);
-                terminal.push((timestamp, id, bytes));
-            }
+
+        let full_reconcile = self.quota_index_needs_refresh();
+        if full_reconcile {
+            self.refresh_quota_index().await?;
+        } else {
+            summary.quota_scanned = self.refresh_mutable_quota_entries().await?;
         }
+        summary.quota_full_reconcile = full_reconcile;
+        if full_reconcile {
+            summary.quota_scanned = u64::try_from(
+                self.quota_index
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .entries
+                    .len(),
+            )
+            .unwrap_or(u64::MAX);
+        }
+
+        let entries = self
+            .quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .clone();
+        let total_bytes = entries
+            .values()
+            .fold(0_u64, |total, entry| total.saturating_add(entry.bytes));
+        let terminal_bytes = entries
+            .values()
+            .filter(|entry| entry.terminal)
+            .fold(0_u64, |total, entry| total.saturating_add(entry.bytes));
+        let mut terminal = entries
+            .into_iter()
+            .filter_map(|(id, entry)| {
+                entry
+                    .terminal
+                    .then_some((entry.completed_at, id, entry.bytes))
+            })
+            .collect::<Vec<_>>();
+        let mut total_bytes = total_bytes;
         summary.store_bytes = total_bytes;
         summary.terminal_retained = u64::try_from(terminal.len()).unwrap_or(u64::MAX);
         let over_bytes =
@@ -648,8 +713,6 @@ impl JobStore {
         let target_terminal_bytes = if self.config.max_store_bytes == 0 {
             u64::MAX
         } else if active_bytes >= self.config.max_store_bytes {
-            // Active jobs are not evictable. If they alone exceed the hard quota,
-            // deleting all terminal history cannot solve the pressure condition.
             terminal_bytes
         } else {
             let low_water_total = self.config.max_store_bytes.saturating_mul(9) / 10;
@@ -686,6 +749,128 @@ impl JobStore {
         summary.terminal_retained = u64::try_from(retained).unwrap_or(u64::MAX);
         self.record_quota_state(summary);
         Ok(())
+    }
+
+    fn quota_index_needs_refresh(&self) -> bool {
+        let index = self
+            .quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        !index.initialized
+            || index
+                .refreshed_at
+                .and_then(|at| at.elapsed().ok())
+                .is_none_or(|age| age >= MAINTENANCE_INDEX_REFRESH)
+    }
+
+    async fn refresh_quota_index(&self) -> Result<()> {
+        let ids = self
+            .maintenance_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .ids
+            .clone();
+        let mut entries = BTreeMap::new();
+        for id in ids {
+            if let Some(entry) = self.measure_quota_entry(&id).await? {
+                entries.insert(id, entry);
+            }
+        }
+        let mut index = self
+            .quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        index.entries = entries;
+        index.initialized = true;
+        index.refreshed_at = Some(SystemTime::now());
+        Ok(())
+    }
+
+    async fn refresh_mutable_quota_entries(&self) -> Result<u64> {
+        let ids = self
+            .quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entries
+            .iter()
+            .filter_map(|(id, entry)| (!entry.terminal).then_some(id.clone()))
+            .collect::<Vec<_>>();
+        let mut updates = Vec::with_capacity(ids.len());
+        for id in ids {
+            updates.push((id.clone(), self.measure_quota_entry(&id).await?));
+        }
+        let scanned = u64::try_from(updates.len()).unwrap_or(u64::MAX);
+        let mut index = self
+            .quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for (id, entry) in updates {
+            if let Some(entry) = entry {
+                index.entries.insert(id, entry);
+            } else {
+                index.entries.remove(&id);
+            }
+        }
+        Ok(scanned)
+    }
+
+    async fn refresh_quota_entry_if_initialized(&self, job_id: &str) -> Result<()> {
+        let initialized = self
+            .quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .initialized;
+        if !initialized {
+            return Ok(());
+        }
+        let measured = self.measure_quota_entry(job_id).await?;
+        let mut index = self
+            .quota_index
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(entry) = measured {
+            index.entries.insert(job_id.to_owned(), entry);
+        } else {
+            index.entries.remove(job_id);
+        }
+        Ok(())
+    }
+
+    async fn measure_quota_entry(&self, job_id: &str) -> Result<Option<QuotaEntry>> {
+        let paths = self.paths(job_id)?;
+        let bytes = match shallow_directory_bytes(&paths.dir).await {
+            Ok(bytes) => bytes,
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let status = read_json(&paths.status).await.ok();
+        let terminal = status
+            .as_ref()
+            .is_some_and(|status| is_terminal(status_name(status)));
+        let completed_at = status
+            .as_ref()
+            .and_then(|status| status.get("completedAtUtc"))
+            .and_then(Value::as_str)
+            .and_then(parse_utc)
+            .or_else(|| {
+                status
+                    .as_ref()
+                    .and_then(|status| status.get("createdAtUtc"))
+                    .and_then(Value::as_str)
+                    .and_then(parse_utc)
+            })
+            .unwrap_or(OffsetDateTime::UNIX_EPOCH);
+        Ok(Some(QuotaEntry {
+            bytes,
+            terminal,
+            completed_at,
+        }))
     }
 
     async fn reconcile_one_for_maintenance(
@@ -730,6 +915,7 @@ impl JobStore {
             object.insert("legacyLogsCompacted".to_owned(), json!(compacted));
         }
         write_json_atomic(&paths.status, &raw).await?;
+        self.refresh_quota_entry_if_initialized(job_id).await?;
         summary.maintained = summary.maintained.saturating_add(1);
         Ok(())
     }
@@ -1005,23 +1191,7 @@ async fn write_json_atomic(path: &Path, value: &Value) -> Result<()> {
     let mut bytes = serde_json::to_vec_pretty(value)?;
     bytes.push(b'\n');
     fs::write(&temp, bytes).await?;
-    match fs::rename(&temp, path).await {
-        Ok(()) => Ok(()),
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
-            ) =>
-        {
-            fs::remove_file(path).await.ok();
-            fs::rename(&temp, path).await?;
-            Ok(())
-        }
-        Err(error) => {
-            fs::remove_file(&temp).await.ok();
-            Err(error.into())
-        }
-    }
+    replace_file_preserving_previous(&temp, path).await
 }
 
 async fn read_heartbeat(paths: &JobPaths) -> Result<HeartbeatState> {
@@ -1568,16 +1738,66 @@ mod tests {
         let quota = store.enforce_store_quota().await.unwrap();
         assert!(quota.store_bytes >= 3 * 1024);
         assert_eq!(quota.terminal_retained, 3);
+        assert!(quota.quota_full_reconcile);
+        assert_eq!(quota.quota_scanned, 3);
         assert!(quota.quota_checked_at_utc.is_some());
         assert_eq!(quota.quota_age_ms, Some(0));
+        let steady = store.enforce_store_quota().await.unwrap();
+        assert!(!steady.quota_full_reconcile);
+        assert_eq!(
+            steady.quota_scanned, 0,
+            "immutable terminal jobs must not be reopened on every minute-scale quota pass"
+        );
 
         let partial = store.reconcile_maintenance_batch(1).await.unwrap();
         assert!(partial.batch_limited);
         assert_eq!(partial.store_bytes, quota.store_bytes);
         assert_eq!(partial.terminal_retained, 3);
-        assert_eq!(partial.quota_checked_at_utc, quota.quota_checked_at_utc);
+        assert_eq!(partial.quota_checked_at_utc, steady.quota_checked_at_utc);
         assert!(partial.quota_age_ms.is_some());
     }
+    #[tokio::test]
+    async fn five_thousand_cached_terminal_jobs_require_zero_steady_state_rescans() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut config = store(temp.path()).config().clone();
+        config.max_terminal_jobs = 10_000;
+        config.max_store_bytes = 10 * 1024 * 1024 * 1024;
+        let store = JobStore::new(config);
+        {
+            let mut quota = store
+                .quota_index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            quota.initialized = true;
+            quota.refreshed_at = Some(SystemTime::now());
+            for index in 0..5_000 {
+                quota.entries.insert(
+                    format!("job-scale-{index:05}"),
+                    QuotaEntry {
+                        bytes: 1_024,
+                        terminal: true,
+                        completed_at: OffsetDateTime::UNIX_EPOCH,
+                    },
+                );
+            }
+        }
+        {
+            let mut maintenance = store
+                .maintenance_index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            maintenance.initialized = true;
+            maintenance.refreshed_at = Some(SystemTime::now());
+        }
+        let started = std::time::Instant::now();
+        let summary = store.enforce_store_quota().await.unwrap();
+        assert_eq!(summary.terminal_retained, 5_000);
+        assert_eq!(summary.store_bytes, 5_000 * 1_024);
+        assert_eq!(summary.quota_scanned, 0);
+        assert!(!summary.quota_full_reconcile);
+        assert!(started.elapsed() < Duration::from_millis(100));
+    }
+
     #[tokio::test]
     async fn retention_removes_expired_terminal_job() {
         let temp = tempfile::tempdir().unwrap();

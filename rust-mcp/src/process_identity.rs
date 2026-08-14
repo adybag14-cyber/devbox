@@ -1,5 +1,7 @@
 #[cfg(target_os = "linux")]
 use sha2::{Digest, Sha256};
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 
 #[must_use]
 pub fn current_process_instance() -> Option<u64> {
@@ -18,13 +20,26 @@ pub fn process_instance(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let close = stat.rfind(')')?;
     let start_ticks = stat.get(close + 1..)?.split_whitespace().nth(19)?;
-    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    let boot_id = linux_boot_id()?;
     let mut digest = Sha256::new();
-    digest.update(boot_id.trim().as_bytes());
+    digest.update(boot_id.as_bytes());
     digest.update(b":");
     digest.update(start_ticks.as_bytes());
     let bytes = digest.finalize();
     Some(u64::from_le_bytes(bytes[..8].try_into().ok()?))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_boot_id() -> Option<&'static str> {
+    static BOOT_ID: OnceLock<Option<String>> = OnceLock::new();
+    BOOT_ID
+        .get_or_init(|| {
+            std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        })
+        .as_deref()
 }
 
 #[cfg(target_os = "macos")]

@@ -15,6 +15,7 @@ const RESTART_BACKOFF_RESET_AFTER: Duration = Duration::from_secs(30);
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BackgroundTaskState {
+    pub kind: String,
     pub running: bool,
     pub starts: u64,
     pub restarts: u64,
@@ -69,6 +70,31 @@ impl BackgroundTaskRegistry {
         F: Fn(CancellationToken, TaskHeartbeat) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
+        self.spawn_supervised_kind(name, "periodic", cancellation, factory);
+    }
+
+    pub fn spawn_event_driven<F, Fut>(
+        &self,
+        name: &'static str,
+        cancellation: CancellationToken,
+        factory: F,
+    ) where
+        F: Fn(CancellationToken, TaskHeartbeat) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        self.spawn_supervised_kind(name, "event-driven", cancellation, factory);
+    }
+
+    fn spawn_supervised_kind<F, Fut>(
+        &self,
+        name: &'static str,
+        kind: &'static str,
+        cancellation: CancellationToken,
+        factory: F,
+    ) where
+        F: Fn(CancellationToken, TaskHeartbeat) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
         let registry = self.clone();
         let factory = Arc::new(factory);
         tokio::spawn(async move {
@@ -78,7 +104,7 @@ impl BackgroundTaskRegistry {
                     registry.mark_stopped(name, None);
                     return;
                 }
-                registry.mark_started(name);
+                registry.mark_started(name, kind);
                 let heartbeat = TaskHeartbeat {
                     registry: registry.clone(),
                     name: Arc::from(name),
@@ -120,7 +146,7 @@ impl BackgroundTaskRegistry {
         Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
         let registry = self.clone();
-        registry.mark_started(name);
+        registry.mark_started(name, "one-shot");
         tokio::spawn(async move {
             match future.await {
                 Ok(()) => {
@@ -146,9 +172,16 @@ impl BackgroundTaskRegistry {
                 let failure_age = state
                     .last_failure_unix_ms
                     .map(|tick| now.saturating_sub(tick));
+                let idle_for = (state.kind == "event-driven").then(|| {
+                    state
+                        .last_attempt_unix_ms
+                        .map_or(0, |at| now.saturating_sub(at))
+                });
                 (
                     name.clone(),
                     serde_json::json!({
+                        "kind": state.kind,
+                        "idleForMs": idle_for,
                         "running": state.running,
                         "starts": state.starts,
                         "restarts": state.restarts,
@@ -168,9 +201,10 @@ impl BackgroundTaskRegistry {
         serde_json::Value::Object(mapped)
     }
 
-    fn mark_started(&self, name: &str) {
+    fn mark_started(&self, name: &str, kind: &str) {
         let mut states = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let state = states.entry(name.to_owned()).or_default();
+        kind.clone_into(&mut state.kind);
         if state.starts > 0 {
             state.restarts = state.restarts.saturating_add(1);
         }
@@ -238,7 +272,7 @@ mod tests {
     #[tokio::test]
     async fn heartbeat_distinguishes_attempt_failure_and_success() {
         let registry = BackgroundTaskRegistry::new();
-        registry.mark_started("semantic-fixture");
+        registry.mark_started("semantic-fixture", "periodic");
         let heartbeat = TaskHeartbeat {
             registry: registry.clone(),
             name: Arc::from("semantic-fixture"),

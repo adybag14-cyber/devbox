@@ -135,3 +135,7 @@ Unregister-ScheduledTask -TaskName 'ChatGptDevboxGuardian-KeepAlive' -Confirm:$f
 ```
 
 For systemd, run `systemctl --user disable --now devbox-guardian.service` and remove the generated user unit. For Termux, remove only `~/.termux/boot/devbox-guardian`.
+
+## Windows supervision cadence
+
+The persistent Guardian watcher is authoritative. The Scheduled Task `KeepAlive` trigger is a 10-minute recovery backstop rather than a minute-by-minute PowerShell verifier; startup and logon triggers still provide immediate ownership.

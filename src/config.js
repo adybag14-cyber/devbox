@@ -157,6 +157,7 @@ export const config = {
   mcpExecQueueTimeoutMs: parseInteger(process.env.MCP_EXEC_QUEUE_TIMEOUT_MS, 15000),
   mcpBackgroundQueueTimeoutMs: parseInteger(process.env.MCP_BACKGROUND_QUEUE_TIMEOUT_MS, 300000),
   mcpWatchMaxConcurrent: parseInteger(process.env.MCP_WATCH_MAX_CONCURRENT, 4),
+  mcpExecHeavyCapacity: parseInteger(process.env.MCP_EXEC_HEAVY_CAPACITY, 4),
   mcpExecHeavyWeight: parseInteger(process.env.MCP_EXEC_HEAVY_WEIGHT, 2),
   mcpJobLogMaxBytes: parseInteger(process.env.MCP_JOB_LOG_MAX_BYTES, 32 * 1024 * 1024),
   mcpJobLogRotations: parseInteger(process.env.MCP_JOB_LOG_ROTATIONS, 2),

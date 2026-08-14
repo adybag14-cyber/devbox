@@ -1,4 +1,12 @@
-export const refreshExecutionStoreHealth = async ({ jobsRoot, probeWritablePath, probeExecutionSlotStoreWritable, statfs, minimumFreeBytes }) => {
+export const refreshExecutionStoreHealth = async ({
+  jobsRoot,
+  probeWritablePath,
+  probeExecutionSlotStoreWritable,
+  statfs,
+  minimumFreeBytes,
+  warningFreeBytes = 50 * 1024 * 1024 * 1024,
+  warningFreePercent = 5,
+}) => {
   const startedAt = Date.now();
   const errors = [];
   let jobsWritable = false;
@@ -15,6 +23,11 @@ export const refreshExecutionStoreHealth = async ({ jobsRoot, probeWritablePath,
   } catch (error) {
     errors.push(`disk: ${error.message}`);
   }
+  const freePercent = totalBytes > 0 ? (freeBytes * 100) / totalBytes : 0;
+  const diskOk = errors.every((error) => !error.startsWith("disk:") && !error.startsWith("free disk"));
+  const diskPressure = !diskOk || freeBytes < minimumFreeBytes
+    ? "critical"
+    : freeBytes < warningFreeBytes || freePercent < warningFreePercent ? "warning" : "normal";
   return {
     ok: errors.length === 0,
     sampledAtUtc: new Date().toISOString(),
@@ -24,7 +37,10 @@ export const refreshExecutionStoreHealth = async ({ jobsRoot, probeWritablePath,
     schedulerWritable,
     freeBytes,
     totalBytes,
-    freePercent: totalBytes > 0 ? (freeBytes * 100) / totalBytes : 0,
+    freePercent,
+    diskPressure,
+    warningFreeBytes,
+    warningFreePercent,
     minimumFreeBytes,
     error: errors.length > 0 ? errors.join("; ") : null,
   };

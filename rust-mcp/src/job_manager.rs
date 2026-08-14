@@ -132,7 +132,7 @@ impl JobManager {
     }
 
     fn shell_request(&self, options: StartShellJob) -> JobRequest {
-        let text = options.command.clone();
+        let resource_class = infer_shell_resource_class(&options.command, &options.resource_class);
         JobRequest {
             id: new_job_id(),
             mode: JobMode::Shell,
@@ -144,14 +144,15 @@ impl JobManager {
             timeout_ms: bounded_timeout_ms(options.timeout),
             user: options.user,
             read_only: options.read_only,
-            resource_class: infer_resource_class(&text, &options.resource_class),
+            resource_class,
             runtime_mode: self.config.runtime_mode.as_str().to_owned(),
             created_at_utc: utc_now(),
         }
     }
 
     fn program_request(&self, options: StartProgramJob) -> JobRequest {
-        let text = format!("{} {}", options.program, options.args.join(" "));
+        let resource_class =
+            infer_program_resource_class(&options.program, &options.args, &options.resource_class);
         JobRequest {
             id: new_job_id(),
             mode: JobMode::Program,
@@ -163,7 +164,7 @@ impl JobManager {
             timeout_ms: bounded_timeout_ms(options.timeout),
             user: options.user,
             read_only: false,
-            resource_class: infer_resource_class(&text, &options.resource_class),
+            resource_class,
             runtime_mode: self.config.runtime_mode.as_str().to_owned(),
             created_at_utc: utc_now(),
         }
@@ -235,34 +236,56 @@ pub fn job_store_config(config: &Config) -> JobStoreConfig {
 }
 
 #[must_use]
-pub fn infer_resource_class(text: &str, requested: &str) -> ResourceClass {
-    match requested.trim().to_ascii_lowercase().as_str() {
-        "watch" => return ResourceClass::Watch,
-        "light" => return ResourceClass::Light,
-        "heavy" => return ResourceClass::Heavy,
-        _ => {}
+pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass {
+    if let Some(explicit) = explicit_resource_class(requested) {
+        return explicit;
     }
     let text = text.to_ascii_lowercase();
     let heavy_markers = [
         "playwright",
         "selenium",
         "gradle",
+        "gradlew",
+        "mvn ",
+        "mvnw",
         "ninja",
         "cmake --build",
         "cargo build",
         "cargo test",
+        "cargo bench",
+        "cargo clippy",
+        "rustc ",
         "zig build",
+        "go build",
+        "go test",
+        "docker build",
+        "docker buildx build",
+        "pytest",
         "npm build",
+        "npm test",
         "npm run build",
+        "npm run test",
         "pnpm build",
+        "pnpm test",
         "pnpm run build",
+        "pnpm run test",
         "yarn build",
+        "yarn test",
+        "bun build",
+        "bun test",
+        "pip wheel",
+        "python -m build",
         "bazel",
         "msbuild",
         "dotnet build",
+        "dotnet test",
+        "dotnet publish",
     ];
     if heavy_markers.iter().any(|marker| text.contains(marker))
-        || text.split_whitespace().next() == Some("make")
+        || text
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| matches!(first, "make" | "gmake" | "mingw32-make"))
     {
         return ResourceClass::Heavy;
     }
@@ -273,6 +296,106 @@ pub fn infer_resource_class(text: &str, requested: &str) -> ResourceClass {
         return ResourceClass::Watch;
     }
     ResourceClass::Light
+}
+
+#[must_use]
+pub fn infer_program_resource_class(
+    program: &str,
+    args: &[String],
+    requested: &str,
+) -> ResourceClass {
+    if let Some(explicit) = explicit_resource_class(requested) {
+        return explicit;
+    }
+    let program = normalized_program_name(program);
+    let args = args
+        .iter()
+        .map(|arg| arg.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    let first = args.first().map(String::as_str).unwrap_or_default();
+    let second = args.get(1).map(String::as_str).unwrap_or_default();
+
+    if program == "gh" && first == "run" && second == "watch" {
+        return ResourceClass::Watch;
+    }
+    if matches!(program.as_str(), "sleep" | "start-sleep") {
+        return ResourceClass::Watch;
+    }
+    if matches!(program.as_str(), "pwsh" | "powershell")
+        && let Some(command_at) = args
+            .iter()
+            .position(|arg| matches!(arg.as_str(), "-command" | "-c"))
+        && let Some(command) = args.get(command_at + 1)
+    {
+        return infer_shell_resource_class(command, requested);
+    }
+
+    let heavy = match program.as_str() {
+        "cargo" => matches!(first, "build" | "test" | "bench" | "clippy"),
+        "rustc" | "ninja" | "make" | "gmake" | "mingw32-make" | "bazel" | "msbuild" | "gradle"
+        | "gradlew" | "mvn" | "mvnw" | "pytest" | "py.test" => true,
+        "cmake" => args.iter().any(|arg| arg == "--build"),
+        "zig" => first == "build",
+        "go" => matches!(first, "build" | "test" | "install"),
+        "docker" => {
+            first == "build"
+                || (first == "buildx" && second == "build")
+                || (first == "compose" && args.get(2).is_some_and(|arg| arg == "build"))
+        }
+        "dotnet" => matches!(first, "build" | "test" | "publish" | "pack"),
+        "npm" | "pnpm" => {
+            first == "build"
+                || first == "test"
+                || (first == "run" && matches!(second, "build" | "test"))
+        }
+        "yarn" | "bun" => {
+            matches!(first, "build" | "test")
+                || (first == "run" && matches!(second, "build" | "test"))
+        }
+        "npx" => matches!(
+            first,
+            "playwright" | "selenium" | "webpack" | "vite" | "tsc"
+        ),
+        "pip" | "pip3" => first == "wheel",
+        "python" | "python3" | "py" => {
+            first == "-m"
+                && matches!(second, "pytest" | "build" | "pip")
+                && (second != "pip" || args.get(2).is_some_and(|arg| arg == "wheel"))
+        }
+        _ => false,
+    };
+    if heavy {
+        ResourceClass::Heavy
+    } else {
+        ResourceClass::Light
+    }
+}
+
+fn explicit_resource_class(requested: &str) -> Option<ResourceClass> {
+    match requested.trim().to_ascii_lowercase().as_str() {
+        "watch" => Some(ResourceClass::Watch),
+        "light" => Some(ResourceClass::Light),
+        "heavy" => Some(ResourceClass::Heavy),
+        _ => None,
+    }
+}
+
+fn normalized_program_name(program: &str) -> String {
+    let name = program
+        .trim()
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    [".exe", ".cmd", ".bat", ".ps1"]
+        .into_iter()
+        .find_map(|suffix| name.strip_suffix(suffix).map(str::to_owned))
+        .unwrap_or(name)
+}
+
+#[must_use]
+pub fn infer_resource_class(text: &str, requested: &str) -> ResourceClass {
+    infer_shell_resource_class(text, requested)
 }
 
 fn contains_numeric_sleep(text: &str) -> bool {
@@ -389,6 +512,42 @@ mod tests {
         assert_eq!(
             infer_resource_class("git status", "heavy"),
             ResourceClass::Heavy
+        );
+    }
+
+    #[test]
+    fn direct_program_classification_uses_executable_and_argv_not_payload_text() {
+        let node_args = vec![
+            "-e".to_owned(),
+            "/* cargo test */ setTimeout(()=>{},1200)".to_owned(),
+        ];
+        assert_eq!(
+            infer_program_resource_class("node", &node_args, "auto"),
+            ResourceClass::Light
+        );
+        assert_eq!(
+            infer_program_resource_class("cargo", &["test".to_owned(), "--all".to_owned()], "auto"),
+            ResourceClass::Heavy
+        );
+        assert_eq!(
+            infer_program_resource_class("pytest", &["-q".to_owned()], "auto"),
+            ResourceClass::Heavy
+        );
+        assert_eq!(
+            infer_program_resource_class(
+                "docker",
+                &["buildx".to_owned(), "build".to_owned(), ".".to_owned()],
+                "auto"
+            ),
+            ResourceClass::Heavy
+        );
+        assert_eq!(
+            infer_program_resource_class(
+                "gh",
+                &["run".to_owned(), "watch".to_owned(), "123".to_owned()],
+                "auto"
+            ),
+            ResourceClass::Watch
         );
     }
 

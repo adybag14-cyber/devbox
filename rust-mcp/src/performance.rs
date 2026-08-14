@@ -9,7 +9,7 @@ use chrono::{SecondsFormat, Utc};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::background::BackgroundTaskRegistry;
+use crate::background::{BackgroundTaskRegistry, TaskHeartbeat};
 
 const SAMPLE_INTERVAL: Duration = Duration::from_millis(20);
 const DRIFT_INTERVAL: Duration = Duration::from_secs(1);
@@ -151,34 +151,87 @@ fn spawn_persistence(
             let state_path = state_path.clone();
             let history_path = history_path.clone();
             async move {
-                let mut interval = tokio::time::interval(PERSIST_INTERVAL);
+                persist_performance_iteration(
+                    &state,
+                    &cached,
+                    &cached_at,
+                    started_at,
+                    &state_path,
+                    &history_path,
+                    &heartbeat,
+                )
+                .await;
+                let first_tick = tokio::time::Instant::now() + Duration::from_secs(5);
+                let mut interval = tokio::time::interval_at(first_tick, PERSIST_INTERVAL);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         () = cancellation.cancelled() => return Ok(()),
                         _ = interval.tick() => {
-                            let snapshot = snapshot_value(&state, started_at);
-                            *cached.write().unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
-                            *cached_at.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
-                            heartbeat.attempt();
-                            let snapshot_result = persist_snapshot(&state_path, &snapshot).await;
-                            let history_result = append_history(&history_path, &snapshot).await;
-                            if let (Ok(()), Ok(())) = (&snapshot_result, &history_result) {
-                                heartbeat.tick();
-                            } else {
-                                let detail = format!(
-                                    "snapshot={} history={}",
-                                    snapshot_result.as_ref().err().map_or("ok".to_owned(), ToString::to_string),
-                                    history_result.as_ref().err().map_or("ok".to_owned(), ToString::to_string),
-                                );
-                                tracing::debug!(error = %detail, "Rust MCP performance persistence iteration degraded");
-                                heartbeat.fail(detail);
-                            }
+                            persist_performance_iteration(
+                                &state,
+                                &cached,
+                                &cached_at,
+                                started_at,
+                                &state_path,
+                                &history_path,
+                                &heartbeat,
+                            ).await;
                         }
                     }
                 }
             }
         },
     );
+}
+
+async fn persist_performance_iteration(
+    state: &Arc<Mutex<PerformanceWindow>>,
+    cached: &Arc<RwLock<Value>>,
+    cached_at: &Arc<RwLock<Instant>>,
+    started_at: Instant,
+    state_path: &std::path::Path,
+    history_path: &std::path::Path,
+    heartbeat: &TaskHeartbeat,
+) {
+    heartbeat.attempt();
+    let snapshot_state = state.clone();
+    let snapshot = match tokio::task::spawn_blocking(move || {
+        snapshot_value(&snapshot_state, started_at)
+    })
+    .await
+    {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            heartbeat.fail(format!("performance snapshot worker failed: {error}"));
+            return;
+        }
+    };
+    *cached
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
+    *cached_at
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
+    let snapshot_result = persist_snapshot(state_path, &snapshot).await;
+    let history_result = append_history(history_path, &snapshot).await;
+    if let (Ok(()), Ok(())) = (&snapshot_result, &history_result) {
+        heartbeat.tick();
+    } else {
+        let detail = format!(
+            "snapshot={} history={}",
+            snapshot_result
+                .as_ref()
+                .err()
+                .map_or("ok".to_owned(), ToString::to_string),
+            history_result
+                .as_ref()
+                .err()
+                .map_or("ok".to_owned(), ToString::to_string),
+        );
+        tracing::debug!(error = %detail, "Rust MCP performance persistence iteration degraded");
+        heartbeat.fail(detail);
+    }
 }
 
 async fn persist_snapshot(path: &std::path::Path, snapshot: &Value) -> std::io::Result<()> {
@@ -188,11 +241,9 @@ async fn persist_snapshot(path: &std::path::Path, snapshot: &Value) -> std::io::
     let bytes = serde_json::to_vec_pretty(snapshot).map_err(std::io::Error::other)?;
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     tokio::fs::write(&temporary, bytes).await?;
-    if tokio::fs::rename(&temporary, path).await.is_err() {
-        tokio::fs::remove_file(path).await.ok();
-        tokio::fs::rename(&temporary, path).await?;
-    }
-    Ok(())
+    crate::lifecycle::replace_file_preserving_previous(&temporary, path)
+        .await
+        .map_err(|error| std::io::Error::other(error.to_string()))
 }
 
 async fn append_history(path: &std::path::Path, snapshot: &Value) -> std::io::Result<()> {
@@ -413,7 +464,11 @@ mod windows_memory {
     #![allow(unsafe_code)]
 
     use serde_json::{Value, json};
-    use std::mem::{size_of, zeroed};
+    use std::{
+        mem::{size_of, zeroed},
+        sync::{Mutex, OnceLock, PoisonError},
+        time::{Duration, Instant},
+    };
     use windows_sys::Win32::System::{
         ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
         Threading::GetCurrentProcess,
@@ -442,16 +497,58 @@ mod windows_memory {
             .unwrap_or(0)
     }
 
+    const THREAD_COUNT_REFRESH: Duration = Duration::from_secs(60);
+    static THREAD_COUNT_CACHE: OnceLock<Mutex<Option<(Instant, u32)>>> = OnceLock::new();
+
+    fn cached_thread_count(pid: u32) -> u32 {
+        let cache = THREAD_COUNT_CACHE.get_or_init(|| Mutex::new(None));
+        {
+            let guard = cache.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some((sampled_at, count)) = *guard
+                && sampled_at.elapsed() < THREAD_COUNT_REFRESH
+            {
+                return count;
+            }
+        }
+        let count = enumerate_thread_count(pid);
+        *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some((Instant::now(), count));
+        count
+    }
+
+    fn enumerate_thread_count(pid: u32) -> u32 {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+            System::Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
+                Thread32Next,
+            },
+        };
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            let mut threads = 0_u32;
+            if snapshot != INVALID_HANDLE_VALUE {
+                let mut entry: THREADENTRY32 = zeroed();
+                entry.dwSize = u32::try_from(size_of::<THREADENTRY32>()).unwrap_or(u32::MAX);
+                if Thread32First(snapshot, &raw mut entry) != 0 {
+                    loop {
+                        if entry.th32OwnerProcessID == pid {
+                            threads = threads.saturating_add(1);
+                        }
+                        if Thread32Next(snapshot, &raw mut entry) == 0 {
+                            break;
+                        }
+                    }
+                }
+                let _ = CloseHandle(snapshot);
+            }
+            threads
+        }
+    }
+
     pub fn process_platform_snapshot() -> Value {
         use windows_sys::Win32::{
-            Foundation::{CloseHandle, FILETIME, INVALID_HANDLE_VALUE},
-            System::{
-                Diagnostics::ToolHelp::{
-                    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First,
-                    Thread32Next,
-                },
-                Threading::{GetProcessHandleCount, GetProcessTimes},
-            },
+            Foundation::FILETIME,
+            System::Threading::{GetProcessHandleCount, GetProcessTimes},
         };
         unsafe {
             let process = GetCurrentProcess();
@@ -474,24 +571,7 @@ mod windows_memory {
             } else {
                 0
             };
-            let pid = std::process::id();
-            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            let mut threads = 0_u32;
-            if snapshot != INVALID_HANDLE_VALUE {
-                let mut entry: THREADENTRY32 = zeroed();
-                entry.dwSize = u32::try_from(size_of::<THREADENTRY32>()).unwrap_or(u32::MAX);
-                if Thread32First(snapshot, &raw mut entry) != 0 {
-                    loop {
-                        if entry.th32OwnerProcessID == pid {
-                            threads = threads.saturating_add(1);
-                        }
-                        if Thread32Next(snapshot, &raw mut entry) == 0 {
-                            break;
-                        }
-                    }
-                }
-                let _ = CloseHandle(snapshot);
-            }
+            let threads = cached_thread_count(std::process::id());
             json!({ "cpuTotalMs": cpu_total_ms, "handles": handles, "threads": threads })
         }
     }

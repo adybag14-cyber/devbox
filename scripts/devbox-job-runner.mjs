@@ -128,6 +128,7 @@ try {
     maxConcurrent: config.mcpExecMaxConcurrent,
     reservedInteractive: config.mcpExecReservedInteractive,
     watchMaxConcurrent: config.mcpWatchMaxConcurrent,
+    heavyCapacity: config.mcpExecHeavyCapacity,
     queueTimeoutMs: config.mcpBackgroundQueueTimeoutMs,
     signal: controller.signal,
   });

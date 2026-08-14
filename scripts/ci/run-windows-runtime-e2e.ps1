@@ -104,7 +104,7 @@ try {
         if ([string]$guardianTask.Actions[0].Execute -match 'wscript\.exe$') { throw 'Guardian supervision task still uses the VBS/wscript hop.' }
         if ([string]$guardianTask.Actions[0].Execute -notmatch 'pwsh\.exe$|powershell\.exe$') { throw 'Guardian supervision task is not invoking PowerShell directly.' }
     }
-    if ([string]$keepAliveTask.Triggers[0].Repetition.Interval -ne 'PT1M') { throw 'Guardian keepalive task is not repeating every minute.' }
+    if ([string]$keepAliveTask.Triggers[0].Repetition.Interval -ne 'PT10M') { throw 'Guardian keepalive task is not repeating on the 10-minute recovery cadence.' }
 
     $guardianPidPath = Join-Path $root 'run\guardian\guardian.pid'
     $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'

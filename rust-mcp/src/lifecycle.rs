@@ -523,37 +523,55 @@ pub(crate) async fn replace_file_preserving_previous(
     temporary: &std::path::Path,
     path: &std::path::Path,
 ) -> Result<()> {
-    match fs::rename(temporary, path).await {
-        Ok(()) => return Ok(()),
-        Err(first_error) => {
-            if fs::metadata(path).await.is_err() {
-                fs::remove_file(temporary).await.ok();
-                return Err(first_error.into());
-            }
-        }
+    #[cfg(windows)]
+    {
+        let temporary = temporary.to_path_buf();
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || replace_file_windows(&temporary, &path))
+            .await
+            .context("join Windows atomic state replacement")?
     }
+    #[cfg(not(windows))]
+    {
+        fs::rename(temporary, path)
+            .await
+            .with_context(|| format!("atomically replace state file {}", path.display()))
+    }
+}
 
-    let backup = path.with_extension(format!("{}.bak", unique_suffix()));
-    fs::rename(path, &backup)
-        .await
-        .with_context(|| format!("preserve previous state file {}", path.display()))?;
-    match fs::rename(temporary, path).await {
-        Ok(()) => {
-            fs::remove_file(&backup).await.ok();
-            Ok(())
-        }
-        Err(replacement_error) => {
-            let rollback = fs::rename(&backup, path).await;
-            fs::remove_file(temporary).await.ok();
-            if let Err(rollback_error) = rollback {
-                bail!(
-                    "failed to replace state file {}: {replacement_error}; rollback also failed: {rollback_error}",
-                    path.display()
-                );
-            }
-            Err(replacement_error.into())
-        }
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Windows atomic file replacement requires the MoveFileExW FFI"
+)]
+fn replace_file_windows(temporary: &std::path::Path, path: &std::path::Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::{
+        Foundation::GetLastError,
+        Storage::FileSystem::{MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW},
+    };
+
+    let temporary_wide = temporary
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let path_wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
+    let moved = unsafe { MoveFileExW(temporary_wide.as_ptr(), path_wide.as_ptr(), flags) };
+    if moved != 0 {
+        return Ok(());
     }
+    let code = unsafe { GetLastError() };
+    std::fs::remove_file(temporary).ok();
+    Err(std::io::Error::from_raw_os_error(
+        i32::try_from(code).unwrap_or(i32::MAX),
+    ))
+    .with_context(|| format!("atomically replace state file {}", path.display()))
 }
 
 fn retired_container_name(base: &str) -> String {

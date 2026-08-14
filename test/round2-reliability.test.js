@@ -9,6 +9,7 @@ import { spawn } from "node:child_process";
 import { abortableSleep, waitForPathCondition } from "../src/wait-utils.js";
 import { shapeProcessOutput } from "../src/output-shaping.js";
 import { createRotatingFileSink } from "../src/job-logs.js";
+import { refreshExecutionStoreHealth } from "../src/execution-store-health.js";
 
 const projectRoot = process.cwd();
 
@@ -398,5 +399,37 @@ test("terminal job maintenance is marked and not repeated on every periodic reco
   assert.equal(first.maintained, 1);
   assert.ok(persisted.maintenanceReconciledAtUtc);
   assert.equal(second.maintained, 0);
+  await rm(jobsRoot, { recursive: true, force: true });
+});
+
+
+test("execution-store health reports warning pressure before the hard free-space floor", async () => {
+  const jobsRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-disk-pressure-"));
+  const common = {
+    jobsRoot,
+    probeWritablePath: async () => true,
+    probeExecutionSlotStoreWritable: async () => true,
+    minimumFreeBytes: 512 * 1024 * 1024,
+    warningFreeBytes: 50 * 1024 * 1024 * 1024,
+    warningFreePercent: 5,
+  };
+  const warning = await refreshExecutionStoreHealth({
+    ...common,
+    statfs: async () => ({ bavail: 220_000_000_000 / 4096, bsize: 4096, blocks: 8_000_000_000_000 / 4096 }),
+  });
+  assert.equal(warning.ok, true);
+  assert.equal(warning.diskPressure, "warning");
+  const critical = await refreshExecutionStoreHealth({
+    ...common,
+    statfs: async () => ({ bavail: 500_000_000 / 4096, bsize: 4096, blocks: 8_000_000_000_000 / 4096 }),
+  });
+  assert.equal(critical.ok, false);
+  assert.equal(critical.diskPressure, "critical");
+  const normal = await refreshExecutionStoreHealth({
+    ...common,
+    statfs: async () => ({ bavail: 800_000_000_000 / 4096, bsize: 4096, blocks: 8_000_000_000_000 / 4096 }),
+  });
+  assert.equal(normal.ok, true);
+  assert.equal(normal.diskPressure, "normal");
   await rm(jobsRoot, { recursive: true, force: true });
 });

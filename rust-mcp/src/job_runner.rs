@@ -245,6 +245,7 @@ async fn prepare_runner(
         reserved_interactive: config.exec_reserved_interactive,
         watch_max_concurrent: config.watch_max_concurrent,
         queue_timeout: Duration::from_millis(config.background_queue_timeout_ms),
+        heavy_capacity: config.exec_heavy_capacity,
         heavy_weight: config.exec_heavy_weight,
     });
     let weight = if request.resource_class == ResourceClass::Heavy {
@@ -762,6 +763,7 @@ mod tests {
             reserved_interactive: 0,
             watch_max_concurrent: 1,
             queue_timeout: Duration::from_secs(1),
+            heavy_capacity: 4,
             heavy_weight: 2,
         });
         let runtime = tokio::runtime::Runtime::new().unwrap();
