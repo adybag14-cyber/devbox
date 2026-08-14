@@ -204,7 +204,7 @@ export const resolveFailureThreshold = ({
   // paging, Hyper-V, or antivirus pressure. Give that live process a longer
   // grace window before a destructive full restart.
   if (state.LocalHealth === false) {
-    return mcpProcessAlive ? liveThreshold : Math.min(2, configured);
+    return mcpProcessAlive ? liveThreshold : 1;
   }
 
   return configured;

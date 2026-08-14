@@ -19,6 +19,10 @@ pub struct BackgroundTaskState {
     pub starts: u64,
     pub restarts: u64,
     pub last_tick_unix_ms: Option<u64>,
+    pub last_attempt_unix_ms: Option<u64>,
+    pub last_success_unix_ms: Option<u64>,
+    pub last_failure_unix_ms: Option<u64>,
+    pub consecutive_failures: u64,
     pub last_error: Option<String>,
 }
 
@@ -34,8 +38,19 @@ pub struct TaskHeartbeat {
 }
 
 impl TaskHeartbeat {
+    /// Record that one iteration is about to attempt its real work.
+    pub fn attempt(&self) {
+        self.registry.attempt(&self.name);
+    }
+
+    /// Record a successful iteration and clear any prior degraded state.
     pub fn tick(&self) {
-        self.registry.tick(&self.name);
+        self.registry.success(&self.name);
+    }
+
+    /// Record a failed iteration without killing the loop.
+    pub fn fail(&self, error: impl Into<String>) {
+        self.registry.failure(&self.name, error.into());
     }
 }
 
@@ -68,7 +83,6 @@ impl BackgroundTaskRegistry {
                     registry: registry.clone(),
                     name: Arc::from(name),
                 };
-                heartbeat.tick();
                 let child_cancel = cancellation.child_token();
                 let started = Instant::now();
                 let mut task = tokio::spawn(factory(child_cancel.clone(), heartbeat));
@@ -101,6 +115,23 @@ impl BackgroundTaskRegistry {
         });
     }
 
+    pub fn spawn_once_tracked<Fut>(&self, name: &'static str, future: Fut)
+    where
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let registry = self.clone();
+        registry.mark_started(name);
+        tokio::spawn(async move {
+            match future.await {
+                Ok(()) => {
+                    registry.success(name);
+                    registry.mark_stopped(name, None);
+                }
+                Err(error) => registry.mark_stopped(name, Some(error)),
+            }
+        });
+    }
+
     #[must_use]
     pub fn snapshot(&self) -> serde_json::Value {
         let now = unix_ms();
@@ -109,6 +140,12 @@ impl BackgroundTaskRegistry {
             .iter()
             .map(|(name, state)| {
                 let age = state.last_tick_unix_ms.map(|tick| now.saturating_sub(tick));
+                let success_age = state
+                    .last_success_unix_ms
+                    .map(|tick| now.saturating_sub(tick));
+                let failure_age = state
+                    .last_failure_unix_ms
+                    .map(|tick| now.saturating_sub(tick));
                 (
                     name.clone(),
                     serde_json::json!({
@@ -117,6 +154,12 @@ impl BackgroundTaskRegistry {
                         "restarts": state.restarts,
                         "lastTickUnixMs": state.last_tick_unix_ms,
                         "lastTickAgeMs": age,
+                        "lastAttemptUnixMs": state.last_attempt_unix_ms,
+                        "lastSuccessUnixMs": state.last_success_unix_ms,
+                        "lastSuccessAgeMs": success_age,
+                        "lastFailureUnixMs": state.last_failure_unix_ms,
+                        "lastFailureAgeMs": failure_age,
+                        "consecutiveFailures": state.consecutive_failures,
                         "lastError": state.last_error,
                     }),
                 )
@@ -133,8 +176,7 @@ impl BackgroundTaskRegistry {
         }
         state.starts = state.starts.saturating_add(1);
         state.running = true;
-        state.last_error = None;
-        state.last_tick_unix_ms = Some(unix_ms());
+        state.last_attempt_unix_ms = Some(unix_ms());
     }
 
     fn mark_stopped(&self, name: &str, error: Option<String>) {
@@ -142,15 +184,39 @@ impl BackgroundTaskRegistry {
         let state = states.entry(name.to_owned()).or_default();
         state.running = false;
         if let Some(error) = error {
+            let now = unix_ms();
+            state.last_failure_unix_ms = Some(now);
+            state.consecutive_failures = state.consecutive_failures.saturating_add(1);
             state.last_error = Some(error);
         }
     }
 
-    fn tick(&self, name: &str) {
+    fn attempt(&self, name: &str) {
         let mut states = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let state = states.entry(name.to_owned()).or_default();
         state.running = true;
-        state.last_tick_unix_ms = Some(unix_ms());
+        state.last_attempt_unix_ms = Some(unix_ms());
+    }
+
+    fn success(&self, name: &str) {
+        let now = unix_ms();
+        let mut states = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = states.entry(name.to_owned()).or_default();
+        state.running = true;
+        state.last_tick_unix_ms = Some(now);
+        state.last_success_unix_ms = Some(now);
+        state.consecutive_failures = 0;
+        state.last_error = None;
+    }
+
+    fn failure(&self, name: &str, error: String) {
+        let now = unix_ms();
+        let mut states = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let state = states.entry(name.to_owned()).or_default();
+        state.running = true;
+        state.last_failure_unix_ms = Some(now);
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        state.last_error = Some(error);
     }
 }
 
@@ -169,6 +235,51 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    #[tokio::test]
+    async fn heartbeat_distinguishes_attempt_failure_and_success() {
+        let registry = BackgroundTaskRegistry::new();
+        registry.mark_started("semantic-fixture");
+        let heartbeat = TaskHeartbeat {
+            registry: registry.clone(),
+            name: Arc::from("semantic-fixture"),
+        };
+        heartbeat.attempt();
+        heartbeat.fail("disk unavailable");
+        let failed = registry.snapshot();
+        assert_eq!(failed["semantic-fixture"]["consecutiveFailures"], 1);
+        assert_eq!(failed["semantic-fixture"]["lastError"], "disk unavailable");
+        assert!(failed["semantic-fixture"]["lastSuccessUnixMs"].is_null());
+        heartbeat.tick();
+        let recovered = registry.snapshot();
+        assert_eq!(recovered["semantic-fixture"]["consecutiveFailures"], 0);
+        assert!(recovered["semantic-fixture"]["lastError"].is_null());
+        assert!(
+            recovered["semantic-fixture"]["lastSuccessUnixMs"]
+                .as_u64()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn tracked_one_shot_records_terminal_success_without_appearing_degraded() {
+        let registry = BackgroundTaskRegistry::new();
+        registry.spawn_once_tracked("one-shot", async { Ok(()) });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            let snapshot = registry.snapshot();
+            if snapshot["one-shot"]["lastSuccessUnixMs"].as_u64().is_some()
+                && snapshot["one-shot"]["running"] == false
+            {
+                assert_eq!(snapshot["one-shot"]["consecutiveFailures"], 0);
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "tracked one-shot never completed"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
     #[tokio::test]
     async fn supervisor_restarts_failed_background_task() {
         let registry = BackgroundTaskRegistry::new();

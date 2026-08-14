@@ -164,7 +164,7 @@ test("local MCP health failures distinguish missing processes from live process 
   assert.equal(resolveFailureThreshold({
     state: { LocalHealth: false, McpProcessId: null },
     configuredThreshold: 3,
-  }), 2);
+  }), 1);
   assert.equal(resolveFailureThreshold({
     state: { LocalHealth: false, McpProcessId: 4242 },
     configuredThreshold: 3,

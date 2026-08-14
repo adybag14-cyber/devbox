@@ -60,6 +60,10 @@ impl Default for ProcessOptions {
 pub struct ProcessOutput {
     pub stdout: String,
     pub stderr: String,
+    pub stdout_original_chars: usize,
+    pub stderr_original_chars: usize,
+    pub stdout_capture_truncated: bool,
+    pub stderr_capture_truncated: bool,
     pub exit_code: i32,
     pub pid: u32,
     pub elapsed_ms: u64,
@@ -87,9 +91,129 @@ impl std::fmt::Display for ProcessError {
 
 impl std::error::Error for ProcessError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CaptureResult {
+    pub(crate) text: String,
+    pub(crate) original_chars: usize,
+    pub(crate) truncated: bool,
+}
+
+#[derive(Debug)]
+struct CaptureAccumulator {
+    head: String,
+    tail: String,
+    original_chars: usize,
+    limit: Option<usize>,
+    truncated: bool,
+}
+
+#[cfg(any(windows, test))]
+pub(crate) async fn read_text_file_bounded(
+    path: &std::path::Path,
+    limit: Option<usize>,
+) -> CaptureResult {
+    let Ok(mut file) = tokio::fs::File::open(path).await else {
+        return CaptureResult {
+            text: String::new(),
+            original_chars: 0,
+            truncated: false,
+        };
+    };
+    let mut capture = CaptureAccumulator::new(limit);
+    let mut buffer = vec![0_u8; 16 * 1024];
+    let mut pending_utf8 = Vec::with_capacity(4);
+    loop {
+        let count = match file.read(&mut buffer).await {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        let mut decoded = String::new();
+        append_stream_utf8(&mut decoded, &mut pending_utf8, &buffer[..count]);
+        capture.push(&decoded);
+    }
+    if !pending_utf8.is_empty() {
+        capture.push(&String::from_utf8_lossy(&pending_utf8));
+    }
+    capture.snapshot()
+}
+
+impl CaptureAccumulator {
+    fn new(limit: Option<usize>) -> Self {
+        Self {
+            head: String::new(),
+            tail: String::new(),
+            original_chars: 0,
+            limit,
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let added = text.chars().count();
+        self.original_chars = self.original_chars.saturating_add(added);
+        let Some(limit) = self.limit else {
+            self.head.push_str(text);
+            return;
+        };
+        if limit == 0 {
+            self.truncated = true;
+            return;
+        }
+        if !self.truncated && self.original_chars <= limit {
+            self.head.push_str(text);
+            return;
+        }
+        let head_limit = limit / 2;
+        let tail_limit = limit.saturating_sub(head_limit);
+        if self.truncated {
+            self.tail.push_str(text);
+            self.tail = tail_chars(&self.tail, tail_limit);
+        } else {
+            let combined = format!("{}{}", self.head, text);
+            self.head = take_chars(&combined, head_limit);
+            self.tail = tail_chars(&combined, tail_limit);
+            self.truncated = true;
+        }
+    }
+
+    fn snapshot(&self) -> CaptureResult {
+        if !self.truncated {
+            return CaptureResult {
+                text: self.head.clone(),
+                original_chars: self.original_chars,
+                truncated: false,
+            };
+        }
+        if self.limit == Some(0) {
+            return CaptureResult {
+                text: String::new(),
+                original_chars: self.original_chars,
+                truncated: true,
+            };
+        }
+        let kept = self
+            .head
+            .chars()
+            .count()
+            .saturating_add(self.tail.chars().count());
+        let omitted = self.original_chars.saturating_sub(kept);
+        CaptureResult {
+            text: format!(
+                "{}\n... middle capture omitted {omitted} characters ...\n{}",
+                self.head, self.tail
+            ),
+            original_chars: self.original_chars,
+            truncated: true,
+        }
+    }
+}
+
 struct CaptureTask {
     task: tokio::task::JoinHandle<()>,
-    captured: Arc<Mutex<String>>,
+    captured: Arc<Mutex<CaptureAccumulator>>,
 }
 
 struct SpawnedProcess {
@@ -371,9 +495,11 @@ fn classify_process_result(
     started: Instant,
     status: Option<ExitStatus>,
     forced_failure: Option<ForcedFailure>,
-    stdout: String,
-    stderr: String,
+    stdout: CaptureResult,
+    stderr: CaptureResult,
 ) -> Result<ProcessOutput, ProcessError> {
+    let stdout_text = stdout.text;
+    let stderr_text = stderr.text;
     let exit_code = status.and_then(|value| value.code());
     let signal = status.and_then(exit_signal);
     let elapsed = elapsed_ms(started);
@@ -382,8 +508,8 @@ fn classify_process_result(
         return Err(ProcessError {
             message,
             exit_code,
-            stdout: stdout.into_boxed_str(),
-            stderr: stderr.into_boxed_str(),
+            stdout: stdout_text.clone().into_boxed_str(),
+            stderr: stderr_text.clone().into_boxed_str(),
             file: file.to_owned().into_boxed_str(),
             args: args.to_vec().into_boxed_slice(),
             timed_out,
@@ -396,8 +522,8 @@ fn classify_process_result(
         return Err(ProcessError {
             message: "Command process disappeared without an exit status.".to_owned(),
             exit_code: None,
-            stdout: stdout.into_boxed_str(),
-            stderr: stderr.into_boxed_str(),
+            stdout: stdout_text.clone().into_boxed_str(),
+            stderr: stderr_text.clone().into_boxed_str(),
             file: file.to_owned().into_boxed_str(),
             args: args.to_vec().into_boxed_slice(),
             timed_out: false,
@@ -409,10 +535,10 @@ fn classify_process_result(
     let code = status.code().unwrap_or(-1);
     if !status.success() {
         return Err(ProcessError {
-            message: summarize_process_failure(file, code, &stdout, &stderr),
+            message: summarize_process_failure(file, code, &stdout_text, &stderr_text),
             exit_code: status.code(),
-            stdout: stdout.into_boxed_str(),
-            stderr: stderr.into_boxed_str(),
+            stdout: stdout_text.clone().into_boxed_str(),
+            stderr: stderr_text.clone().into_boxed_str(),
             file: file.to_owned().into_boxed_str(),
             args: args.to_vec().into_boxed_slice(),
             timed_out: false,
@@ -422,8 +548,12 @@ fn classify_process_result(
         });
     }
     Ok(ProcessOutput {
-        stdout,
-        stderr,
+        stdout: stdout_text,
+        stderr: stderr_text,
+        stdout_original_chars: stdout.original_chars,
+        stderr_original_chars: stderr.original_chars,
+        stdout_capture_truncated: stdout.truncated,
+        stderr_capture_truncated: stderr.truncated,
         exit_code: code,
         pid,
         elapsed_ms: elapsed,
@@ -492,28 +622,20 @@ fn start_capture_task<R>(
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
-    let captured = Arc::new(Mutex::new(String::new()));
+    let captured = Arc::new(Mutex::new(CaptureAccumulator::new(max_capture_chars)));
     let shared = captured.clone();
-    let task = tokio::spawn(capture_stream(
-        reader,
-        stream,
-        max_capture_chars,
-        output_tx,
-        shared,
-    ));
+    let task = tokio::spawn(capture_stream(reader, stream, output_tx, shared));
     CaptureTask { task, captured }
 }
 
 async fn capture_stream<R>(
     mut reader: R,
     stream: OutputStream,
-    max_capture_chars: Option<usize>,
     output_tx: Option<Sender<OutputChunk>>,
-    captured: Arc<Mutex<String>>,
+    captured: Arc<Mutex<CaptureAccumulator>>,
 ) where
     R: AsyncRead + Unpin,
 {
-    let mut local = String::new();
     let mut buffer = vec![0_u8; 16 * 1024];
     let mut pending_utf8 = Vec::with_capacity(4);
     loop {
@@ -522,19 +644,13 @@ async fn capture_stream<R>(
             Ok(count) => count,
         };
         let bytes = &buffer[..count];
-        let previous_len = local.len();
-        append_stream_utf8(&mut local, &mut pending_utf8, bytes);
-        if let Some(limit) = max_capture_chars {
-            retain_tail_chars(&mut local, limit);
+        let mut decoded = String::new();
+        append_stream_utf8(&mut decoded, &mut pending_utf8, bytes);
+        if !decoded.is_empty() {
             captured
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone_from(&local);
-        } else if local.len() > previous_len {
-            captured
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push_str(&local[previous_len..]);
+                .push(&decoded);
         }
         if let Some(tx) = output_tx.as_ref() {
             let _ = tx
@@ -546,14 +662,12 @@ async fn capture_stream<R>(
         }
     }
     if !pending_utf8.is_empty() {
-        local.push_str(&String::from_utf8_lossy(&pending_utf8));
-        if let Some(limit) = max_capture_chars {
-            retain_tail_chars(&mut local, limit);
-        }
+        let decoded = String::from_utf8_lossy(&pending_utf8).into_owned();
+        captured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(&decoded);
     }
-    *captured
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = local;
 }
 
 fn append_stream_utf8(captured: &mut String, pending: &mut Vec<u8>, bytes: &[u8]) {
@@ -584,7 +698,7 @@ fn append_stream_utf8(captured: &mut String, pending: &mut Vec<u8>, bytes: &[u8]
     }
 }
 
-async fn join_capture(mut capture: CaptureTask, timeout: Option<Duration>) -> String {
+async fn join_capture(mut capture: CaptureTask, timeout: Option<Duration>) -> CaptureResult {
     if let Some(timeout) = timeout {
         if tokio::time::timeout(timeout, &mut capture.task)
             .await
@@ -601,19 +715,18 @@ async fn join_capture(mut capture: CaptureTask, timeout: Option<Duration>) -> St
         .captured
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .clone()
+        .snapshot()
 }
 
-fn retain_tail_chars(value: &mut String, max_chars: usize) {
+fn tail_chars(value: &str, max_chars: usize) -> String {
     if max_chars == 0 {
-        value.clear();
-        return;
+        return String::new();
     }
     let count = value.chars().count();
-    if count <= max_chars {
-        return;
-    }
-    *value = value.chars().skip(count - max_chars).collect();
+    value
+        .chars()
+        .skip(count.saturating_sub(max_chars))
+        .collect()
 }
 
 fn take_chars(value: &str, max_chars: usize) -> String {
@@ -920,6 +1033,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bounded_file_capture_limits_elevated_output_files_without_reading_them_whole() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("elevated-stdout.txt");
+        tokio::fs::write(&path, "x".repeat(2 * 1024 * 1024))
+            .await
+            .unwrap();
+        let capture = read_text_file_bounded(&path, Some(8 * 1024)).await;
+        assert_eq!(capture.original_chars, 2 * 1024 * 1024);
+        assert!(capture.truncated);
+        assert!(capture.text.chars().count() < 9 * 1024);
+    }
+
+    #[tokio::test]
     async fn output_capture_keeps_bounded_tails() {
         let (file, args) = output_command();
         let output = spawn_process(
@@ -933,8 +1059,48 @@ mod tests {
         )
         .await
         .expect("output process succeeds");
-        assert_eq!(output.stdout, "efgh");
-        assert_eq!(output.stderr, "5678");
+        assert_eq!(output.stdout_original_chars, 8);
+        assert_eq!(output.stderr_original_chars, 8);
+        assert!(output.stdout_capture_truncated);
+        assert!(output.stderr_capture_truncated);
+        assert!(output.stdout.starts_with("ab"));
+        assert!(output.stdout.ends_with("gh"));
+        assert!(
+            output
+                .stdout
+                .contains("middle capture omitted 4 characters")
+        );
+        assert!(output.stderr.starts_with("12"));
+        assert!(output.stderr.ends_with("78"));
+    }
+
+    #[tokio::test]
+    async fn large_foreground_output_stays_inside_capture_budget() {
+        let megabytes = 32_usize;
+        let script = format!(
+            "const chunk='x'.repeat(1024*1024); for(let i=0;i<{megabytes};i++) process.stdout.write(chunk);"
+        );
+        let output = spawn_process(
+            "node",
+            &["-e".to_owned(), script],
+            ProcessOptions {
+                timeout: Some(Duration::from_secs(20)),
+                max_capture_chars: Some(8 * 1024),
+                ..ProcessOptions::default()
+            },
+            CancellationToken::new(),
+        )
+        .await
+        .expect("large output process succeeds");
+        assert!(output.stdout_capture_truncated);
+        assert!(output.stdout_original_chars >= megabytes * 1024 * 1024);
+        assert!(
+            output.stdout.len() < 10 * 1024,
+            "capture grew beyond bounded head/tail budget"
+        );
+        assert!(output.stdout.starts_with('x'));
+        assert!(output.stdout.ends_with('x'));
+        assert!(output.stdout.contains("middle capture omitted"));
     }
 
     #[test]

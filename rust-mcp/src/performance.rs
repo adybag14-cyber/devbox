@@ -110,6 +110,7 @@ fn spawn_sampler(inner: &PerformanceInner, background: &BackgroundTaskRegistry) 
                             window.delays.push_back(TimedSample { at: now.into_std(), value_ms: delay_ms });
                             while window.delays.len() > MAX_SAMPLES { window.delays.pop_front(); }
                             if now >= expected_drift {
+                                heartbeat.attempt();
                                 let drift_ms = now.saturating_duration_since(expected_drift).as_secs_f64() * 1_000.0;
                                 window.drifts.push_back(TimedSample { at: now.into_std(), value_ms: drift_ms });
                                 expected_drift = now + DRIFT_INTERVAL;
@@ -158,13 +159,20 @@ fn spawn_persistence(
                             let snapshot = snapshot_value(&state, started_at);
                             *cached.write().unwrap_or_else(std::sync::PoisonError::into_inner) = snapshot.clone();
                             *cached_at.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Instant::now();
-                            if let Err(error) = persist_snapshot(&state_path, &snapshot).await {
-                                tracing::debug!(%error, path = %state_path.display(), "failed to persist Rust MCP performance snapshot");
+                            heartbeat.attempt();
+                            let snapshot_result = persist_snapshot(&state_path, &snapshot).await;
+                            let history_result = append_history(&history_path, &snapshot).await;
+                            if let (Ok(()), Ok(())) = (&snapshot_result, &history_result) {
+                                heartbeat.tick();
+                            } else {
+                                let detail = format!(
+                                    "snapshot={} history={}",
+                                    snapshot_result.as_ref().err().map_or("ok".to_owned(), ToString::to_string),
+                                    history_result.as_ref().err().map_or("ok".to_owned(), ToString::to_string),
+                                );
+                                tracing::debug!(error = %detail, "Rust MCP performance persistence iteration degraded");
+                                heartbeat.fail(detail);
                             }
-                            if let Err(error) = append_history(&history_path, &snapshot).await {
-                                tracing::debug!(%error, path = %history_path.display(), "failed to append Rust MCP performance history");
-                            }
-                            heartbeat.tick();
                         }
                     }
                 }
@@ -207,8 +215,11 @@ async fn append_history(path: &std::path::Path, snapshot: &Value) -> std::io::Re
         }
         let _ = tokio::fs::rename(path, history_rotation_path(path, 1)).await;
     }
+    let build = crate::provenance::snapshot();
     let compact = json!({
         "sampledAtUtc": snapshot.pointer("/eventLoop/sampledAtUtc"),
+        "gitSha": build.get("gitSha"),
+        "deploymentGeneration": build.get("deploymentGeneration"),
         "pid": snapshot.pointer("/process/pid"),
         "p95Ms": snapshot.pointer("/eventLoop/p95Ms"),
         "p99Ms": snapshot.pointer("/eventLoop/p99Ms"),

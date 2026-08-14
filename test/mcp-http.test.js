@@ -409,11 +409,11 @@ test("GET /readyz reports operational readiness without exposing detailed diagno
   assert.deepEqual(body, { ok: true });
 });
 
-test("GET /readyz rejects a zero Docker command timeout without leaking error details", async (t) => {
+test("GET /readyz stays core-ready when optional Docker configuration is degraded", async (t) => {
   const { port } = await startServer(t, { dockerCommandTimeoutMs: "0" });
   const response = await fetch(`http://127.0.0.1:${port}/readyz`, { signal: AbortSignal.timeout(5000) });
-  assert.equal(response.status, 503);
-  assert.deepEqual(await response.json(), { ok: false });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { ok: true });
 });
 
 test("GET / returns an SSE content type for stream probes", async (t) => {

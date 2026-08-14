@@ -797,13 +797,18 @@ export const getHostRuntimeVersions = async () => {
         ["rg", ["--version"]],
       ];
 
-  return Promise.all(candidates.map(async ([program, args]) => {
+  const probe = async ([program, args]) => {
     try {
-      const result = await spawnProcess(program, args, { cwd: runtimeConfig.hostDefaultWorkdir, timeoutMs: 15000 });
+      const result = await spawnProcess(program, args, { cwd: runtimeConfig.hostDefaultWorkdir, timeoutMs: 15000, maxCaptureChars: 16384 });
       const line = `${program}=${`${result.stdout}${result.stderr}`.split(/\r?\n/).find(Boolean) ?? "available"}`;
       return line.trim();
     } catch {
       return `${program}=unavailable`;
     }
-  }));
+  };
+  const versions = [];
+  for (let index = 0; index < candidates.length; index += 2) {
+    versions.push(...await Promise.all(candidates.slice(index, index + 2).map(probe)));
+  }
+  return versions;
 };

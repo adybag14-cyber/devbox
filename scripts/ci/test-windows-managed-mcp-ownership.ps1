@@ -117,6 +117,17 @@ try {
         }
     }
 
+    # Untrusted process command-line tokens can contain characters that make
+    # Path.IsPathRooted throw on Windows PowerShell/.NET Framework. Ownership
+    # discovery must classify those tokens as non-paths rather than abort startup.
+    # Different .NET generations disagree on whether characters such as `|`
+    # invalidate an otherwise rooted Windows path. The invariant is that such
+    # untrusted command-line input never throws and is never claimed as ours.
+    $malformedCommand = ('"{0}" "C:\bad|token"' -f $nodeExe)
+    if (Test-IsOwnedServerCommandLine -CommandLine $malformedCommand -ProjectRoot $checkoutB) {
+        throw 'Malformed unrelated command line was incorrectly claimed.'
+    }
+
     # Versioned immutable Rust binaries are checkout-owned only when they live
     # directly below that checkout's run\bin directory and match the deployment name.
     $versionedRust = Join-Path $checkoutB 'run\bin\devbox-mcp-621656c746f5-0123456789ABCDEF.exe'

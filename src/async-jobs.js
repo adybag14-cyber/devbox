@@ -78,6 +78,26 @@ const readHeartbeatState = async (paths) => {
   }
 };
 
+const runnerOwnerState = async (paths, value) => {
+  const pid = Number(value?.runnerPid);
+  const processPresent = processAlive(pid);
+  const heartbeat = await readHeartbeatState(paths);
+  const normalizeInstance = (instance) => (typeof instance === "string" || typeof instance === "number") ? String(instance) : null;
+  const expectedInstance = normalizeInstance(value?.runnerProcessInstance);
+  const actualInstance = normalizeInstance(heartbeat.value?.runnerProcessInstance);
+  const staleMs = Math.max(1000, config.mcpJobOrphanStaleMs);
+  const identityMaxAgeMs = Math.max(60_000, staleMs * 4);
+  const identityFresh = heartbeat.ageMs !== null && heartbeat.ageMs < identityMaxAgeMs;
+  const identityComparable = identityFresh && expectedInstance !== null && actualInstance !== null;
+  const instanceMatches = !identityComparable || actualInstance === expectedInstance;
+  return {
+    alive: processPresent && instanceMatches,
+    processPresent,
+    instanceMatches,
+    heartbeat,
+  };
+};
+
 const readTail = async (filePath, maxChars) => {
   try {
     const info = await stat(filePath);
@@ -246,7 +266,8 @@ const reconcileStatus = async (paths, value) => {
   const cancelRequested = await cancellationRequested(paths);
   if (cancelRequested) {
     const runnerPid = Number(value.runnerPid);
-    const runnerAlive = processAlive(runnerPid);
+    const owner = await runnerOwnerState(paths, value);
+    const runnerAlive = owner.alive;
     const cancelled = {
       ...value,
       status: "cancelled",
@@ -258,8 +279,9 @@ const reconcileStatus = async (paths, value) => {
   }
 
   const runnerPid = Number(value.runnerPid);
-  const runnerAlive = processAlive(runnerPid);
-  const heartbeat = await readHeartbeatState(paths);
+  const owner = await runnerOwnerState(paths, value);
+  const runnerAlive = owner.alive;
+  const heartbeat = owner.heartbeat;
   const heartbeatAgeMs = heartbeat.ageMs;
   const referenceMs = Date.parse(value.startedAtUtc ?? value.queuedAtUtc ?? value.createdAtUtc ?? "");
   const statusAgeMs = Number.isFinite(referenceMs) ? Math.max(0, Date.now() - referenceMs) : Infinity;
@@ -311,6 +333,16 @@ export const getDevboxJobStatus = async (jobId) => {
   return reconcileStatus(paths, value);
 };
 
+const shallowDirectoryBytes = async (dir) => {
+  let total = 0;
+  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    if (!entry.isFile()) continue;
+    const metadata = await stat(path.join(dir, entry.name)).catch(() => null);
+    if (metadata) total += metadata.size;
+  }
+  return total;
+};
+
 export const reconcileOrphanedDevboxJobs = async () => {
   await mkdir(jobsRoot, { recursive: true });
   const names = await readdir(jobsRoot).catch(() => []);
@@ -323,7 +355,13 @@ export const reconcileOrphanedDevboxJobs = async () => {
     compactedLogs: 0,
     deleted: 0,
     errors: 0,
+    storeBytes: 0,
+    terminalRetained: 0,
+    quotaDeleted: 0,
+    quotaPressure: false,
+    quotaCheckedAtUtc: new Date().toISOString(),
   };
+  const terminalForQuota = [];
   const retentionHours = Math.max(0, Number(config.mcpJobRetentionHours) || 0);
   const retentionMs = retentionHours > 0 ? retentionHours * 60 * 60 * 1000 : 0;
   for (const name of names) {
@@ -333,11 +371,13 @@ export const reconcileOrphanedDevboxJobs = async () => {
     try {
       const status = await getDevboxJobStatus(name);
       if (status.status === "interrupted") summary.interrupted += 1;
-      else if (TERMINAL_STATUSES.has(status.status)) summary.terminal += 1;
-      else {
+      const terminal = TERMINAL_STATUSES.has(status.status);
+      if (!terminal) {
         summary.active += 1;
+        summary.storeBytes += await shallowDirectoryBytes(paths.dir);
         continue;
       }
+      summary.terminal += 1;
 
       const terminalAtMs = Date.parse(status.completedAtUtc ?? status.createdAtUtc ?? "");
       if (retentionMs > 0 && Number.isFinite(terminalAtMs) && Date.now() - terminalAtMs >= retentionMs) {
@@ -346,22 +386,62 @@ export const reconcileOrphanedDevboxJobs = async () => {
         continue;
       }
 
-      const rawStatus = await readJson(paths.status);
-      if (rawStatus.maintenanceReconciledAtUtc) continue;
-      const [stdoutCompaction, stderrCompaction] = await Promise.all([
-        compactLegacyLogFile(paths.stdout),
-        compactLegacyLogFile(paths.stderr),
-      ]);
-      const compacted = stdoutCompaction.compacted || stderrCompaction.compacted;
-      if (compacted) summary.compactedLogs += 1;
-      await writeJsonAtomic(paths.status, {
-        ...rawStatus,
-        maintenanceReconciledAtUtc: new Date().toISOString(),
-        legacyLogsCompacted: compacted,
-      });
-      summary.maintained += 1;
+      let rawStatus = await readJson(paths.status);
+      let jobBytes = Number(rawStatus.maintenanceBytes);
+      if (!Number.isFinite(jobBytes) || jobBytes < 0 || !rawStatus.maintenanceReconciledAtUtc) {
+        let compacted = rawStatus.legacyLogsCompacted === true;
+        if (!rawStatus.maintenanceReconciledAtUtc) {
+          const [stdoutCompaction, stderrCompaction] = await Promise.all([
+            compactLegacyLogFile(paths.stdout),
+            compactLegacyLogFile(paths.stderr),
+          ]);
+          compacted = stdoutCompaction.compacted || stderrCompaction.compacted;
+          if (compacted) summary.compactedLogs += 1;
+          summary.maintained += 1;
+        }
+        jobBytes = await shallowDirectoryBytes(paths.dir);
+        rawStatus = {
+          ...rawStatus,
+          maintenanceReconciledAtUtc: rawStatus.maintenanceReconciledAtUtc ?? new Date().toISOString(),
+          legacyLogsCompacted: compacted,
+          maintenanceBytes: jobBytes,
+        };
+        await writeJsonAtomic(paths.status, rawStatus);
+      }
+      summary.storeBytes += jobBytes;
+      terminalForQuota.push({ name, dir: paths.dir, bytes: jobBytes, terminalAtMs: Number.isFinite(terminalAtMs) ? terminalAtMs : 0 });
     } catch {
       summary.errors += 1;
+    }
+  }
+  terminalForQuota.sort((left, right) => left.terminalAtMs - right.terminalAtMs);
+  summary.terminalRetained = terminalForQuota.length;
+  const maxBytes = Math.max(0, Number(config.mcpJobStoreMaxBytes) || 0);
+  const maxJobs = Math.max(0, Number(config.mcpJobStoreMaxTerminalJobs) || 0);
+  const activeBytes = Math.max(0, summary.storeBytes - terminalForQuota.reduce((sum, job) => sum + job.bytes, 0));
+  const bytePressure = maxBytes > 0 && summary.storeBytes > maxBytes;
+  const countPressure = maxJobs > 0 && terminalForQuota.length > maxJobs;
+  const canReduceBytePressure = bytePressure && activeBytes < maxBytes;
+  const targetBytes = canReduceBytePressure ? Math.max(0, Math.floor(maxBytes * 0.9) - activeBytes) : Number.POSITIVE_INFINITY;
+  const targetJobs = maxJobs > 0 ? Math.floor(maxJobs * 0.9) : Number.POSITIVE_INFINITY;
+  let terminalBytes = terminalForQuota.reduce((sum, job) => sum + job.bytes, 0);
+  summary.quotaPressure = bytePressure || countPressure;
+  if (canReduceBytePressure || countPressure) {
+    for (const job of terminalForQuota) {
+      const bytesSatisfied = !canReduceBytePressure || terminalBytes <= targetBytes;
+      const countSatisfied = summary.terminalRetained <= targetJobs;
+      if (bytesSatisfied && countSatisfied) break;
+      try {
+        await rm(job.dir, { recursive: true, force: true });
+      } catch {
+        summary.errors += 1;
+        continue;
+      }
+      terminalBytes = Math.max(0, terminalBytes - job.bytes);
+      summary.storeBytes = Math.max(0, summary.storeBytes - job.bytes);
+      summary.terminalRetained = Math.max(0, summary.terminalRetained - 1);
+      summary.deleted += 1;
+      summary.quotaDeleted += 1;
     }
   }
   return summary;
@@ -447,8 +527,13 @@ export const cancelDevboxJob = async (jobId) => {
   await writeFile(paths.cancel, `${cancelled.completedAtUtc}\n`, { encoding: "utf8", flag: "wx" }).catch((error) => {
     if (error?.code !== "EEXIST") throw error;
   });
-  await killDetachedTree(Number(statusValue.runnerPid));
-  return { ...cancelled, runnerAlive: false };
+  const ownership = await runnerOwnerState(paths, statusValue);
+  if (ownership.alive) {
+    await killDetachedTree(Number(statusValue.runnerPid));
+  }
+  return ownership.alive
+    ? { ...cancelled, runnerAlive: false }
+    : { ...cancelled, runnerAlive: false, cancellationKillSkipped: true };
 };
 
 export const asyncJobsInternals = {
@@ -459,6 +544,7 @@ export const asyncJobsInternals = {
   processAlive,
   cancellationRequested,
   readHeartbeatState,
+  runnerOwnerState,
   reconcileStatus,
   compactLegacyLogFile,
   TERMINAL_STATUSES,

@@ -16,7 +16,6 @@ $guardianDir = Join-Path $runDir 'guardian'
 $envFile = Join-Path $projectRoot '.env'
 $runtimeEnvFile = Join-Path $projectRoot '.env.runtime'
 $ensureScript = Join-Path $PSScriptRoot 'Ensure-ChatGptDevboxGuardian.ps1'
-$hiddenLauncher = Join-Path $PSScriptRoot 'Run-Ensure-ChatGptDevboxGuardian.vbs'
 $elevatedLauncher = Join-Path $PSScriptRoot 'Run-Start-ChatGptDevboxMcp.vbs'
 $powerShellResolver = Join-Path $PSScriptRoot 'Resolve-DevboxPowerShell.ps1'
 . $powerShellResolver
@@ -36,9 +35,6 @@ foreach ($path in @($runDir, $guardianDir)) {
     }
 }
 
-if (-not (Test-Path $hiddenLauncher)) {
-    throw "Hidden launcher not found: $hiddenLauncher"
-}
 if (-not (Test-Path $elevatedLauncher)) {
     throw "Elevated MCP launcher not found: $elevatedLauncher"
 }
@@ -255,41 +251,46 @@ Write-JsonFile -Path $desiredStatePath -Value @{
     Source = 'Install-ChatGptDevboxGuardian.ps1'
 }
 
+$powerShellExe = Resolve-DevboxPowerShellExecutable
+
+# Prove Guardian can start before replacing the existing scheduled-task safety net.
+# This also avoids a newly registered AtStartup/StartWhenAvailable task racing the
+# installer's own Ensure invocation on machines that have already booted.
+& $powerShellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript -ProjectRoot $projectRoot | Out-Null
+if ($LASTEXITCODE -ne 0) {
+    throw "Guardian ensure process failed with exit code $LASTEXITCODE."
+}
+
 foreach ($taskName in @($startupTaskName, $logonTaskName, $keepAliveTaskName, $elevatedStartTaskName)) {
     Remove-TaskIfPresent -TaskName $taskName
 }
 
-$hiddenArgs = @('//B', '//NoLogo', ('"{0}"' -f $hiddenLauncher)) -join ' '
-$powerShellExe = Resolve-DevboxPowerShellExecutable
-
-$action = New-ScheduledTaskAction -Execute $wscriptExe -Argument $hiddenArgs
+$ensureActionArgs = @(
+    '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-WindowStyle', 'Hidden', '-File', ('"{0}"' -f $ensureScript),
+    '-ProjectRoot', ('"{0}"' -f $projectRoot)
+) -join ' '
+$action = New-ScheduledTaskAction -Execute $powerShellExe -Argument $ensureActionArgs
 $startupTrigger = New-ScheduledTaskTrigger -AtStartup
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
+$keepAliveTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
 $settingsSet = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
+    -Priority 4 `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 1)
 $interactivePrincipal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
 $startupPrincipal = New-ScheduledTaskPrincipal -UserId $userId -LogonType S4U -RunLevel Highest
 
-# Boot recovery must not depend on an existing desktop session. S4U runs under
-# the same user identity without storing a password; the ordinary logon task
-# remains Interactive so desktop/session-sensitive host tools retain their behavior.
+# Startup and keepalive are non-interactive so Guardian recovery does not depend on a desktop login.
+# The ordinary logon trigger remains Interactive for session-sensitive host tooling.
 Register-ScheduledTask -TaskName $startupTaskName -Action $action -Trigger $startupTrigger -Settings $settingsSet -Principal $startupPrincipal -Force | Out-Null
 Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $logonTrigger -Settings $settingsSet -Principal $interactivePrincipal -Force | Out-Null
-
-$taskCommand = ('"{0}" {1}' -f $wscriptExe, $hiddenArgs)
-$startTime = (Get-Date).AddMinutes(1).ToString('HH:mm')
-$createMinuteTask = & schtasks.exe /Create /TN $keepAliveTaskName /SC MINUTE /MO 1 /ST $startTime /TR $taskCommand /RL HIGHEST /F
-if ($LASTEXITCODE -ne 0) {
-    throw ($createMinuteTask | Out-String)
-}
-# schtasks.exe applies battery-stopping defaults; normalize the keepalive task
-# to the same always-on settings as the logon task.
-Set-ScheduledTask -TaskName $keepAliveTaskName -Settings $settingsSet | Out-Null
+Register-ScheduledTask -TaskName $keepAliveTaskName -Action $action -Trigger $keepAliveTrigger -Settings $settingsSet -Principal $startupPrincipal -Force | Out-Null
 
 # On-demand elevated MCP start (no UAC after registration). Used when a medium
 # shell tries to start host-mode MCP and when agents need silent elevation.
@@ -305,12 +306,6 @@ $elevatedSettings = New-ScheduledTaskSettingsSet `
     -MultipleInstances IgnoreNew `
     -ExecutionTimeLimit (New-TimeSpan -Minutes 10)
 Register-ScheduledTask -TaskName $elevatedStartTaskName -Action $elevatedAction -Settings $elevatedSettings -Principal $interactivePrincipal -Force | Out-Null
-
-& $powerShellExe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $ensureScript | Out-Null
-if ($LASTEXITCODE -ne 0) {
-    throw "Guardian ensure process failed with exit code $LASTEXITCODE."
-}
-Start-Sleep -Seconds 5
 
 $taskInfo = @(
     Get-ScheduledTaskInfo -TaskName $startupTaskName | Select-Object @{Name = 'TaskName'; Expression = { $startupTaskName } }, LastRunTime, NextRunTime, LastTaskResult

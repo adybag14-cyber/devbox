@@ -59,6 +59,13 @@ function Resolve-McpComparablePath {
     return ([string]$resolved).TrimEnd('\').Replace('/', '\').ToLowerInvariant()
 }
 
+function Test-IsPathRootedSafe {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try { return [IO.Path]::IsPathRooted($Path) }
+    catch { return $false }
+}
+
 function Test-IsOwnedServerCommandLine {
     param(
         [string]$CommandLine,
@@ -87,7 +94,7 @@ function Test-IsOwnedServerCommandLine {
     }
 
     $executableArgument = [string]$arguments[0]
-    $executable = if ([IO.Path]::IsPathRooted($executableArgument)) {
+    $executable = if (Test-IsPathRootedSafe -Path $executableArgument) {
         Resolve-McpComparablePath -Path $executableArgument
     } else {
         $null
@@ -112,16 +119,16 @@ function Test-IsOwnedServerCommandLine {
         $argument = [string]$arguments[$i]
         if ($argument.StartsWith('--env-file=', [StringComparison]::OrdinalIgnoreCase)) {
             $runtimePath = $argument.Substring('--env-file='.Length)
-            $runtimeEnvMatches = [IO.Path]::IsPathRooted($runtimePath) -and ((Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv)
+            $runtimeEnvMatches = (Test-IsPathRootedSafe -Path $runtimePath) -and ((Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv)
             continue
         }
         if ($argument.Equals('--env-file', [StringComparison]::OrdinalIgnoreCase) -and ($i + 1) -lt $arguments.Count) {
             $i++
             $runtimePath = [string]$arguments[$i]
-            $runtimeEnvMatches = [IO.Path]::IsPathRooted($runtimePath) -and ((Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv)
+            $runtimeEnvMatches = (Test-IsPathRootedSafe -Path $runtimePath) -and ((Resolve-McpComparablePath -Path $runtimePath) -eq $expectedRuntimeEnv)
             continue
         }
-        if ([IO.Path]::IsPathRooted($argument) -and ((Resolve-McpComparablePath -Path $argument) -eq $expectedServer)) {
+        if ((Test-IsPathRootedSafe -Path $argument) -and ((Resolve-McpComparablePath -Path $argument) -eq $expectedServer)) {
             $serverMatches = $true
         }
     }

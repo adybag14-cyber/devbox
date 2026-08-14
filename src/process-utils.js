@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 
 export const MAX_PROCESS_ERROR_MESSAGE_CHARS = 4096;
 
@@ -62,6 +63,46 @@ const killProcessTree = (child) => {
 export const spawnProcess = (file, args, options = {}) =>
   new Promise((resolve, reject) => {
     const startedAtMs = Date.now();
+    const captureLimit = Number.isFinite(options.maxCaptureChars) ? Math.max(0, options.maxCaptureChars) : null;
+    const createCapture = () => ({ head: "", tail: "", originalChars: 0, truncated: false });
+    const codePointLength = (value) => { let count = 0; for (const _ of String(value ?? "")) count += 1; return count; };
+    const takeCodePoints = (value, limit) => Array.from(String(value ?? "")).slice(0, Math.max(0, limit)).join("");
+    const tailCodePoints = (value, limit) => limit <= 0 ? "" : Array.from(String(value ?? "")).slice(-limit).join("");
+    const stdoutCapture = createCapture();
+    const stderrCapture = createCapture();
+    const stdoutDecoder = new StringDecoder("utf8");
+    const stderrDecoder = new StringDecoder("utf8");
+    const appendCapture = (state, text) => {
+      const value = String(text ?? "");
+      state.originalChars += codePointLength(value);
+      if (captureLimit === null) { state.head += value; return; }
+      if (captureLimit === 0) { state.truncated ||= codePointLength(value) > 0; return; }
+      if (!state.truncated && state.originalChars <= captureLimit) { state.head += value; return; }
+      const headLimit = Math.floor(captureLimit / 2);
+      const tailLimit = captureLimit - headLimit;
+      if (!state.truncated) {
+        const combined = state.head + value;
+        state.head = takeCodePoints(combined, headLimit);
+        state.tail = tailCodePoints(combined, tailLimit);
+        state.truncated = true;
+      } else {
+        state.tail = tailCodePoints(state.tail + value, tailLimit);
+      }
+    };
+    const captureText = (state) => {
+      if (!state.truncated) return state.head;
+      if (captureLimit === 0) return "";
+      const omitted = Math.max(0, state.originalChars - codePointLength(state.head) - codePointLength(state.tail));
+      return `${state.head}\n... middle capture omitted ${omitted} characters ...\n${state.tail}`;
+    };
+    const captureDetails = () => ({
+      stdout: captureText(stdoutCapture),
+      stderr: captureText(stderrCapture),
+      stdoutOriginalChars: stdoutCapture.originalChars,
+      stderrOriginalChars: stderrCapture.originalChars,
+      stdoutCaptureTruncated: stdoutCapture.truncated,
+      stderrCaptureTruncated: stderrCapture.truncated,
+    });
     let stdout = "";
     let stderr = "";
     let timedOut = false;
@@ -164,24 +205,21 @@ export const spawnProcess = (file, args, options = {}) =>
       timer.unref?.();
     }
 
-    const appendCaptured = (current, text) => {
-      const limit = Number.isFinite(options.maxCaptureChars) ? Math.max(0, options.maxCaptureChars) : null;
-      const combined = current + text;
-      if (limit === null || combined.length <= limit) return combined;
-      return combined.slice(Math.max(0, combined.length - limit));
+    const pushStdout = (text) => {
+      if (!text) return;
+      appendCapture(stdoutCapture, text);
+      stdout = captureText(stdoutCapture);
+      try { options.onStdout?.(text); } catch {}
+    };
+    const pushStderr = (text) => {
+      if (!text) return;
+      appendCapture(stderrCapture, text);
+      stderr = captureText(stderrCapture);
+      try { options.onStderr?.(text); } catch {}
     };
 
-    child.stdout.on("data", (chunk) => {
-      const text = chunk.toString();
-      stdout = appendCaptured(stdout, text);
-      try { options.onStdout?.(text); } catch {}
-    });
-
-    child.stderr.on("data", (chunk) => {
-      const text = chunk.toString();
-      stderr = appendCaptured(stderr, text);
-      try { options.onStderr?.(text); } catch {}
-    });
+    child.stdout.on("data", (chunk) => pushStdout(stdoutDecoder.write(chunk)));
+    child.stderr.on("data", (chunk) => pushStderr(stderrDecoder.write(chunk)));
 
     child.on("error", (error) => {
       settleReject(
@@ -195,6 +233,8 @@ export const spawnProcess = (file, args, options = {}) =>
     });
 
     child.on("close", (code, signal) => {
+      pushStdout(stdoutDecoder.end());
+      pushStderr(stderrDecoder.end());
       if (timedOut) {
         settleReject(buildTimeoutError(code, signal));
         return;
@@ -219,8 +259,7 @@ export const spawnProcess = (file, args, options = {}) =>
       }
 
       settleResolve({
-        stdout,
-        stderr,
+        ...captureDetails(),
         exitCode: code,
       });
     });

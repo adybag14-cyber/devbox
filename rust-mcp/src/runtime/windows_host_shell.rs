@@ -11,7 +11,8 @@ use uuid::Uuid;
 use super::{RuntimeExecError, RuntimeExecutor, ShellRequest};
 use crate::{
     process::{
-        OutputChunk, OutputStream, ProcessError, ProcessOptions, ProcessOutput, spawn_process,
+        OutputChunk, OutputStream, ProcessError, ProcessOptions, ProcessOutput,
+        read_text_file_bounded, spawn_process,
     },
     windows_shell,
 };
@@ -201,11 +202,11 @@ impl RuntimeExecutor {
             terminate_reported_elevated_process_tree(&elevated_pid_path).await;
         }
         let launcher_output = launcher_result.map_err(clean_runtime_process_error)?;
-        let stdout = read_text_file_or_empty(&stdout_path).await;
-        let stderr = read_text_file_or_empty(&stderr_path).await;
+        let stdout_capture = read_text_file_bounded(&stdout_path, request.max_capture_chars).await;
+        let stderr_capture = read_text_file_bounded(&stderr_path, request.max_capture_chars).await;
         let exit_code_text = read_text_file_or_empty(&exit_code_path).await;
-        let stdout = windows_shell::clean_output(&stdout);
-        let stderr = windows_shell::clean_output(&stderr);
+        let stdout = windows_shell::clean_output(&stdout_capture.text);
+        let stderr = windows_shell::clean_output(&stderr_capture.text);
         emit_buffered_output(request.output_tx.as_ref(), OutputStream::Stdout, &stdout).await;
         emit_buffered_output(request.output_tx.as_ref(), OutputStream::Stderr, &stderr).await;
         let Ok(exit_code) = exit_code_text.trim().parse::<i32>() else {
@@ -240,6 +241,10 @@ impl RuntimeExecutor {
             }));
         }
         Ok(ProcessOutput {
+            stdout_original_chars: stdout_capture.original_chars,
+            stderr_original_chars: stderr_capture.original_chars,
+            stdout_capture_truncated: stdout_capture.truncated,
+            stderr_capture_truncated: stderr_capture.truncated,
             stdout,
             stderr,
             exit_code,

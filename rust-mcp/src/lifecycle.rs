@@ -14,6 +14,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     Config, RuntimeMode,
+    background::BackgroundTaskRegistry,
     process::{ProcessError, ProcessOptions, ProcessOutput, spawn_process},
 };
 
@@ -44,14 +45,16 @@ impl LifecycleAction {
 pub struct LifecycleService {
     config: Arc<Config>,
     gate: Arc<Mutex<()>>,
+    background: Arc<BackgroundTaskRegistry>,
 }
 
 impl LifecycleService {
     #[must_use]
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<Config>, background: Arc<BackgroundTaskRegistry>) -> Self {
         Self {
             config,
             gate: Arc::new(Mutex::new(())),
+            background,
         }
     }
 
@@ -377,22 +380,25 @@ impl LifecycleService {
     fn queue_retired_cleanup(&self, retired_name: String) {
         let delay = Duration::from_millis(self.config.devbox_retired_container_grace_ms);
         let docker_timeout = Duration::from_millis(self.config.docker_command_timeout_ms);
-        tokio::spawn(async move {
-            if !delay.is_zero() {
-                tokio::time::sleep(delay).await;
-            }
-            let _ = spawn_process(
-                "docker",
-                &["rm".to_owned(), "-f".to_owned(), retired_name],
-                ProcessOptions {
-                    timeout: Some(docker_timeout),
-                    max_capture_chars: Some(DOCKER_CAPTURE_CHARS),
-                    ..ProcessOptions::default()
-                },
-                CancellationToken::new(),
-            )
-            .await;
-        });
+        self.background
+            .spawn_once_tracked("docker-retired-cleanup", async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
+                spawn_process(
+                    "docker",
+                    &["rm".to_owned(), "-f".to_owned(), retired_name],
+                    ProcessOptions {
+                        timeout: Some(docker_timeout),
+                        max_capture_chars: Some(DOCKER_CAPTURE_CHARS),
+                        ..ProcessOptions::default()
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+            });
     }
 
     async fn run_docker(
@@ -513,7 +519,7 @@ fn is_missing_container_error(error: &anyhow::Error) -> bool {
     text.contains("no such container") || text.contains("no such object")
 }
 
-async fn replace_file_preserving_previous(
+pub(crate) async fn replace_file_preserving_previous(
     temporary: &std::path::Path,
     path: &std::path::Path,
 ) -> Result<()> {

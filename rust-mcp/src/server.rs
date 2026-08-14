@@ -41,12 +41,12 @@ use crate::{
     background::BackgroundTaskRegistry,
     capture::CaptureService,
     docker_files::{DockerFileBackend, DockerListOptions},
-    execution::{AcquireRequest, ExecutionScheduler, SchedulerConfig},
+    execution::{AcquireRequest, ExecutionScheduler, ResourceClass, SchedulerConfig},
     files::{FileService, LargeReadResult, LargeWriteResult, ListOptions, ProcessResult},
     gateway::{GatewayRequestContext, GatewayState, transport_allowed_hosts},
     github_auth::GithubAuthService,
     host_inspect::{InspectFileRequest, inspect_host_file},
-    job_manager::{JobManager, StartProgramJob},
+    job_manager::{JobManager, StartProgramJob, infer_resource_class},
     lifecycle::{LifecycleAction, LifecycleService},
     oauth::OAuthService,
     output::{OutputMode, shape_process_output},
@@ -74,6 +74,7 @@ pub struct DevboxMcp {
     usage: Arc<UsageService>,
     active_requests: Arc<ActiveRequestRegistry>,
     background: Arc<BackgroundTaskRegistry>,
+    execution_store_health: Arc<tokio::sync::RwLock<Value>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -89,14 +90,14 @@ impl DevboxMcp {
             heavy_weight: config.exec_heavy_weight,
         }));
         let runtime = Arc::new(RuntimeExecutor::new(config.clone()));
-        let lifecycle = Arc::new(LifecycleService::new(config.clone()));
+        let background = Arc::new(BackgroundTaskRegistry::new());
+        let lifecycle = Arc::new(LifecycleService::new(config.clone(), background.clone()));
         let github_auth = Arc::new(GithubAuthService::new(
             config.clone(),
             runtime.clone(),
             lifecycle.clone(),
         ));
         let capture = Arc::new(CaptureService::new(config.clone()));
-        let background = Arc::new(BackgroundTaskRegistry::new());
         let performance = Arc::new(PerformanceMonitor::new(
             config.mcp_performance_state_path.clone(),
             &background,
@@ -108,6 +109,11 @@ impl DevboxMcp {
             &background,
         ));
         let active_requests = Arc::new(ActiveRequestRegistry::new());
+        let execution_store_health = Arc::new(tokio::sync::RwLock::new(json!({
+            "ok": false,
+            "sampledAtUtc": null,
+            "error": "execution-store probe has not completed yet"
+        })));
         Self {
             runtime,
             jobs: Arc::new(JobManager::new(config.clone())),
@@ -119,6 +125,7 @@ impl DevboxMcp {
             usage,
             active_requests,
             background,
+            execution_store_health,
             config,
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
@@ -662,6 +669,21 @@ impl DevboxMcp {
         }
     }
 
+    fn interactive_acquire(&self, label: impl Into<String>, text: &str) -> AcquireRequest {
+        let inferred = infer_resource_class(text, "auto");
+        let resource_class = if inferred == ResourceClass::Watch {
+            ResourceClass::Light
+        } else {
+            inferred
+        };
+        let weight = if resource_class == ResourceClass::Heavy {
+            self.scheduler.config().heavy_weight
+        } else {
+            1
+        };
+        AcquireRequest::interactive_weighted(label, resource_class, weight)
+    }
+
     fn configured_tool(&self, mut tool: rmcp::model::Tool) -> rmcp::model::Tool {
         let mut schema = (*tool.input_schema).clone();
         crate::schema_parity::configure_tool_input_schema(
@@ -705,7 +727,7 @@ impl DevboxMcp {
                 );
             }
         };
-        let (guardian, startup, job_maintenance) = tokio::join!(
+        let (guardian, startup, job_maintenance, job_quota) = tokio::join!(
             read_guardian_status_snapshot(&self.config),
             read_json_snapshot(
                 self.config
@@ -714,6 +736,7 @@ impl DevboxMcp {
                     .join("startup-state.json")
             ),
             read_job_maintenance_snapshot(&self.config),
+            read_job_quota_snapshot(&self.config),
         );
         let mut data = info.as_object().cloned().unwrap_or_default();
         data.insert(
@@ -734,10 +757,20 @@ impl DevboxMcp {
             "jobMaintenance".to_owned(),
             job_maintenance.unwrap_or(Value::Null),
         );
+        data.insert("jobQuota".to_owned(), job_quota.unwrap_or(Value::Null));
         data.insert("execution".to_owned(), json!(execution));
         let performance = self.performance.snapshot();
         data.insert("performance".to_owned(), performance);
-        data.insert("backgroundTasks".to_owned(), self.background.snapshot());
+        let background_snapshot = self.background.snapshot();
+        data.insert("backgroundTasks".to_owned(), background_snapshot.clone());
+        data.insert(
+            "executionStore".to_owned(),
+            self.execution_store_health.read().await.clone(),
+        );
+        data.insert(
+            "degradedSubsystems".to_owned(),
+            json!(background_degraded_subsystems(&background_snapshot)),
+        );
         data.insert("usageTelemetry".to_owned(), self.usage.metrics_snapshot());
         let active_including_current = self.active_requests.active_count();
         data.insert(
@@ -789,11 +822,14 @@ impl DevboxMcp {
                 None,
             );
         }
-        let mut acquire = AcquireRequest::interactive(if read_only {
-            "devbox_exec_readonly"
-        } else {
-            "devbox_exec"
-        });
+        let mut acquire = self.interactive_acquire(
+            if read_only {
+                "devbox_exec_readonly"
+            } else {
+                "devbox_exec"
+            },
+            &request.command,
+        );
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
@@ -813,7 +849,9 @@ impl DevboxMcp {
                     working_dir,
                     timeout: Duration::from_secs(request.timeout_seconds),
                     user: request.user,
-                    max_capture_chars: None,
+                    max_capture_chars: Some(
+                        self.config.command_output_limit_chars.saturating_mul(2),
+                    ),
                     output_tx: None,
                     pid_tx: None,
                 },
@@ -874,7 +912,7 @@ impl DevboxMcp {
         {
             return ToolEnvelope::error("Invalid host output bounds.", None);
         }
-        let mut acquire = AcquireRequest::interactive("host_exec");
+        let mut acquire = self.interactive_acquire("host_exec", &request.command);
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
@@ -894,7 +932,9 @@ impl DevboxMcp {
                     working_dir,
                     timeout: Duration::from_secs(request.timeout_seconds.saturating_add(5)),
                     user: String::new(),
-                    max_capture_chars: None,
+                    max_capture_chars: Some(
+                        self.config.command_output_limit_chars.saturating_mul(2),
+                    ),
                     output_tx: None,
                     pid_tx: None,
                 },
@@ -947,8 +987,11 @@ impl DevboxMcp {
         {
             return ToolEnvelope::error("Invalid host output bounds.", None);
         }
-        let mut acquire =
-            AcquireRequest::interactive(format!("host_run_program:{}", request.program.trim()));
+        let scheduling_text = format!("{} {}", request.program.trim(), request.args.join(" "));
+        let mut acquire = self.interactive_acquire(
+            format!("host_run_program:{}", request.program.trim()),
+            &scheduling_text,
+        );
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
@@ -969,7 +1012,9 @@ impl DevboxMcp {
                     working_dir,
                     timeout: Duration::from_secs(request.timeout_seconds.saturating_add(5)),
                     user: String::new(),
-                    max_capture_chars: None,
+                    max_capture_chars: Some(
+                        self.config.command_output_limit_chars.saturating_mul(2),
+                    ),
                     output_tx: None,
                     pid_tx: None,
                 },
@@ -1269,8 +1314,11 @@ impl DevboxMcp {
                 None,
             );
         }
-        let mut acquire =
-            AcquireRequest::interactive(format!("devbox_run_program:{}", request.program.trim()));
+        let scheduling_text = format!("{} {}", request.program.trim(), request.args.join(" "));
+        let mut acquire = self.interactive_acquire(
+            format!("devbox_run_program:{}", request.program.trim()),
+            &scheduling_text,
+        );
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
@@ -1291,7 +1339,9 @@ impl DevboxMcp {
                     working_dir,
                     timeout: Duration::from_secs(request.timeout_seconds),
                     user: request.user,
-                    max_capture_chars: None,
+                    max_capture_chars: Some(
+                        self.config.command_output_limit_chars.saturating_mul(2),
+                    ),
                     output_tx: None,
                     pid_tx: None,
                 },
@@ -2267,6 +2317,135 @@ struct HttpState {
     gateway: Arc<GatewayState>,
 }
 
+const EXECUTION_STORE_PROBE_INTERVAL: Duration = Duration::from_secs(15);
+const EXECUTION_STORE_PROBE_STALE_MS: u64 = 45_000;
+const EXECUTION_STORE_MIN_FREE_BYTES: u64 = 512 * 1024 * 1024;
+
+async fn probe_writable_root(root: &std::path::Path, label: &str) -> Result<()> {
+    tokio::fs::create_dir_all(root).await?;
+    let probe = root.join(format!(
+        ".mcp-ready-{label}-{}-{}.tmp",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .await
+        .with_context(|| format!("create readiness probe {}", probe.display()))?;
+    file.sync_data().await?;
+    drop(file);
+    tokio::fs::remove_file(&probe)
+        .await
+        .with_context(|| format!("remove readiness probe {}", probe.display()))?;
+    Ok(())
+}
+
+fn spawn_execution_store_probe(
+    handler: &DevboxMcp,
+    config: &Config,
+    cancellation: CancellationToken,
+) {
+    let jobs_root = config.jobs_root.clone();
+    let slot_root = config.execution_slot_root.clone();
+    let health = handler.execution_store_health.clone();
+    handler.background.spawn_supervised(
+        "execution-store-probe",
+        cancellation,
+        move |cancellation, heartbeat| {
+            let jobs_root = jobs_root.clone();
+            let slot_root = slot_root.clone();
+            let health = health.clone();
+            async move {
+                let mut interval = tokio::time::interval(EXECUTION_STORE_PROBE_INTERVAL);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        () = cancellation.cancelled() => return Ok(()),
+                        _ = interval.tick() => {
+                            heartbeat.attempt();
+                            let started = Instant::now();
+                            let jobs_result = probe_writable_root(&jobs_root, "jobs").await;
+                            let slots_result = probe_writable_root(&slot_root, "slots").await;
+                            let disk_root = jobs_root.clone();
+                            let disk = match tokio::task::spawn_blocking(move || {
+                                let free = fs2::available_space(&disk_root)?;
+                                let total = fs2::total_space(&disk_root)?;
+                                Ok::<_, std::io::Error>((free, total))
+                            }).await {
+                                Ok(Ok(value)) => Ok(value),
+                                Ok(Err(error)) => Err(error.to_string()),
+                                Err(error) => Err(format!("join disk readiness probe: {error}")),
+                            };
+                            let (free_bytes, total_bytes) = disk.as_ref().copied().unwrap_or((0, 0));
+                            let disk_ok = disk.is_ok() && free_bytes >= EXECUTION_STORE_MIN_FREE_BYTES;
+                            let errors = [
+                                jobs_result.as_ref().err().map(ToString::to_string),
+                                slots_result.as_ref().err().map(ToString::to_string),
+                                disk.as_ref().err().cloned(),
+                                (disk.is_ok() && !disk_ok).then(|| format!("free disk {free_bytes} below minimum {EXECUTION_STORE_MIN_FREE_BYTES}")),
+                            ]
+                            .into_iter()
+                            .flatten()
+                            .collect::<Vec<_>>();
+                            let ok = errors.is_empty();
+                            let free_percent = if total_bytes > 0 {
+                                let basis_points = free_bytes.saturating_mul(10_000) / total_bytes;
+                                f64::from(u32::try_from(basis_points.min(10_000)).unwrap_or(0)) / 100.0
+                            } else {
+                                0.0
+                            };
+                            let value = json!({
+                                "ok": ok,
+                                "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
+                                "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                                "jobsWritable": jobs_result.is_ok(),
+                                "schedulerWritable": slots_result.is_ok(),
+                                "freeBytes": free_bytes,
+                                "totalBytes": total_bytes,
+                                "freePercent": free_percent,
+                                "minimumFreeBytes": EXECUTION_STORE_MIN_FREE_BYTES,
+                                "error": if errors.is_empty() { Value::Null } else { json!(errors.join("; ")) },
+                            });
+                            *health.write().await = value;
+                            if ok {
+                                heartbeat.tick();
+                            } else {
+                                heartbeat.fail(errors.join("; "));
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    );
+}
+
+fn background_degraded_subsystems(snapshot: &Value) -> Vec<String> {
+    let Some(object) = snapshot.as_object() else {
+        return Vec::new();
+    };
+    object
+        .iter()
+        .filter_map(|(name, state)| {
+            let failures = state
+                .get("consecutiveFailures")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let running = state
+                .get("running")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let succeeded = state
+                .get("lastSuccessUnixMs")
+                .and_then(Value::as_u64)
+                .is_some();
+            (failures > 0 || (!running && !succeeded)).then(|| name.clone())
+        })
+        .collect()
+}
+
 fn spawn_job_maintenance(handler: &DevboxMcp, config: &Config, cancellation: CancellationToken) {
     let maintenance_store = handler.jobs.store().clone();
     let maintenance_state_path = config.project_root.join("run").join("job-maintenance.json");
@@ -2282,6 +2461,7 @@ fn spawn_job_maintenance(handler: &DevboxMcp, config: &Config, cancellation: Can
                     tokio::select! {
                         () = cancellation.cancelled() => return Ok(()),
                         _ = interval.tick() => {
+                            heartbeat.attempt();
                             let started = Instant::now();
                             let value = match maintenance_store.reconcile_maintenance_batch(100).await {
                                 Ok(summary) => {
@@ -2291,6 +2471,7 @@ fn spawn_job_maintenance(handler: &DevboxMcp, config: &Config, cancellation: Can
                                 }
                                 Err(error) => {
                                     tracing::warn!(%error, "Rust MCP job maintenance pass failed");
+                                    heartbeat.fail(error.to_string());
                                     json!({ "sampledAtUtc": chrono::Utc::now().to_rfc3339(), "durationMs": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX), "error": error.to_string() })
                                 }
                             };
@@ -2322,8 +2503,11 @@ fn spawn_version_refresh(handler: &DevboxMcp, cancellation: CancellationToken) {
                     tokio::select! {
                         () = cancellation.cancelled() => return Ok(()),
                         _ = interval.tick() => {
-                            let _ = runtime.get_versions(true, cancellation.child_token()).await;
-                            heartbeat.tick();
+                            heartbeat.attempt();
+                            match runtime.get_versions(true, cancellation.child_token()).await {
+                                Ok(_) => heartbeat.tick(),
+                                Err(error) => heartbeat.fail(error.to_string()),
+                            }
                         }
                     }
                 }
@@ -2334,17 +2518,34 @@ fn spawn_version_refresh(handler: &DevboxMcp, cancellation: CancellationToken) {
 
 pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Router {
     let handler = DevboxMcp::new(config.clone());
+    spawn_execution_store_probe(&handler, &config, cancellation.child_token());
+    crate::incident_task::spawn_incident_monitor(
+        config.project_root.clone(),
+        handler.performance.clone(),
+        handler.scheduler.clone(),
+        handler.active_requests.clone(),
+        handler.background.clone(),
+        handler.execution_store_health.clone(),
+        cancellation.child_token(),
+    );
     spawn_version_refresh(&handler, cancellation.child_token());
     let warm_host_runtime = handler.runtime.clone();
     let warm_host_cancellation = cancellation.child_token();
-    tokio::spawn(async move {
-        if let Err(error) = warm_host_runtime
-            .warm_host_execution_state(warm_host_cancellation)
-            .await
-        {
-            tracing::warn!(%error, "Failed to warm Rust host execution state");
-        }
-    });
+    handler
+        .background
+        .spawn_once_tracked("host-execution-warm", async move {
+            warm_host_runtime
+                .warm_host_execution_state(warm_host_cancellation)
+                .await
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+    crate::quota_task::spawn_job_quota(
+        handler.jobs.store().clone(),
+        config.project_root.join("run").join("job-quota.json"),
+        &handler.background,
+        cancellation.child_token(),
+    );
     spawn_job_maintenance(&handler, &config, cancellation.child_token());
     let service_handler = handler.clone();
     let transport_config = StreamableHttpServerConfig::default()
@@ -2535,6 +2736,18 @@ async fn read_guardian_status_snapshot(config: &Config) -> Option<Value> {
     }))
 }
 
+async fn read_job_quota_snapshot(config: &Config) -> Option<Value> {
+    let mut snapshot =
+        read_json_snapshot(config.project_root.join("run").join("job-quota.json")).await?;
+    let age_ms = snapshot_age_ms(snapshot.get("sampledAtUtc").and_then(Value::as_str));
+    let is_stale = age_ms.is_none_or(|age| age > 150_000);
+    if let Some(object) = snapshot.as_object_mut() {
+        object.insert("ageMs".to_owned(), json!(age_ms));
+        object.insert("stale".to_owned(), json!(is_stale));
+    }
+    Some(snapshot)
+}
+
 async fn read_job_maintenance_snapshot(config: &Config) -> Option<Value> {
     let mut snapshot =
         read_json_snapshot(config.project_root.join("run").join("job-maintenance.json")).await?;
@@ -2559,28 +2772,26 @@ fn snapshot_age_ms(timestamp: Option<&str>) -> Option<u64> {
 
 async fn readyz(State(state): State<HttpState>) -> Response {
     let checks = tokio::time::timeout(Duration::from_millis(750), async {
-        let jobs = tokio::fs::metadata(&state.config.jobs_root)
-            .await
-            .is_ok_and(|metadata| metadata.is_dir() && !metadata.permissions().readonly());
         let scheduler = state.handler.scheduler.snapshot().await.is_ok();
         let tool_contract =
             state.handler.tool_router.list_all().len() == crate::contract::TARGET_TOOL_NAMES.len();
         let background = state.handler.background.snapshot();
-        let critical = [
-            "performance-sampler",
-            "performance-persistence",
-            "job-maintenance",
-            "version-refresh",
-        ];
-        let tasks = critical.iter().all(|name| {
-            let task = &background[*name];
-            task.get("running").and_then(Value::as_bool) == Some(true)
-                && task
-                    .get("lastTickAgeMs")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|age| age < 180_000)
-        });
-        jobs && scheduler && tool_contract && tasks
+        let store_task = &background["execution-store-probe"];
+        let store_task_fresh = store_task.get("running").and_then(Value::as_bool) == Some(true)
+            && store_task
+                .get("lastSuccessAgeMs")
+                .and_then(Value::as_u64)
+                .is_some_and(|age| age < EXECUTION_STORE_PROBE_STALE_MS)
+            && store_task
+                .get("consecutiveFailures")
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                == 0;
+        let store = state.handler.execution_store_health.read().await;
+        let store_age = snapshot_age_ms(store.get("sampledAtUtc").and_then(Value::as_str));
+        let store_ready = store.get("ok").and_then(Value::as_bool) == Some(true)
+            && store_age.is_some_and(|age| age < EXECUTION_STORE_PROBE_STALE_MS);
+        scheduler && tool_contract && store_task_fresh && store_ready
     })
     .await;
     let ok = matches!(checks, Ok(true));
@@ -2945,7 +3156,10 @@ fn render_shell_result(
                 shape_process_output(&output.stdout, mode, context.max_chars, context.max_lines);
             let stderr =
                 shape_process_output(&output.stderr, mode, context.max_chars, context.max_lines);
-            let truncated = stdout.truncated || stderr.truncated;
+            let truncated = stdout.truncated
+                || stderr.truncated
+                || output.stdout_capture_truncated
+                || output.stderr_capture_truncated;
             ToolEnvelope::process_success(
                 summary,
                 Some(json!({
@@ -2954,8 +3168,10 @@ fn render_shell_result(
                         "mode": mode.as_str(),
                         "max_chars": context.max_chars,
                         "max_lines": context.max_lines,
-                        "stdout_original_chars": stdout.original_chars,
-                        "stderr_original_chars": stderr.original_chars,
+                        "stdout_original_chars": output.stdout_original_chars,
+                        "stderr_original_chars": output.stderr_original_chars,
+                        "stdout_capture_truncated": output.stdout_capture_truncated,
+                        "stderr_capture_truncated": output.stderr_capture_truncated,
                     }
                 })),
                 stdout.text,
@@ -3019,15 +3235,20 @@ fn render_program_result(
                 shape_process_output(&output.stdout, mode, context.max_chars, context.max_lines);
             let stderr =
                 shape_process_output(&output.stderr, mode, context.max_chars, context.max_lines);
-            let truncated = stdout.truncated || stderr.truncated;
+            let truncated = stdout.truncated
+                || stderr.truncated
+                || output.stdout_capture_truncated
+                || output.stderr_capture_truncated;
             let data = json!({
                 "execution": execution,
                 "output": {
                     "mode": mode.as_str(),
                     "max_chars": context.max_chars,
                     "max_lines": context.max_lines,
-                    "stdout_original_chars": stdout.original_chars,
-                    "stderr_original_chars": stderr.original_chars,
+                    "stdout_original_chars": output.stdout_original_chars,
+                    "stderr_original_chars": output.stderr_original_chars,
+                    "stdout_capture_truncated": output.stdout_capture_truncated,
+                    "stderr_capture_truncated": output.stderr_capture_truncated,
                 }
             });
             ToolEnvelope::process_success(
@@ -3422,6 +3643,33 @@ fn path_state_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn execution_store_probe_rejects_a_path_that_is_not_a_directory() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let not_a_directory = temp.path().join("blocked-root");
+        tokio::fs::write(&not_a_directory, b"file")
+            .await
+            .expect("write blocking file");
+        let error = probe_writable_root(&not_a_directory, "jobs")
+            .await
+            .expect_err("readiness write canary must fail when the root is a file");
+        assert!(!error.to_string().is_empty());
+        assert!(not_a_directory.is_file());
+    }
+
+    #[tokio::test]
+    async fn interactive_classifier_keeps_watch_like_sync_commands_in_execution_pool() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let config = Arc::new(crate::config::test_config(temp.path()));
+        let server = DevboxMcp::new(config);
+        let watch_like = server.interactive_acquire("sync-watch", "sleep 30");
+        assert_eq!(watch_like.resource_class, ResourceClass::Light);
+        assert_eq!(watch_like.weight, 1);
+        let heavy = server.interactive_acquire("sync-heavy", "cargo test --release");
+        assert_eq!(heavy.resource_class, ResourceClass::Heavy);
+        assert_eq!(heavy.weight, server.scheduler.config().heavy_weight);
+    }
 
     #[tokio::test]
     async fn host_large_file_tools_keep_base64_out_of_text_content() {

@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use futures::future::join_all;
+use futures::{StreamExt, stream};
 #[cfg(windows)]
 use tokio::sync::OnceCell;
 use tokio::sync::{
@@ -197,70 +197,65 @@ impl RuntimeExecutor {
     }
 
     async fn load_host_versions(&self, cancellation: CancellationToken) -> Vec<String> {
-        let candidates: Vec<(&str, &[&str])> = if self.config.platform.is_windows {
-            vec![
-                ("node", &["--version"]),
-                ("npm", &["--version"]),
-                ("git", &["--version"]),
-                ("gh", &["--version"]),
-                ("python", &["--version"]),
-                ("pwsh", &["--version"]),
-                ("rg", &["--version"]),
-                ("curl", &["--version"]),
-            ]
+        let candidates: Vec<(String, Vec<String>)> = if self.config.platform.is_windows {
+            vec!["node", "npm", "git", "gh", "python", "pwsh", "rg", "curl"]
+                .into_iter()
+                .map(|program| (program.to_owned(), vec!["--version".to_owned()]))
+                .collect()
         } else {
-            vec![
-                ("node", &["--version"]),
-                ("npm", &["--version"]),
-                ("git", &["--version"]),
-                ("gh", &["--version"]),
-                ("python3", &["--version"]),
-                ("rg", &["--version"]),
-            ]
+            vec!["node", "npm", "git", "gh", "python3", "rg"]
+                .into_iter()
+                .map(|program| (program.to_owned(), vec!["--version".to_owned()]))
+                .collect()
         };
-        let probes = candidates.into_iter().map(|(program, args)| {
-            let arguments = args
-                .iter()
-                .map(|value| (*value).to_owned())
-                .collect::<Vec<_>>();
-            #[cfg(windows)]
-            let (executable, arguments) =
-                resolve_windows_host_program(&self.config, program, &arguments);
-            #[cfg(not(windows))]
-            let executable = if program == "node" {
-                self.config.node_exe.clone()
-            } else {
-                program.to_owned()
-            };
-            let cwd = self.config.host_default_workdir.clone();
-            let cancellation = cancellation.child_token();
-            async move {
-                match spawn_process(
-                    &executable,
-                    &arguments,
-                    ProcessOptions {
-                        cwd: Some(cwd),
-                        timeout: Some(Duration::from_secs(15)),
-                        max_capture_chars: Some(16_384),
-                        ..ProcessOptions::default()
-                    },
-                    cancellation,
-                )
-                .await
-                {
-                    Ok(output) => {
-                        let combined = format!("{}{}", output.stdout, output.stderr);
-                        let value = combined
-                            .lines()
-                            .find(|line| !line.trim().is_empty())
-                            .unwrap_or("available");
-                        format!("{program}={}", value.trim())
-                    }
-                    Err(_) => format!("{program}=unavailable"),
+        let probes = candidates
+            .into_iter()
+            .enumerate()
+            .map(|(index, (program, arguments))| {
+                #[cfg(windows)]
+                let (executable, arguments) =
+                    resolve_windows_host_program(&self.config, &program, &arguments);
+                #[cfg(not(windows))]
+                let executable = if program == "node" {
+                    self.config.node_exe.clone()
+                } else {
+                    program.clone()
+                };
+                let cwd = self.config.host_default_workdir.clone();
+                let cancellation = cancellation.child_token();
+                async move {
+                    let value = match spawn_process(
+                        &executable,
+                        &arguments,
+                        ProcessOptions {
+                            cwd: Some(cwd),
+                            timeout: Some(Duration::from_secs(15)),
+                            max_capture_chars: Some(16_384),
+                            ..ProcessOptions::default()
+                        },
+                        cancellation,
+                    )
+                    .await
+                    {
+                        Ok(output) => {
+                            let combined = format!("{}{}", output.stdout, output.stderr);
+                            let value = combined
+                                .lines()
+                                .find(|line| !line.trim().is_empty())
+                                .unwrap_or("available");
+                            format!("{program}={}", value.trim())
+                        }
+                        Err(_) => format!("{program}=unavailable"),
+                    };
+                    (index, value)
                 }
-            }
-        });
-        join_all(probes).await
+            });
+        let mut values = stream::iter(probes)
+            .buffer_unordered(2)
+            .collect::<Vec<_>>()
+            .await;
+        values.sort_by_key(|(index, _)| *index);
+        values.into_iter().map(|(_, value)| value).collect()
     }
 
     async fn load_docker_versions(

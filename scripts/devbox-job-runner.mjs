@@ -16,10 +16,11 @@ const stdoutPath = path.join(dir, "stdout.log");
 const stderrPath = path.join(dir, "stderr.log");
 const cancelPath = path.join(dir, "cancel.requested");
 const heartbeatPath = path.join(dir, "heartbeat.json");
+const runnerProcessInstance = randomUUID();
 
 const writeStatus = async (value) => {
   const temp = `${statusPath}.${process.pid}.tmp`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await writeFile(temp, `${JSON.stringify({ ...value, runnerProcessInstance }, null, 2)}\n`, "utf8");
   await rename(temp, statusPath);
 };
 
@@ -27,6 +28,7 @@ const writeHeartbeat = async (state) => {
   const temp = `${heartbeatPath}.${process.pid}.${randomUUID()}.tmp`;
   const payload = `${JSON.stringify({
     pid: process.pid,
+    runnerProcessInstance,
     status: state,
     childPid,
     runtimeMode: request.runtimeMode || config.runtimeMode,
