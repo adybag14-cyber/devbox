@@ -907,8 +907,19 @@ const main = async () => {
   const guardianPid = options.directOwner
     ? process.pid
     : Number.isInteger(ownerPid) && ownerPid > 0 ? ownerPid : process.pid;
-  let stopping = false;
-  let unhealthyCount = 0;
+  let heartbeatTimer = null;
+  try {
+    // Publish ownership before any process enumeration, health probing, or state
+    // recovery. Hosted Windows runners can make process discovery take >15 s;
+    // Ensure must be able to recognize the live Guardian immediately.
+    await writeFile(paths.pid, `${guardianPid}\n`, "ascii");
+    await appendRotatingLog(
+      paths.log,
+      `${new Date().toISOString()} [INFO] guardian v2 boot supervisorPid=${process.pid} ownerPid=${guardianPid}\n`,
+    );
+
+    let stopping = false;
+    let unhealthyCount = 0;
   let lastRepairAtMs = 0;
   const [persistedLastRepair, initialMcpProcess] = await Promise.all([
     readJson(paths.lastRepair, null),
@@ -1172,7 +1183,7 @@ const main = async () => {
   // Keep watchdog liveness independent from public health, PowerShell token
   // inspection, Docker, or any other probe that can block. This prevents the
   // external KeepAlive task from killing a healthy Guardian during a slow probe.
-  const heartbeatTimer = setInterval(() => {
+    heartbeatTimer = setInterval(() => {
     if (!lastHeartbeatState) return;
     void writeJsonAtomic(paths.heartbeat, heartbeatPayload(lastHeartbeatState, heartbeatExtra)).catch(() => {});
   }, 5000);
@@ -1313,9 +1324,6 @@ const main = async () => {
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
 
-  try {
-    await writeFile(paths.pid, `${guardianPid}\n`, "ascii");
-    await log("INFO", `guardian v2 boot supervisorPid=${process.pid} ownerPid=${guardianPid}`);
     while (!stopping) {
       let state = await probe();
       if (state.SelectedRuntime === "docker" && state.IsHealthy && repairPolicy.ConsecutiveDockerFailures > 0) {
@@ -1448,9 +1456,16 @@ const main = async () => {
       await sleep(options.pollSeconds * 1000);
     }
   } finally {
-    clearInterval(heartbeatTimer);
-    await rm(paths.lock, { force: true });
-    await log("INFO", "guardian v2 stopped");
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    const publishedPid = await readPid(paths.pid).catch(() => null);
+    if (publishedPid === guardianPid) {
+      await rm(paths.pid, { force: true }).catch(() => {});
+    }
+    await rm(paths.lock, { force: true }).catch(() => {});
+    await appendRotatingLog(
+      paths.log,
+      `${new Date().toISOString()} [INFO] guardian v2 stopped\n`,
+    ).catch(() => {});
   }
 };
 

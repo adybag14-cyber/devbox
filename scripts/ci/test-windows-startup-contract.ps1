@@ -7,6 +7,7 @@ $ownershipPath = Join-Path $root 'scripts\DevboxMcpOwnership.ps1'
 $installPath = Join-Path $root 'scripts\Install-ChatGptDevboxGuardian.ps1'
 $ensureGuardianPath = Join-Path $root 'scripts\Ensure-ChatGptDevboxGuardian.ps1'
 $watchGuardianPath = Join-Path $root 'scripts\Watch-ChatGptDevboxGuardian.ps1'
+$guardianSupervisorPath = Join-Path $root 'scripts\devbox-guardian.mjs'
 $vbsPath = Join-Path $root 'scripts\Run-Start-ChatGptDevboxMcp.vbs'
 
 function Assert-Contains {
@@ -32,6 +33,7 @@ $ownership = Get-Content -LiteralPath $ownershipPath -Raw
 $install = Get-Content -LiteralPath $installPath -Raw
 $ensureGuardian = Get-Content -LiteralPath $ensureGuardianPath -Raw
 $watchGuardian = Get-Content -LiteralPath $watchGuardianPath -Raw
+$guardianSupervisor = Get-Content -LiteralPath $guardianSupervisorPath -Raw
 $vbs = Get-Content -LiteralPath $vbsPath -Raw
 
 Assert-Contains $start '$script:lifecycleMutex.WaitOne(0, $false)' 'Lifecycle mutex must reject concurrent starts instead of queueing them.'
@@ -103,6 +105,8 @@ Assert-Contains $ensureGuardian "'--direct-owner'" 'Direct Ensure Guardian must 
 Assert-Contains $ensureGuardian 'Start-Process -FilePath $nodeExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden' 'Guardian Ensure must launch the Node supervisor directly.'
 Assert-Contains $ensureGuardian 'function Get-LiveGuardianSupervisorProcess' 'Guardian Ensure must identify a verified orphan supervisor separately from the watcher.'
 Assert-Contains $ensureGuardian 'guardian failed to start persistently' 'Guardian Ensure must require a persistent Node supervisor before reporting success.'
+Assert-Before $guardianSupervisor 'await writeFile(paths.pid' 'findMcpProcess(paths.runDir)' 'Guardian must publish its PID before potentially slow Windows process discovery.'
+Assert-Contains $guardianSupervisor 'const publishedPid = await readPid(paths.pid)' 'Guardian shutdown must verify PID ownership before deleting its discoverability file.'
 Assert-Contains $watchGuardian 'function Get-GuardianMutexName' 'Guardian mutex ownership must be scoped to the project root.'
 Assert-Contains $watchGuardian 'Global\ChatGptDevboxGuardian-' 'Guardian mutex must use a root-derived namespace.'
 
