@@ -7,6 +7,7 @@ $ownershipPath = Join-Path $root 'scripts\DevboxMcpOwnership.ps1'
 $installPath = Join-Path $root 'scripts\Install-ChatGptDevboxGuardian.ps1'
 $ensureGuardianPath = Join-Path $root 'scripts\Ensure-ChatGptDevboxGuardian.ps1'
 $watchGuardianPath = Join-Path $root 'scripts\Watch-ChatGptDevboxGuardian.ps1'
+$guardianSupervisorPath = Join-Path $root 'scripts\devbox-guardian.mjs'
 $vbsPath = Join-Path $root 'scripts\Run-Start-ChatGptDevboxMcp.vbs'
 
 function Assert-Contains {
@@ -32,6 +33,7 @@ $ownership = Get-Content -LiteralPath $ownershipPath -Raw
 $install = Get-Content -LiteralPath $installPath -Raw
 $ensureGuardian = Get-Content -LiteralPath $ensureGuardianPath -Raw
 $watchGuardian = Get-Content -LiteralPath $watchGuardianPath -Raw
+$guardianSupervisor = Get-Content -LiteralPath $guardianSupervisorPath -Raw
 $vbs = Get-Content -LiteralPath $vbsPath -Raw
 
 Assert-Contains $start '$script:lifecycleMutex.WaitOne(0, $false)' 'Lifecycle mutex must reject concurrent starts instead of queueing them.'
@@ -75,6 +77,8 @@ Assert-Contains $start '$Public = $true' 'Tunnel-only repair must imply the conf
 Assert-Contains $start '@(''--protocol'', $transportProtocol)' 'Explicit Cloudflare transport protocol support is missing.'
 Assert-Contains $start '@(''--edge-bind-address'', $effectiveEdgeBindAddress)' 'Explicit Cloudflare edge bind support is missing.'
 Assert-Contains $start 'function Resolve-DefaultRouteIPv4BindAddress' 'DHCP-aware physical default-route bind resolution is missing.'
+Assert-Contains $start 'function Remove-StaleAtomicTempFiles' 'Startup must prune abandoned top-level atomic temp files.'
+Assert-Contains $start 'Remove-StaleAtomicTempFiles -RunDir $runDir' 'Startup must invoke stale atomic temp cleanup.'
 Assert-Contains $start '$adapter.HardwareInterface -ne $true' 'Automatic tunnel binding must avoid virtual adapters.'
 Assert-Contains $start "$requestedEdgeBindAddress -eq 'auto'" 'Cloudflare edge bind auto mode is missing.'
 Assert-Contains $start "'configured-stale-default-route'" 'Stale configured DHCP addresses must fall back to the active physical default route.'
@@ -87,16 +91,26 @@ Assert-Before $start 'Set-Content -Path $pidFile -Value $process.Id -Encoding AS
 Assert-Contains $vbs 'shell.Run(command, 0, True)' 'Scheduled-task VBS must wait for the real startup child and propagate its exit code.'
 Assert-Contains $install '-ExecutionTimeLimit (New-TimeSpan -Minutes 10)' 'Elevated startup task must have a bounded execution time.'
 Assert-Contains $install 'if ($LASTEXITCODE -ne 0)' 'Guardian installation must fail when the Ensure process fails.'
-Assert-Contains $install 'New-ScheduledTaskAction -Execute $powerShellExe -Argument $ensureActionArgs' 'Guardian supervision tasks must invoke PowerShell directly.'
+Assert-Contains $install 'New-ScheduledTaskAction -Execute $nodeExe -Argument $startupActionArgs' 'Guardian AtStartup must launch Node directly.'
+Assert-Contains $install "'--direct-owner'" 'Direct AtStartup Guardian must ignore inherited legacy wrapper ownership.'
+Assert-Contains $install 'New-ScheduledTaskAction -Execute $powerShellExe -Argument $ensureActionArgs' 'Guardian recovery tasks must retain the Ensure path.'
+Assert-Contains $install '-ExecutionTimeLimit ([TimeSpan]::Zero)' 'Persistent AtStartup Guardian task must not be killed by a short execution limit.'
 Assert-Contains $install 'Register-ScheduledTask -TaskName $keepAliveTaskName -Action $action -Trigger $keepAliveTrigger -Settings $settingsSet -Principal $startupPrincipal' 'Guardian KeepAlive must run non-interactively under the S4U principal.'
 Assert-NotContains $install 'schtasks.exe /Create /TN $keepAliveTaskName' 'Guardian KeepAlive must not fall back to the interactive schtasks path.'
 Assert-Contains $ensureGuardian 'function Get-EnsureMutexName' 'Guardian Ensure invocations must share a project-root-scoped mutex.'
 Assert-Contains $ensureGuardian 'Global\ChatGptDevboxGuardianEnsure-' 'Guardian Ensure mutex must use a root-derived global name.'
 Assert-NotContains $ensureGuardian 'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |' 'Guardian Ensure must not enumerate every process during boot recovery.'
-Assert-Contains $ensureGuardian "'-File', ('`"{0}`"' -f `$guardianScript)" 'Guardian direct launch must quote a watcher path containing spaces.'
-Assert-Contains $ensureGuardian 'Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden' 'Guardian Ensure must launch the watcher directly through the resolved PowerShell executable.'
+Assert-Contains $ensureGuardian '$escapedGuardianPath = [regex]::Escape($guardianScript)' 'Guardian legacy watcher ownership must be scoped to the current checkout path.'
+Assert-Contains $ensureGuardian "'--project-root', ('`"{0}`"' -f `$ProjectRoot)" 'Guardian direct Node launch must quote the project root as one argument.'
+Assert-Contains $ensureGuardian "('`"{0}`"' -f `$supervisorScript)" 'Guardian direct Node launch must quote the supervisor path as one argument.'
+Assert-Contains $ensureGuardian "'--direct-owner'" 'Direct Ensure Guardian must ignore inherited legacy wrapper ownership.'
+Assert-Contains $ensureGuardian "CreationDateUtc" 'Guardian stale corroboration must bind to a process instance, not PID alone.'
+Assert-Contains $ensureGuardian "TotalMinutes -le 30" 'Guardian stale corroboration must survive the 10-minute KeepAlive cadence.'
+Assert-Contains $ensureGuardian 'Start-Process -FilePath $nodeExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden' 'Guardian Ensure must launch the Node supervisor directly.'
 Assert-Contains $ensureGuardian 'function Get-LiveGuardianSupervisorProcess' 'Guardian Ensure must identify a verified orphan supervisor separately from the watcher.'
-Assert-Contains $ensureGuardian 'guardian watcher failed to start persistently' 'Guardian Ensure must require a persistent watcher before reporting success.'
+Assert-Contains $ensureGuardian 'guardian failed to start persistently' 'Guardian Ensure must require a persistent Node supervisor before reporting success.'
+Assert-Before $guardianSupervisor 'await writeFile(paths.pid' 'findMcpProcess(paths.runDir)' 'Guardian must publish its PID before potentially slow Windows process discovery.'
+Assert-Contains $guardianSupervisor 'const publishedPid = await readPid(paths.pid)' 'Guardian shutdown must verify PID ownership before deleting its discoverability file.'
 Assert-Contains $watchGuardian 'function Get-GuardianMutexName' 'Guardian mutex ownership must be scoped to the project root.'
 Assert-Contains $watchGuardian 'Global\ChatGptDevboxGuardian-' 'Guardian mutex must use a root-derived namespace.'
 

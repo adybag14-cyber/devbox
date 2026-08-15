@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     ffi::OsString,
     path::PathBuf,
     process::{ExitStatus, Stdio},
@@ -101,7 +101,7 @@ pub(crate) struct CaptureResult {
 #[derive(Debug)]
 struct CaptureAccumulator {
     head: String,
-    tail: String,
+    tail: VecDeque<char>,
     original_chars: usize,
     limit: Option<usize>,
     truncated: bool,
@@ -141,7 +141,7 @@ impl CaptureAccumulator {
     fn new(limit: Option<usize>) -> Self {
         Self {
             head: String::new(),
-            tail: String::new(),
+            tail: VecDeque::new(),
             original_chars: 0,
             limit,
             truncated: false,
@@ -169,12 +169,21 @@ impl CaptureAccumulator {
         let head_limit = limit / 2;
         let tail_limit = limit.saturating_sub(head_limit);
         if self.truncated {
-            self.tail.push_str(text);
-            self.tail = tail_chars(&self.tail, tail_limit);
+            push_tail_chars(&mut self.tail, text, tail_limit);
         } else {
             let combined = format!("{}{}", self.head, text);
             self.head = take_chars(&combined, head_limit);
-            self.tail = tail_chars(&combined, tail_limit);
+            self.tail.clear();
+            for character in combined
+                .chars()
+                .rev()
+                .take(tail_limit)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
+                self.tail.push_back(character);
+            }
             self.truncated = true;
         }
     }
@@ -194,16 +203,13 @@ impl CaptureAccumulator {
                 truncated: true,
             };
         }
-        let kept = self
-            .head
-            .chars()
-            .count()
-            .saturating_add(self.tail.chars().count());
+        let kept = self.head.chars().count().saturating_add(self.tail.len());
         let omitted = self.original_chars.saturating_sub(kept);
+        let tail = self.tail.iter().collect::<String>();
         CaptureResult {
             text: format!(
                 "{}\n... middle capture omitted {omitted} characters ...\n{}",
-                self.head, self.tail
+                self.head, tail
             ),
             original_chars: self.original_chars,
             truncated: true,
@@ -312,8 +318,13 @@ pub async fn spawn_process(
     drop_guard.disarm();
 
     let drain = status.map(|_| POST_EXIT_PIPE_DRAIN);
-    let stdout = join_capture(spawned.stdout_task, drain).await;
-    let stderr = join_capture(spawned.stderr_task, drain).await;
+    // Descendants can inherit both stdout and stderr handles after the direct
+    // child exits. Drain the two streams concurrently so the bounded post-exit
+    // grace is paid once, not once per inherited pipe.
+    let (stdout, stderr) = tokio::join!(
+        join_capture(spawned.stdout_task, drain),
+        join_capture(spawned.stderr_task, drain),
+    );
     classify_process_result(
         file,
         args,
@@ -718,15 +729,17 @@ async fn join_capture(mut capture: CaptureTask, timeout: Option<Duration>) -> Ca
         .snapshot()
 }
 
-fn tail_chars(value: &str, max_chars: usize) -> String {
+fn push_tail_chars(tail: &mut VecDeque<char>, value: &str, max_chars: usize) {
     if max_chars == 0 {
-        return String::new();
+        tail.clear();
+        return;
     }
-    let count = value.chars().count();
-    value
-        .chars()
-        .skip(count.saturating_sub(max_chars))
-        .collect()
+    for character in value.chars() {
+        if tail.len() == max_chars {
+            tail.pop_front();
+        }
+        tail.push_back(character);
+    }
 }
 
 fn take_chars(value: &str, max_chars: usize) -> String {

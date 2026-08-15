@@ -25,6 +25,14 @@ const reservePort = () => new Promise((resolve, reject) => {
 });
 const form = (values) => new URLSearchParams(Object.entries(values).filter(([, value]) => value !== undefined));
 const pkce = (verifier) => createHash("sha256").update(verifier).digest("base64url");
+const expectedScopes = [
+  "mcp:tools",
+  "mcp:devbox:read",
+  "mcp:devbox:exec",
+  "mcp:host:read",
+  "mcp:host:exec",
+  "mcp:admin",
+];
 
 await access(binaryPath);
 const port = await reservePort();
@@ -90,12 +98,14 @@ try {
   assert.equal(metadata.registration_endpoint, new URL("register", baseUrl).toString());
   assert.equal(metadata.revocation_endpoint, new URL("revoke", baseUrl).toString());
   assert.deepEqual(metadata.code_challenge_methods_supported, ["S256"]);
+  assert.deepEqual(metadata.scopes_supported, expectedScopes);
 
   const rootResource = await (await fetch(new URL(".well-known/oauth-protected-resource", baseUrl))).json();
   const legacyResource = await (await fetch(new URL(".well-known/oauth-protected-resource/mcp", baseUrl))).json();
   assert.equal(rootResource.resource, baseUrl.toString());
   assert.equal(legacyResource.resource, new URL("mcp", baseUrl).toString());
-  assert.deepEqual(rootResource.scopes_supported, ["mcp:tools"]);
+  assert.deepEqual(rootResource.scopes_supported, expectedScopes);
+  assert.deepEqual(legacyResource.scopes_supported, expectedScopes);
 
   const unauthorized = await fetch(baseUrl, {
     method: "POST",

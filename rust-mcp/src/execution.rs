@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,6 +23,22 @@ const MAX_QUEUE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const CLAIM_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 const CORRUPT_SLOT_STALE: Duration = Duration::from_secs(5 * 60);
 const CORRUPT_QUEUE_TICKET_STALE: Duration = Duration::from_secs(5);
+const DISK_PRESSURE_STATE_STALE: Duration = Duration::from_secs(180);
+const DISK_PRESSURE_CACHE_TTL: Duration = Duration::from_secs(1);
+const AGED_BACKGROUND_CACHE_TTL: Duration = Duration::from_millis(250);
+type AgedBackgroundCache = BTreeMap<(PathBuf, u64), (Instant, bool)>;
+static DISK_PRESSURE_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, (Instant, bool)>>> = OnceLock::new();
+static AGED_BACKGROUND_CACHE: OnceLock<Mutex<AgedBackgroundCache>> = OnceLock::new();
+
+fn invalidate_aged_background_cache(root: &Path) {
+    let Some(cache) = AGED_BACKGROUND_CACHE.get() else {
+        return;
+    };
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(cached_root, _), _| cached_root != root);
+}
 #[cfg(windows)]
 const WINDOWS_SLOT_IO_RETRY_ATTEMPTS: usize = 100;
 #[cfg(windows)]
@@ -34,6 +50,8 @@ pub enum ResourceClass {
     Watch,
     Light,
     Heavy,
+    #[serde(rename = "io-heavy")]
+    IoHeavy,
 }
 
 impl ResourceClass {
@@ -42,6 +60,7 @@ impl ResourceClass {
         match value.trim().to_ascii_lowercase().as_str() {
             "watch" => Self::Watch,
             "heavy" => Self::Heavy,
+            "io-heavy" | "io_heavy" | "ioheavy" => Self::IoHeavy,
             _ => Self::Light,
         }
     }
@@ -52,6 +71,7 @@ impl ResourceClass {
             Self::Watch => "watch",
             Self::Light => "light",
             Self::Heavy => "heavy",
+            Self::IoHeavy => "io-heavy",
         }
     }
 }
@@ -80,6 +100,9 @@ pub struct SchedulerConfig {
     pub queue_timeout: Duration,
     pub heavy_capacity: usize,
     pub heavy_weight: usize,
+    pub io_heavy_capacity: usize,
+    pub io_heavy_weight: usize,
+    pub background_priority_age: Duration,
 }
 
 impl SchedulerConfig {
@@ -96,6 +119,12 @@ impl SchedulerConfig {
             .heavy_capacity
             .max(self.heavy_weight)
             .min(self.max_concurrent);
+        self.io_heavy_weight = self.io_heavy_weight.max(1).min(self.max_concurrent);
+        self.io_heavy_capacity = self
+            .io_heavy_capacity
+            .max(self.io_heavy_weight)
+            .min(self.max_concurrent);
+        self.background_priority_age = self.background_priority_age.max(Duration::from_millis(1));
         self
     }
 }
@@ -214,6 +243,8 @@ pub struct ExecutionSlotSnapshot {
     pub max_concurrent: usize,
     pub reserved_interactive: usize,
     pub heavy_capacity: usize,
+    pub io_heavy_capacity: usize,
+    pub background_priority_age_ms: u64,
     pub background_capacity: usize,
     pub watch_capacity: usize,
     pub occupied: usize,
@@ -251,7 +282,7 @@ struct Metrics {
 struct SlotOwner {
     token: String,
     pid: u32,
-    process_instance: Option<u64>,
+    process_instance: Option<String>,
     kind: String,
     pool: String,
     resource_class: String,
@@ -286,6 +317,11 @@ impl QueueTicket {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
         }
+        if self.class == "execution-background"
+            && let Some(root) = self.root.parent()
+        {
+            invalidate_aged_background_cache(root);
+        }
         refresh_queue_head(&self.root, &self.class, Duration::from_secs(1)).await?;
         self.released = true;
         Ok(())
@@ -308,10 +344,16 @@ struct AcquirePlan {
     reserved: usize,
     usable_slots: usize,
     requested_weight: usize,
+    disk_pressure_constrained: bool,
+    protected_low_slots: usize,
 }
 
 impl AcquirePlan {
-    fn new(config: &SchedulerConfig, request: &AcquireRequest) -> Self {
+    fn new(
+        config: &SchedulerConfig,
+        request: &AcquireRequest,
+        disk_pressure_constrained: bool,
+    ) -> Self {
         let resource_class = request.resource_class;
         let pool = pool_for(request.kind, resource_class);
         let total = if pool == "watch" {
@@ -330,8 +372,26 @@ impl AcquirePlan {
         } else {
             total
         };
-        let usable_slots = if pool == "execution" && resource_class == ResourceClass::Heavy {
-            base_usable_slots.min(config.heavy_capacity).max(1)
+        let usable_slots = if pool == "execution" {
+            match resource_class {
+                ResourceClass::Heavy => {
+                    let capacity = if disk_pressure_constrained {
+                        config.heavy_capacity.min(request.weight.max(1))
+                    } else {
+                        config.heavy_capacity
+                    };
+                    base_usable_slots.min(capacity).max(1)
+                }
+                ResourceClass::IoHeavy => {
+                    let capacity = if disk_pressure_constrained {
+                        config.io_heavy_capacity.min(request.weight.max(1))
+                    } else {
+                        config.io_heavy_capacity
+                    };
+                    base_usable_slots.min(capacity).max(1)
+                }
+                ResourceClass::Watch | ResourceClass::Light => base_usable_slots,
+            }
         } else {
             base_usable_slots
         };
@@ -340,6 +400,17 @@ impl AcquirePlan {
         } else {
             request.weight.max(1).min(usable_slots)
         };
+        let protected_low_slots = if pool == "execution"
+            && disk_pressure_constrained
+            && resource_class == ResourceClass::Light
+        {
+            config
+                .heavy_weight
+                .max(config.io_heavy_weight)
+                .min(usable_slots.saturating_sub(1))
+        } else {
+            0
+        };
         Self {
             pool,
             resource_class,
@@ -347,12 +418,23 @@ impl AcquirePlan {
             reserved,
             usable_slots,
             requested_weight,
+            disk_pressure_constrained,
+            protected_low_slots,
         }
     }
 
     fn queue_class(&self, kind: ExecutionKind) -> String {
         if self.pool == "watch" {
             "watch".to_owned()
+        } else if kind == ExecutionKind::Interactive && self.disk_pressure_constrained {
+            match self.resource_class {
+                ResourceClass::Heavy | ResourceClass::IoHeavy => {
+                    "execution-interactive-weighted".to_owned()
+                }
+                ResourceClass::Watch | ResourceClass::Light => {
+                    "execution-interactive-light".to_owned()
+                }
+            }
         } else if kind == ExecutionKind::Interactive {
             "execution-interactive".to_owned()
         } else {
@@ -458,7 +540,8 @@ impl ExecutionScheduler {
             .queue_timeout
             .unwrap_or(self.config.queue_timeout)
             .max(Duration::from_millis(1));
-        let plan = AcquirePlan::new(&self.config, &request);
+        let disk_pressure_constrained = disk_pressure_constrained(&self.config.root).await;
+        let plan = AcquirePlan::new(&self.config, &request, disk_pressure_constrained);
         let mut ticket = match create_queue_ticket(
             &self.config.root,
             &plan.queue_class(request.kind),
@@ -564,6 +647,20 @@ impl ExecutionScheduler {
                 .await?;
                 continue;
             }
+            if request.kind == ExecutionKind::Interactive
+                && aged_background_waiter_exists(
+                    &self.config.root,
+                    self.config.background_priority_age,
+                )
+                .await?
+            {
+                cancellable_sleep(
+                    queue_poll_interval(elapsed).min(timeout.saturating_sub(elapsed)),
+                    cancellation,
+                )
+                .await?;
+                continue;
+            }
             if let Some(owned) = self
                 .claim_slots_once(request, plan, cancellation, started, timeout)
                 .await?
@@ -610,7 +707,7 @@ impl ExecutionScheduler {
         };
 
         let mut owned = Vec::with_capacity(plan.requested_weight);
-        let mut index = 0_usize;
+        let mut index = plan.protected_low_slots;
         while index < plan.usable_slots && owned.len() < plan.requested_weight {
             let path = slot_path(&self.config.root, &plan.pool, index);
             let token = unique_token();
@@ -724,6 +821,8 @@ impl ExecutionScheduler {
             max_concurrent: self.config.max_concurrent,
             reserved_interactive: self.config.reserved_interactive,
             heavy_capacity: self.config.heavy_capacity,
+            io_heavy_capacity: self.config.io_heavy_capacity,
+            background_priority_age_ms: duration_ms(self.config.background_priority_age),
             background_capacity: self
                 .config
                 .max_concurrent
@@ -842,6 +941,9 @@ async fn create_queue_ticket(
         "queueTimeoutMs": duration_ms(timeout),
     });
     write_queue_ticket_atomic(&path, &value).await?;
+    if class == "execution-background" {
+        invalidate_aged_background_cache(root);
+    }
     if let Err(error) = refresh_queue_head(&queue_root, class, timeout).await {
         remove_slot_file(&path).await.ok();
         return Err(error);
@@ -1037,13 +1139,109 @@ async fn queue_ticket_is_head(_root: &Path, ticket: &QueueTicket) -> Result<bool
             continue;
         }
         let owner = owner.expect("queue head owner checked above");
-        if queue_ticket_expired(&head_name, &prefix, &owner) || !owner_process_alive(&owner) {
+        if queue_ticket_should_reap(&head_name, &prefix, &owner) {
             remove_slot_file(&head_path).await.ok();
             refresh_queue_head(&ticket.root, &ticket.class, Duration::from_secs(1)).await?;
             continue;
         }
         return Ok(false);
     }
+}
+
+async fn aged_background_waiter_exists(root: &Path, threshold: Duration) -> Result<bool> {
+    let threshold_ms = duration_ms(threshold);
+    let key = (root.to_path_buf(), threshold_ms);
+    let cache = AGED_BACKGROUND_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    {
+        let values = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((sampled, result)) = values.get(&key)
+            && sampled.elapsed() < AGED_BACKGROUND_CACHE_TTL
+        {
+            return Ok(*result);
+        }
+    }
+    let result = aged_background_waiter_exists_uncached(root, threshold).await?;
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, (Instant::now(), result));
+    Ok(result)
+}
+
+async fn aged_background_waiter_exists_uncached(root: &Path, threshold: Duration) -> Result<bool> {
+    let queue_root = root.join("queue");
+    let mut reader = match fs::read_dir(&queue_root).await {
+        Ok(reader) => reader,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let prefix = "execution-background-";
+    let now_ms = unix_ms_now();
+    let threshold_ms = duration_ms(threshold);
+    while let Some(entry) = reader.next_entry().await? {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(prefix)
+            || !Path::new(&name)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        {
+            continue;
+        }
+        let Some(owner) = fs::read(entry.path())
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        else {
+            continue;
+        };
+        if queue_ticket_should_reap(&name, prefix, &owner) {
+            continue;
+        }
+        let queued_ms = owner
+            .get("queuedAtUnixMs")
+            .and_then(Value::as_u64)
+            .unwrap_or(now_ms);
+        if now_ms.saturating_sub(queued_ms) >= threshold_ms {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+async fn disk_pressure_constrained(root: &Path) -> bool {
+    let cache = DISK_PRESSURE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    {
+        let values = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((sampled, constrained)) = values.get(root)
+            && sampled.elapsed() < DISK_PRESSURE_CACHE_TTL
+        {
+            return *constrained;
+        }
+    }
+    let path = root.join(".disk-pressure.json");
+    let constrained = if let Ok(metadata) = fs::metadata(&path).await
+        && let Ok(modified) = metadata.modified()
+        && let Ok(age) = SystemTime::now().duration_since(modified)
+        && age <= DISK_PRESSURE_STATE_STALE
+        && let Ok(raw) = fs::read(&path).await
+        && let Ok(value) = serde_json::from_slice::<Value>(&raw)
+    {
+        matches!(
+            value.get("diskPressure").and_then(Value::as_str),
+            Some("warning" | "critical")
+        )
+    } else {
+        false
+    };
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(root.to_path_buf(), (Instant::now(), constrained));
+    constrained
 }
 
 fn queue_poll_interval(elapsed: Duration) -> Duration {
@@ -1058,8 +1256,16 @@ fn queue_poll_interval(elapsed: Duration) -> Duration {
     }
 }
 
-fn current_process_instance() -> Option<u64> {
-    crate::process_identity::current_process_instance()
+fn current_process_instance() -> Option<String> {
+    crate::process_identity::current_process_instance().map(|value| value.to_string())
+}
+
+fn owner_process_instance(owner: &Value) -> Option<u64> {
+    owner.get("processInstance").and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_str().and_then(|text| text.parse::<u64>().ok()))
+    })
 }
 
 fn owner_process_alive(owner: &Value) -> bool {
@@ -1070,8 +1276,22 @@ fn owner_process_alive(owner: &Value) -> bool {
     else {
         return false;
     };
-    let instance = owner.get("processInstance").and_then(Value::as_u64);
-    crate::process_identity::process_matches_instance(pid, instance)
+    crate::process_identity::process_matches_instance(pid, owner_process_instance(owner))
+}
+
+fn queue_ticket_should_reap(name: &str, prefix: &str, owner: &Value) -> bool {
+    let alive = owner_process_alive(owner);
+    if !alive {
+        return true;
+    }
+    // Modern identity-bearing tickets are governed by the waiter's monotonic
+    // deadline and explicit Drop cleanup. Never reap a verified live owner
+    // solely because the wall clock jumped forward. Legacy identity-less
+    // tickets retain the old timestamp expiry as a compatibility escape hatch.
+    let has_identity = owner
+        .get("processInstance")
+        .is_some_and(|value| !value.is_null());
+    !has_identity && queue_ticket_expired(name, prefix, owner)
 }
 
 fn queue_ticket_expired(name: &str, prefix: &str, owner: &Value) -> bool {
@@ -1128,30 +1348,36 @@ async fn read_queue_snapshot(root: &Path) -> Result<BTreeMap<String, usize>> {
     };
     while let Some(entry) = reader.next_entry().await? {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let class = if name.starts_with("execution-interactive-") {
-            Some("execution-interactive")
-        } else if name.starts_with("execution-background-") {
-            Some("execution-background")
-        } else if name.starts_with("watch-") {
-            Some("watch")
-        } else {
-            None
-        };
-        if let Some(class) = class {
-            let path = entry.path();
-            let prefix = format!("{class}-");
-            let owner = fs::read(&path)
-                .await
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
-            let valid = owner.as_ref().is_some_and(|owner| {
-                !queue_ticket_expired(&name, &prefix, owner) && owner_process_alive(owner)
+        if !Path::new(&name)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        {
+            continue;
+        }
+        let path = entry.path();
+        let owner = fs::read(&path)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        let class = owner
+            .as_ref()
+            .and_then(|owner| owner.get("class").and_then(Value::as_str))
+            .filter(|class| {
+                *class == "watch"
+                    || class.starts_with("execution-interactive")
+                    || class.starts_with("execution-background")
             });
-            if valid {
-                *result.entry(class.to_owned()).or_insert(0) += 1;
-            } else if owner.is_some() {
-                remove_slot_file(&path).await.ok();
-            }
+        let Some(class) = class else {
+            continue;
+        };
+        let prefix = format!("{class}-");
+        let valid = owner
+            .as_ref()
+            .is_some_and(|owner| !queue_ticket_should_reap(&name, &prefix, owner));
+        if valid {
+            *result.entry(class.to_owned()).or_insert(0) += 1;
+        } else if owner.is_some() {
+            remove_slot_file(&path).await.ok();
         }
     }
     Ok(result)
@@ -1535,6 +1761,9 @@ mod tests {
             queue_timeout: Duration::from_millis(250),
             heavy_capacity: 4,
             heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_secs(30),
         })
     }
 
@@ -1592,6 +1821,26 @@ mod tests {
         interactive.release().await.unwrap();
         two.release().await.unwrap();
         one.release().await.unwrap();
+    }
+
+    #[test]
+    fn live_identity_ticket_is_not_reaped_by_wall_clock_expiry() {
+        let prefix = "execution-background-";
+        let name = "execution-background-00000000000000000000000000000001-fixture.json";
+        let live = json!({
+            "pid": std::process::id(),
+            "processInstance": current_process_instance(),
+            "queuedAtUnixMs": 1,
+            "queueTimeoutMs": 1,
+        });
+        assert!(!queue_ticket_should_reap(name, prefix, &live));
+        let legacy = json!({
+            "pid": std::process::id(),
+            "processInstance": null,
+            "queuedAtUnixMs": 1,
+            "queueTimeoutMs": 1,
+        });
+        assert!(queue_ticket_should_reap(name, prefix, &legacy));
     }
 
     #[tokio::test]
@@ -1781,6 +2030,212 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn disk_pressure_light_request_bypasses_blocked_weighted_waiter_outside_corridor() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".disk-pressure.json"),
+            br#"{"diskPressure":"warning"}"#,
+        )
+        .await
+        .unwrap();
+        let scheduler = ExecutionScheduler::new(SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 4,
+            reserved_interactive: 1,
+            watch_max_concurrent: 1,
+            queue_timeout: Duration::from_secs(1),
+            heavy_capacity: 4,
+            heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_secs(30),
+        });
+        let cancellation = CancellationToken::new();
+        let mut first = scheduler
+            .acquire(
+                AcquireRequest::interactive_weighted("pressure-first", ResourceClass::Heavy, 2),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        let weighted_scheduler = scheduler.clone();
+        let weighted_cancel = cancellation.clone();
+        let weighted = tokio::spawn(async move {
+            weighted_scheduler
+                .acquire(
+                    AcquireRequest::interactive_weighted(
+                        "pressure-second",
+                        ResourceClass::Heavy,
+                        2,
+                    ),
+                    &weighted_cancel,
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        let mut light = tokio::time::timeout(
+            Duration::from_millis(400),
+            scheduler.acquire(AcquireRequest::interactive("pressure-light"), &cancellation),
+        )
+        .await
+        .expect("light request should bypass pressure-blocked weighted waiter")
+        .unwrap();
+        assert!(light.slot.is_some_and(|slot| slot >= 2));
+        assert!(!weighted.is_finished());
+        light.release().await.unwrap();
+        first.release().await.unwrap();
+        let mut weighted = tokio::time::timeout(Duration::from_secs(1), weighted)
+            .await
+            .expect("weighted waiter should resume")
+            .unwrap()
+            .unwrap();
+        assert_eq!(weighted.slots, vec![0, 1]);
+        weighted.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn warning_disk_pressure_serializes_heavy_claims() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".disk-pressure.json"),
+            br#"{"diskPressure":"warning"}"#,
+        )
+        .await
+        .unwrap();
+        let scheduler = ExecutionScheduler::new(SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 4,
+            reserved_interactive: 1,
+            watch_max_concurrent: 1,
+            queue_timeout: Duration::from_millis(150),
+            heavy_capacity: 4,
+            heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_secs(30),
+        });
+        let cancellation = CancellationToken::new();
+        let mut first = scheduler
+            .acquire(
+                AcquireRequest::interactive_weighted("pressure-first", ResourceClass::Heavy, 2),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.slots, vec![0, 1]);
+        let second = scheduler
+            .acquire(
+                AcquireRequest::interactive_weighted("pressure-second", ResourceClass::Heavy, 2),
+                &cancellation,
+            )
+            .await;
+        assert!(
+            second.is_err(),
+            "warning pressure should serialize heavy claims"
+        );
+        first.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn aged_background_waiter_temporarily_blocks_new_interactive_claims() {
+        let temp = tempfile::tempdir().unwrap();
+        let scheduler = ExecutionScheduler::new(SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 1,
+            reserved_interactive: 0,
+            watch_max_concurrent: 1,
+            queue_timeout: Duration::from_secs(2),
+            heavy_capacity: 1,
+            heavy_weight: 1,
+            io_heavy_capacity: 1,
+            io_heavy_weight: 1,
+            background_priority_age: Duration::from_millis(1),
+        });
+        let cancellation = CancellationToken::new();
+        let mut blocker = scheduler
+            .acquire(AcquireRequest::interactive("aging-blocker"), &cancellation)
+            .await
+            .unwrap();
+        let background_scheduler = scheduler.clone();
+        let background_cancel = cancellation.clone();
+        let background = tokio::spawn(async move {
+            background_scheduler
+                .acquire(
+                    AcquireRequest::background("aged-background", ResourceClass::Light, 1),
+                    &background_cancel,
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let interactive_scheduler = scheduler.clone();
+        let interactive_cancel = cancellation.clone();
+        let interactive = tokio::spawn(async move {
+            interactive_scheduler
+                .acquire(
+                    AcquireRequest::interactive("later-interactive"),
+                    &interactive_cancel,
+                )
+                .await
+        });
+        blocker.release().await.unwrap();
+        let mut background_lease = tokio::time::timeout(Duration::from_secs(1), background)
+            .await
+            .expect("aged background should acquire")
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(
+            !interactive.is_finished(),
+            "later interactive claim bypassed aged background waiter"
+        );
+        background_lease.release().await.unwrap();
+        let mut interactive_lease = tokio::time::timeout(Duration::from_secs(1), interactive)
+            .await
+            .expect("interactive should resume after aged background")
+            .unwrap()
+            .unwrap();
+        interactive_lease.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn io_heavy_capacity_serializes_storage_work_without_consuming_all_slots() {
+        let temp = tempfile::tempdir().unwrap();
+        let scheduler = ExecutionScheduler::new(SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 4,
+            reserved_interactive: 1,
+            watch_max_concurrent: 1,
+            queue_timeout: Duration::from_millis(500),
+            heavy_capacity: 4,
+            heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_secs(30),
+        });
+        let cancellation = CancellationToken::new();
+        let mut first = scheduler
+            .acquire(
+                AcquireRequest::interactive_weighted("io-first", ResourceClass::IoHeavy, 2),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.weight, 2);
+        assert_eq!(scheduler.snapshot().await.unwrap().io_heavy_capacity, 2);
+        let second = scheduler
+            .acquire(
+                AcquireRequest::interactive_weighted("io-second", ResourceClass::IoHeavy, 2),
+                &cancellation,
+            )
+            .await;
+        assert!(
+            second.is_err(),
+            "second io-heavy workload should be serialized by class capacity"
+        );
+        first.release().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn interactive_heavy_request_consumes_weighted_capacity() {
         let temp = tempfile::tempdir().unwrap();
         let scheduler = scheduler(temp.path(), 4, 1, 2);
@@ -1842,6 +2297,9 @@ mod tests {
             queue_timeout: Duration::from_secs(2),
             heavy_capacity: 4,
             heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_secs(30),
         });
         let mut blocker = scheduler
             .acquire(

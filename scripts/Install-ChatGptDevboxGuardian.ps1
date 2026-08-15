@@ -251,7 +251,22 @@ Write-JsonFile -Path $desiredStatePath -Value @{
     Source = 'Install-ChatGptDevboxGuardian.ps1'
 }
 
+function Resolve-DevboxNodeExecutable {
+    $configured = [string]$env:NODE_EXE
+    if (-not [string]::IsNullOrWhiteSpace($configured) -and (Test-Path -LiteralPath $configured -PathType Leaf)) {
+        return $configured
+    }
+    $programFiles = if ([string]::IsNullOrWhiteSpace($env:ProgramFiles)) { 'C:\Program Files' } else { $env:ProgramFiles }
+    $installed = Join-Path $programFiles 'nodejs\node.exe'
+    if (Test-Path -LiteralPath $installed -PathType Leaf) { return $installed }
+    $resolved = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($resolved) { return [string]$resolved.Source }
+    throw 'Node.js is required to run Guardian v2.'
+}
+
 $powerShellExe = Resolve-DevboxPowerShellExecutable
+$nodeExe = Resolve-DevboxNodeExecutable
+$guardianNodeScript = Join-Path $PSScriptRoot 'devbox-guardian.mjs'
 
 # Prove Guardian can start before replacing the existing scheduled-task safety net.
 # This also avoids a newly registered AtStartup/StartWhenAvailable task racing the
@@ -271,6 +286,12 @@ $ensureActionArgs = @(
     '-ProjectRoot', ('"{0}"' -f $projectRoot)
 ) -join ' '
 $action = New-ScheduledTaskAction -Execute $powerShellExe -Argument $ensureActionArgs
+$startupActionArgs = @(
+    ('"{0}"' -f $guardianNodeScript),
+    '--project-root', ('"{0}"' -f $projectRoot),
+    '--direct-owner'
+) -join ' '
+$startupAction = New-ScheduledTaskAction -Execute $nodeExe -Argument $startupActionArgs
 $startupTrigger = New-ScheduledTaskTrigger -AtStartup
 $logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
 $keepAliveTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(10) -RepetitionInterval (New-TimeSpan -Minutes 10)
@@ -283,12 +304,23 @@ $settingsSet = New-ScheduledTaskSettingsSet `
     -Priority 4 `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 1)
+$startupSettingsSet = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable `
+    -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -Priority 4 `
+    -RestartCount 3 `
+    -RestartInterval (New-TimeSpan -Minutes 1)
 $interactivePrincipal = New-ScheduledTaskPrincipal -UserId $userId -LogonType Interactive -RunLevel Highest
 $startupPrincipal = New-ScheduledTaskPrincipal -UserId $userId -LogonType S4U -RunLevel Highest
 
-# Startup and keepalive are non-interactive so Guardian recovery does not depend on a desktop login.
-# The ordinary logon trigger remains Interactive for session-sensitive host tooling.
-Register-ScheduledTask -TaskName $startupTaskName -Action $action -Trigger $startupTrigger -Settings $settingsSet -Principal $startupPrincipal -Force | Out-Null
+# Boot is latency-sensitive: run the Node Guardian directly instead of waiting for
+# a PowerShell Ensure/wrapper chain. Guardian owns its own cross-process lock and
+# remains the persistent task process. Logon and KeepAlive retain Ensure as the
+# independent recovery/source-refresh safety net.
+Register-ScheduledTask -TaskName $startupTaskName -Action $startupAction -Trigger $startupTrigger -Settings $startupSettingsSet -Principal $startupPrincipal -Force | Out-Null
 Register-ScheduledTask -TaskName $logonTaskName -Action $action -Trigger $logonTrigger -Settings $settingsSet -Principal $interactivePrincipal -Force | Out-Null
 Register-ScheduledTask -TaskName $keepAliveTaskName -Action $action -Trigger $keepAliveTrigger -Settings $settingsSet -Principal $startupPrincipal -Force | Out-Null
 

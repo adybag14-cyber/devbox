@@ -187,6 +187,7 @@ pub struct Config {
     pub mcp_performance_state_path: PathBuf,
     pub usage_log: UsageLogConfig,
     pub mcp_json_body_limit_bytes: usize,
+    pub oauth_max_clients: usize,
     pub exec_max_concurrent: usize,
     pub exec_reserved_interactive: usize,
     pub exec_queue_timeout_ms: u64,
@@ -194,6 +195,9 @@ pub struct Config {
     pub watch_max_concurrent: usize,
     pub exec_heavy_capacity: usize,
     pub exec_heavy_weight: usize,
+    pub exec_io_heavy_capacity: usize,
+    pub exec_io_heavy_weight: usize,
+    pub background_priority_age_ms: u64,
     pub job_log_max_bytes: u64,
     pub job_log_rotations: usize,
     pub job_heartbeat_ms: u64,
@@ -273,10 +277,7 @@ impl Config {
             .unwrap_or_else(|| format!("{devbox_container_name}-tmp"));
         let devbox_default_user = load_devbox_default_user(runtime_mode);
         let program = load_program_configuration(&platform, runtime_mode);
-        let execution_slot_root = env_path("MCP_EXEC_SLOT_ROOT")
-            .unwrap_or_else(|| project_root.join("run").join("execution-slots"));
-        let jobs_root =
-            env_path("MCP_JOBS_ROOT").unwrap_or_else(|| project_root.join("run").join("jobs"));
+        let (execution_slot_root, jobs_root) = load_execution_roots(&project_root);
         let screen_capture = load_screen_capture_configuration();
         Ok(Self {
             project_root: project_root.clone(),
@@ -316,6 +317,7 @@ impl Config {
             mcp_performance_state_path: load_performance_state_path(&project_root),
             usage_log: load_usage_log_configuration(),
             mcp_json_body_limit_bytes: parse_json_body_limit(),
+            oauth_max_clients: parse_env("MCP_OAUTH_MAX_CLIENTS", 256_usize).max(1),
             exec_max_concurrent: parse_env("MCP_EXEC_MAX_CONCURRENT", 6_usize),
             exec_reserved_interactive: parse_env("MCP_EXEC_RESERVED_INTERACTIVE", 1_usize),
             exec_queue_timeout_ms: parse_env("MCP_EXEC_QUEUE_TIMEOUT_MS", 15_000_u64),
@@ -323,6 +325,9 @@ impl Config {
             watch_max_concurrent: parse_env("MCP_WATCH_MAX_CONCURRENT", 4_usize),
             exec_heavy_capacity: parse_env("MCP_EXEC_HEAVY_CAPACITY", 4_usize),
             exec_heavy_weight: parse_env("MCP_EXEC_HEAVY_WEIGHT", 2_usize),
+            exec_io_heavy_capacity: parse_env("MCP_EXEC_IO_HEAVY_CAPACITY", 2_usize),
+            exec_io_heavy_weight: parse_env("MCP_EXEC_IO_HEAVY_WEIGHT", 2_usize),
+            background_priority_age_ms: parse_env("MCP_BACKGROUND_PRIORITY_AGE_MS", 30_000_u64),
             job_log_max_bytes: parse_env("MCP_JOB_LOG_MAX_BYTES", 32_u64 * 1024 * 1024),
             job_log_rotations: parse_env("MCP_JOB_LOG_ROTATIONS", 2_usize),
             job_heartbeat_ms: parse_env("MCP_JOB_HEARTBEAT_MS", 5_000_u64),
@@ -601,6 +606,14 @@ fn parse_csv_env(name: &str, fallback: Vec<String>) -> Vec<String> {
         }
     }
     values
+}
+
+fn load_execution_roots(project_root: &Path) -> (PathBuf, PathBuf) {
+    let run = project_root.join("run");
+    (
+        env_path("MCP_EXEC_SLOT_ROOT").unwrap_or_else(|| run.join("execution-slots")),
+        env_path("MCP_JOBS_ROOT").unwrap_or_else(|| run.join("jobs")),
+    )
 }
 
 fn load_performance_state_path(project_root: &Path) -> PathBuf {
@@ -913,6 +926,7 @@ pub(crate) fn test_config(root: &Path) -> Config {
             rotations: 3,
         },
         mcp_json_body_limit_bytes: 16 * 1024 * 1024,
+        oauth_max_clients: 256,
         exec_max_concurrent: 6,
         exec_reserved_interactive: 1,
         exec_queue_timeout_ms: 15_000,
@@ -920,6 +934,9 @@ pub(crate) fn test_config(root: &Path) -> Config {
         watch_max_concurrent: 4,
         exec_heavy_capacity: 4,
         exec_heavy_weight: 2,
+        exec_io_heavy_capacity: 2,
+        exec_io_heavy_weight: 2,
+        background_priority_age_ms: 30_000,
         job_log_max_bytes: 32 * 1024 * 1024,
         job_log_rotations: 2,
         job_heartbeat_ms: 5_000,

@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "macos", allow(unsafe_code))]
+
 #[cfg(target_os = "linux")]
 use sha2::{Digest, Sha256};
 #[cfg(target_os = "linux")]
@@ -43,17 +45,75 @@ fn linux_boot_id() -> Option<&'static str> {
 }
 
 #[cfg(target_os = "macos")]
+#[repr(C)]
+struct ProcBsdInfo {
+    pbi_flags: u32,
+    pbi_status: u32,
+    pbi_xstatus: u32,
+    pbi_pid: u32,
+    pbi_ppid: u32,
+    pbi_uid: u32,
+    pbi_gid: u32,
+    pbi_ruid: u32,
+    pbi_rgid: u32,
+    pbi_svuid: u32,
+    pbi_svgid: u32,
+    rfu_1: u32,
+    pbi_comm: [std::os::raw::c_char; 16],
+    pbi_name: [std::os::raw::c_char; 32],
+    pbi_nfiles: u32,
+    pbi_pgid: u32,
+    pbi_pjobc: u32,
+    e_tdev: u32,
+    e_tpgid: u32,
+    pbi_nice: i32,
+    pbi_start_tvsec: u64,
+    pbi_start_tvusec: u64,
+}
+
+#[cfg(target_os = "macos")]
+const _: [(); 136] = [(); std::mem::size_of::<ProcBsdInfo>()];
+
+#[cfg(target_os = "macos")]
+#[link(name = "proc")]
+unsafe extern "C" {
+    fn proc_pidinfo(
+        pid: std::os::raw::c_int,
+        flavor: std::os::raw::c_int,
+        arg: u64,
+        buffer: *mut std::ffi::c_void,
+        buffersize: std::os::raw::c_int,
+    ) -> std::os::raw::c_int;
+}
+
+#[cfg(target_os = "macos")]
 #[must_use]
-/// Return a macOS process start-time identity. `sysinfo` exposes whole-second
-/// precision here, so an extremely rare PID reuse inside the same second cannot
-/// be distinguished by this token alone; callers still require PID liveness.
+/// Return a macOS process identity from `proc_pidinfo(PROC_PIDTBSDINFO)`.
+/// The kernel supplies start time to microsecond precision, avoiding the
+/// whole-second PID-reuse ambiguity of the previous `sysinfo` fallback.
 pub fn process_instance(pid: u32) -> Option<u64> {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
-    let pid = Pid::from_u32(pid);
-    let mut system = System::new();
-    system.refresh_processes(ProcessesToUpdate::Some(&[pid]), false);
-    let start = system.process(pid)?.start_time();
-    (start > 0).then_some(start)
+    const PROC_PIDTBSDINFO: std::os::raw::c_int = 3;
+    let pid = std::os::raw::c_int::try_from(pid).ok()?;
+    let mut info = std::mem::MaybeUninit::<ProcBsdInfo>::zeroed();
+    let size = std::os::raw::c_int::try_from(std::mem::size_of::<ProcBsdInfo>()).ok()?;
+    let read = unsafe {
+        proc_pidinfo(
+            pid,
+            PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast::<std::ffi::c_void>(),
+            size,
+        )
+    };
+    if read < size {
+        return None;
+    }
+    let info = unsafe { info.assume_init() };
+    (info.pbi_start_tvsec > 0).then(|| {
+        info.pbi_start_tvsec
+            .saturating_mul(1_000_000)
+            .saturating_add(info.pbi_start_tvusec.min(999_999))
+    })
 }
 
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]

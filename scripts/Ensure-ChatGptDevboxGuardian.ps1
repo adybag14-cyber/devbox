@@ -31,6 +31,17 @@ if (-not $ensureMutexHeld) { exit 0 }
 $powerShellResolver = Join-Path $PSScriptRoot 'Resolve-DevboxPowerShell.ps1'
 . $powerShellResolver
 $powerShellExe = Resolve-DevboxPowerShellExecutable
+function Resolve-DevboxNodeExecutable {
+    $configured = [string]$env:NODE_EXE
+    if (-not [string]::IsNullOrWhiteSpace($configured) -and (Test-Path -LiteralPath $configured -PathType Leaf)) { return $configured }
+    $programFiles = if ([string]::IsNullOrWhiteSpace($env:ProgramFiles)) { 'C:\Program Files' } else { $env:ProgramFiles }
+    $installed = Join-Path $programFiles 'nodejs\node.exe'
+    if (Test-Path -LiteralPath $installed -PathType Leaf) { return $installed }
+    $resolved = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($resolved) { return [string]$resolved.Source }
+    throw 'Node.js is required to run Guardian v2.'
+}
+$nodeExe = Resolve-DevboxNodeExecutable
 $guardianScript = Join-Path $ProjectRoot 'scripts\Watch-ChatGptDevboxGuardian.ps1'
 $supervisorScript = Join-Path $ProjectRoot 'scripts\devbox-guardian.mjs'
 $guardianDir = Join-Path $ProjectRoot 'run\guardian'
@@ -100,7 +111,10 @@ function Get-LiveGuardianProcess {
 
     if ($candidatePid) {
         $process = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $candidatePid) -ErrorAction SilentlyContinue
-        if ($process -and ([string]$process.CommandLine) -match 'Watch-ChatGptDevboxGuardian\.ps1') {
+        $commandLine = [string]$process.CommandLine
+        $escapedGuardianPath = [regex]::Escape($guardianScript)
+        $escapedSupervisorPath = [regex]::Escape($supervisorScript)
+        if ($process -and ($commandLine -match $escapedGuardianPath -or $commandLine -match $escapedSupervisorPath)) {
             return $process
         }
     }
@@ -168,6 +182,10 @@ function Test-SecondStaleHeartbeatObservation {
         if (Test-Path -LiteralPath $staleObservationPath) {
             $previous = Get-Content -LiteralPath $staleObservationPath -Raw -ErrorAction Stop | ConvertFrom-Json
             $samePid = ([int]$previous.ProcessId -eq [int]$Process.ProcessId)
+            $currentCreationUtc = ([DateTime]$Process.CreationDate).ToUniversalTime().ToString('o')
+            $sameProcessInstance = $samePid -and
+                $previous.PSObject.Properties['CreationDateUtc'] -and
+                ([string]$previous.CreationDateUtc -eq $currentCreationUtc)
             $observed = if ($previous.ObservedAtUtc -is [DateTime]) {
                 $previous.ObservedAtUtc.ToUniversalTime()
             } else {
@@ -177,14 +195,21 @@ function Test-SecondStaleHeartbeatObservation {
                     [Globalization.DateTimeStyles]::RoundtripKind
                 ).ToUniversalTime()
             }
-            if ($samePid -and (($now - $observed).TotalSeconds -le 180)) {
+            # Keep the first corroborating observation across the 10-minute KeepAlive cadence,
+            # but only for the exact same process instance. A 30-minute ceiling prevents a
+            # forgotten observation from surviving indefinitely if task scheduling is disrupted.
+            if ($sameProcessInstance -and (($now - $observed).TotalMinutes -le 30)) {
                 return $true
             }
         }
     } catch {
     }
 
-    @{ ProcessId = [int]$Process.ProcessId; ObservedAtUtc = $now.ToString('o') } |
+    @{
+        ProcessId = [int]$Process.ProcessId
+        CreationDateUtc = ([DateTime]$Process.CreationDate).ToUniversalTime().ToString('o')
+        ObservedAtUtc = $now.ToString('o')
+    } |
         ConvertTo-Json -Compress |
         Set-Content -LiteralPath $staleObservationPath -Encoding UTF8
     return $false
@@ -281,31 +306,28 @@ if (-not (Test-Path $guardianScript)) {
 }
 
 $arguments = @(
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-ExecutionPolicy', 'Bypass',
-    '-WindowStyle', 'Hidden',
-    '-File', ('"{0}"' -f $guardianScript)
+    ('"{0}"' -f $supervisorScript),
+    '--project-root', ('"{0}"' -f $ProjectRoot),
+    '--direct-owner'
 )
 
-Write-EnsureLog -Message 'guardian not running; starting detached guardian process directly'
-$watcher = Start-Process -FilePath $powerShellExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru
+Write-EnsureLog -Message 'guardian not running; starting detached Node guardian directly'
+$launched = Start-Process -FilePath $nodeExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden -PassThru
 $started = $null
 $startDeadline = [DateTime]::UtcNow.AddSeconds(15)
 do {
     Start-Sleep -Milliseconds 250
     $started = Get-LiveGuardianProcess
-    if (-not $started -and $watcher.HasExited) {
-        Write-EnsureLog -Level 'ERROR' -Message ("guardian watcher exited during startup pid={0} exitCode={1}" -f $watcher.Id, $watcher.ExitCode)
+    if (-not $started -and $launched.HasExited) {
+        Write-EnsureLog -Level 'ERROR' -Message ("guardian process exited during startup pid={0} exitCode={1}" -f $launched.Id, $launched.ExitCode)
         exit 1
     }
 } while (-not $started -and [DateTime]::UtcNow -lt $startDeadline)
-$escapedWatcherPath = [regex]::Escape($guardianScript)
-if (-not $started -or ([string]$started.CommandLine) -notmatch $escapedWatcherPath) {
-    Write-EnsureLog -Level 'ERROR' -Message ("guardian watcher failed to start persistently launchedPid={0} launchedAlive={1}" -f $watcher.Id, (-not $watcher.HasExited))
+$escapedSupervisorPath = [regex]::Escape($supervisorScript)
+if (-not $started -or ([string]$started.CommandLine) -notmatch $escapedSupervisorPath) {
+    Write-EnsureLog -Level 'ERROR' -Message ("guardian failed to start persistently launchedPid={0} launchedAlive={1}" -f $launched.Id, (-not $launched.HasExited))
     exit 1
 }
 
-Write-EnsureLog -Message ("guardian watcher running pid={0}" -f $started.ProcessId)
+Write-EnsureLog -Message ("guardian running pid={0}" -f $started.ProcessId)
 exit 0

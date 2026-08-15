@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     background::BackgroundTaskRegistry, performance::PerformanceMonitor,
-    request_control::ActiveRequestRegistry,
+    request_control::ActiveRequestRegistry, usage::ActiveToolRegistry,
 };
 
 const INCIDENT_INTERVAL: Duration = Duration::from_secs(10);
@@ -18,21 +18,36 @@ const INCIDENT_COOLDOWN: Duration = Duration::from_secs(30);
 const INCIDENT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const INCIDENT_ROTATIONS: usize = 3;
 
+#[derive(Clone)]
+pub struct IncidentMonitorContext {
+    pub performance: Arc<PerformanceMonitor>,
+    pub execution_snapshot: Arc<RwLock<Value>>,
+    pub active_requests: Arc<ActiveRequestRegistry>,
+    pub active_tools: Arc<ActiveToolRegistry>,
+    pub background: Arc<BackgroundTaskRegistry>,
+    pub execution_store: Arc<RwLock<Value>>,
+}
+
 pub fn spawn_incident_monitor(
     project_root: PathBuf,
-    performance: Arc<PerformanceMonitor>,
-    execution_snapshot: Arc<RwLock<Value>>,
-    active_requests: Arc<ActiveRequestRegistry>,
-    background: Arc<BackgroundTaskRegistry>,
-    execution_store: Arc<RwLock<Value>>,
+    context: IncidentMonitorContext,
     cancellation: CancellationToken,
 ) {
+    let IncidentMonitorContext {
+        performance,
+        execution_snapshot,
+        active_requests,
+        active_tools,
+        background,
+        execution_store,
+    } = context;
     let registry = background.clone();
     registry.spawn_supervised("incident-monitor", cancellation, move |cancellation, heartbeat| {
         let path = project_root.join("run").join("mcp-incidents.jsonl");
         let performance = performance.clone();
         let execution_snapshot = execution_snapshot.clone();
         let active_requests = active_requests.clone();
+        let active_tools = active_tools.clone();
         let background = background.clone();
         let execution_store = execution_store.clone();
         async move {
@@ -66,6 +81,7 @@ pub fn spawn_incident_monitor(
                                     "error": execution_cache.get("error"),
                                 },
                                 "activeRequests": active_requests.active_count(),
+                                "activeTools": active_tools.snapshot(),
                                 "backgroundTasks": background.snapshot(),
                                 "executionStore": execution_store.read().await.clone(),
                             });

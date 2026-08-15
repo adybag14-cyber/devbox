@@ -240,7 +240,7 @@ fn apply_common_constraints(tool_name: &str, properties: &mut Map<String, Value>
     set_enum(
         properties,
         "resource_class",
-        &["auto", "watch", "light", "heavy"],
+        &["auto", "watch", "light", "heavy", "io-heavy"],
     );
     set_integer_bounds(
         properties,

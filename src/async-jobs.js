@@ -14,7 +14,7 @@ const jobsRoot = process.env.MCP_JOBS_ROOT?.trim()
 const runnerPath = path.join(projectRoot, "scripts", "devbox-job-runner.mjs");
 const JOB_ID_RE = /^[a-z0-9][a-z0-9-]{7,80}$/iu;
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "interrupted"]);
-const RESOURCE_CLASSES = new Set(["auto", "watch", "light", "heavy"]);
+const RESOURCE_CLASSES = new Set(["auto", "watch", "light", "heavy", "io-heavy"]);
 
 const assertJobId = (jobId) => {
   const value = String(jobId ?? "").trim();
@@ -171,20 +171,44 @@ const normalizedProgramName = (program) => path.basename(String(program ?? "").r
   .toLowerCase()
   .replace(/\.(?:exe|cmd|bat|ps1)$/u, "");
 
+const shellHasRipgrepSearch = (command) => {
+  const tokens = String(command ?? "").match(/"[^"\r\n]*"|'[^'\r\n]*'|[^\s]+/gu) ?? [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index].replace(/^["']|["']$/gu, "");
+    if (normalizedProgramName(token) !== "rg") continue;
+    const next = tokens[index + 1]?.replace(/^["']|["']$/gu, "");
+    if (!next || next === "--version" || next === "-V") continue;
+    return true;
+  }
+  return false;
+};
+
 const inferShellResourceClass = (command) => {
-  const text = String(command ?? "").toLowerCase();
+  const rawText = String(command ?? "");
+  const text = rawText.toLowerCase();
   if (/playwright|selenium|gradlew?|mvnw?|ninja|cmake\s+--build|cargo\s+(?:build|test|bench|clippy)|rustc\s|zig\s+build|go\s+(?:build|test)|docker\s+(?:build|buildx\s+build)|pytest|npm\s+(?:(?:run\s+)?(?:build|test))|pnpm\s+(?:(?:run\s+)?(?:build|test))|yarn\s+(?:build|test)|bun\s+(?:build|test)|pip\s+wheel|python\s+-m\s+build|bazel|msbuild|dotnet\s+(?:build|test|publish)|(?:^|[;&|]\s*)make(?:\s|$)/u.test(text)) return "heavy";
+  if (shellHasRipgrepSearch(rawText) || /(?:^|[\s;&|])find(?:\.exe)?\s|\bgrep\s+(?:(?:-[^\s]*[rR][^\s]*\s)|--recursive\b)|\bget-childitem\b[^\r\n;&|]*\s-recurse\b|(?:^|[\s;&|])du(?:\.exe)?(?:\s|$)|\b(?:robocopy|xcopy|rsync)\b|\bcp\s+-[^\s]*(?:r|R|a|A)[^\s]*\s|\brm\s+-[^\s]*(?:r|R)[^\s]*\s|\bremove-item\b[^\r\n;&|]*\s-recurse\b|\b(?:tar|7z|7zz)\s|\bzip\s+-[^\s]*r|\bgit\s+(?:clone|fetch|gc|repack)\b|\b(?:npm|pnpm|yarn|bun)\s+(?:ci|install|add)\b|\b(?:pip|pip3)\s+install\b|\b(?:python|python3|py)\s+-m\s+pip\s+install\b|\b(?:apt|apt-get|dnf|yum|pacman|apk|winget|choco|scoop)\s+(?:install|add|upgrade|update)\b/u.test(text)) return "io-heavy";
   if (/\bgh\s+run\s+watch\b|\bstart-sleep\b|\bsleep\s+\d+/u.test(text)) return "watch";
   return "light";
 };
 
 const inferProgramResourceClass = (program, rawArgs) => {
   const exe = normalizedProgramName(program);
-  const args = Array.isArray(rawArgs) ? rawArgs.map((value) => String(value).trim().toLowerCase()) : [];
+  const raw = Array.isArray(rawArgs) ? rawArgs.map((value) => String(value).trim()) : [];
+  const args = raw.map((value) => value.toLowerCase());
+  const rawFirst = raw[0] ?? "";
   const first = args[0] ?? "";
   const second = args[1] ?? "";
   if (exe === "gh" && first === "run" && second === "watch") return "watch";
   if (["sleep", "start-sleep"].includes(exe)) return "watch";
+  if (["wsl", "wsl.exe"].includes(exe)) return inferShellResourceClass(raw.join(" "));
+  if (["find", "du", "robocopy", "xcopy", "rsync", "tar", "7z", "7zz", "zip", "unzip"].includes(exe)) return "io-heavy";
+  if (exe === "rg" && args.length > 0 && first !== "--version" && rawFirst !== "-V") return "io-heavy";
+  if (exe === "git" && ["clone", "fetch", "gc", "repack"].includes(first)) return "io-heavy";
+  if (["npm", "pnpm", "yarn", "bun"].includes(exe) && ["ci", "install", "add"].includes(first)) return "io-heavy";
+  if (["apt", "apt-get", "dnf", "yum", "pacman", "apk", "winget", "choco", "scoop"].includes(exe) && ["install", "add", "upgrade", "update", "-s"].includes(first)) return "io-heavy";
+  if (["pip", "pip3"].includes(exe) && first === "install") return "io-heavy";
+  if (["python", "python3", "py"].includes(exe) && first === "-m" && second === "pip" && args[2] === "install") return "io-heavy";
   if (["pwsh", "powershell"].includes(exe)) {
     const at = args.findIndex((arg) => arg === "-command" || arg === "-c");
     if (at >= 0 && args[at + 1]) return inferShellResourceClass(args[at + 1]);
@@ -378,7 +402,11 @@ const shallowDirectoryBytes = async (dir) => {
   return total;
 };
 
+let maintenanceCycle = 0;
+
 export const reconcileOrphanedDevboxJobs = async () => {
+  const maintenanceStartedAt = Date.now();
+  maintenanceCycle += 1;
   await mkdir(jobsRoot, { recursive: true });
   const names = await readdir(jobsRoot).catch(() => []);
   const summary = {
@@ -390,6 +418,14 @@ export const reconcileOrphanedDevboxJobs = async () => {
     compactedLogs: 0,
     deleted: 0,
     errors: 0,
+    // The JS rollback performs one complete maintenance pass per invocation.
+    // Progress fields therefore describe that single pass and are 100% at return.
+    cycleCompleted: true,
+    maintenanceCycle,
+    maintenanceCursor: 0,
+    maintenanceTotal: 0,
+    maintenanceProgressPercent: 0,
+    maintenanceCycleAgeMs: 0,
     storeBytes: 0,
     terminalRetained: 0,
     quotaDeleted: 0,
@@ -479,6 +515,10 @@ export const reconcileOrphanedDevboxJobs = async () => {
       summary.quotaDeleted += 1;
     }
   }
+  summary.maintenanceCursor = summary.scanned;
+  summary.maintenanceTotal = summary.scanned;
+  summary.maintenanceProgressPercent = 100;
+  summary.maintenanceCycleAgeMs = Math.max(0, Date.now() - maintenanceStartedAt);
   return summary;
 };
 

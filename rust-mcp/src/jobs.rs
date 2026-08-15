@@ -80,6 +80,16 @@ pub struct ReconcileSummary {
     pub errors: u64,
     #[serde(rename = "cycleCompleted")]
     pub cycle_completed: bool,
+    #[serde(rename = "maintenanceCycle")]
+    pub maintenance_cycle: u64,
+    #[serde(rename = "maintenanceCursor")]
+    pub maintenance_cursor: u64,
+    #[serde(rename = "maintenanceTotal")]
+    pub maintenance_total: u64,
+    #[serde(rename = "maintenanceProgressPercent")]
+    pub maintenance_progress_percent: u64,
+    #[serde(rename = "maintenanceCycleAgeMs")]
+    pub maintenance_cycle_age_ms: u64,
     #[serde(rename = "storeBytes")]
     pub store_bytes: u64,
     #[serde(rename = "terminalRetained")]
@@ -145,8 +155,20 @@ pub struct LegacyCompaction {
 struct MaintenanceIndex {
     ids: Vec<String>,
     cursor: usize,
+    cycle: u64,
+    cycle_started_at: Option<SystemTime>,
     initialized: bool,
     refreshed_at: Option<SystemTime>,
+}
+
+#[derive(Debug)]
+struct MaintenanceSlice {
+    discovered: usize,
+    ids: Vec<String>,
+    completed: bool,
+    cycle: u64,
+    cursor: usize,
+    cycle_age_ms: u64,
 }
 
 #[derive(Debug, Default)]
@@ -448,15 +470,25 @@ impl JobStore {
         if self.maintenance_index_needs_refresh() {
             self.refresh_maintenance_index().await?;
         }
-        let (discovered, ids, cycle_completed) = self.next_maintenance_slice(max_jobs);
+        let slice = self.next_maintenance_slice(max_jobs);
+        let progress = if slice.discovered == 0 {
+            100
+        } else {
+            u64::try_from(slice.cursor.saturating_mul(100) / slice.discovered).unwrap_or(100)
+        };
         let mut summary = ReconcileSummary {
-            discovered: u64::try_from(discovered).unwrap_or(u64::MAX),
-            scanned: u64::try_from(ids.len()).unwrap_or(u64::MAX),
-            batch_limited: !cycle_completed,
-            cycle_completed,
+            discovered: u64::try_from(slice.discovered).unwrap_or(u64::MAX),
+            scanned: u64::try_from(slice.ids.len()).unwrap_or(u64::MAX),
+            batch_limited: !slice.completed,
+            cycle_completed: slice.completed,
+            maintenance_cycle: slice.cycle,
+            maintenance_cursor: u64::try_from(slice.cursor).unwrap_or(u64::MAX),
+            maintenance_total: u64::try_from(slice.discovered).unwrap_or(u64::MAX),
+            maintenance_progress_percent: progress.min(100),
+            maintenance_cycle_age_ms: slice.cycle_age_ms,
             ..ReconcileSummary::default()
         };
-        for id in &ids {
+        for id in &slice.ids {
             if self
                 .reconcile_one_for_maintenance(id, &mut summary)
                 .await
@@ -554,19 +586,41 @@ impl JobStore {
             .unwrap_or_else(PoisonError::into_inner);
         index.ids = ids;
         index.cursor = 0;
+        index.cycle_started_at = None;
         index.initialized = true;
         index.refreshed_at = Some(SystemTime::now());
         Ok(())
     }
 
-    fn next_maintenance_slice(&self, max_jobs: usize) -> (usize, Vec<String>, bool) {
+    fn next_maintenance_slice(&self, max_jobs: usize) -> MaintenanceSlice {
         let mut index = self
             .maintenance_index
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         let discovered = index.ids.len();
+        if index.cycle_started_at.is_none() {
+            index.cycle = index.cycle.saturating_add(1);
+            index.cycle_started_at = Some(SystemTime::now());
+        }
+        let cycle = index.cycle;
+        let cycle_age_ms = index
+            .cycle_started_at
+            .and_then(|started| started.elapsed().ok())
+            .map_or(0, duration_ms);
         if discovered == 0 || max_jobs == 0 {
-            return (discovered, Vec::new(), discovered == 0);
+            let completed = discovered == 0;
+            if completed {
+                index.cursor = 0;
+                index.cycle_started_at = None;
+            }
+            return MaintenanceSlice {
+                discovered,
+                ids: Vec::new(),
+                completed,
+                cycle,
+                cursor: if completed { discovered } else { index.cursor },
+                cycle_age_ms,
+            };
         }
         if index.cursor >= discovered {
             index.cursor = 0;
@@ -577,8 +631,20 @@ impl JobStore {
             .min(discovered);
         let ids = index.ids[start..end].to_vec();
         let completed = end >= discovered;
-        index.cursor = if completed { 0 } else { end };
-        (discovered, ids, completed)
+        if completed {
+            index.cursor = 0;
+            index.cycle_started_at = None;
+        } else {
+            index.cursor = end;
+        }
+        MaintenanceSlice {
+            discovered,
+            ids,
+            completed,
+            cycle,
+            cursor: end,
+            cycle_age_ms,
+        }
     }
 
     fn note_job_created(&self, job_id: &str) {
@@ -594,7 +660,12 @@ impl JobStore {
             .binary_search_by(|value| value.as_str().cmp(job_id))
         {
             Ok(_) => {}
-            Err(at) => index.ids.insert(at, job_id.to_owned()),
+            Err(at) => {
+                index.ids.insert(at, job_id.to_owned());
+                if at < index.cursor {
+                    index.cursor = index.cursor.saturating_add(1);
+                }
+            }
         }
         drop(index);
         let mut quota = self
@@ -644,8 +715,17 @@ impl JobStore {
             .maintenance_index
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
+        let removed_before_cursor = index
+            .ids
+            .iter()
+            .take(index.cursor)
+            .filter(|id| deleted.contains(*id))
+            .count();
         index.ids.retain(|id| !deleted.contains(id));
-        index.cursor = index.cursor.min(index.ids.len());
+        index.cursor = index
+            .cursor
+            .saturating_sub(removed_before_cursor)
+            .min(index.ids.len());
         drop(index);
         self.quota_index
             .lock()
@@ -1713,7 +1793,61 @@ mod tests {
         assert_eq!(second.scanned, 2);
         assert_eq!(third.scanned, 1);
         assert!(first.batch_limited);
+        assert_eq!(first.maintenance_cursor, 2);
+        assert_eq!(first.maintenance_total, 5);
+        assert_eq!(first.maintenance_progress_percent, 40);
+        assert_eq!(second.maintenance_cursor, 4);
+        assert_eq!(second.maintenance_progress_percent, 80);
+        assert_eq!(third.maintenance_cursor, 5);
+        assert_eq!(third.maintenance_progress_percent, 100);
+        assert_eq!(first.maintenance_cycle, second.maintenance_cycle);
+        assert_eq!(second.maintenance_cycle, third.maintenance_cycle);
         assert!(!third.batch_limited);
+    }
+
+    #[tokio::test]
+    async fn maintenance_cursor_survives_index_insertions_and_bulk_deletions_before_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path());
+        for id in ["job-cursorb", "job-cursorc", "job-cursord"] {
+            write_status(
+                &store,
+                id,
+                json!({
+                    "id": id,
+                    "status": "succeeded",
+                    "createdAtUtc": utc_now(),
+                    "completedAtUtc": utc_now(),
+                }),
+            )
+            .await;
+        }
+        let first = store.reconcile_maintenance_batch(2).await.unwrap();
+        assert_eq!(first.maintenance_cursor, 2);
+        store.note_job_created("job-cursora");
+        {
+            let index = store
+                .maintenance_index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            assert_eq!(
+                index.cursor, 3,
+                "insertion before cursor must preserve logical position"
+            );
+        }
+        let deleted =
+            std::collections::HashSet::from(["job-cursora".to_owned(), "job-cursorb".to_owned()]);
+        store.note_jobs_deleted(&deleted);
+        {
+            let index = store
+                .maintenance_index
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            assert_eq!(
+                index.cursor, 1,
+                "bulk deletion before cursor must preserve logical position"
+            );
+        }
     }
 
     #[tokio::test]

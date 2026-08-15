@@ -102,7 +102,12 @@ try {
         if ([string]$guardianTask.Principal.RunLevel -ne 'Highest') { throw 'Guardian CI task is not Highest run level.' }
         if ($guardianTask.Settings.RestartCount -lt 3) { throw 'Guardian CI task restart policy is missing.' }
         if ([string]$guardianTask.Actions[0].Execute -match 'wscript\.exe$') { throw 'Guardian supervision task still uses the VBS/wscript hop.' }
-        if ([string]$guardianTask.Actions[0].Execute -notmatch 'pwsh\.exe$|powershell\.exe$') { throw 'Guardian supervision task is not invoking PowerShell directly.' }
+    }
+    if ([string]$startupTask.Actions[0].Execute -notmatch 'node\.exe$') { throw 'Guardian AtStartup task must launch Node directly on the boot-critical path.' }
+    if ([string]$startupTask.Actions[0].Arguments -notmatch 'devbox-guardian\.mjs') { throw 'Guardian AtStartup task is not launching the Guardian supervisor directly.' }
+    if ([string]$startupTask.Actions[0].Arguments -notmatch '--direct-owner') { throw 'Guardian AtStartup task is not forcing direct process ownership.' }
+    foreach ($guardianTask in @($logonTask, $keepAliveTask)) {
+        if ([string]$guardianTask.Actions[0].Execute -notmatch 'pwsh\.exe$|powershell\.exe$') { throw 'Guardian recovery task is not invoking PowerShell Ensure directly.' }
     }
     if ([string]$keepAliveTask.Triggers[0].Repetition.Interval -ne 'PT10M') { throw 'Guardian keepalive task is not repeating on the 10-minute recovery cadence.' }
 
@@ -110,18 +115,18 @@ try {
     $heartbeatPath = Join-Path $root 'run\guardian\heartbeat.json'
     $guardianPid = [int](Get-Content $guardianPidPath -ErrorAction Stop | Select-Object -First 1)
     $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
-    if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'Watch-ChatGptDevboxGuardian\.ps1') {
-        throw 'Guardian installer did not leave a persistent Watch-ChatGptDevboxGuardian process running.'
+    if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'devbox-guardian\.mjs') {
+        throw 'Guardian installer did not leave the persistent direct Node Guardian running.'
     }
     $firstHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
     Start-Sleep -Seconds 12
     $secondHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
     $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
-    if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'Watch-ChatGptDevboxGuardian\.ps1') {
-        throw 'Guardian wrapper did not remain running.'
+    if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'devbox-guardian\.mjs') {
+        throw 'Direct Node Guardian did not remain running.'
     }
     if (-not $secondHeartbeat.PSObject.Properties['GuardianPid'] -or [int]$secondHeartbeat.GuardianPid -ne $guardianPid) {
-        throw 'Heartbeat is not associated with the persistent Guardian wrapper.'
+        throw 'Heartbeat is not associated with the persistent Guardian process.'
     }
     if ([DateTime]$secondHeartbeat.ObservedAtUtc -le [DateTime]$firstHeartbeat.ObservedAtUtc) {
         throw 'Guardian heartbeat did not advance after installation.'

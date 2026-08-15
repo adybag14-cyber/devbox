@@ -240,6 +240,7 @@ pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass 
     if let Some(explicit) = explicit_resource_class(requested) {
         return explicit;
     }
+    let raw_text = text;
     let text = text.to_ascii_lowercase();
     let heavy_markers = [
         "playwright",
@@ -289,6 +290,9 @@ pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass 
     {
         return ResourceClass::Heavy;
     }
+    if shell_is_io_heavy(raw_text) {
+        return ResourceClass::IoHeavy;
+    }
     if text.contains("gh run watch")
         || text.contains("start-sleep")
         || contains_numeric_sleep(&text)
@@ -296,6 +300,113 @@ pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass 
         return ResourceClass::Watch;
     }
     ResourceClass::Light
+}
+
+fn shell_has_ripgrep_search(text: &str) -> bool {
+    let tokens = text.split_whitespace().collect::<Vec<_>>();
+    for (index, token) in tokens.iter().enumerate() {
+        let token =
+            token.trim_matches(|character| character == '"' || character == char::from(39_u8));
+        if normalized_program_name(token) != "rg" {
+            continue;
+        }
+        let Some(next) = tokens.get(index + 1) else {
+            continue;
+        };
+        let next =
+            next.trim_matches(|character| character == '"' || character == char::from(39_u8));
+        if next == "--version" || next == "-V" {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+fn shell_is_io_heavy(text: &str) -> bool {
+    if shell_has_ripgrep_search(text) {
+        return true;
+    }
+    let text = text.to_ascii_lowercase();
+    let padded = format!(" {text} ");
+    [
+        " find ",
+        " find.exe ",
+        " grep -r",
+        " grep --recursive",
+        " get-childitem ",
+        " -recurse",
+        " du ",
+        " robocopy ",
+        " xcopy ",
+        " rsync ",
+        " cp -r",
+        " cp -a",
+        " rm -r",
+        " remove-item ",
+        " tar ",
+        " 7z ",
+        " 7zz ",
+        " zip -r",
+        " git clone ",
+        " git fetch ",
+        " git gc",
+        " git repack",
+        " npm ci",
+        " npm install",
+        " npm add",
+        " pnpm ci",
+        " pnpm install",
+        " pnpm add",
+        " yarn ci",
+        " yarn install",
+        " yarn add",
+        " bun ci",
+        " bun install",
+        " bun add",
+        " pip install",
+        " pip3 install",
+        " -m pip install",
+        " apt install",
+        " apt add",
+        " apt upgrade",
+        " apt update",
+        " apt-get install",
+        " apt-get add",
+        " apt-get upgrade",
+        " apt-get update",
+        " dnf install",
+        " dnf add",
+        " dnf upgrade",
+        " dnf update",
+        " yum install",
+        " yum add",
+        " yum upgrade",
+        " yum update",
+        " pacman -s",
+        " pacman install",
+        " pacman add",
+        " pacman upgrade",
+        " pacman update",
+        " apk install",
+        " apk add",
+        " apk upgrade",
+        " apk update",
+        " winget install",
+        " winget add",
+        " winget upgrade",
+        " winget update",
+        " choco install",
+        " choco add",
+        " choco upgrade",
+        " choco update",
+        " scoop install",
+        " scoop add",
+        " scoop upgrade",
+        " scoop update",
+    ]
+    .iter()
+    .any(|marker| padded.contains(marker))
 }
 
 #[must_use]
@@ -308,10 +419,12 @@ pub fn infer_program_resource_class(
         return explicit;
     }
     let program = normalized_program_name(program);
-    let args = args
+    let raw_args = args.iter().map(|arg| arg.trim()).collect::<Vec<_>>();
+    let args = raw_args
         .iter()
-        .map(|arg| arg.trim().to_ascii_lowercase())
+        .map(|arg| arg.to_ascii_lowercase())
         .collect::<Vec<_>>();
+    let raw_first = raw_args.first().copied().unwrap_or_default();
     let first = args.first().map(String::as_str).unwrap_or_default();
     let second = args.get(1).map(String::as_str).unwrap_or_default();
 
@@ -320,6 +433,28 @@ pub fn infer_program_resource_class(
     }
     if matches!(program.as_str(), "sleep" | "start-sleep") {
         return ResourceClass::Watch;
+    }
+    if program == "wsl" {
+        return infer_shell_resource_class(&raw_args.join(" "), requested);
+    }
+    if matches!(
+        program.as_str(),
+        "find" | "du" | "robocopy" | "xcopy" | "rsync" | "tar" | "7z" | "7zz" | "zip" | "unzip"
+    ) || (program == "rg" && !args.is_empty() && first != "--version" && raw_first != "-V")
+        || (program == "git" && matches!(first, "clone" | "fetch" | "gc" | "repack"))
+        || (matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun")
+            && matches!(first, "ci" | "install" | "add"))
+        || (matches!(
+            program.as_str(),
+            "apt" | "apt-get" | "dnf" | "yum" | "pacman" | "apk" | "winget" | "choco" | "scoop"
+        ) && matches!(first, "install" | "add" | "upgrade" | "update" | "-s"))
+        || (matches!(program.as_str(), "pip" | "pip3") && first == "install")
+        || (matches!(program.as_str(), "python" | "python3" | "py")
+            && first == "-m"
+            && second == "pip"
+            && args.get(2).is_some_and(|arg| arg == "install"))
+    {
+        return ResourceClass::IoHeavy;
     }
     if matches!(program.as_str(), "pwsh" | "powershell")
         && let Some(command_at) = args
@@ -376,6 +511,7 @@ fn explicit_resource_class(requested: &str) -> Option<ResourceClass> {
         "watch" => Some(ResourceClass::Watch),
         "light" => Some(ResourceClass::Light),
         "heavy" => Some(ResourceClass::Heavy),
+        "io-heavy" | "io_heavy" | "ioheavy" => Some(ResourceClass::IoHeavy),
         _ => None,
     }
 }
@@ -504,6 +640,76 @@ mod tests {
         assert_eq!(
             infer_resource_class("sleep 20", "auto"),
             ResourceClass::Watch
+        );
+        assert_eq!(
+            infer_resource_class("find /home/user -type f -print", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("Get-ChildItem C:\\src -Recurse -File", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("npm add zod", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("apt-get upgrade -y", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("rg needle /home/user", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("rg -v needle /home/user", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(infer_resource_class("rg -V", "auto"), ResourceClass::Light);
+        assert_eq!(
+            infer_resource_class("rg --version", "auto"),
+            ResourceClass::Light
+        );
+        assert_eq!(
+            infer_program_resource_class(
+                "rg",
+                &["needle".to_owned(), "/home/user".to_owned()],
+                "auto"
+            ),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_program_resource_class("rg", &["-v".to_owned(), "needle".to_owned()], "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_program_resource_class("rg", &["-V".to_owned()], "auto"),
+            ResourceClass::Light
+        );
+        assert_eq!(
+            infer_program_resource_class(
+                "wsl",
+                &[
+                    "-d".to_owned(),
+                    "Ubuntu".to_owned(),
+                    "--".to_owned(),
+                    "find".to_owned(),
+                    "/home".to_owned()
+                ],
+                "auto"
+            ),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_program_resource_class(
+                "git",
+                &[
+                    "clone".to_owned(),
+                    "https://example.invalid/repo".to_owned()
+                ],
+                "auto"
+            ),
+            ResourceClass::IoHeavy
         );
         assert_eq!(
             infer_resource_class("git status", "auto"),
