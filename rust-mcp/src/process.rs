@@ -318,8 +318,13 @@ pub async fn spawn_process(
     drop_guard.disarm();
 
     let drain = status.map(|_| POST_EXIT_PIPE_DRAIN);
-    let stdout = join_capture(spawned.stdout_task, drain).await;
-    let stderr = join_capture(spawned.stderr_task, drain).await;
+    // Descendants can inherit both stdout and stderr handles after the direct
+    // child exits. Drain the two streams concurrently so the bounded post-exit
+    // grace is paid once, not once per inherited pipe.
+    let (stdout, stderr) = tokio::join!(
+        join_capture(spawned.stdout_task, drain),
+        join_capture(spawned.stderr_task, drain),
+    );
     classify_process_result(
         file,
         args,
