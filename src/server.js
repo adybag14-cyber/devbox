@@ -62,6 +62,8 @@ import { shapeProcessOutput } from "./output-shaping.js";
 import { abortableSleep, waitForPathCondition } from "./wait-utils.js";
 import { getExecutionSlotSnapshot, probeExecutionSlotStoreWritable, withExecutionSlot } from "./execution-slots.js";
 import { refreshExecutionStoreHealth as probeExecutionStoreHealth } from "./execution-store-health.js";
+import { MCP_OAUTH_SCOPES, missingRequiredToolScope } from "./tool-authorization.js";
+import { shouldRejectDiskPressure } from "./disk-pressure-policy.js";
 import {
   cancelDevboxJob,
   getDevboxJobLogs,
@@ -76,6 +78,10 @@ import {
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runDir = path.join(projectRoot, "run");
 const jobsRoot = path.join(runDir, "jobs");
+const executionSlotRoot = process.env.MCP_EXEC_SLOT_ROOT?.trim()
+  ? path.resolve(process.env.MCP_EXEC_SLOT_ROOT.trim())
+  : path.join(runDir, "execution-slots");
+const executionPressureStatePath = path.join(executionSlotRoot, ".disk-pressure.json");
 const jobsRootReady = mkdir(jobsRoot, { recursive: true });
 const guardianDesiredStatePath = path.join(runDir, "guardian.desired-state.json");
 const toolUsageLogPath = path.join(runDir, "tool-usage.jsonl");
@@ -92,6 +98,7 @@ const EXECUTION_STORE_MIN_FREE_BYTES = 512 * 1024 * 1024;
 const EXECUTION_STORE_WARN_FREE_BYTES = 50 * 1024 * 1024 * 1024;
 const EXECUTION_STORE_WARN_FREE_PERCENT = 5;
 let executionStoreHealth = { ok: false, sampledAtUtc: null, sampledAtMs: 0, error: "execution-store probe has not completed yet" };
+const diskTrendSamples = [];
 
 const probeWritablePath = async (root, label) => {
   await mkdir(root, { recursive: true });
@@ -112,8 +119,54 @@ const probeWritablePath = async (root, label) => {
 };
 
 
+const updateDiskTrend = (freeBytes, sampledAtMs) => {
+  diskTrendSamples.push({ at: sampledAtMs, freeBytes });
+  const cutoff = sampledAtMs - 30 * 60 * 1000;
+  while (diskTrendSamples.length > 0 && diskTrendSamples[0].at < cutoff) diskTrendSamples.shift();
+  const sampleCount = diskTrendSamples.length;
+  const windowMs = sampleCount > 0 ? Math.max(0, sampledAtMs - diskTrendSamples[0].at) : 0;
+  if (sampleCount < 5 || windowMs < 180_000) {
+    return { freeBytesTrendPerHour: null, freeBytesTrendSampleCount: sampleCount, freeBytesTrendWindowSeconds: Math.floor(windowMs / 1000) };
+  }
+  const slopes = [];
+  for (let index = 1; index < diskTrendSamples.length; index += 1) {
+    const previous = diskTrendSamples[index - 1];
+    const current = diskTrendSamples[index];
+    const elapsedMs = current.at - previous.at;
+    if (elapsedMs < 1000) continue;
+    slopes.push(((current.freeBytes - previous.freeBytes) * 3_600_000) / elapsedMs);
+  }
+  if (slopes.length < 4) {
+    return { freeBytesTrendPerHour: null, freeBytesTrendSampleCount: sampleCount, freeBytesTrendWindowSeconds: Math.floor(windowMs / 1000) };
+  }
+  slopes.sort((left, right) => left - right);
+  const middle = Math.floor(slopes.length / 2);
+  const median = slopes.length % 2 === 0 ? (slopes[middle - 1] + slopes[middle]) / 2 : slopes[middle];
+  return {
+    freeBytesTrendPerHour: Math.round(median),
+    freeBytesTrendSampleCount: sampleCount,
+    freeBytesTrendWindowSeconds: Math.floor(windowMs / 1000),
+  };
+};
+
+const writeExecutionPressureState = async (health) => {
+  await mkdir(executionSlotRoot, { recursive: true });
+  const temporary = `${executionPressureStatePath}.${process.pid}.${randomUUID()}.tmp`;
+  await writeFile(temporary, `${JSON.stringify({
+    diskPressure: health.diskPressure,
+    freeBytes: health.freeBytes,
+    totalBytes: health.totalBytes,
+    sampledAtUtc: health.sampledAtUtc,
+  })}\n`, "utf8");
+  try {
+    await rename(temporary, executionPressureStatePath);
+  } finally {
+    await rm(temporary, { force: true }).catch(() => {});
+  }
+};
+
 const runExecutionStoreProbe = async () => {
-  executionStoreHealth = await probeExecutionStoreHealth({
+  const health = await probeExecutionStoreHealth({
     jobsRoot,
     probeWritablePath,
     probeExecutionSlotStoreWritable,
@@ -122,6 +175,8 @@ const runExecutionStoreProbe = async () => {
     warningFreeBytes: EXECUTION_STORE_WARN_FREE_BYTES,
     warningFreePercent: EXECUTION_STORE_WARN_FREE_PERCENT,
   });
+  executionStoreHealth = { ...health, ...updateDiskTrend(health.freeBytes, health.sampledAtMs) };
+  await writeExecutionPressureState(executionStoreHealth).catch(() => {});
   return executionStoreHealth;
 };
 let executionStoreProbeTimer = null;
@@ -148,6 +203,10 @@ const runExecutionSnapshot = async () => {
       reservedInteractive: config.mcpExecReservedInteractive,
       watchMaxConcurrent: config.mcpWatchMaxConcurrent,
       heavyCapacity: config.mcpExecHeavyCapacity,
+      heavyWeight: config.mcpExecHeavyWeight,
+      ioHeavyCapacity: config.mcpExecIoHeavyCapacity,
+      ioHeavyWeight: config.mcpExecIoHeavyWeight,
+      backgroundPriorityAgeMs: config.mcpBackgroundPriorityAgeMs,
     });
     executionSnapshotCache = { ok: true, sampledAtMs: Date.now(), sampledAtUtc: new Date().toISOString(), durationMs: Date.now() - startedAt, snapshot, error: null };
   } catch (error) {
@@ -282,10 +341,31 @@ const COMMAND_OUTPUT_LIMIT_CHARS = Math.max(100, config.maxTextOutputChars === n
   : Math.min(config.maxTextOutputChars, config.maxCommandOutputChars));
 const INTERACTIVE_WAIT_MAX_SECONDS = Math.min(config.mcpWaitMaxSeconds, 85);
 const WAIT_FOR_FILE_DEFAULT_SECONDS = Math.min(60, INTERACTIVE_WAIT_MAX_SECONDS);
-const withInteractiveExecution = async ({ label, signal, command = "", program = "", args = [] }, callback) => {
+const assertDiskPressureAdmission = ({ resourceClass, readOnly = false, operation = "" }) => {
+  if (!shouldRejectDiskPressure({
+    diskPressure: executionStoreHealth.diskPressure,
+    resourceClass,
+    readOnly,
+    operation,
+  })) return;
+  const error = new Error("Disk pressure is critical; refusing new storage-intensive mutating work. Read-only inspection and cleanup operations remain available.");
+  error.data = {
+    diskPressure: "critical",
+    freeBytes: executionStoreHealth.freeBytes ?? null,
+    resourceClass,
+    recovery: "Free disk space or run a cleanup operation, then retry.",
+  };
+  throw error;
+};
+
+const withInteractiveExecution = async ({ label, signal, command = "", program = "", args = [], readOnly = false }, callback) => {
   const inferredResourceClass = inferJobResourceClass({ command, program, args, requested: "auto" });
   const resourceClass = inferredResourceClass === "watch" ? "light" : inferredResourceClass;
-  const weight = resourceClass === "heavy" ? config.mcpExecHeavyWeight : 1;
+  const operation = command || [program, ...args].filter(Boolean).join(" ");
+  assertDiskPressureAdmission({ resourceClass, readOnly, operation });
+  const weight = resourceClass === "heavy"
+    ? config.mcpExecHeavyWeight
+    : resourceClass === "io-heavy" ? config.mcpExecIoHeavyWeight : 1;
   return withExecutionSlot({
     kind: "interactive",
     label,
@@ -293,6 +373,10 @@ const withInteractiveExecution = async ({ label, signal, command = "", program =
     reservedInteractive: config.mcpExecReservedInteractive,
     watchMaxConcurrent: config.mcpWatchMaxConcurrent,
     heavyCapacity: config.mcpExecHeavyCapacity,
+    heavyWeight: config.mcpExecHeavyWeight,
+    ioHeavyCapacity: config.mcpExecIoHeavyCapacity,
+    ioHeavyWeight: config.mcpExecIoHeavyWeight,
+    backgroundPriorityAgeMs: config.mcpBackgroundPriorityAgeMs,
     resourceClass,
     weight,
     queueTimeoutMs: config.mcpExecQueueTimeoutMs,
@@ -563,7 +647,19 @@ const instrumentToolHandler = (toolName, handler, requestSignal) => async (args 
   });
 
   try {
-    const result = await handler(args, handlerExtra);
+    const requiredScope = missingRequiredToolScope(toolName, extra?.authInfo);
+    const result = requiredScope
+      ? {
+          content: [{ type: "text", text: `OAuth token is missing the required scope ${requiredScope} for tool ${toolName}.` }],
+          structuredContent: {
+            ok: false,
+            summary: `OAuth token is missing the required scope ${requiredScope} for tool ${toolName}.`,
+            data: { requiredScope, clientId: extra?.authInfo?.clientId ?? null },
+            truncated: false,
+          },
+          isError: true,
+        }
+      : await handler(args, handlerExtra);
     const structured = result?.structuredContent ?? {};
     const loggedSummary = boundedToolSummary(structured.summary, "Tool completed.");
     const resultTextChars = Array.isArray(result?.content)
@@ -1038,7 +1134,7 @@ const buildServer = ({ requestSignal } = {}) => {
     ),
     async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, output_mode: outputMode, max_output_chars: maxOutputChars, max_output_lines: maxOutputLines, user }, extra) => {
       try {
-        return await withInteractiveExecution({ label: "devbox_exec_readonly", signal: extra?.signal, command }, async (lease) => {
+        return await withInteractiveExecution({ label: "devbox_exec_readonly", signal: extra?.signal, command, readOnly: true }, async (lease) => {
           const result = await execReadOnlyInDevbox({
             command,
             workingDir,
@@ -1158,7 +1254,7 @@ const buildServer = ({ requestSignal } = {}) => {
           timeout_seconds: z.number().int().min(1).max(86400).default(7200).describe("Maximum background job runtime in seconds."),
           user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
           read_only: z.boolean().default(false).describe("When true, use the read-only execution path. Read-only enforcement is advisory in host mode."),
-          resource_class: z.enum(["auto", "watch", "light", "heavy"]).default("auto").describe("Scheduling class. auto detects passive watches and heavy build/browser workloads."),
+          resource_class: z.enum(["auto", "watch", "light", "heavy", "io-heavy"]).default("auto").describe("Scheduling class. auto detects passive watches, CPU-heavy builds/browser workloads, and recursive I/O-heavy work."),
         },
         outputSchema,
       },
@@ -1167,6 +1263,8 @@ const buildServer = ({ requestSignal } = {}) => {
     ),
     async ({ command, working_dir: workingDir, timeout_seconds: timeoutSeconds, user, read_only: readOnly, resource_class: resourceClass }) => {
       try {
+        const inferredResourceClass = inferJobResourceClass({ command, requested: resourceClass });
+        assertDiskPressureAdmission({ resourceClass: inferredResourceClass, readOnly, operation: command });
         const data = await startDevboxJob({ command, workingDir, timeoutSeconds, user, readOnly, resourceClass });
         return successResult(`Started background ${runtimeLabel} job ${data.id}.`, { data });
       } catch (error) {
@@ -1188,7 +1286,7 @@ const buildServer = ({ requestSignal } = {}) => {
           working_dir: z.string().default(config.devboxWorkspacePath).describe(`Working directory inside the ${runtimeLabel}.`),
           timeout_seconds: z.number().int().min(1).max(86400).default(7200).describe("Maximum background runtime in seconds."),
           user: z.string().default(config.devboxDefaultUser).describe(isDockerRuntime ? "Linux user inside the devbox container." : `Host user hint for ${runtimeLabel} mode.`),
-          resource_class: z.enum(["auto", "watch", "light", "heavy"]).default("auto").describe("Scheduling class. auto detects gh run watch and common heavy build/browser programs."),
+          resource_class: z.enum(["auto", "watch", "light", "heavy", "io-heavy"]).default("auto").describe("Scheduling class. auto detects gh run watch, common CPU-heavy build/browser programs, and recursive I/O-heavy programs."),
         },
         outputSchema,
       },
@@ -1197,6 +1295,8 @@ const buildServer = ({ requestSignal } = {}) => {
     ),
     async ({ program, args, input, working_dir: workingDir, timeout_seconds: timeoutSeconds, user, resource_class: resourceClass }) => {
       try {
+        const inferredResourceClass = inferJobResourceClass({ program, args, requested: resourceClass });
+        assertDiskPressureAdmission({ resourceClass: inferredResourceClass, operation: [program, ...args].join(" ") });
         const data = await startDevboxProgramJob({ program, args, input, workingDir, timeoutSeconds, user, resourceClass });
         return successResult(`Started direct background ${runtimeLabel} job ${data.id}.`, { data });
       } catch (error) {
@@ -2207,9 +2307,11 @@ if (config.authMode === "demo-oauth" || config.authMode === "cloudflare-access")
           audience: config.cloudflareAccessAud,
           jwksUrl: config.cloudflareAccessJwksUrl,
           stateFilePath: config.oauthStateFilePath,
+          maxClients: config.mcpOauthMaxClients,
         })
       : new DemoOAuthProvider({
           stateFilePath: config.oauthStateFilePath,
+          maxClients: config.mcpOauthMaxClients,
         });
   const issuerUrl = new URL(config.publicBaseUrl);
   const rootMcpServerUrl = new URL("/", config.publicBaseUrl);
@@ -2220,7 +2322,7 @@ if (config.authMode === "demo-oauth" || config.authMode === "cloudflare-access")
       provider,
       issuerUrl,
       resourceServerUrl: rootMcpServerUrl,
-      scopesSupported: ["mcp:tools"],
+      scopesSupported: MCP_OAUTH_SCOPES,
       resourceName: runtimeServerName,
     }),
   );
@@ -2246,7 +2348,7 @@ if (config.authMode === "demo-oauth" || config.authMode === "cloudflare-access")
   legacyProtectedResourceMetadata = {
     resource: legacyMcpServerUrl.toString(),
     authorization_servers: [issuerUrl.toString()],
-    scopes_supported: ["mcp:tools"],
+    scopes_supported: MCP_OAUTH_SCOPES,
     resource_name: "Docker ChatGPT Devbox MCP",
   };
 }

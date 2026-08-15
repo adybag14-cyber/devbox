@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -87,6 +88,7 @@ const parseArgs = (argv) => {
     dockerCircuitOpenSeconds: 3600,
     once: false,
     noRepair: false,
+    directOwner: false,
   };
 
   const numeric = new Map([
@@ -116,6 +118,8 @@ const parseArgs = (argv) => {
       options.once = true;
     } else if (argument === "--no-repair") {
       options.noRepair = true;
+    } else if (argument === "--direct-owner") {
+      options.directOwner = true;
     } else {
       throw new Error(`Unknown guardian option: ${argument}`);
     }
@@ -327,19 +331,44 @@ const readJson = async (filePath, fallback = null) => {
   }
 };
 
-const writeJsonAtomic = async (filePath, value) => {
+const atomicWriteChains = new Map();
+const WINDOWS_RENAME_RETRY_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+
+const replaceJsonFile = async (filePath, value) => {
   await mkdir(path.dirname(filePath), { recursive: true });
-  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   try {
-    await rename(temporaryPath, filePath);
-  } catch (error) {
-    if (process.platform !== "win32") {
-      throw error;
+    let lastError = null;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        // libuv maps rename to an atomic replace on Windows. Never delete the
+        // known-good destination as a recovery step: a competing heartbeat
+        // writer may already have consumed its own temporary file.
+        await rename(temporaryPath, filePath);
+        return;
+      } catch (error) {
+        lastError = error;
+        const retryable = process.platform === "win32" && WINDOWS_RENAME_RETRY_CODES.has(error?.code);
+        if (!retryable || attempt === 5) throw error;
+        await sleep(5 * (attempt + 1));
+      }
     }
-    await rm(filePath, { force: true });
-    await rename(temporaryPath, filePath);
+    throw lastError ?? new Error(`failed to replace ${filePath}`);
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => {});
   }
+};
+
+export const writeJsonAtomic = (filePath, value) => {
+  const previous = atomicWriteChains.get(filePath) ?? Promise.resolve();
+  const current = previous
+    .catch(() => {})
+    .then(() => replaceJsonFile(filePath, value));
+  atomicWriteChains.set(filePath, current);
+  return current.finally(() => {
+    if (atomicWriteChains.get(filePath) === current) atomicWriteChains.delete(filePath);
+  });
 };
 
 const loadGuardianEnv = async (projectRoot) => {
@@ -875,7 +904,9 @@ const main = async () => {
   }
 
   const ownerPid = Number.parseInt(process.env.DEVBOX_GUARDIAN_WRAPPER_PID ?? "", 10);
-  const guardianPid = Number.isInteger(ownerPid) && ownerPid > 0 ? ownerPid : process.pid;
+  const guardianPid = options.directOwner
+    ? process.pid
+    : Number.isInteger(ownerPid) && ownerPid > 0 ? ownerPid : process.pid;
   let stopping = false;
   let unhealthyCount = 0;
   let lastRepairAtMs = 0;

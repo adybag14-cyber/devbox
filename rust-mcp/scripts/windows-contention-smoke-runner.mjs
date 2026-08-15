@@ -189,20 +189,29 @@ try {
       max_output_chars: 1_024,
     },
   }));
+  const pressureConstrained = ["warning", "critical"].includes(
+    status.structuredContent?.data?.executionStore?.diskPressure,
+  );
+  const expectedHeavyOccupied = pressureConstrained ? 2 : 4;
   let weightedStatus = null;
   const weightedDeadline = Date.now() + 2_000;
   while (Date.now() < weightedDeadline) {
     const candidate = await client.callTool({ name: "devbox_status", arguments: {} });
     const execution = candidate.structuredContent?.data?.execution;
-    if (execution?.occupied === 4) {
+    if (execution?.occupied === expectedHeavyOccupied) {
       weightedStatus = execution;
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
-  assert.ok(weightedStatus, "two synchronous heavy commands did not consume weighted capacity");
+  assert.ok(
+    weightedStatus,
+    pressureConstrained
+      ? "disk-pressure warning did not serialize synchronous heavy commands"
+      : "two synchronous heavy commands did not consume weighted capacity",
+  );
   assert.equal(weightedStatus.heavy_capacity, 4);
-  assert.equal(weightedStatus.occupied_slots.length, 4);
+  assert.equal(weightedStatus.occupied_slots.length, expectedHeavyOccupied);
   assert.ok(weightedStatus.occupied_slots.every((slot) => slot.resourceClass === "heavy" && slot.weight === 2));
   const lightDuringHeavyStarted = performance.now();
   const lightDuringHeavy = await client.callTool({
@@ -254,7 +263,7 @@ try {
   assert.ok(Number.isFinite(maxProbe) && maxProbe < 1_500, `health probe stalled under watchers: ${maxProbe}ms`);
   console.log(JSON.stringify({ waitDurationsMs: waitDurations, healthProbeCount: probeSamples.length, maxHealthMs: maxProbe, statusMs }));
  } finally {
-  await client.close().catch(() => {});
+  // The server is process-scoped to this smoke; killing it below owns transport cleanup.
   if (server.exitCode === null && server.signalCode === null) {
     const exited = new Promise((resolve) => server.once("exit", resolve));
     server.kill();

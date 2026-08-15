@@ -629,6 +629,17 @@ function Stop-ExistingServerIfOwned {
     Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
 }
 
+function Remove-StaleAtomicTempFiles {
+    param([Parameter(Mandatory = $true)][string]$RunDir)
+    $cutoff = [DateTime]::UtcNow.AddDays(-1)
+    foreach ($directory in @($RunDir, (Join-Path $RunDir 'guardian'))) {
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) { continue }
+        Get-ChildItem -LiteralPath $directory -File -Filter '*.tmp' -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTimeUtc -lt $cutoff } |
+            ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Ensure-Directory {
     param([string]$Path)
 
@@ -1504,6 +1515,7 @@ $preflightTimeoutSeconds = if ($preflightTimeoutRaw -match '^\d+$') {
 Enter-ChatGptDevboxLifecycleMutex -RunDir $runDir -SelectedRuntime $selectedRuntimeEarly -TimeoutSeconds $startupTimeoutSeconds
 try {
 Ensure-Directory -Path $runDir
+Remove-StaleAtomicTempFiles -RunDir $runDir
 Write-StartupPhase -Phase 'preparing-runtime'
 Write-GuardianDesiredState -RunDir $runDir -ShouldRun $true -Source "Start-ChatGptDevboxMcp.ps1"
 

@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     net::SocketAddr,
     path::PathBuf,
     sync::Arc,
@@ -10,7 +11,7 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{Extension, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, StatusCode, header, request::Parts},
     middleware,
     response::{IntoResponse, Response},
     routing::get,
@@ -50,7 +51,7 @@ use crate::{
         JobManager, StartProgramJob, infer_program_resource_class, infer_shell_resource_class,
     },
     lifecycle::{LifecycleAction, LifecycleService, replace_file_preserving_previous},
-    oauth::OAuthService,
+    oauth::{OAuthRequestInfo, OAuthService},
     output::{OutputMode, shape_process_output},
     performance::PerformanceMonitor,
     request_control::ActiveRequestRegistry,
@@ -92,6 +93,9 @@ impl DevboxMcp {
             queue_timeout: Duration::from_millis(config.exec_queue_timeout_ms),
             heavy_capacity: config.exec_heavy_capacity,
             heavy_weight: config.exec_heavy_weight,
+            io_heavy_capacity: config.exec_io_heavy_capacity,
+            io_heavy_weight: config.exec_io_heavy_weight,
+            background_priority_age: Duration::from_millis(config.background_priority_age_ms),
         }));
         let runtime = Arc::new(RuntimeExecutor::new(config.clone()));
         let background = Arc::new(BackgroundTaskRegistry::new());
@@ -520,7 +524,7 @@ struct StartProgramRequest {
     #[serde(default)]
     user: String,
     #[serde(default = "default_resource_class")]
-    #[schemars(description = "Resource class: auto, watch, light, or heavy.")]
+    #[schemars(description = "Resource class: auto, watch, light, heavy, or io-heavy.")]
     resource_class: String,
 }
 
@@ -680,6 +684,37 @@ impl DevboxMcp {
         }
     }
 
+    async fn disk_pressure_rejection(
+        &self,
+        resource_class: ResourceClass,
+        read_only: bool,
+        operation: &str,
+    ) -> Option<CallToolResult> {
+        if read_only
+            || !matches!(
+                resource_class,
+                ResourceClass::Heavy | ResourceClass::IoHeavy
+            )
+            || disk_pressure_cleanup_operation(operation)
+        {
+            return None;
+        }
+        let store = self.execution_store_health.read().await;
+        if store.get("diskPressure").and_then(Value::as_str) != Some("critical") {
+            return None;
+        }
+        let free_bytes = store.get("freeBytes").cloned().unwrap_or(Value::Null);
+        Some(ToolEnvelope::error(
+            "Disk pressure is critical; refusing new storage-intensive mutating work. Read-only inspection and cleanup operations remain available.",
+            Some(json!({
+                "diskPressure": "critical",
+                "freeBytes": free_bytes,
+                "resourceClass": resource_class.as_str(),
+                "recovery": "Free disk space or run a cleanup operation, then retry.",
+            })),
+        ))
+    }
+
     fn interactive_acquire(&self, label: impl Into<String>, text: &str) -> AcquireRequest {
         let inferred = infer_shell_resource_class(text, "auto");
         let resource_class = if inferred == ResourceClass::Watch {
@@ -687,10 +722,10 @@ impl DevboxMcp {
         } else {
             inferred
         };
-        let weight = if resource_class == ResourceClass::Heavy {
-            self.scheduler.config().heavy_weight
-        } else {
-            1
+        let weight = match resource_class {
+            ResourceClass::Heavy => self.scheduler.config().heavy_weight,
+            ResourceClass::IoHeavy => self.scheduler.config().io_heavy_weight,
+            ResourceClass::Watch | ResourceClass::Light => 1,
         };
         AcquireRequest::interactive_weighted(label, resource_class, weight)
     }
@@ -707,10 +742,10 @@ impl DevboxMcp {
         } else {
             inferred
         };
-        let weight = if resource_class == ResourceClass::Heavy {
-            self.scheduler.config().heavy_weight
-        } else {
-            1
+        let weight = match resource_class {
+            ResourceClass::Heavy => self.scheduler.config().heavy_weight,
+            ResourceClass::IoHeavy => self.scheduler.config().io_heavy_weight,
+            ResourceClass::Watch | ResourceClass::Light => 1,
         };
         AcquireRequest::interactive_weighted(label, resource_class, weight)
     }
@@ -862,6 +897,12 @@ impl DevboxMcp {
             &request.command,
         );
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
+        if let Some(rejection) = self
+            .disk_pressure_rejection(acquire.resource_class, read_only, &request.command)
+            .await
+        {
+            return rejection;
+        }
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
             Err(error) => return ToolEnvelope::error(error.to_string(), None),
@@ -945,6 +986,12 @@ impl DevboxMcp {
         }
         let mut acquire = self.interactive_acquire("host_exec", &request.command);
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
+        if let Some(rejection) = self
+            .disk_pressure_rejection(acquire.resource_class, false, &request.command)
+            .await
+        {
+            return rejection;
+        }
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
             Err(error) => return ToolEnvelope::error(error.to_string(), None),
@@ -1024,6 +1071,13 @@ impl DevboxMcp {
             &request.args,
         );
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
+        let operation = format!("{} {}", request.program.trim(), request.args.join(" "));
+        if let Some(rejection) = self
+            .disk_pressure_rejection(acquire.resource_class, false, &operation)
+            .await
+        {
+            return rejection;
+        }
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
             Err(error) => return ToolEnvelope::error(error.to_string(), None),
@@ -1293,6 +1347,13 @@ impl DevboxMcp {
         if !(1..=86_400).contains(&request.timeout_seconds) {
             return ToolEnvelope::error("timeout_seconds must be between 1 and 86400", None);
         }
+        let resource_class = infer_shell_resource_class(&request.command, &request.resource_class);
+        if let Some(rejection) = self
+            .disk_pressure_rejection(resource_class, request.read_only, &request.command)
+            .await
+        {
+            return rejection;
+        }
         match self
             .jobs
             .start_shell(crate::job_manager::StartShellJob {
@@ -1351,6 +1412,13 @@ impl DevboxMcp {
             &request.args,
         );
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
+        let operation = format!("{} {}", request.program.trim(), request.args.join(" "));
+        if let Some(rejection) = self
+            .disk_pressure_rejection(acquire.resource_class, false, &operation)
+            .await
+        {
+            return rejection;
+        }
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
             Err(error) => return ToolEnvelope::error(error.to_string(), None),
@@ -1417,6 +1485,18 @@ impl DevboxMcp {
         }
         if !(1..=86_400).contains(&request.timeout_seconds) {
             return ToolEnvelope::error("timeout_seconds must be between 1 and 86400", None);
+        }
+        let resource_class = infer_program_resource_class(
+            request.program.trim(),
+            &request.args,
+            &request.resource_class,
+        );
+        let operation = format!("{} {}", request.program.trim(), request.args.join(" "));
+        if let Some(rejection) = self
+            .disk_pressure_rejection(resource_class, false, &operation)
+            .await
+        {
+            return rejection;
         }
         match self
             .jobs
@@ -2325,8 +2405,28 @@ impl ServerHandler for DevboxMcp {
             ToolUsageInvocation::new(request.name.as_ref(), request.arguments.as_ref(), &context);
         let logger = self.usage.tool_logger();
         logger.enqueue(invocation.start_event());
+        let _active_tool = self.usage.active_tool_registry().register(&invocation);
         let mut usage_guard = ToolUsageDropGuard::new(logger.clone(), invocation.clone());
         let _active_request = self.active_requests.register_context(&context);
+        if let Some(required_scope) = required_tool_scope(request.name.as_ref())
+            && let Some(parts) = context.extensions.get::<Parts>()
+            && let Some(auth) = parts.extensions.get::<OAuthRequestInfo>()
+            && !oauth_scope_allows(&auth.scopes, required_scope)
+        {
+            let response = CallToolResponse::Complete(ToolEnvelope::error(
+                format!(
+                    "OAuth token is missing the required scope {required_scope} for tool {}.",
+                    request.name
+                ),
+                Some(json!({
+                    "requiredScope": required_scope,
+                    "clientId": auth.client_id,
+                })),
+            ));
+            logger.enqueue(invocation.finish_event(&response));
+            usage_guard.complete();
+            return Ok(response);
+        }
         let result = self
             .tool_router
             .call(ToolCallContext::new(self, request, context))
@@ -2338,6 +2438,55 @@ impl ServerHandler for DevboxMcp {
         usage_guard.complete();
         result
     }
+}
+
+fn required_tool_scope(tool: &str) -> Option<&'static str> {
+    match tool {
+        "devbox_status"
+        | "devbox_github_auth_status"
+        | "devbox_job_logs"
+        | "devbox_job_status"
+        | "devbox_list_files"
+        | "devbox_read_file"
+        | "devbox_read_large_file"
+        | "devbox_search_files"
+        | "devbox_wait"
+        | "devbox_wait_for_file" => Some("mcp:devbox:read"),
+        "devbox_exec"
+        | "devbox_exec_readonly"
+        | "devbox_exec_start"
+        | "devbox_job_cancel"
+        | "devbox_run_program"
+        | "devbox_run_program_start"
+        | "devbox_write_file"
+        | "devbox_write_large_file" => Some("mcp:devbox:exec"),
+        "devbox_recreate"
+        | "devbox_restart"
+        | "devbox_start"
+        | "devbox_stop"
+        | "devbox_sync_github_auth_from_host" => Some("mcp:admin"),
+        "host_capture_display"
+        | "host_capture_program"
+        | "host_capture_window"
+        | "host_status"
+        | "windows_host_capture_display"
+        | "windows_host_capture_program"
+        | "windows_host_inspect_file"
+        | "windows_host_read_large_file"
+        | "windows_host_status" => Some("mcp:host:read"),
+        "host_exec"
+        | "host_run_program"
+        | "windows_host_exec"
+        | "windows_host_run_program"
+        | "windows_host_write_large_file" => Some("mcp:host:exec"),
+        _ => None,
+    }
+}
+
+fn oauth_scope_allows(scopes: &[String], required: &str) -> bool {
+    scopes
+        .iter()
+        .any(|scope| scope == "mcp:tools" || scope == required)
 }
 
 #[derive(Debug, Clone)]
@@ -2385,6 +2534,7 @@ fn spawn_execution_store_probe(
 ) {
     let jobs_root = config.jobs_root.clone();
     let slot_root = config.execution_slot_root.clone();
+    let pressure_state_path = slot_root.join(".disk-pressure.json");
     let health = handler.execution_store_health.clone();
     handler.background.spawn_supervised(
         "execution-store-probe",
@@ -2392,10 +2542,11 @@ fn spawn_execution_store_probe(
         move |cancellation, heartbeat| {
             let jobs_root = jobs_root.clone();
             let slot_root = slot_root.clone();
+            let pressure_state_path = pressure_state_path.clone();
             let health = health.clone();
             async move {
                 let mut next_delay = Duration::ZERO;
-                let mut previous_disk: Option<(Instant, u64)> = None;
+                let mut disk_samples = VecDeque::<(Instant, u64)>::new();
                 loop {
                     tokio::select! {
                         () = cancellation.cancelled() => return Ok(()),
@@ -2433,19 +2584,7 @@ fn spawn_execution_store_probe(
                                 0.0
                             };
                             let pressure = disk_pressure_level(free_bytes, total_bytes, disk_ok);
-                            let trend_per_hour = previous_disk.and_then(|(at, previous)| {
-                                let elapsed_ms = at.elapsed().as_millis();
-                                if elapsed_ms == 0 {
-                                    return None;
-                                }
-                                let delta = i128::from(free_bytes) - i128::from(previous);
-                                let per_hour = delta.saturating_mul(3_600_000)
-                                    / i128::try_from(elapsed_ms).unwrap_or(i128::MAX);
-                                Some(i64::try_from(per_hour).unwrap_or_else(|_| {
-                                    if per_hour.is_negative() { i64::MIN } else { i64::MAX }
-                                }))
-                            });
-                            previous_disk = Some((Instant::now(), free_bytes));
+                            let trend = update_disk_trend(&mut disk_samples, free_bytes);
                             let value = json!({
                                 "ok": ok,
                                 "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
@@ -2455,13 +2594,24 @@ fn spawn_execution_store_probe(
                                 "freeBytes": free_bytes,
                                 "totalBytes": total_bytes,
                                 "freePercent": free_percent,
-                                "freeBytesTrendPerHour": trend_per_hour,
+                                "freeBytesTrendPerHour": trend.per_hour,
+                                "freeBytesTrendSampleCount": trend.sample_count,
+                                "freeBytesTrendWindowSeconds": trend.window_seconds,
                                 "diskPressure": pressure,
                                 "warningFreeBytes": EXECUTION_STORE_WARN_FREE_BYTES,
                                 "warningFreePercent": EXECUTION_STORE_WARN_FREE_PERCENT,
                                 "minimumFreeBytes": EXECUTION_STORE_MIN_FREE_BYTES,
                                 "error": if errors.is_empty() { Value::Null } else { json!(errors.join("; ")) },
                             });
+                            let pressure_state = json!({
+                                "diskPressure": pressure,
+                                "freeBytes": free_bytes,
+                                "totalBytes": total_bytes,
+                                "sampledAtUtc": chrono::Utc::now().to_rfc3339(),
+                            });
+                            if let Err(error) = write_json_snapshot(&pressure_state_path, &pressure_state).await {
+                                tracing::warn!(%error, path = %pressure_state_path.display(), "failed to persist scheduler disk-pressure state");
+                            }
                             *health.write().await = value;
                             next_delay = if ok { EXECUTION_STORE_PROBE_HEALTHY_INTERVAL } else { EXECUTION_STORE_PROBE_RETRY_INTERVAL };
                             if ok {
@@ -2537,6 +2687,97 @@ async fn cached_execution_value(cache: &tokio::sync::RwLock<Value>) -> Option<Va
         .get("snapshot")
         .filter(|snapshot| !snapshot.is_null())
         .cloned()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DiskTrend {
+    per_hour: Option<i64>,
+    sample_count: usize,
+    window_seconds: u64,
+}
+
+fn update_disk_trend(samples: &mut VecDeque<(Instant, u64)>, free_bytes: u64) -> DiskTrend {
+    let now = Instant::now();
+    samples.push_back((now, free_bytes));
+    let horizon = Duration::from_secs(30 * 60);
+    while samples
+        .front()
+        .is_some_and(|(at, _)| now.saturating_duration_since(*at) > horizon)
+    {
+        samples.pop_front();
+    }
+    let sample_count = samples.len();
+    let window_seconds = samples
+        .front()
+        .map_or(0, |(at, _)| now.saturating_duration_since(*at).as_secs());
+    if sample_count < 5 || window_seconds < 180 {
+        return DiskTrend {
+            per_hour: None,
+            sample_count,
+            window_seconds,
+        };
+    }
+    let mut slopes = samples
+        .iter()
+        .zip(samples.iter().skip(1))
+        .filter_map(|((at_a, bytes_a), (at_b, bytes_b))| {
+            let elapsed_ms = at_b.saturating_duration_since(*at_a).as_millis();
+            if elapsed_ms < 1_000 {
+                return None;
+            }
+            let delta = i128::from(*bytes_b) - i128::from(*bytes_a);
+            Some(delta.saturating_mul(3_600_000) / i128::try_from(elapsed_ms).unwrap_or(i128::MAX))
+        })
+        .collect::<Vec<_>>();
+    if slopes.len() < 4 {
+        return DiskTrend {
+            per_hour: None,
+            sample_count,
+            window_seconds,
+        };
+    }
+    slopes.sort_unstable();
+    let middle = slopes.len() / 2;
+    let median = if slopes.len() % 2 == 0 {
+        slopes[middle - 1].saturating_add(slopes[middle]) / 2
+    } else {
+        slopes[middle]
+    };
+    let per_hour = Some(i64::try_from(median).unwrap_or_else(|_| {
+        if median.is_negative() {
+            i64::MIN
+        } else {
+            i64::MAX
+        }
+    }));
+    DiskTrend {
+        per_hour,
+        sample_count,
+        window_seconds,
+    }
+}
+
+fn disk_pressure_cleanup_operation(operation: &str) -> bool {
+    let text = operation.to_ascii_lowercase();
+    [
+        "rm -",
+        "remove-item",
+        "rmdir",
+        " del ",
+        "git clean",
+        "cargo clean",
+        "npm cache clean",
+        "npm cache verify",
+        "pip cache purge",
+        "docker system prune",
+        "docker builder prune",
+        "docker image prune",
+        "docker container prune",
+        "docker volume prune",
+        "wsl --shutdown",
+    ]
+    .iter()
+    .any(|marker| text.contains(marker))
 }
 
 fn disk_pressure_level(free_bytes: u64, total_bytes: u64, disk_ok: bool) -> &'static str {
@@ -2664,11 +2905,14 @@ pub fn build_router(config: Arc<Config>, cancellation: CancellationToken) -> Rou
     spawn_execution_store_probe(&handler, &config, cancellation.child_token());
     crate::incident_task::spawn_incident_monitor(
         config.project_root.clone(),
-        handler.performance.clone(),
-        handler.execution_snapshot.clone(),
-        handler.active_requests.clone(),
-        handler.background.clone(),
-        handler.execution_store_health.clone(),
+        crate::incident_task::IncidentMonitorContext {
+            performance: handler.performance.clone(),
+            execution_snapshot: handler.execution_snapshot.clone(),
+            active_requests: handler.active_requests.clone(),
+            active_tools: handler.usage.active_tool_registry(),
+            background: handler.background.clone(),
+            execution_store: handler.execution_store_health.clone(),
+        },
         cancellation.child_token(),
     );
     spawn_version_refresh(&handler, cancellation.child_token());
@@ -3911,6 +4155,77 @@ mod tests {
             structured["summary"]
                 .as_str()
                 .is_some_and(|value| value.contains("medium-integrity"))
+        );
+    }
+
+    #[test]
+    fn oauth_tool_scopes_preserve_legacy_access_and_enforce_narrow_capabilities() {
+        assert_eq!(required_tool_scope("host_exec"), Some("mcp:host:exec"));
+        assert_eq!(required_tool_scope("host_status"), Some("mcp:host:read"));
+        assert_eq!(
+            required_tool_scope("devbox_status"),
+            Some("mcp:devbox:read")
+        );
+        assert_eq!(required_tool_scope("devbox_restart"), Some("mcp:admin"));
+        assert!(oauth_scope_allows(
+            &["mcp:tools".to_owned()],
+            "mcp:host:exec"
+        ));
+        assert!(oauth_scope_allows(
+            &["mcp:host:read".to_owned()],
+            "mcp:host:read"
+        ));
+        assert!(!oauth_scope_allows(
+            &["mcp:host:read".to_owned()],
+            "mcp:host:exec"
+        ));
+    }
+
+    #[test]
+    fn critical_disk_policy_keeps_cleanup_paths_available() {
+        assert!(disk_pressure_cleanup_operation(
+            "Remove-Item C:\\temp -Recurse -Force"
+        ));
+        assert!(disk_pressure_cleanup_operation("docker system prune -af"));
+        assert!(disk_pressure_cleanup_operation("cargo clean"));
+        assert!(!disk_pressure_cleanup_operation("cargo build --release"));
+        assert!(!disk_pressure_cleanup_operation(
+            "git clone https://example.invalid/repo"
+        ));
+    }
+
+    #[test]
+    fn disk_trend_median_rejects_one_large_space_discontinuity() {
+        let now = Instant::now();
+        let mut samples = VecDeque::from([
+            (
+                now.checked_sub(Duration::from_secs(240))
+                    .expect("test instant subtraction"),
+                1_000_000_000_u64,
+            ),
+            (
+                now.checked_sub(Duration::from_secs(180))
+                    .expect("test instant subtraction"),
+                999_000_000_u64,
+            ),
+            (
+                now.checked_sub(Duration::from_secs(120))
+                    .expect("test instant subtraction"),
+                500_000_000_u64,
+            ),
+            (
+                now.checked_sub(Duration::from_secs(60))
+                    .expect("test instant subtraction"),
+                499_000_000_u64,
+            ),
+        ]);
+        let trend = update_disk_trend(&mut samples, 498_000_000);
+        assert_eq!(trend.sample_count, 5);
+        assert!(trend.window_seconds >= 239);
+        let per_hour = trend.per_hour.expect("trend after five samples");
+        assert!(
+            (-61_000_000..=-59_000_000).contains(&per_hour),
+            "single discontinuity should not dominate median trend: {per_hour}"
         );
     }
 

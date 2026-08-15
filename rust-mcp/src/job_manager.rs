@@ -289,6 +289,9 @@ pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass 
     {
         return ResourceClass::Heavy;
     }
+    if shell_is_io_heavy(&text) {
+        return ResourceClass::IoHeavy;
+    }
     if text.contains("gh run watch")
         || text.contains("start-sleep")
         || contains_numeric_sleep(&text)
@@ -296,6 +299,53 @@ pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass 
         return ResourceClass::Watch;
     }
     ResourceClass::Light
+}
+
+fn shell_is_io_heavy(text: &str) -> bool {
+    let padded = format!(" {text} ");
+    [
+        " find ",
+        " find.exe ",
+        " grep -r",
+        " grep --recursive",
+        " get-childitem ",
+        " -recurse",
+        " du ",
+        " robocopy ",
+        " xcopy ",
+        " rsync ",
+        " cp -r",
+        " cp -a",
+        " rm -r",
+        " remove-item ",
+        " tar ",
+        " 7z ",
+        " 7zz ",
+        " zip -r",
+        " git clone ",
+        " git fetch ",
+        " git gc",
+        " git repack",
+        " npm ci",
+        " npm install",
+        " pnpm install",
+        " yarn install",
+        " bun install",
+        " pip install",
+        " pip3 install",
+        " -m pip install",
+        " apt install",
+        " apt-get install",
+        " dnf install",
+        " yum install",
+        " pacman -s",
+        " apk add",
+        " winget install",
+        " choco install",
+        " scoop install",
+    ]
+    .iter()
+    .any(|marker| padded.contains(marker))
 }
 
 #[must_use]
@@ -320,6 +370,23 @@ pub fn infer_program_resource_class(
     }
     if matches!(program.as_str(), "sleep" | "start-sleep") {
         return ResourceClass::Watch;
+    }
+    if program == "wsl" {
+        return infer_shell_resource_class(&args.join(" "), requested);
+    }
+    if matches!(
+        program.as_str(),
+        "find" | "du" | "robocopy" | "xcopy" | "rsync" | "tar" | "7z" | "7zz" | "zip" | "unzip"
+    ) || (program == "git" && matches!(first, "clone" | "fetch" | "gc" | "repack"))
+        || (matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun")
+            && matches!(first, "ci" | "install" | "add"))
+        || (matches!(program.as_str(), "pip" | "pip3") && first == "install")
+        || (matches!(program.as_str(), "python" | "python3" | "py")
+            && first == "-m"
+            && second == "pip"
+            && args.get(2).is_some_and(|arg| arg == "install"))
+    {
+        return ResourceClass::IoHeavy;
     }
     if matches!(program.as_str(), "pwsh" | "powershell")
         && let Some(command_at) = args
@@ -376,6 +443,7 @@ fn explicit_resource_class(requested: &str) -> Option<ResourceClass> {
         "watch" => Some(ResourceClass::Watch),
         "light" => Some(ResourceClass::Light),
         "heavy" => Some(ResourceClass::Heavy),
+        "io-heavy" | "io_heavy" | "ioheavy" => Some(ResourceClass::IoHeavy),
         _ => None,
     }
 }
@@ -504,6 +572,39 @@ mod tests {
         assert_eq!(
             infer_resource_class("sleep 20", "auto"),
             ResourceClass::Watch
+        );
+        assert_eq!(
+            infer_resource_class("find /home/tdamre -type f -print", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("Get-ChildItem C:\\src -Recurse -File", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_program_resource_class(
+                "wsl",
+                &[
+                    "-d".to_owned(),
+                    "Ubuntu".to_owned(),
+                    "--".to_owned(),
+                    "find".to_owned(),
+                    "/home".to_owned()
+                ],
+                "auto"
+            ),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_program_resource_class(
+                "git",
+                &[
+                    "clone".to_owned(),
+                    "https://example.invalid/repo".to_owned()
+                ],
+                "auto"
+            ),
+            ResourceClass::IoHeavy
         );
         assert_eq!(
             infer_resource_class("git status", "auto"),

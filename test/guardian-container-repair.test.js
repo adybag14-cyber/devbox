@@ -11,8 +11,9 @@ import {
   isProcessAlive,
   restoreRepairBackoff,
   runProcessUntilExit,
+  writeJsonAtomic,
 } from "../scripts/devbox-guardian.mjs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -25,6 +26,24 @@ const environment = {
 const settings = { DevboxContainerName: "devbox-runtime" };
 const result = (exitCode, stdout = "", stderr = "") => ({ exitCode, stdout, stderr });
 
+
+
+
+test("Guardian serializes concurrent atomic JSON replacements without temp collisions", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "devbox-guardian-atomic-"));
+  const target = path.join(root, "heartbeat.json");
+  try {
+    await Promise.all(Array.from({ length: 250 }, (_, sequence) => writeJsonAtomic(target, {
+      sequence,
+      observedAtUtc: new Date(1_700_000_000_000 + sequence).toISOString(),
+    })));
+    const parsed = JSON.parse(await readFile(target, "utf8"));
+    assert.equal(parsed.sequence, 249);
+    assert.equal((await readdir(root)).filter((name) => name.endsWith(".tmp")).length, 0);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("Guardian restores repair backoff only for the same live MCP PID", () => {
   const now = Date.parse("2026-08-07T19:00:00.000Z");

@@ -130,6 +130,10 @@ test("orphaned running jobs reconcile to interrupted and resource classes are in
   const jobs = await import(`${href}?orphan=${Date.now()}-${Math.random()}`);
   assert.equal(jobs.inferJobResourceClass({ command: "gh run watch 123 --interval 30" }), "watch");
   assert.equal(jobs.inferJobResourceClass({ command: "node scripts/pioneer-playwright-workload.mjs" }), "heavy");
+  assert.equal(jobs.inferJobResourceClass({ command: "find /home/tdamre -type f -print" }), "io-heavy");
+  assert.equal(jobs.inferJobResourceClass({ command: "Get-ChildItem C:\\src -Recurse -File" }), "io-heavy");
+  assert.equal(jobs.inferJobResourceClass({ program: "wsl", args: ["-d", "Ubuntu", "--", "find", "/home", "-type", "f"] }), "io-heavy");
+  assert.equal(jobs.inferJobResourceClass({ program: "git", args: ["clone", "https://example.invalid/repo"] }), "io-heavy");
   assert.equal(jobs.inferJobResourceClass({ program: "git", args: ["status"] }), "light");
   const id = `job-test-${Date.now().toString(36)}-orphan99`;
   const paths = jobs.asyncJobsInternals.jobPaths(id);

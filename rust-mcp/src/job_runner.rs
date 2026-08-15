@@ -247,11 +247,14 @@ async fn prepare_runner(
         queue_timeout: Duration::from_millis(config.background_queue_timeout_ms),
         heavy_capacity: config.exec_heavy_capacity,
         heavy_weight: config.exec_heavy_weight,
+        io_heavy_capacity: config.exec_io_heavy_capacity,
+        io_heavy_weight: config.exec_io_heavy_weight,
+        background_priority_age: Duration::from_millis(config.background_priority_age_ms),
     });
-    let weight = if request.resource_class == ResourceClass::Heavy {
-        config.exec_heavy_weight.max(1)
-    } else {
-        1
+    let weight = match request.resource_class {
+        ResourceClass::Heavy => config.exec_heavy_weight.max(1),
+        ResourceClass::IoHeavy => config.exec_io_heavy_weight.max(1),
+        ResourceClass::Watch | ResourceClass::Light => 1,
     };
     Ok(Some(PreparedRunner {
         config,
@@ -765,6 +768,9 @@ mod tests {
             queue_timeout: Duration::from_secs(1),
             heavy_capacity: 4,
             heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_secs(30),
         });
         let runtime = tokio::runtime::Runtime::new().unwrap();
         runtime.block_on(async {

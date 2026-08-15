@@ -32,15 +32,16 @@ Run from an elevated PowerShell session:
 
 The installer creates:
 
+- `ChatGptDevboxGuardian-Startup`
 - `ChatGptDevboxGuardian-Logon`
 - `ChatGptDevboxGuardian-KeepAlive`
 - `ChatGptDevboxMcp-ElevatedStart` (on-demand host-mode MCP start at RunLevel Highest)
 
 On Windows host mode, MCP must stay elevated so `host_exec` inherits admin privileges and never calls `Start-Process -Verb RunAs` (that path pops a full UAC secure-desktop prompt). Guardian treats a healthy but medium-integrity MCP process as unhealthy and restarts it via the elevated repair path.
 
-Windows launchers prefer `POWERSHELL_EXE` when configured, otherwise `C:\Program Files\PowerShell\7\pwsh.exe` when installed, and finally Windows PowerShell 5.1. `POWERSHELL_FALLBACK_EXE` can override the fallback. The scheduled-task VBS launchers resolve this policy at execution time, so removing or breaking PowerShell 7 does not strand Guardian; it can still start through the legacy 5.1 executable.
+Windows recovery launchers prefer `POWERSHELL_EXE` when configured, otherwise `C:\Program Files\PowerShell\7\pwsh.exe` when installed, and finally Windows PowerShell 5.1. `POWERSHELL_FALLBACK_EXE` can override the fallback.
 
-The scheduled tasks run `Ensure-ChatGptDevboxGuardian.ps1`, which checks the heartbeat and safely restarts only the verified Guardian wrapper/supervisor PIDs when stale. Guardian writes an independent heartbeat every five seconds so slow health probes do not look like supervisor death. KeepAlive uses a 60-second stale threshold and requires two consecutive stale observations before killing the verified Guardian process. `Watch-ChatGptDevboxGuardian.ps1` is a thin Windows wrapper around the portable foreground supervisor.
+The boot-critical `ChatGptDevboxGuardian-Startup` task launches `node.exe scripts/devbox-guardian.mjs --project-root ... --direct-owner` directly as Highest/S4U and has no short execution limit because Guardian itself is the persistent task process. `ChatGptDevboxGuardian-Logon` and `ChatGptDevboxGuardian-KeepAlive` run `Ensure-ChatGptDevboxGuardian.ps1` as independent recovery/source-refresh paths. Ensure recognizes and starts the direct Node supervisor when needed. Guardian writes an independent heartbeat every five seconds so slow health probes do not look like supervisor death; same-path heartbeat/state replacement is serialized with collision-resistant temporary names. KeepAlive uses a 60-second stale threshold and requires two consecutive stale observations before killing the verified Guardian process. `Watch-ChatGptDevboxGuardian.ps1` remains a compatibility wrapper, not the boot-critical path.
 
 Windows MCP elevation inspection is tri-state. A definitive medium-integrity result is unhealthy, but a PowerShell/token-query timeout is `unknown` rather than falsely treated as unelevated. A confirmed elevation result is cached for the lifetime of that MCP PID.
 
@@ -130,6 +131,7 @@ All repair output and state remain local under:
 ## Remove Windows tasks
 
 ```powershell
+Unregister-ScheduledTask -TaskName 'ChatGptDevboxGuardian-Startup' -Confirm:$false
 Unregister-ScheduledTask -TaskName 'ChatGptDevboxGuardian-Logon' -Confirm:$false
 Unregister-ScheduledTask -TaskName 'ChatGptDevboxGuardian-KeepAlive' -Confirm:$false
 ```
@@ -138,4 +140,4 @@ For systemd, run `systemctl --user disable --now devbox-guardian.service` and re
 
 ## Windows supervision cadence
 
-The persistent Guardian watcher is authoritative. The Scheduled Task `KeepAlive` trigger is a 10-minute recovery backstop rather than a minute-by-minute PowerShell verifier; startup and logon triggers still provide immediate ownership.
+The persistent direct Node Guardian is authoritative. `ChatGptDevboxGuardian-Startup` starts it directly at boot; `Logon` provides a session-time recovery check, and `KeepAlive` is a 10-minute recovery backstop rather than a minute-by-minute PowerShell verifier.

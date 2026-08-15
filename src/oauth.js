@@ -173,6 +173,27 @@ export class PersistentOAuthState {
     return removed;
   }
 
+  pruneClientsForCapacity(maxClients) {
+    const limit = Math.max(1, Number(maxClients) || 256);
+    if (this.clients.size < limit) return 0;
+    const referenced = new Set();
+    for (const collection of [this.authorizationCodes, this.accessTokens, this.refreshTokens]) {
+      for (const record of collection.values()) {
+        if (record?.clientId) referenced.add(String(record.clientId));
+      }
+    }
+    const candidates = [...this.clients.entries()]
+      .filter(([clientId]) => !referenced.has(String(clientId)))
+      .map(([clientId, metadata]) => [Number(metadata?.client_id_issued_at) || 0, clientId])
+      .sort((left, right) => left[0] - right[0] || String(left[1]).localeCompare(String(right[1])));
+    let removed = 0;
+    for (const [, clientId] of candidates) {
+      if (this.clients.size < limit) break;
+      if (this.clients.delete(clientId)) removed += 1;
+    }
+    return removed;
+  }
+
   snapshot() {
     return {
       clients: [...this.clients.entries()],
@@ -220,7 +241,9 @@ export class PersistentOAuthState {
 
     this.pruneExpired();
     const snapshot = this.snapshot();
-    this.writePromise = this.writePromise.then(async () => {
+    // A transient failed write must not poison the serialization chain forever.
+    // The next persistence attempt starts from the last settled state and retries.
+    this.writePromise = this.writePromise.catch(() => {}).then(async () => {
       await mkdir(path.dirname(this.filePath), { recursive: true });
       const tempFilePath = `${this.filePath}.${process.pid}.tmp`;
       await writeFile(tempFilePath, JSON.stringify(snapshot, null, 2), "utf8");
@@ -232,8 +255,9 @@ export class PersistentOAuthState {
 }
 
 export class DemoClientStore {
-  constructor(state) {
+  constructor(state, { maxClients = 256 } = {}) {
     this.state = state;
+    this.maxClients = Math.max(1, Number(maxClients) || 256);
   }
 
   async getClient(clientId) {
@@ -243,6 +267,10 @@ export class DemoClientStore {
 
   async registerClient(clientMetadata) {
     await this.state.ensureLoaded();
+    this.state.pruneClientsForCapacity(this.maxClients);
+    if (this.state.clients.size >= this.maxClients) {
+      throw new Error("OAuth client registry capacity is occupied by active clients; retry after older sessions expire or are revoked.");
+    }
     this.state.clients.set(clientMetadata.client_id, clientMetadata);
     await this.state.persist();
     return clientMetadata;
@@ -250,9 +278,9 @@ export class DemoClientStore {
 }
 
 export class DemoOAuthProvider {
-  constructor({ stateFilePath } = {}) {
+  constructor({ stateFilePath, maxClients = 256 } = {}) {
     this.state = new PersistentOAuthState(stateFilePath);
-    this.clientsStore = new DemoClientStore(this.state);
+    this.clientsStore = new DemoClientStore(this.state, { maxClients });
   }
 
   async authorize(client, params, res) {
@@ -394,7 +422,7 @@ export class DemoOAuthProvider {
 }
 
 export class CloudflareAccessOAuthProvider {
-  constructor({ teamDomain, audience, jwksUrl, stateFilePath }) {
+  constructor({ teamDomain, audience, jwksUrl, stateFilePath, maxClients = 256 }) {
     const issuer = normalizeUrl(teamDomain);
     if (!issuer) {
       throw new Error("Cloudflare Access team domain is required.");
@@ -405,7 +433,7 @@ export class CloudflareAccessOAuthProvider {
     }
 
     this.state = new PersistentOAuthState(stateFilePath);
-    this.clientsStore = new DemoClientStore(this.state);
+    this.clientsStore = new DemoClientStore(this.state, { maxClients });
     this.issuer = issuer;
     this.audience = audience;
     this.jwksUrl = new URL(normalizeUrl(jwksUrl) || `${issuer}/cdn-cgi/access/certs`);

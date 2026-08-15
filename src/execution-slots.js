@@ -3,15 +3,21 @@ import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "nod
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { currentProcessInstance, processMatchesInstance } from "./process-identity.js";
+
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const slotRoot = process.env.MCP_EXEC_SLOT_ROOT?.trim()
   ? path.resolve(process.env.MCP_EXEC_SLOT_ROOT.trim())
   : path.join(projectRoot, "run", "execution-slots");
+const diskPressureStatePath = path.join(slotRoot, ".disk-pressure.json");
 const POLL_MS = 50;
 const MAX_POLL_MS = 500;
 const pollInterval = (elapsedMs) => elapsedMs < 1000 ? POLL_MS : elapsedMs < 5000 ? 100 : elapsedMs < 30000 ? 250 : MAX_POLL_MS;
 const CORRUPT_SLOT_STALE_MS = 5 * 60 * 1000;
 const CORRUPT_QUEUE_TICKET_STALE_MS = 5000;
+const DISK_PRESSURE_STATE_STALE_MS = 180_000;
+const DISK_PRESSURE_CACHE_MS = 1_000;
+let diskPressureCache = { sampledAtMs: 0, constrained: false };
 
 const metrics = {
   queued: 0,
@@ -36,6 +42,23 @@ const processAlive = (pid) => {
   }
 };
 
+const diskPressureConstrained = async () => {
+  const now = Date.now();
+  if (now - diskPressureCache.sampledAtMs < DISK_PRESSURE_CACHE_MS) return diskPressureCache.constrained;
+  let constrained = false;
+  try {
+    const info = await stat(diskPressureStatePath);
+    if (now - info.mtimeMs <= DISK_PRESSURE_STATE_STALE_MS) {
+      const state = JSON.parse(await readFile(diskPressureStatePath, "utf8"));
+      constrained = ["warning", "critical"].includes(String(state?.diskPressure ?? ""));
+    }
+  } catch {
+    constrained = false;
+  }
+  diskPressureCache = { sampledAtMs: now, constrained };
+  return constrained;
+};
+
 const abortError = () => {
   const error = new Error("Execution queue wait cancelled by the MCP client.");
   error.name = "AbortError";
@@ -52,7 +75,7 @@ export class ExecutionQueueTimeoutError extends Error {
 
 const normalizeResourceClass = (value) => {
   const normalized = String(value ?? "light").trim().toLowerCase();
-  return ["watch", "light", "heavy"].includes(normalized) ? normalized : "light";
+  return ["watch", "light", "heavy", "io-heavy"].includes(normalized) ? normalized : "light";
 };
 
 const classMetrics = (resourceClass) => {
@@ -74,9 +97,14 @@ const slotPath = (pool, index) => path.join(
 );
 
 const queueRoot = path.join(slotRoot, "queue");
-const queueClassFor = ({ kind, pool }) => pool === "watch"
-  ? "watch"
-  : kind === "interactive" ? "execution-interactive" : "execution-background";
+const queueClassFor = ({ kind, pool, resourceClass, pressureConstrained = false }) => {
+  if (pool === "watch") return "watch";
+  if (kind !== "interactive") return "execution-background";
+  if (!pressureConstrained) return "execution-interactive";
+  return ["heavy", "io-heavy"].includes(normalizeResourceClass(resourceClass))
+    ? "execution-interactive-weighted"
+    : "execution-interactive-light";
+};
 const queueHeadPath = (queueClass) => path.join(queueRoot, `.${queueClass}-head.json`);
 const queueHeadLockPath = (queueClass) => path.join(queueRoot, `.${queueClass}-head.lock`);
 const queueSequencePath = (queueClass) => path.join(queueRoot, `.${queueClass}-sequence.txt`);
@@ -104,7 +132,7 @@ const acquireQueueHeadLock = async (queueClass, { signal, deadlineMs }) => {
     let handle = null;
     try {
       handle = await open(filePath, "wx");
-      await handle.writeFile(`${JSON.stringify({ token, pid: process.pid, processInstance: null, class: queueClass, acquiredAtUtc: new Date().toISOString() })}\n`, "utf8");
+      await handle.writeFile(`${JSON.stringify({ token, pid: process.pid, processInstance: await currentProcessInstance(), class: queueClass, acquiredAtUtc: new Date().toISOString() })}\n`, "utf8");
       await handle.close();
       handle = null;
       let released = false;
@@ -177,9 +205,16 @@ const ticketExpired = (name, owner) => {
   return Number.isFinite(queuedAtMs) && Date.now() - queuedAtMs > timeoutMs + 1000;
 };
 
-const createQueueTicket = async ({ kind, pool, resourceClass, weight, label, timeoutMs, signal, deadlineMs }) => {
+const ticketShouldReap = async (name, owner) => {
+  const alive = await processMatchesInstance(Number(owner?.pid), owner?.processInstance);
+  if (!alive) return true;
+  const hasIdentity = owner?.processInstance !== null && owner?.processInstance !== undefined && owner?.processInstance !== "";
+  return !hasIdentity && ticketExpired(name, owner);
+};
+
+const createQueueTicket = async ({ kind, pool, resourceClass, weight, label, timeoutMs, signal, deadlineMs, pressureConstrained }) => {
   await mkdir(queueRoot, { recursive: true });
-  const queueClass = queueClassFor({ kind, pool });
+  const queueClass = queueClassFor({ kind, pool, resourceClass, pressureConstrained });
   const sequence = await nextQueueSequence(queueClass, { signal, deadlineMs });
   const token = randomUUID();
   const name = `${queueClass}-${sequence.toString().padStart(32, "0")}-${token}.json`;
@@ -190,7 +225,7 @@ const createQueueTicket = async ({ kind, pool, resourceClass, weight, label, tim
     await handle.writeFile(`${JSON.stringify({
       token,
       pid: process.pid,
-      processInstance: null,
+      processInstance: await currentProcessInstance(),
       class: queueClass,
       kind,
       resourceClass,
@@ -245,7 +280,7 @@ const queueTicketIsHead = async (ticket, { signal, deadlineMs }) => {
       await refreshQueueHead(ticket.queueClass, { signal, deadlineMs });
       continue;
     }
-    if (ticketExpired(head, owner) || !processAlive(Number(owner.pid))) {
+    if (await ticketShouldReap(head, owner)) {
       await rm(headPath, { force: true }).catch(() => {});
       await refreshQueueHead(ticket.queueClass, { signal, deadlineMs });
       continue;
@@ -257,14 +292,15 @@ const queueTicketIsHead = async (ticket, { signal, deadlineMs }) => {
 const readQueueSnapshot = async () => {
   const result = {};
   for (const name of await readdir(queueRoot).catch(() => [])) {
-    const queueClass = name.startsWith("execution-interactive-") ? "execution-interactive"
-      : name.startsWith("execution-background-") ? "execution-background"
-        : name.startsWith("watch-") ? "watch" : null;
-    if (!queueClass || !name.endsWith(".json")) continue;
+    if (!name.endsWith(".json")) continue;
     const filePath = path.join(queueRoot, name);
     const owner = await readFile(filePath, "utf8").then(JSON.parse).catch(() => null);
-    if (!owner || ticketExpired(name, owner) || !processAlive(Number(owner.pid))) {
-      if (owner) await rm(filePath, { force: true }).catch(() => {});
+    const queueClass = String(owner?.class ?? "");
+    const knownClass = queueClass === "watch"
+      || queueClass.startsWith("execution-interactive")
+      || queueClass.startsWith("execution-background");
+    if (!owner || !knownClass || await ticketShouldReap(name, owner)) {
+      if (owner && knownClass) await rm(filePath, { force: true }).catch(() => {});
       continue;
     }
     result[queueClass] = (result[queueClass] ?? 0) + 1;
@@ -297,7 +333,7 @@ const removeStaleSlot = async (filePath) => {
   } catch {
   }
 
-  if (Number.isInteger(owner?.pid) && processAlive(owner.pid)) {
+  if (Number.isInteger(owner?.pid) && await processMatchesInstance(owner.pid, owner.processInstance)) {
     return false;
   }
 
@@ -342,7 +378,7 @@ const acquirePoolClaimLock = async (pool, { signal, deadlineMs }) => {
       await handle.writeFile(`${JSON.stringify({
         token,
         pid: process.pid,
-        processInstance: null,
+        processInstance: await currentProcessInstance(),
         pool,
         acquiredAtUtc: new Date().toISOString(),
       })}
@@ -381,6 +417,19 @@ const acquirePoolClaimLock = async (pool, { signal, deadlineMs }) => {
   return null;
 };
 
+const agedBackgroundWaiterExists = async (thresholdMs) => {
+  const boundedThreshold = Math.max(1, Number(thresholdMs) || 30_000);
+  const now = Date.now();
+  for (const name of await readdir(queueRoot).catch(() => [])) {
+    if (!name.startsWith("execution-background-") || !name.endsWith(".json")) continue;
+    const owner = await readFile(path.join(queueRoot, name), "utf8").then(JSON.parse).catch(() => null);
+    if (!owner || await ticketShouldReap(name, owner)) continue;
+    const queuedAt = Number(owner.queuedAtUnixMs);
+    if (Number.isFinite(queuedAt) && now - queuedAt >= boundedThreshold) return true;
+  }
+  return false;
+};
+
 export const acquireExecutionSlot = async ({
   kind = "interactive",
   resourceClass = "light",
@@ -389,6 +438,10 @@ export const acquireExecutionSlot = async ({
   reservedInteractive = 1,
   watchMaxConcurrent = 4,
   heavyCapacity = 4,
+  heavyWeight = 2,
+  ioHeavyCapacity = 2,
+  ioHeavyWeight = 2,
+  backgroundPriorityAgeMs = 30_000,
   queueTimeoutMs = 15000,
   signal,
   label = "execution",
@@ -403,12 +456,26 @@ export const acquireExecutionSlot = async ({
     : 0;
   const baseUsableSlots = kind === "background" && pool === "execution" ? Math.max(1, total - reserved) : total;
   const normalizedHeavyCapacity = Math.max(1, Math.min(total, Number(heavyCapacity) || total));
-  const usableSlots = pool === "execution" && normalizedClass === "heavy"
-    ? Math.min(baseUsableSlots, Math.max(Number(weight) || 1, normalizedHeavyCapacity))
+  const normalizedIoHeavyCapacity = Math.max(1, Math.min(total, Number(ioHeavyCapacity) || total));
+  const pressureConstrained = await diskPressureConstrained();
+  const requested = Math.max(1, Number(weight) || 1);
+  const classCapacity = normalizedClass === "heavy"
+    ? (pressureConstrained ? Math.min(normalizedHeavyCapacity, requested) : normalizedHeavyCapacity)
+    : normalizedClass === "io-heavy"
+      ? (pressureConstrained ? Math.min(normalizedIoHeavyCapacity, requested) : normalizedIoHeavyCapacity)
+      : total;
+  const usableSlots = pool === "execution" && ["heavy", "io-heavy"].includes(normalizedClass)
+    ? Math.min(baseUsableSlots, Math.max(Number(weight) || 1, classCapacity))
     : baseUsableSlots;
   const requestedWeight = pool === "watch"
     ? 1
     : Math.max(1, Math.min(usableSlots, Number(weight) || 1));
+  const protectedLowSlots = pool === "execution" && pressureConstrained && normalizedClass === "light"
+    ? Math.min(
+        Math.max(0, usableSlots - 1),
+        Math.max(1, Number(heavyWeight) || 1, Number(ioHeavyWeight) || 1),
+      )
+    : 0;
   const timeoutMs = Math.max(1, Number(queueTimeoutMs) || 1);
   const queuedAt = Date.now();
   await mkdir(slotRoot, { recursive: true });
@@ -426,6 +493,7 @@ export const acquireExecutionSlot = async ({
       timeoutMs,
       signal,
       deadlineMs,
+      pressureConstrained,
     });
     while (true) {
       if (signal?.aborted) {
@@ -439,6 +507,18 @@ export const acquireExecutionSlot = async ({
           metrics.timedOut += 1;
           throw new ExecutionQueueTimeoutError(
             `Execution queue remained saturated for ${elapsed} ms. Retry shortly or use a detached job for long work.`,
+            { kind, label, pool, resource_class: normalizedClass, weight: requestedWeight, queue_wait_ms: elapsed, max_concurrent: total, reserved_interactive: reserved },
+          );
+        }
+        await sleep(Math.min(pollInterval(elapsed), timeoutMs - elapsed));
+        continue;
+      }
+      if (kind === "interactive" && await agedBackgroundWaiterExists(backgroundPriorityAgeMs)) {
+        const elapsed = Date.now() - queuedAt;
+        if (elapsed >= timeoutMs) {
+          metrics.timedOut += 1;
+          throw new ExecutionQueueTimeoutError(
+            `Execution queue remained saturated for ${elapsed} ms while yielding to an aged background waiter.`,
             { kind, label, pool, resource_class: normalizedClass, weight: requestedWeight, queue_wait_ms: elapsed, max_concurrent: total, reserved_interactive: reserved },
           );
         }
@@ -469,7 +549,7 @@ export const acquireExecutionSlot = async ({
       const owned = [];
       let claimReleaseError = null;
       try {
-        for (let index = 0; index < usableSlots && owned.length < requestedWeight; index += 1) {
+        for (let index = protectedLowSlots; index < usableSlots && owned.length < requestedWeight; index += 1) {
           const filePath = slotPath(pool, index);
           const token = randomUUID();
           let handle = null;
@@ -478,7 +558,7 @@ export const acquireExecutionSlot = async ({
             await handle.writeFile(`${JSON.stringify({
               token,
               pid: process.pid,
-              processInstance: null,
+              processInstance: await currentProcessInstance(),
               kind,
               pool,
               resourceClass: normalizedClass,
@@ -603,7 +683,7 @@ const readPoolEntries = async (pool) => {
     const filePath = path.join(slotRoot, name);
     try {
       const value = JSON.parse(await readFile(filePath, "utf8"));
-      if (!processAlive(Number(value.pid))) {
+      if (!await processMatchesInstance(Number(value.pid), value.processInstance)) {
         await rm(filePath, { force: true });
         continue;
       }
@@ -619,6 +699,8 @@ export const getExecutionSlotSnapshot = async ({
   reservedInteractive = 1,
   watchMaxConcurrent = 4,
   heavyCapacity = 4,
+  ioHeavyCapacity = 2,
+  backgroundPriorityAgeMs = 30_000,
 } = {}) => {
   const total = Math.max(1, Number(maxConcurrent) || 1);
   const reserved = Math.max(0, Math.min(total - 1, Number(reservedInteractive) || 0));
@@ -639,6 +721,8 @@ export const getExecutionSlotSnapshot = async ({
     max_concurrent: total,
     reserved_interactive: reserved,
     heavy_capacity: Math.max(1, Math.min(total, Number(heavyCapacity) || total)),
+    io_heavy_capacity: Math.max(1, Math.min(total, Number(ioHeavyCapacity) || total)),
+    background_priority_age_ms: Math.max(1, Number(backgroundPriorityAgeMs) || 30_000),
     background_capacity: Math.max(1, total - reserved),
     watch_capacity: watchTotal,
     occupied: entries.length,

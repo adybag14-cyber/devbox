@@ -117,7 +117,9 @@ let lease = null;
 let finalStatus = null;
 
 const resourceClass = request.resourceClass || "light";
-const weight = resourceClass === "heavy" ? Math.max(1, config.mcpExecHeavyWeight) : 1;
+const weight = resourceClass === "heavy"
+  ? Math.max(1, config.mcpExecHeavyWeight)
+  : resourceClass === "io-heavy" ? Math.max(1, config.mcpExecIoHeavyWeight) : 1;
 
 try {
   lease = await acquireExecutionSlot({
@@ -129,6 +131,10 @@ try {
     reservedInteractive: config.mcpExecReservedInteractive,
     watchMaxConcurrent: config.mcpWatchMaxConcurrent,
     heavyCapacity: config.mcpExecHeavyCapacity,
+    heavyWeight: config.mcpExecHeavyWeight,
+    ioHeavyCapacity: config.mcpExecIoHeavyCapacity,
+    ioHeavyWeight: config.mcpExecIoHeavyWeight,
+    backgroundPriorityAgeMs: config.mcpBackgroundPriorityAgeMs,
     queueTimeoutMs: config.mcpBackgroundQueueTimeoutMs,
     signal: controller.signal,
   });

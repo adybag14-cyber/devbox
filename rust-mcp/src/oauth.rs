@@ -153,6 +153,7 @@ pub struct OAuthService {
     state_file: PathBuf,
     public_base_url: String,
     resource_name: String,
+    max_clients: usize,
     cloudflare_issuer: Option<String>,
     cloudflare_audience: String,
     cloudflare_jwks_url: Option<String>,
@@ -212,6 +213,7 @@ pub struct VerifiedAccessToken {
 #[derive(Debug, Clone)]
 pub struct OAuthRequestInfo {
     pub client_id: String,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -305,6 +307,54 @@ impl OAuthFailure {
     }
 }
 
+fn prune_clients_for_capacity(state: &mut OAuthState, max_clients: usize) -> usize {
+    if state.clients.len() < max_clients {
+        return 0;
+    }
+    let mut referenced = std::collections::BTreeSet::new();
+    referenced.extend(
+        state
+            .authorization_codes
+            .values()
+            .map(|record| record.client_id.clone()),
+    );
+    referenced.extend(
+        state
+            .access_tokens
+            .values()
+            .map(|record| record.client_id.clone()),
+    );
+    referenced.extend(
+        state
+            .refresh_tokens
+            .values()
+            .map(|record| record.client_id.clone()),
+    );
+    let mut candidates = state
+        .clients
+        .iter()
+        .filter(|(client_id, _)| !referenced.contains(*client_id))
+        .map(|(client_id, metadata)| {
+            let issued = metadata
+                .get("client_id_issued_at")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            (issued, client_id.clone())
+        })
+        .collect::<Vec<_>>();
+    candidates.sort();
+    let mut removed = 0;
+    for (_, client_id) in candidates {
+        if state.clients.len() < max_clients {
+            break;
+        }
+        if state.clients.remove(&client_id).is_some() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 impl OAuthService {
     #[must_use]
     pub fn new(config: &Config) -> Option<Self> {
@@ -314,6 +364,7 @@ impl OAuthService {
             state_file: config.oauth_state_file_path.clone(),
             public_base_url,
             resource_name: config.server_name(),
+            max_clients: config.oauth_max_clients.max(1),
             cloudflare_issuer: config.cloudflare_access_team_domain.clone(),
             cloudflare_audience: config.cloudflare_access_aud.clone(),
             cloudflare_jwks_url: config.cloudflare_access_jwks_url.clone().or_else(|| {
@@ -338,7 +389,14 @@ impl OAuthService {
             "token_endpoint": self.endpoint("token"),
             "token_endpoint_auth_methods_supported": ["client_secret_post", "none"],
             "grant_types_supported": ["authorization_code", "refresh_token"],
-            "scopes_supported": ["mcp:tools"],
+            "scopes_supported": [
+                "mcp:tools",
+                "mcp:devbox:read",
+                "mcp:devbox:exec",
+                "mcp:host:read",
+                "mcp:host:exec",
+                "mcp:admin"
+            ],
             "revocation_endpoint": self.endpoint("revoke"),
             "revocation_endpoint_auth_methods_supported": ["client_secret_post"],
             "registration_endpoint": self.endpoint("register"),
@@ -355,7 +413,14 @@ impl OAuthService {
         json!({
             "resource": resource,
             "authorization_servers": [self.issuer_url()],
-            "scopes_supported": ["mcp:tools"],
+            "scopes_supported": [
+                "mcp:tools",
+                "mcp:devbox:read",
+                "mcp:devbox:exec",
+                "mcp:host:read",
+                "mcp:host:exec",
+                "mcp:admin"
+            ],
             "resource_name": if legacy { "Docker ChatGPT Devbox MCP" } else { &self.resource_name },
         })
     }
@@ -414,6 +479,12 @@ impl OAuthService {
         self.ensure_loaded_locked(&mut state)
             .await
             .map_err(internal_failure)?;
+        prune_clients_for_capacity(&mut state, self.max_clients);
+        if state.clients.len() >= self.max_clients {
+            return Err(OAuthFailure::invalid_client_metadata(
+                "OAuth client registry capacity is occupied by active clients; retry after older sessions expire or are revoked.",
+            ));
+        }
         state.clients.insert(client_id, value.clone());
         self.persist_locked(&state)
             .await
@@ -890,6 +961,7 @@ pub async fn mcp_bearer_guard(
             let mut request = request;
             request.extensions_mut().insert(OAuthRequestInfo {
                 client_id: info.client_id.clone(),
+                scopes: info.scopes.clone(),
             });
             next.run(request).await
         }
@@ -1330,6 +1402,37 @@ fn internal_failure(error: impl std::fmt::Display) -> OAuthFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oauth_client_capacity_prunes_oldest_unreferenced_clients() {
+        let mut state = OAuthState {
+            loaded: true,
+            ..OAuthState::default()
+        };
+        state
+            .clients
+            .insert("active".to_owned(), json!({"client_id_issued_at": 1}));
+        state
+            .clients
+            .insert("old".to_owned(), json!({"client_id_issued_at": 2}));
+        state
+            .clients
+            .insert("new".to_owned(), json!({"client_id_issued_at": 3}));
+        state.access_tokens.insert(
+            "token".to_owned(),
+            TokenRecord {
+                client_id: "active".to_owned(),
+                scopes: Vec::new(),
+                resource: None,
+                identity: None,
+                expires_at: u64::MAX,
+            },
+        );
+        let removed = prune_clients_for_capacity(&mut state, 2);
+        assert_eq!(removed, 2);
+        assert!(state.clients.contains_key("active"));
+        assert_eq!(state.clients.len(), 1);
+    }
 
     #[test]
     fn loopback_redirect_uri_relaxes_only_port() {

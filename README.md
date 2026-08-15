@@ -191,7 +191,7 @@ Behavior:
 - `devbox_run_program` is the preferred fast path for a single executable with structured arguments; it avoids shell startup and quoting overhead
 - `devbox_exec_readonly` is best-effort and is not container-sandboxed; use it when shell syntax such as pipelines, variables, or redirection is actually needed
 - host-mode `devbox_search_files` prefers native ripgrep when available and retains the portable JS walker as a fallback; normal searches respect ignore files for speed, while `include_ignored=true` opts into exhaustive hidden/ignored content
-- synchronous process tools share a bounded execution pool; detached jobs cannot consume the reserved interactive slot, while `/healthz`, status, file I/O, and Guardian remain outside the process queue
+- synchronous process tools share a bounded execution pool; detached jobs cannot consume the reserved interactive slot, while `/healthz`, status, file I/O, and Guardian remain outside the process queue; recursive scans/copies/archives/package installs are classified separately as `io-heavy` so storage pressure cannot masquerade as light interactive work
 - generic host tools are exposed through `host_*`
 - legacy `windows_host_*` names remain compatibility aliases
 - `host_capture_display` captures the native desktop; `host_capture_window` captures the largest visible window for a PID or its child processes
@@ -238,14 +238,16 @@ Important `.env` values:
   - Migration note: older deployments treated `HOST_PROGRAM_ALLOWLIST` as a full replacement. If you intentionally narrowed the defaults, set `HOST_PROGRAM_ALLOWLIST_REPLACE=true`; otherwise the configured entries are now merged with the canonical safe defaults.
 - `DEVBOX_PROGRAM_ALLOWLIST` controls the structured `devbox_run_program` fast path; in host mode the executable must also be allowed by `HOST_PROGRAM_ALLOWLIST`
 - `HOST_SEARCH_BACKEND=auto|rg|js` selects host search acceleration; `auto` prefers ripgrep
-- `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune the light/heavy execution pool
-- `MCP_WATCH_MAX_CONCURRENT` gives passive watchers such as `gh run watch` a separate pool; `MCP_EXEC_HEAVY_WEIGHT` controls per-request heavy weight and `MCP_EXEC_HEAVY_CAPACITY` (default `4` of `6`) caps aggregate heavy occupancy so light interactive work keeps capacity
+- `MCP_EXEC_MAX_CONCURRENT`, `MCP_EXEC_RESERVED_INTERACTIVE`, `MCP_EXEC_QUEUE_TIMEOUT_MS`, and `MCP_BACKGROUND_QUEUE_TIMEOUT_MS` tune the shared execution pool
+- `MCP_WATCH_MAX_CONCURRENT` gives passive watchers such as `gh run watch` a separate pool; `MCP_EXEC_HEAVY_WEIGHT`/`MCP_EXEC_HEAVY_CAPACITY` (defaults `2`/`4`) control CPU-heavy build/browser work, while `MCP_EXEC_IO_HEAVY_WEIGHT`/`MCP_EXEC_IO_HEAVY_CAPACITY` (defaults `2`/`2`) serialize recursive scans, large copies/archives, package installs, and similar storage-intensive work
+- `MCP_BACKGROUND_PRIORITY_AGE_MS` (default `30000`) prevents sustained interactive traffic from starving background jobs indefinitely; normal interactive priority remains in effect before the aging threshold
 - `MCP_JOB_LOG_MAX_BYTES` and `MCP_JOB_LOG_ROTATIONS` bound detached-job stdout/stderr on disk; `MCP_JOB_HEARTBEAT_MS` and `MCP_JOB_ORPHAN_STALE_MS` control orphan detection; `MCP_JOB_RETENTION_HOURS` bounds persisted terminal-job history; `MCP_JOB_STORE_MAX_BYTES` and `MCP_JOB_STORE_MAX_TERMINAL_JOBS` apply global pressure limits that evict the oldest terminal jobs toward a low-water mark without deleting active jobs
+- incremental job maintenance reports cycle number, cursor, total jobs, progress percent, and cycle age; quota accounting remains independent so a large retained history does not require a full rescan every minute
 - `MCP_WAIT_MAX_SECONDS` bounds no-process waits; prefer `devbox_wait`, `devbox_wait_for_file`, or `devbox_job_status(wait_seconds=...)` over shell `sleep`/`Start-Sleep`
 - `SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS`, `SCREEN_CAPTURE_RETRIES`, and `SCREEN_CAPTURE_QUEUE_TIMEOUT_MS` control serialized fail-fast screenshot capture
 - `GUARDIAN_HOST_PRESSURE_SAMPLE_MS` controls diagnostic Windows CPU/memory/commit/pagefile sampling; it does not trigger repair by itself
 - `DEVBOX_VERSION_CACHE_MS` controls the toolchain-version cache; Rust refreshes it in a supervised background loop so `devbox_status` remains subprocess-free while normally returning fresh versions
-- `devbox_status` exposes cached scheduler/store health plus `executionStore.diskPressure` and `operationalWarnings`; low disk percentage warns before the hard readiness floor
+- `devbox_status` exposes cached scheduler/store health plus `executionStore.diskPressure`, a robust multi-sample free-space trend (`freeBytesTrendPerHour`, sample count, and window), and `operationalWarnings`; low disk percentage warns before the hard readiness floor. Warning/critical pressure serializes weighted work, and critical pressure rejects new mutating heavy/I/O-heavy work while leaving read-only inspection and cleanup available
 - `npm run repo:freshness` compares `HEAD`, cached `origin/main`, and the actual remote head so a stale remote-tracking ref cannot masquerade as a current checkout
 - `PUBLIC_BASE_URL` for public OAuth deployments
 - `ENABLE_GATEWAY_BRIDGE=true|false`
@@ -283,7 +285,7 @@ Guardian v2 monitors the MCP process, local and public health endpoints, the sel
 ./scripts/install-guardian.sh auto
 ```
 
-Docker mode includes stale-container start/replace repair plus exponential backoff and a persistent circuit breaker after repeated Docker Desktop failures. Windows/host startup also has single-owner lifecycle locking, a bounded startup deadline, immediate MCP PID ownership, cleanup-on-failure, and a machine-readable `run/startup-state.json` phase journal that Guardian uses to avoid racing an in-progress start. See [docs/GUARDIAN.md](./docs/GUARDIAN.md) for readiness fields, status commands, and service-manager setup.
+Docker mode includes stale-container start/replace repair plus exponential backoff and a persistent circuit breaker after repeated Docker Desktop failures. On Windows, the boot-critical `AtStartup` task launches the portable Node Guardian directly at Highest/S4U; logon and the 10-minute KeepAlive task retain the independent PowerShell Ensure recovery path. Windows/host startup also has single-owner lifecycle locking, a bounded startup deadline, immediate MCP PID ownership, cleanup-on-failure, and a machine-readable `run/startup-state.json` phase journal that Guardian uses to avoid racing an in-progress start. See [docs/GUARDIAN.md](./docs/GUARDIAN.md) for readiness fields, status commands, and service-manager setup.
 
 ## ChatGPT connector values
 
@@ -305,8 +307,8 @@ For commands likely to exceed the connector request lifetime, use the persistent
 
 - Synchronous shell tools are intentionally capped at **90 seconds** because upstream MCP/connector requests can be aborted around the two-minute mark. Do not use a long synchronous timeout for builds, exports, sleeps, or soak tests.
 - `devbox_run_program` should be preferred for one executable such as `git`, `gh`, `node`, `python`, or `rg`; it bypasses the shell. Long direct programs should use `devbox_run_program_start`.
-- `devbox_exec_start` starts a detached shell job and returns a job ID immediately; use `resource_class=watch|light|heavy` when auto-detection is not appropriate.
-- Passive watchers use their own bounded pool; heavy jobs consume weighted execution capacity while at least one interactive slot remains reserved.
+- `devbox_exec_start` starts a detached shell job and returns a job ID immediately; use `resource_class=watch|light|heavy|io-heavy` when auto-detection is not appropriate.
+- Passive watchers use their own bounded pool; CPU-heavy and I/O-heavy jobs consume weighted capacity. Under disk pressure, weighted and light interactive work use separate FIFO lanes and light work is kept outside the weighted slot corridor, avoiding head-of-line stalls while preserving per-class FIFO ordering.
 - `devbox_job_status(wait_seconds=...)` long-polls using a Node timer without occupying an execution slot. `devbox_wait` and host-mode `devbox_wait_for_file` likewise avoid spawning a shell just to sleep/poll.
 - Detached job logs rotate at configured byte limits, and dead runners with stale heartbeats reconcile to terminal `interrupted` state.
 - Synchronous shell/direct-program tools support `output_mode=head|tail|summary`, `max_output_chars`, and `max_output_lines` for bounded large-output inspection.
@@ -319,7 +321,8 @@ When `MCP_AUTH_MODE=none`, local loopback requests can expose the browser bridge
 
 - `host_exec` provides direct host shell access and should be enabled only in a trusted environment.
 - `host_run_program` is constrained by `HOST_PROGRAM_ALLOWLIST` and is the preferred native-host fast path for a single executable.
-- Persistent OAuth state automatically prunes expired authorization codes and tokens during load/persistence so long-running public deployments do not accumulate stale state indefinitely.
+- Persistent OAuth state automatically prunes expired authorization codes and tokens during load/persistence and bounds dynamic client registration with `MCP_OAUTH_MAX_CLIENTS` (default `256`), evicting only the oldest unreferenced clients.
+- OAuth advertises capability scopes `mcp:devbox:read`, `mcp:devbox:exec`, `mcp:host:read`, `mcp:host:exec`, and `mcp:admin`. The legacy `mcp:tools` scope remains a full-access compatibility scope so existing connector sessions continue to work.
 - Host-mode read-only execution is cooperative rather than a hard sandbox.
 - The built-in `oauth`/`demo-oauth` mode is for connector/protocol testing and does not authenticate an external user identity. Public deployments requiring identity enforcement should use `cloudflare-access` or another trusted authentication layer in front of Devbox.
 

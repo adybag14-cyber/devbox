@@ -1,7 +1,8 @@
 use std::{
+    collections::BTreeMap,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     task::{Context as TaskContext, Poll},
     time::Duration,
 };
@@ -272,6 +273,7 @@ impl UsageLogSink {
 pub struct UsageService {
     tool: Arc<UsageLogger>,
     http: Arc<UsageLogger>,
+    active_tools: Arc<ActiveToolRegistry>,
 }
 
 impl UsageService {
@@ -298,6 +300,7 @@ impl UsageService {
                 "usage-http-writer",
                 background,
             )),
+            active_tools: Arc::new(ActiveToolRegistry::default()),
         }
     }
 
@@ -309,6 +312,11 @@ impl UsageService {
     #[must_use]
     pub fn http_logger(&self) -> Arc<UsageLogger> {
         self.http.clone()
+    }
+
+    #[must_use]
+    pub fn active_tool_registry(&self) -> Arc<ActiveToolRegistry> {
+        self.active_tools.clone()
     }
 
     #[must_use]
@@ -481,6 +489,84 @@ fn header_text(headers: &HeaderMap, name: header::HeaderName) -> String {
         .and_then(|value| value.to_str().ok())
         .unwrap_or_default()
         .to_owned()
+}
+
+#[derive(Debug, Clone)]
+struct ActiveToolEntry {
+    tool: String,
+    started_at: String,
+    started: std::time::Instant,
+    arguments: Value,
+    context: Value,
+}
+
+#[derive(Debug, Default)]
+pub struct ActiveToolRegistry {
+    entries: StdMutex<BTreeMap<String, ActiveToolEntry>>,
+}
+
+impl ActiveToolRegistry {
+    #[must_use]
+    pub fn register(self: &Arc<Self>, invocation: &ToolUsageInvocation) -> ActiveToolGuard {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                invocation.invocation_id.clone(),
+                ActiveToolEntry {
+                    tool: invocation.tool.clone(),
+                    started_at: invocation.started_at.clone(),
+                    started: invocation.started,
+                    arguments: invocation.arguments.clone(),
+                    context: invocation.context.clone(),
+                },
+            );
+        ActiveToolGuard {
+            registry: self.clone(),
+            invocation_id: invocation.invocation_id.clone(),
+        }
+    }
+
+    #[must_use]
+    pub fn snapshot(&self) -> Value {
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .map(|(invocation_id, entry)| {
+                json!({
+                    "invocationId": invocation_id,
+                    "tool": entry.tool,
+                    "startedAtUtc": entry.started_at,
+                    "elapsedMs": elapsed_ms(entry.started.elapsed()),
+                    "arguments": entry.arguments,
+                    "context": entry.context,
+                })
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry["elapsedMs"].as_u64().unwrap_or(0)));
+        entries.truncate(32);
+        Value::Array(entries)
+    }
+
+    fn remove(&self, invocation_id: &str) {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(invocation_id);
+    }
+}
+
+pub struct ActiveToolGuard {
+    registry: Arc<ActiveToolRegistry>,
+    invocation_id: String,
+}
+
+impl Drop for ActiveToolGuard {
+    fn drop(&mut self) {
+        self.registry.remove(&self.invocation_id);
+    }
 }
 
 #[derive(Debug, Clone)]

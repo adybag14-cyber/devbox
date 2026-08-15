@@ -53,6 +53,8 @@ jobs:
           cache: npm
       - name: Install JavaScript SDK dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Audit production JavaScript dependencies
+        run: npm audit --omit=dev --audit-level=high
       - name: Install Rust 1.91.1 with quality components
         shell: bash
         run: |

@@ -34,14 +34,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             artifact: devbox-setup-linux-x86_64
             rust_binary: bootstrap/target/release/devbox-setup
             rust_output: devbox-setup-linux-x86_64
             tui_binary: setup-tui/build/devbox-tui
             tui_output: devbox-tui-linux-x86_64
             cloudflare_hint: pkg.cloudflare.com/cloudflare-main.gpg
-          - os: windows-latest
+          - os: windows-2025
             artifact: devbox-setup-windows-x86_64
             rust_binary: bootstrap/target/release/devbox-setup.exe
             rust_output: devbox-setup-windows-x86_64.exe
@@ -69,8 +69,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Select stable Rust
-        run: rustup default stable
+      - name: Select pinned Rust 1.91.1
+        run: |
+          rustup toolchain install 1.91.1 --profile minimal
+          rustup default 1.91.1
       - name: Format check
         run: cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
       - name: Test Rust bootstrap
@@ -115,8 +117,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Select stable Rust
-        run: rustup default stable
+      - name: Select pinned Rust 1.91.1
+        run: |
+          rustup toolchain install 1.91.1 --profile minimal
+          rustup default 1.91.1
       - name: Format and test
         run: |
           cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
@@ -145,14 +149,16 @@ jobs:
 
   android:
     name: Android and Termux binaries
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Select stable Rust
-        run: rustup default stable
+      - name: Select pinned Rust 1.91.1
+        run: |
+          rustup toolchain install 1.91.1 --profile minimal
+          rustup default 1.91.1
       - name: Install Android Rust targets
         run: >-
           rustup target add
@@ -206,7 +212,7 @@ jobs:
     name: Publish bootstrap release
     if: startsWith(github.ref, 'refs/tags/bootstrap-v')
     needs: [desktop, linux-arm64, android]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Download all binaries
@@ -236,10 +242,8 @@ jobs:
           Canonical Termux app: https://github.com/adybag14-cyber/termux-app
           EOF
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
-              --title "Devbox bootstrap $GITHUB_REF_NAME" --notes-file release-notes.md --latest
-          else
-            gh release create "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" \
-              --title "Devbox bootstrap $GITHUB_REF_NAME" --notes-file release-notes.md --latest
+            echo "Release $GITHUB_REF_NAME already exists; refusing to mutate published versioned assets." >&2
+            exit 1
           fi
+          gh release create "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" \
+            --title "Devbox bootstrap $GITHUB_REF_NAME" --notes-file release-notes.md --latest
