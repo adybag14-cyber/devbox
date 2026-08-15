@@ -7,8 +7,9 @@ const execFileAsync = promisify(execFile);
 const CACHE_TTL_MS = 1500;
 const cache = new Map();
 let linuxBootIdPromise = null;
+let currentProcessInstancePromise = null;
 
-const processAlive = (pid) => {
+export const processAlive = (pid) => {
   if (!Number.isInteger(pid) || pid < 1) return false;
   try {
     process.kill(pid, 0);
@@ -53,6 +54,7 @@ const linuxProcessInstance = async (pid) => {
 const macosProcessInstance = async (pid) => {
   const { stdout } = await execFileAsync("ps", ["-o", "lstart=", "-p", String(pid)], {
     encoding: "utf8", timeout: 2000, maxBuffer: 4096,
+    env: { ...process.env, LC_ALL: "C" },
   });
   const millis = Date.parse(String(stdout ?? "").trim());
   return Number.isFinite(millis) ? String(Math.floor(millis / 1000)) : null;
@@ -75,13 +77,18 @@ export const processInstance = async (pid) => {
   return value;
 };
 
-export const currentProcessInstance = () => processInstance(process.pid);
+export const currentProcessInstance = () => {
+  currentProcessInstancePromise ??= processInstance(process.pid);
+  return currentProcessInstancePromise;
+};
 
 export const processMatchesInstance = async (pid, expected) => {
   if (!processAlive(pid)) return false;
   if (expected === null || expected === undefined || expected === "") return true;
-  const actual = await processInstance(pid);
-  if (actual === null) return false;
+  const actual = pid === process.pid ? await currentProcessInstance() : await processInstance(pid);
+  // A failed identity probe is indeterminate, not proof of PID reuse. Verified
+  // liveness remains authoritative until a successful identity probe disagrees.
+  if (actual === null) return true;
   if (typeof expected === "number" && !Number.isSafeInteger(expected)) {
     // Legacy JSON numeric identities above 2^53 cannot be represented exactly in
     // JavaScript. Preserve upgrade compatibility by falling back to verified PID

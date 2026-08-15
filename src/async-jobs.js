@@ -188,8 +188,10 @@ const inferProgramResourceClass = (program, rawArgs) => {
   if (["sleep", "start-sleep"].includes(exe)) return "watch";
   if (["wsl", "wsl.exe"].includes(exe)) return inferShellResourceClass(args.join(" "));
   if (["find", "du", "robocopy", "xcopy", "rsync", "tar", "7z", "7zz", "zip", "unzip"].includes(exe)) return "io-heavy";
+  if (exe === "rg" && args.length > 0 && !["--version", "-v"].includes(first)) return "io-heavy";
   if (exe === "git" && ["clone", "fetch", "gc", "repack"].includes(first)) return "io-heavy";
   if (["npm", "pnpm", "yarn", "bun"].includes(exe) && ["ci", "install", "add"].includes(first)) return "io-heavy";
+  if (["apt", "apt-get", "dnf", "yum", "pacman", "apk", "winget", "choco", "scoop"].includes(exe) && ["install", "add", "upgrade", "update", "-s"].includes(first)) return "io-heavy";
   if (["pip", "pip3"].includes(exe) && first === "install") return "io-heavy";
   if (["python", "python3", "py"].includes(exe) && first === "-m" && second === "pip" && args[2] === "install") return "io-heavy";
   if (["pwsh", "powershell"].includes(exe)) {
@@ -401,6 +403,8 @@ export const reconcileOrphanedDevboxJobs = async () => {
     compactedLogs: 0,
     deleted: 0,
     errors: 0,
+    // The JS rollback performs one complete maintenance pass per invocation.
+    // Progress fields therefore describe that single pass and are 100% at return.
     cycleCompleted: true,
     maintenanceCycle,
     maintenanceCursor: 0,

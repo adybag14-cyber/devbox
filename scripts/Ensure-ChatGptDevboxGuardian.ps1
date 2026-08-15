@@ -181,6 +181,10 @@ function Test-SecondStaleHeartbeatObservation {
         if (Test-Path -LiteralPath $staleObservationPath) {
             $previous = Get-Content -LiteralPath $staleObservationPath -Raw -ErrorAction Stop | ConvertFrom-Json
             $samePid = ([int]$previous.ProcessId -eq [int]$Process.ProcessId)
+            $currentCreationUtc = ([DateTime]$Process.CreationDate).ToUniversalTime().ToString('o')
+            $sameProcessInstance = $samePid -and
+                $previous.PSObject.Properties['CreationDateUtc'] -and
+                ([string]$previous.CreationDateUtc -eq $currentCreationUtc)
             $observed = if ($previous.ObservedAtUtc -is [DateTime]) {
                 $previous.ObservedAtUtc.ToUniversalTime()
             } else {
@@ -190,14 +194,21 @@ function Test-SecondStaleHeartbeatObservation {
                     [Globalization.DateTimeStyles]::RoundtripKind
                 ).ToUniversalTime()
             }
-            if ($samePid -and (($now - $observed).TotalSeconds -le 180)) {
+            # Keep the first corroborating observation across the 10-minute KeepAlive cadence,
+            # but only for the exact same process instance. A 30-minute ceiling prevents a
+            # forgotten observation from surviving indefinitely if task scheduling is disrupted.
+            if ($sameProcessInstance -and (($now - $observed).TotalMinutes -le 30)) {
                 return $true
             }
         }
     } catch {
     }
 
-    @{ ProcessId = [int]$Process.ProcessId; ObservedAtUtc = $now.ToString('o') } |
+    @{
+        ProcessId = [int]$Process.ProcessId
+        CreationDateUtc = ([DateTime]$Process.CreationDate).ToUniversalTime().ToString('o')
+        ObservedAtUtc = $now.ToString('o')
+    } |
         ConvertTo-Json -Compress |
         Set-Content -LiteralPath $staleObservationPath -Encoding UTF8
     return $false

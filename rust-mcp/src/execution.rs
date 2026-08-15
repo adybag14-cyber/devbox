@@ -25,7 +25,20 @@ const CORRUPT_SLOT_STALE: Duration = Duration::from_secs(5 * 60);
 const CORRUPT_QUEUE_TICKET_STALE: Duration = Duration::from_secs(5);
 const DISK_PRESSURE_STATE_STALE: Duration = Duration::from_secs(180);
 const DISK_PRESSURE_CACHE_TTL: Duration = Duration::from_secs(1);
+const AGED_BACKGROUND_CACHE_TTL: Duration = Duration::from_millis(250);
+type AgedBackgroundCache = BTreeMap<(PathBuf, u64), (Instant, bool)>;
 static DISK_PRESSURE_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, (Instant, bool)>>> = OnceLock::new();
+static AGED_BACKGROUND_CACHE: OnceLock<Mutex<AgedBackgroundCache>> = OnceLock::new();
+
+fn invalidate_aged_background_cache(root: &Path) {
+    let Some(cache) = AGED_BACKGROUND_CACHE.get() else {
+        return;
+    };
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(cached_root, _), _| cached_root != root);
+}
 #[cfg(windows)]
 const WINDOWS_SLOT_IO_RETRY_ATTEMPTS: usize = 100;
 #[cfg(windows)]
@@ -303,6 +316,11 @@ impl QueueTicket {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(error.into()),
+        }
+        if self.class == "execution-background"
+            && let Some(root) = self.root.parent()
+        {
+            invalidate_aged_background_cache(root);
         }
         refresh_queue_head(&self.root, &self.class, Duration::from_secs(1)).await?;
         self.released = true;
@@ -923,6 +941,9 @@ async fn create_queue_ticket(
         "queueTimeoutMs": duration_ms(timeout),
     });
     write_queue_ticket_atomic(&path, &value).await?;
+    if class == "execution-background" {
+        invalidate_aged_background_cache(root);
+    }
     if let Err(error) = refresh_queue_head(&queue_root, class, timeout).await {
         remove_slot_file(&path).await.ok();
         return Err(error);
@@ -1128,6 +1149,28 @@ async fn queue_ticket_is_head(_root: &Path, ticket: &QueueTicket) -> Result<bool
 }
 
 async fn aged_background_waiter_exists(root: &Path, threshold: Duration) -> Result<bool> {
+    let threshold_ms = duration_ms(threshold);
+    let key = (root.to_path_buf(), threshold_ms);
+    let cache = AGED_BACKGROUND_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    {
+        let values = cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((sampled, result)) = values.get(&key)
+            && sampled.elapsed() < AGED_BACKGROUND_CACHE_TTL
+        {
+            return Ok(*result);
+        }
+    }
+    let result = aged_background_waiter_exists_uncached(root, threshold).await?;
+    cache
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, (Instant::now(), result));
+    Ok(result)
+}
+
+async fn aged_background_waiter_exists_uncached(root: &Path, threshold: Duration) -> Result<bool> {
     let queue_root = root.join("queue");
     let mut reader = match fs::read_dir(&queue_root).await {
         Ok(reader) => reader,
@@ -2162,7 +2205,7 @@ mod tests {
             max_concurrent: 4,
             reserved_interactive: 1,
             watch_max_concurrent: 1,
-            queue_timeout: Duration::from_millis(150),
+            queue_timeout: Duration::from_millis(500),
             heavy_capacity: 4,
             heavy_weight: 2,
             io_heavy_capacity: 2,

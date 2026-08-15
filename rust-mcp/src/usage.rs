@@ -529,25 +529,46 @@ impl ActiveToolRegistry {
 
     #[must_use]
     pub fn snapshot(&self) -> Value {
-        let mut entries = self
-            .entries
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .iter()
-            .map(|(invocation_id, entry)| {
-                json!({
-                    "invocationId": invocation_id,
-                    "tool": entry.tool,
-                    "startedAtUtc": entry.started_at,
-                    "elapsedMs": elapsed_ms(entry.started.elapsed()),
-                    "arguments": entry.arguments,
-                    "context": entry.context,
+        let selected = {
+            let entries = self
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut selected = Vec::with_capacity(32);
+            for (invocation_id, entry) in entries.iter() {
+                let elapsed = elapsed_ms(entry.started.elapsed());
+                let at = selected.partition_point(
+                    |(current, _, _): &(u64, &String, &ActiveToolEntry)| *current >= elapsed,
+                );
+                if at < 32 {
+                    selected.insert(at, (elapsed, invocation_id, entry));
+                    if selected.len() > 32 {
+                        selected.pop();
+                    }
+                }
+            }
+            selected
+                .into_iter()
+                .map(|(elapsed, invocation_id, entry)| {
+                    (elapsed, invocation_id.clone(), entry.clone())
                 })
-            })
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry["elapsedMs"].as_u64().unwrap_or(0)));
-        entries.truncate(32);
-        Value::Array(entries)
+                .collect::<Vec<_>>()
+        };
+        Value::Array(
+            selected
+                .into_iter()
+                .map(|(elapsed, invocation_id, entry)| {
+                    json!({
+                        "invocationId": invocation_id,
+                        "tool": entry.tool,
+                        "startedAtUtc": entry.started_at,
+                        "elapsedMs": elapsed,
+                        "arguments": entry.arguments,
+                        "context": entry.context,
+                    })
+                })
+                .collect(),
+        )
     }
 
     fn remove(&self, invocation_id: &str) {
@@ -958,6 +979,33 @@ mod tests {
         let snapshot = background.snapshot();
         assert_eq!(snapshot["usage-test-writer"]["starts"], 1);
         assert_eq!(snapshot["usage-test-writer"]["running"], false);
+    }
+
+    #[test]
+    fn active_tool_snapshot_keeps_only_the_32_longest_running_entries() {
+        let registry = Arc::new(ActiveToolRegistry::default());
+        let now = std::time::Instant::now();
+        let mut guards = Vec::new();
+        for index in 0_u64..40 {
+            let invocation = ToolUsageInvocation {
+                invocation_id: format!("invocation-{index:02}"),
+                tool: format!("tool-{index:02}"),
+                started_at: "2026-08-15T00:00:00Z".to_owned(),
+                started: now
+                    .checked_sub(Duration::from_millis(index.saturating_mul(100)))
+                    .expect("test start instant"),
+                arguments: json!({"index": index}),
+                context: json!({"source": "test"}),
+            };
+            guards.push(registry.register(&invocation));
+        }
+        let snapshot = registry.snapshot();
+        let entries = snapshot.as_array().expect("active tool snapshot array");
+        assert_eq!(entries.len(), 32);
+        assert_eq!(entries[0]["tool"], "tool-39");
+        assert_eq!(entries[31]["tool"], "tool-08");
+        assert!(!entries.iter().any(|entry| entry["tool"] == "tool-00"));
+        drop(guards);
     }
 
     #[test]

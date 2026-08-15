@@ -134,6 +134,7 @@ All repair output and state remain local under:
 Unregister-ScheduledTask -TaskName 'ChatGptDevboxGuardian-Startup' -Confirm:$false
 Unregister-ScheduledTask -TaskName 'ChatGptDevboxGuardian-Logon' -Confirm:$false
 Unregister-ScheduledTask -TaskName 'ChatGptDevboxGuardian-KeepAlive' -Confirm:$false
+Unregister-ScheduledTask -TaskName 'ChatGptDevboxMcp-ElevatedStart' -Confirm:$false
 ```
 
 For systemd, run `systemctl --user disable --now devbox-guardian.service` and remove the generated user unit. For Termux, remove only `~/.termux/boot/devbox-guardian`.

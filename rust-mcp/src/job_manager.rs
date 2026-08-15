@@ -328,21 +328,56 @@ fn shell_is_io_heavy(text: &str) -> bool {
         " git repack",
         " npm ci",
         " npm install",
+        " npm add",
+        " pnpm ci",
         " pnpm install",
+        " pnpm add",
+        " yarn ci",
         " yarn install",
+        " yarn add",
+        " bun ci",
         " bun install",
+        " bun add",
         " pip install",
         " pip3 install",
         " -m pip install",
         " apt install",
+        " apt add",
+        " apt upgrade",
+        " apt update",
         " apt-get install",
+        " apt-get add",
+        " apt-get upgrade",
+        " apt-get update",
         " dnf install",
+        " dnf add",
+        " dnf upgrade",
+        " dnf update",
         " yum install",
+        " yum add",
+        " yum upgrade",
+        " yum update",
         " pacman -s",
+        " pacman install",
+        " pacman add",
+        " pacman upgrade",
+        " pacman update",
+        " apk install",
         " apk add",
+        " apk upgrade",
+        " apk update",
         " winget install",
+        " winget add",
+        " winget upgrade",
+        " winget update",
         " choco install",
+        " choco add",
+        " choco upgrade",
+        " choco update",
         " scoop install",
+        " scoop add",
+        " scoop upgrade",
+        " scoop update",
     ]
     .iter()
     .any(|marker| padded.contains(marker))
@@ -377,9 +412,14 @@ pub fn infer_program_resource_class(
     if matches!(
         program.as_str(),
         "find" | "du" | "robocopy" | "xcopy" | "rsync" | "tar" | "7z" | "7zz" | "zip" | "unzip"
-    ) || (program == "git" && matches!(first, "clone" | "fetch" | "gc" | "repack"))
+    ) || (program == "rg" && !args.is_empty() && !matches!(first, "--version" | "-v"))
+        || (program == "git" && matches!(first, "clone" | "fetch" | "gc" | "repack"))
         || (matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun")
             && matches!(first, "ci" | "install" | "add"))
+        || (matches!(
+            program.as_str(),
+            "apt" | "apt-get" | "dnf" | "yum" | "pacman" | "apk" | "winget" | "choco" | "scoop"
+        ) && matches!(first, "install" | "add" | "upgrade" | "update" | "-s"))
         || (matches!(program.as_str(), "pip" | "pip3") && first == "install")
         || (matches!(program.as_str(), "python" | "python3" | "py")
             && first == "-m"
@@ -574,11 +614,27 @@ mod tests {
             ResourceClass::Watch
         );
         assert_eq!(
-            infer_resource_class("find /home/tdamre -type f -print", "auto"),
+            infer_resource_class("find /home/user -type f -print", "auto"),
             ResourceClass::IoHeavy
         );
         assert_eq!(
             infer_resource_class("Get-ChildItem C:\\src -Recurse -File", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("npm add zod", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("apt-get upgrade -y", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_program_resource_class(
+                "rg",
+                &["needle".to_owned(), "/home/user".to_owned()],
+                "auto"
+            ),
             ResourceClass::IoHeavy
         );
         assert_eq!(

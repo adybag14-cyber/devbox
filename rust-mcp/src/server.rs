@@ -1958,7 +1958,9 @@ impl DevboxMcp {
         } else {
             request.path
         };
-        let mut acquire = AcquireRequest::interactive("devbox_search_files");
+        let search_args = vec![request.pattern.clone(), path.clone()];
+        let mut acquire =
+            self.interactive_program_acquire("devbox_search_files", "rg", &search_args);
         acquire.queue_timeout = Some(Duration::from_millis(self.config.exec_queue_timeout_ms));
         let mut lease = match self.scheduler.acquire(acquire, &cancellation).await {
             Ok(lease) => lease,
@@ -2758,12 +2760,22 @@ fn update_disk_trend(samples: &mut VecDeque<(Instant, u64)>, free_bytes: u64) ->
 }
 
 fn disk_pressure_cleanup_operation(operation: &str) -> bool {
-    let text = operation.to_ascii_lowercase();
+    let raw = operation.trim().to_ascii_lowercase();
+    if raw.is_empty()
+        || raw
+            .chars()
+            .any(|character| matches!(character, ';' | '&' | '|' | '\r' | '\n'))
+    {
+        return false;
+    }
+    let text = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.starts_with("rm -") {
+        return true;
+    }
     [
-        "rm -",
         "remove-item",
         "rmdir",
-        " del ",
+        "del",
         "git clean",
         "cargo clean",
         "npm cache clean",
@@ -2777,7 +2789,12 @@ fn disk_pressure_cleanup_operation(operation: &str) -> bool {
         "wsl --shutdown",
     ]
     .iter()
-    .any(|marker| text.contains(marker))
+    .any(|prefix| {
+        text == *prefix
+            || text
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with(' '))
+    })
 }
 
 fn disk_pressure_level(free_bytes: u64, total_bytes: u64, disk_ok: bool) -> &'static str {
@@ -4182,15 +4199,39 @@ mod tests {
     }
 
     #[test]
+    fn every_registered_tool_declares_a_required_oauth_scope() {
+        let missing = DevboxMcp::tool_router()
+            .list_all()
+            .into_iter()
+            .filter(|tool| required_tool_scope(tool.name.as_ref()).is_none())
+            .map(|tool| tool.name.to_string())
+            .collect::<Vec<_>>();
+        assert!(
+            missing.is_empty(),
+            "tools without a required OAuth scope: {missing:?}"
+        );
+    }
+
+    #[test]
     fn critical_disk_policy_keeps_cleanup_paths_available() {
         assert!(disk_pressure_cleanup_operation(
             "Remove-Item C:\\temp -Recurse -Force"
         ));
         assert!(disk_pressure_cleanup_operation("docker system prune -af"));
         assert!(disk_pressure_cleanup_operation("cargo clean"));
+        assert!(disk_pressure_cleanup_operation("del C:\\temp\\old.bin"));
         assert!(!disk_pressure_cleanup_operation("cargo build --release"));
         assert!(!disk_pressure_cleanup_operation(
             "git clone https://example.invalid/repo"
+        ));
+        assert!(!disk_pressure_cleanup_operation(
+            "cargo build --release; cargo clean"
+        ));
+        assert!(!disk_pressure_cleanup_operation(
+            "git clone https://example.invalid/repo && rm -rf repo"
+        ));
+        assert!(!disk_pressure_cleanup_operation(
+            "cargo clean; cargo build --release"
         ));
     }
 

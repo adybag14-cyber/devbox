@@ -97,7 +97,7 @@ const EXECUTION_STORE_PROBE_STALE_MS = 150_000;
 const EXECUTION_STORE_MIN_FREE_BYTES = 512 * 1024 * 1024;
 const EXECUTION_STORE_WARN_FREE_BYTES = 50 * 1024 * 1024 * 1024;
 const EXECUTION_STORE_WARN_FREE_PERCENT = 5;
-let executionStoreHealth = { ok: false, sampledAtUtc: null, sampledAtMs: 0, error: "execution-store probe has not completed yet" };
+let executionStoreHealth = { ok: false, sampledAtUtc: null, sampledAtMs: 0, error: "execution-store probe has not completed yet", pressureStateError: null };
 const diskTrendSamples = [];
 
 const probeWritablePath = async (root, label) => {
@@ -175,8 +175,12 @@ const runExecutionStoreProbe = async () => {
     warningFreeBytes: EXECUTION_STORE_WARN_FREE_BYTES,
     warningFreePercent: EXECUTION_STORE_WARN_FREE_PERCENT,
   });
-  executionStoreHealth = { ...health, ...updateDiskTrend(health.freeBytes, health.sampledAtMs) };
-  await writeExecutionPressureState(executionStoreHealth).catch(() => {});
+  executionStoreHealth = { ...health, ...updateDiskTrend(health.freeBytes, health.sampledAtMs), pressureStateError: null };
+  try {
+    await writeExecutionPressureState(executionStoreHealth);
+  } catch (error) {
+    executionStoreHealth = { ...executionStoreHealth, pressureStateError: error?.message ?? String(error) };
+  }
   return executionStoreHealth;
 };
 let executionStoreProbeTimer = null;
@@ -1651,7 +1655,13 @@ const buildServer = ({ requestSignal } = {}) => {
       include_ignored: includeIgnored,
     }, extra) => {
       try {
-        return await withInteractiveExecution({ label: "devbox_search_files", signal: extra?.signal }, async (lease) => {
+        return await withInteractiveExecution({
+          label: "devbox_search_files",
+          signal: extra?.signal,
+          program: "rg",
+          args: [pattern, path],
+          readOnly: true,
+        }, async (lease) => {
           const result = await searchFilesInDevbox({
             pattern,
             path,

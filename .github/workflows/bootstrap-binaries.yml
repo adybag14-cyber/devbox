@@ -71,7 +71,7 @@ jobs:
           persist-credentials: false
       - name: Select pinned Rust 1.91.1
         run: |
-          rustup toolchain install 1.91.1 --profile minimal
+          rustup toolchain install 1.91.1 --profile minimal --component rustfmt
           rustup default 1.91.1
       - name: Format check
         run: cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
@@ -119,7 +119,7 @@ jobs:
           persist-credentials: false
       - name: Select pinned Rust 1.91.1
         run: |
-          rustup toolchain install 1.91.1 --profile minimal
+          rustup toolchain install 1.91.1 --profile minimal --component rustfmt
           rustup default 1.91.1
       - name: Format and test
         run: |
@@ -157,7 +157,7 @@ jobs:
           persist-credentials: false
       - name: Select pinned Rust 1.91.1
         run: |
-          rustup toolchain install 1.91.1 --profile minimal
+          rustup toolchain install 1.91.1 --profile minimal --component rustfmt
           rustup default 1.91.1
       - name: Install Android Rust targets
         run: >-

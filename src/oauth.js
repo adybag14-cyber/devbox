@@ -8,6 +8,11 @@ const ACCESS_TOKEN_TTL_MS = 60 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const AUTHORIZATION_CODE_TTL_MS = 10 * 60 * 1000;
 
+const normalizeMaxClients = (value, fallback = 256) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : fallback;
+};
+
 const normalizeUrl = (value) => {
   const rawValue = String(value ?? "").trim();
   if (!rawValue) {
@@ -174,7 +179,7 @@ export class PersistentOAuthState {
   }
 
   pruneClientsForCapacity(maxClients) {
-    const limit = Math.max(1, Number(maxClients) || 256);
+    const limit = normalizeMaxClients(maxClients);
     if (this.clients.size < limit) return 0;
     const referenced = new Set();
     for (const collection of [this.authorizationCodes, this.accessTokens, this.refreshTokens]) {
@@ -257,7 +262,7 @@ export class PersistentOAuthState {
 export class DemoClientStore {
   constructor(state, { maxClients = 256 } = {}) {
     this.state = state;
-    this.maxClients = Math.max(1, Number(maxClients) || 256);
+    this.maxClients = normalizeMaxClients(maxClients);
   }
 
   async getClient(clientId) {

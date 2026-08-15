@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile } from "node:fs/promises";
 
-import { PersistentOAuthState } from "../src/oauth.js";
+import { DemoClientStore, PersistentOAuthState } from "../src/oauth.js";
 
 test("persistent OAuth state prunes expired transient records on load and persistence", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "devbox-oauth-prune-"));
@@ -54,6 +54,13 @@ test("OAuth client capacity evicts oldest unreferenced clients but preserves act
   assert.equal(removed, 2);
   assert.equal(state.clients.has("active"), true);
   assert.equal(state.clients.size, 1);
+});
+
+
+test("OAuth client capacity clamps an explicit zero to one", () => {
+  const state = new PersistentOAuthState();
+  const store = new DemoClientStore(state, { maxClients: 0 });
+  assert.equal(store.maxClients, 1);
 });
 
 

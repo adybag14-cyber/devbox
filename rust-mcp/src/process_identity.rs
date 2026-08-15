@@ -72,6 +72,9 @@ struct ProcBsdInfo {
 }
 
 #[cfg(target_os = "macos")]
+const _: [(); 136] = [(); std::mem::size_of::<ProcBsdInfo>()];
+
+#[cfg(target_os = "macos")]
 #[link(name = "proc")]
 unsafe extern "C" {
     fn proc_pidinfo(

@@ -102,6 +102,8 @@ Assert-Contains $ensureGuardian 'Global\ChatGptDevboxGuardianEnsure-' 'Guardian 
 Assert-NotContains $ensureGuardian 'Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |' 'Guardian Ensure must not enumerate every process during boot recovery.'
 Assert-Contains $ensureGuardian "'--project-root', `$ProjectRoot" 'Guardian direct Node launch must pass the project root explicitly.'
 Assert-Contains $ensureGuardian "'--direct-owner'" 'Direct Ensure Guardian must ignore inherited legacy wrapper ownership.'
+Assert-Contains $ensureGuardian "CreationDateUtc" 'Guardian stale corroboration must bind to a process instance, not PID alone.'
+Assert-Contains $ensureGuardian "TotalMinutes -le 30" 'Guardian stale corroboration must survive the 10-minute KeepAlive cadence.'
 Assert-Contains $ensureGuardian 'Start-Process -FilePath $nodeExe -ArgumentList $arguments -WorkingDirectory $ProjectRoot -WindowStyle Hidden' 'Guardian Ensure must launch the Node supervisor directly.'
 Assert-Contains $ensureGuardian 'function Get-LiveGuardianSupervisorProcess' 'Guardian Ensure must identify a verified orphan supervisor separately from the watcher.'
 Assert-Contains $ensureGuardian 'guardian failed to start persistently' 'Guardian Ensure must require a persistent Node supervisor before reporting success.'

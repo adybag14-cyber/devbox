@@ -94,6 +94,12 @@ test("io-heavy capacity serializes recursive storage workloads without consuming
       ioHeavyCapacity: 2,
     });
     assert.equal(snapshot.io_heavy_capacity, 2);
+    const normalizedSnapshot = await getExecutionSlotSnapshot({
+      maxConcurrent: 4,
+      ioHeavyCapacity: 1,
+      ioHeavyWeight: 2,
+    });
+    assert.equal(normalizedSnapshot.io_heavy_capacity, 2);
     assert.equal(first.weight, 2);
     assert.equal(snapshot.occupied, 2);
     await assert.rejects(
