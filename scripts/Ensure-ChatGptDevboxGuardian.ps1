@@ -112,8 +112,9 @@ function Get-LiveGuardianProcess {
     if ($candidatePid) {
         $process = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $candidatePid) -ErrorAction SilentlyContinue
         $commandLine = [string]$process.CommandLine
+        $escapedGuardianPath = [regex]::Escape($guardianScript)
         $escapedSupervisorPath = [regex]::Escape($supervisorScript)
-        if ($process -and ($commandLine -match 'Watch-ChatGptDevboxGuardian\.ps1' -or $commandLine -match $escapedSupervisorPath)) {
+        if ($process -and ($commandLine -match $escapedGuardianPath -or $commandLine -match $escapedSupervisorPath)) {
             return $process
         }
     }
@@ -305,8 +306,8 @@ if (-not (Test-Path $guardianScript)) {
 }
 
 $arguments = @(
-    $supervisorScript,
-    '--project-root', $ProjectRoot,
+    ('"{0}"' -f $supervisorScript),
+    '--project-root', ('"{0}"' -f $ProjectRoot),
     '--direct-owner'
 )
 

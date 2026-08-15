@@ -15,7 +15,7 @@ export const processAlive = (pid) => {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return process.platform === "win32" && error?.code === "EPERM";
+    return error?.code === "EPERM";
   }
 };
 
@@ -60,11 +60,13 @@ const macosProcessInstance = async (pid) => {
   return Number.isFinite(millis) ? String(Math.floor(millis / 1000)) : null;
 };
 
-export const processInstance = async (pid) => {
+export const processInstance = async (pid, { bypassCache = false } = {}) => {
   if (!Number.isInteger(pid) || pid < 1 || !processAlive(pid)) return null;
   const now = Date.now();
-  const cached = cache.get(pid);
-  if (cached && now - cached.sampledAtMs < CACHE_TTL_MS) return cached.value;
+  if (!bypassCache) {
+    const cached = cache.get(pid);
+    if (cached && now - cached.sampledAtMs < CACHE_TTL_MS) return cached.value;
+  }
   let value = null;
   try {
     if (process.platform === "win32") value = await windowsProcessInstance(pid);
@@ -73,7 +75,7 @@ export const processInstance = async (pid) => {
   } catch {
     value = null;
   }
-  cache.set(pid, { sampledAtMs: now, value });
+  if (!bypassCache) cache.set(pid, { sampledAtMs: now, value });
   return value;
 };
 
@@ -85,7 +87,9 @@ export const currentProcessInstance = () => {
 export const processMatchesInstance = async (pid, expected) => {
   if (!processAlive(pid)) return false;
   if (expected === null || expected === undefined || expected === "") return true;
-  const actual = pid === process.pid ? await currentProcessInstance() : await processInstance(pid);
+  const actual = pid === process.pid
+    ? await currentProcessInstance()
+    : await processInstance(pid, { bypassCache: true });
   // A failed identity probe is indeterminate, not proof of PID reuse. Verified
   // liveness remains authoritative until a successful identity probe disagrees.
   if (actual === null) return true;
@@ -99,4 +103,4 @@ export const processMatchesInstance = async (pid, expected) => {
   return normalizedExpected === actual;
 };
 
-export const processIdentityInternals = { processAlive };
+export const processIdentityInternals = { processAlive, cache };

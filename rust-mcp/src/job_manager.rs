@@ -240,6 +240,7 @@ pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass 
     if let Some(explicit) = explicit_resource_class(requested) {
         return explicit;
     }
+    let raw_text = text;
     let text = text.to_ascii_lowercase();
     let heavy_markers = [
         "playwright",
@@ -289,7 +290,7 @@ pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass 
     {
         return ResourceClass::Heavy;
     }
-    if shell_is_io_heavy(&text) {
+    if shell_is_io_heavy(raw_text) {
         return ResourceClass::IoHeavy;
     }
     if text.contains("gh run watch")
@@ -301,7 +302,32 @@ pub fn infer_shell_resource_class(text: &str, requested: &str) -> ResourceClass 
     ResourceClass::Light
 }
 
+fn shell_has_ripgrep_search(text: &str) -> bool {
+    let tokens = text.split_whitespace().collect::<Vec<_>>();
+    for (index, token) in tokens.iter().enumerate() {
+        let token =
+            token.trim_matches(|character| character == '"' || character == char::from(39_u8));
+        if normalized_program_name(token) != "rg" {
+            continue;
+        }
+        let Some(next) = tokens.get(index + 1) else {
+            continue;
+        };
+        let next =
+            next.trim_matches(|character| character == '"' || character == char::from(39_u8));
+        if next == "--version" || next == "-V" {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
 fn shell_is_io_heavy(text: &str) -> bool {
+    if shell_has_ripgrep_search(text) {
+        return true;
+    }
+    let text = text.to_ascii_lowercase();
     let padded = format!(" {text} ");
     [
         " find ",
@@ -393,10 +419,12 @@ pub fn infer_program_resource_class(
         return explicit;
     }
     let program = normalized_program_name(program);
-    let args = args
+    let raw_args = args.iter().map(|arg| arg.trim()).collect::<Vec<_>>();
+    let args = raw_args
         .iter()
-        .map(|arg| arg.trim().to_ascii_lowercase())
+        .map(|arg| arg.to_ascii_lowercase())
         .collect::<Vec<_>>();
+    let raw_first = raw_args.first().copied().unwrap_or_default();
     let first = args.first().map(String::as_str).unwrap_or_default();
     let second = args.get(1).map(String::as_str).unwrap_or_default();
 
@@ -407,12 +435,12 @@ pub fn infer_program_resource_class(
         return ResourceClass::Watch;
     }
     if program == "wsl" {
-        return infer_shell_resource_class(&args.join(" "), requested);
+        return infer_shell_resource_class(&raw_args.join(" "), requested);
     }
     if matches!(
         program.as_str(),
         "find" | "du" | "robocopy" | "xcopy" | "rsync" | "tar" | "7z" | "7zz" | "zip" | "unzip"
-    ) || (program == "rg" && !args.is_empty() && !matches!(first, "--version" | "-v"))
+    ) || (program == "rg" && !args.is_empty() && first != "--version" && raw_first != "-V")
         || (program == "git" && matches!(first, "clone" | "fetch" | "gc" | "repack"))
         || (matches!(program.as_str(), "npm" | "pnpm" | "yarn" | "bun")
             && matches!(first, "ci" | "install" | "add"))
@@ -630,12 +658,33 @@ mod tests {
             ResourceClass::IoHeavy
         );
         assert_eq!(
+            infer_resource_class("rg needle /home/user", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_resource_class("rg -v needle /home/user", "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(infer_resource_class("rg -V", "auto"), ResourceClass::Light);
+        assert_eq!(
+            infer_resource_class("rg --version", "auto"),
+            ResourceClass::Light
+        );
+        assert_eq!(
             infer_program_resource_class(
                 "rg",
                 &["needle".to_owned(), "/home/user".to_owned()],
                 "auto"
             ),
             ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_program_resource_class("rg", &["-v".to_owned(), "needle".to_owned()], "auto"),
+            ResourceClass::IoHeavy
+        );
+        assert_eq!(
+            infer_program_resource_class("rg", &["-V".to_owned()], "auto"),
+            ResourceClass::Light
         );
         assert_eq!(
             infer_program_resource_class(
