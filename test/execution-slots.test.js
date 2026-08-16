@@ -278,6 +278,48 @@ test("shared FIFO prevents a later light job from overtaking an earlier heavy wa
 
 
 
+test("aged background ticket from another pool does not block interactive execution", async () => {
+  const { acquireExecutionSlot, testSlotRoot } = await importIsolatedSlots();
+  const queueRoot = path.join(testSlotRoot, "queue");
+  await mkdir(queueRoot, { recursive: true });
+  const queueClass = "execution-background";
+  const sequence = BigInt(Date.now()) * 1_000_000n;
+  const name = `${queueClass}-${sequence.toString().padStart(32, "0")}-watchfixture.json`;
+  const ticketPath = path.join(queueRoot, name);
+  await writeFile(ticketPath, `${JSON.stringify({
+    token: "watchfixture",
+    pid: process.pid,
+    processInstance: await currentProcessInstance(),
+    class: queueClass,
+    kind: "background",
+    resourceClass: "watch",
+    weight: 1,
+    label: "legacy-watch-fixture",
+    sequence: sequence.toString(),
+    queuedAtUnixMs: 1,
+    queuedAtUtc: new Date(1).toISOString(),
+    queueTimeoutMs: 600_000,
+  })}
+`, "utf8");
+  let lease = null;
+  try {
+    lease = await acquireExecutionSlot({
+      kind: "interactive",
+      resourceClass: "light",
+      maxConcurrent: 4,
+      reservedInteractive: 1,
+      watchMaxConcurrent: 2,
+      backgroundPriorityAgeMs: 1,
+      queueTimeoutMs: 500,
+      label: "execution-interactive-with-watch-fixture",
+    });
+    assert.equal(lease.pool, "execution");
+  } finally {
+    await lease?.release().catch(() => {});
+    await rm(ticketPath, { force: true });
+  }
+});
+
 test("disk pressure light interactive bypasses a non-overlapping aged heavy background waiter", async () => {
   const { acquireExecutionSlot, testSlotRoot } = await importIsolatedSlots();
   await writeFile(path.join(testSlotRoot, ".disk-pressure.json"), JSON.stringify({ diskPressure: "warning" }));

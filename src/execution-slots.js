@@ -446,13 +446,14 @@ const agedBackgroundWaiterCompetes = async (thresholdMs, {
   normalizedHeavyCapacity,
   normalizedIoHeavyCapacity,
   pressureConstrained,
+  interactivePool,
   interactiveStart,
   interactiveEnd,
 }) => {
   const boundedThreshold = Math.max(1, Number(thresholdMs) || 30_000);
   const planKey = [
     total, reserved, normalizedHeavyCapacity, normalizedIoHeavyCapacity,
-    pressureConstrained ? 1 : 0, interactiveStart, interactiveEnd,
+    pressureConstrained ? 1 : 0, interactivePool, interactiveStart, interactiveEnd,
   ].join(":");
   const now = Date.now();
   if (
@@ -470,6 +471,8 @@ const agedBackgroundWaiterCompetes = async (thresholdMs, {
     if (!Number.isFinite(queuedAt) || now - queuedAt < boundedThreshold) continue;
 
     const ownerClass = normalizeResourceClass(owner.resourceClass);
+    const backgroundPool = poolFor({ kind: "background", resourceClass: ownerClass });
+    if (backgroundPool !== interactivePool) continue;
     const ownerWeight = Math.max(1, Number(owner.weight) || 1);
     const backgroundBase = Math.max(1, total - reserved);
     let backgroundUsable = backgroundBase;
@@ -588,6 +591,7 @@ export const acquireExecutionSlot = async ({
         normalizedHeavyCapacity,
         normalizedIoHeavyCapacity,
         pressureConstrained,
+        interactivePool: pool,
         interactiveStart: protectedLowSlots,
         interactiveEnd: usableSlots,
       })) {
