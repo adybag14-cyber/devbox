@@ -26,7 +26,21 @@ const CORRUPT_QUEUE_TICKET_STALE: Duration = Duration::from_secs(5);
 const DISK_PRESSURE_STATE_STALE: Duration = Duration::from_secs(180);
 const DISK_PRESSURE_CACHE_TTL: Duration = Duration::from_secs(1);
 const AGED_BACKGROUND_CACHE_TTL: Duration = Duration::from_millis(250);
-type AgedBackgroundCache = BTreeMap<(PathBuf, u64), (Instant, bool)>;
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct AgedBackgroundCacheKey {
+    root: PathBuf,
+    threshold_ms: u64,
+    interactive_pool: String,
+    candidate_start: usize,
+    candidate_end: usize,
+    disk_pressure_constrained: bool,
+    max_concurrent: usize,
+    reserved_interactive: usize,
+    watch_max_concurrent: usize,
+    heavy_capacity: usize,
+    io_heavy_capacity: usize,
+}
+type AgedBackgroundCache = BTreeMap<AgedBackgroundCacheKey, (Instant, bool)>;
 static DISK_PRESSURE_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, (Instant, bool)>>> = OnceLock::new();
 static AGED_BACKGROUND_CACHE: OnceLock<Mutex<AgedBackgroundCache>> = OnceLock::new();
 
@@ -37,7 +51,7 @@ fn invalidate_aged_background_cache(root: &Path) {
     cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .retain(|(cached_root, _), _| cached_root != root);
+        .retain(|key, _| key.root != root);
 }
 #[cfg(windows)]
 const WINDOWS_SLOT_IO_RETRY_ATTEMPTS: usize = 100;
@@ -648,8 +662,9 @@ impl ExecutionScheduler {
                 continue;
             }
             if request.kind == ExecutionKind::Interactive
-                && aged_background_waiter_exists(
-                    &self.config.root,
+                && aged_background_waiter_competes(
+                    &self.config,
+                    plan,
                     self.config.background_priority_age,
                 )
                 .await?
@@ -1148,9 +1163,28 @@ async fn queue_ticket_is_head(_root: &Path, ticket: &QueueTicket) -> Result<bool
     }
 }
 
-async fn aged_background_waiter_exists(root: &Path, threshold: Duration) -> Result<bool> {
+async fn aged_background_waiter_competes(
+    config: &SchedulerConfig,
+    interactive_plan: &AcquirePlan,
+    threshold: Duration,
+) -> Result<bool> {
+    let normalized = config.clone().normalized();
     let threshold_ms = duration_ms(threshold);
-    let key = (root.to_path_buf(), threshold_ms);
+    let candidate_start = interactive_plan.protected_low_slots;
+    let candidate_end = interactive_plan.usable_slots;
+    let key = AgedBackgroundCacheKey {
+        root: normalized.root.clone(),
+        threshold_ms,
+        interactive_pool: interactive_plan.pool.clone(),
+        candidate_start,
+        candidate_end,
+        disk_pressure_constrained: interactive_plan.disk_pressure_constrained,
+        max_concurrent: normalized.max_concurrent,
+        reserved_interactive: normalized.reserved_interactive,
+        watch_max_concurrent: normalized.watch_max_concurrent,
+        heavy_capacity: normalized.heavy_capacity,
+        io_heavy_capacity: normalized.io_heavy_capacity,
+    };
     let cache = AGED_BACKGROUND_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
     {
         let values = cache
@@ -1162,7 +1196,8 @@ async fn aged_background_waiter_exists(root: &Path, threshold: Duration) -> Resu
             return Ok(*result);
         }
     }
-    let result = aged_background_waiter_exists_uncached(root, threshold).await?;
+    let result =
+        aged_background_waiter_competes_uncached(&normalized, interactive_plan, threshold).await?;
     cache
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1170,8 +1205,21 @@ async fn aged_background_waiter_exists(root: &Path, threshold: Duration) -> Resu
     Ok(result)
 }
 
-async fn aged_background_waiter_exists_uncached(root: &Path, threshold: Duration) -> Result<bool> {
-    let queue_root = root.join("queue");
+fn slot_ranges_overlap(
+    first_start: usize,
+    first_end: usize,
+    second_start: usize,
+    second_end: usize,
+) -> bool {
+    first_start < second_end && second_start < first_end
+}
+
+async fn aged_background_waiter_competes_uncached(
+    config: &SchedulerConfig,
+    interactive_plan: &AcquirePlan,
+    threshold: Duration,
+) -> Result<bool> {
+    let queue_root = config.root.join("queue");
     let mut reader = match fs::read_dir(&queue_root).await {
         Ok(reader) => reader,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -1203,7 +1251,36 @@ async fn aged_background_waiter_exists_uncached(root: &Path, threshold: Duration
             .get("queuedAtUnixMs")
             .and_then(Value::as_u64)
             .unwrap_or(now_ms);
-        if now_ms.saturating_sub(queued_ms) >= threshold_ms {
+        if now_ms.saturating_sub(queued_ms) < threshold_ms {
+            continue;
+        }
+        let resource_class = ResourceClass::parse(
+            owner
+                .get("resourceClass")
+                .and_then(Value::as_str)
+                .unwrap_or("light"),
+        );
+        let weight = owner
+            .get("weight")
+            .and_then(Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .unwrap_or(1)
+            .max(1);
+        let background_request =
+            AcquireRequest::background("aged-background-probe", resource_class, weight);
+        let background_plan = AcquirePlan::new(
+            config,
+            &background_request,
+            interactive_plan.disk_pressure_constrained,
+        );
+        if background_plan.pool == interactive_plan.pool
+            && slot_ranges_overlap(
+                interactive_plan.protected_low_slots,
+                interactive_plan.usable_slots,
+                background_plan.protected_low_slots,
+                background_plan.usable_slots,
+            )
+        {
             return Ok(true);
         }
     }
@@ -2134,6 +2211,167 @@ mod tests {
             "warning pressure should serialize heavy claims"
         );
         first.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn aged_background_cache_is_scoped_to_capacity_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".disk-pressure.json"),
+            br#"{"diskPressure":"warning"}"#,
+        )
+        .await
+        .unwrap();
+        let narrow = SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 4,
+            reserved_interactive: 1,
+            watch_max_concurrent: 1,
+            queue_timeout: Duration::from_secs(2),
+            heavy_capacity: 2,
+            heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_millis(1),
+        }
+        .normalized();
+        let wide = SchedulerConfig {
+            heavy_capacity: 3,
+            ..narrow.clone()
+        }
+        .normalized();
+        let background_request =
+            AcquireRequest::background("capacity-cache-fixture", ResourceClass::Heavy, 3);
+        let mut ticket = create_queue_ticket(
+            &narrow.root,
+            "execution-background",
+            &background_request,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let interactive = AcquireRequest::interactive("capacity-cache-interactive");
+        let narrow_plan = AcquirePlan::new(&narrow, &interactive, true);
+        let wide_plan = AcquirePlan::new(&wide, &interactive, true);
+        assert_eq!(narrow_plan.protected_low_slots, 2);
+        assert_eq!(wide_plan.protected_low_slots, 2);
+        assert!(
+            !aged_background_waiter_competes(&narrow, &narrow_plan, Duration::from_millis(1),)
+                .await
+                .unwrap()
+        );
+        assert!(
+            aged_background_waiter_competes(&wide, &wide_plan, Duration::from_millis(1),)
+                .await
+                .unwrap()
+        );
+        ticket.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn aged_background_from_different_pool_does_not_block_interactive_execution() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 4,
+            reserved_interactive: 1,
+            watch_max_concurrent: 2,
+            queue_timeout: Duration::from_secs(2),
+            heavy_capacity: 4,
+            heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_millis(1),
+        }
+        .normalized();
+        let malformed_watch =
+            AcquireRequest::background("legacy-watch-fixture", ResourceClass::Watch, 1);
+        let mut ticket = create_queue_ticket(
+            &config.root,
+            "execution-background",
+            &malformed_watch,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let interactive = AcquireRequest::interactive("execution-interactive");
+        let plan = AcquirePlan::new(&config, &interactive, false);
+        assert_eq!(plan.pool, "execution");
+        assert!(
+            !aged_background_waiter_competes(&config, &plan, Duration::from_millis(1),)
+                .await
+                .unwrap()
+        );
+        ticket.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn disk_pressure_light_interactive_bypasses_non_overlapping_aged_heavy_background() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path().join(".disk-pressure.json"),
+            br#"{"diskPressure":"warning"}"#,
+        )
+        .await
+        .unwrap();
+        let scheduler = ExecutionScheduler::new(SchedulerConfig {
+            root: temp.path().to_path_buf(),
+            max_concurrent: 4,
+            reserved_interactive: 1,
+            watch_max_concurrent: 1,
+            queue_timeout: Duration::from_secs(2),
+            heavy_capacity: 4,
+            heavy_weight: 2,
+            io_heavy_capacity: 2,
+            io_heavy_weight: 2,
+            background_priority_age: Duration::from_millis(1),
+        });
+        let cancellation = CancellationToken::new();
+        let mut first = scheduler
+            .acquire(
+                AcquireRequest::interactive_weighted("pressure-holder", ResourceClass::Heavy, 2),
+                &cancellation,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.slots, vec![0, 1]);
+
+        let background_scheduler = scheduler.clone();
+        let background_cancel = cancellation.clone();
+        let background = tokio::spawn(async move {
+            background_scheduler
+                .acquire(
+                    AcquireRequest::background("aged-heavy-background", ResourceClass::Heavy, 2),
+                    &background_cancel,
+                )
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let mut light = tokio::time::timeout(
+            Duration::from_millis(400),
+            scheduler.acquire(
+                AcquireRequest::interactive("pressure-light-after-aged-heavy"),
+                &cancellation,
+            ),
+        )
+        .await
+        .expect("light request should not yield to a non-overlapping aged heavy waiter")
+        .unwrap();
+        assert!(light.slot.is_some_and(|slot| slot >= 2));
+        assert!(!background.is_finished());
+        light.release().await.unwrap();
+        first.release().await.unwrap();
+
+        let mut background_lease = tokio::time::timeout(Duration::from_secs(1), background)
+            .await
+            .expect("aged heavy background should resume after corridor release")
+            .unwrap()
+            .unwrap();
+        assert_eq!(background_lease.slots, vec![0, 1]);
+        background_lease.release().await.unwrap();
     }
 
     #[tokio::test]

@@ -278,6 +278,102 @@ test("shared FIFO prevents a later light job from overtaking an earlier heavy wa
 
 
 
+test("aged background ticket from another pool does not block interactive execution", async () => {
+  const { acquireExecutionSlot, testSlotRoot } = await importIsolatedSlots();
+  const queueRoot = path.join(testSlotRoot, "queue");
+  await mkdir(queueRoot, { recursive: true });
+  const queueClass = "execution-background";
+  const sequence = BigInt(Date.now()) * 1_000_000n;
+  const name = `${queueClass}-${sequence.toString().padStart(32, "0")}-watchfixture.json`;
+  const ticketPath = path.join(queueRoot, name);
+  await writeFile(ticketPath, `${JSON.stringify({
+    token: "watchfixture",
+    pid: process.pid,
+    processInstance: await currentProcessInstance(),
+    class: queueClass,
+    kind: "background",
+    resourceClass: "watch",
+    weight: 1,
+    label: "legacy-watch-fixture",
+    sequence: sequence.toString(),
+    queuedAtUnixMs: 1,
+    queuedAtUtc: new Date(1).toISOString(),
+    queueTimeoutMs: 600_000,
+  })}
+`, "utf8");
+  let lease = null;
+  try {
+    lease = await acquireExecutionSlot({
+      kind: "interactive",
+      resourceClass: "light",
+      maxConcurrent: 4,
+      reservedInteractive: 1,
+      watchMaxConcurrent: 2,
+      backgroundPriorityAgeMs: 1,
+      queueTimeoutMs: 500,
+      label: "execution-interactive-with-watch-fixture",
+    });
+    assert.equal(lease.pool, "execution");
+  } finally {
+    await lease?.release().catch(() => {});
+    await rm(ticketPath, { force: true });
+  }
+});
+
+test("disk pressure light interactive bypasses a non-overlapping aged heavy background waiter", async () => {
+  const { acquireExecutionSlot, testSlotRoot } = await importIsolatedSlots();
+  await writeFile(path.join(testSlotRoot, ".disk-pressure.json"), JSON.stringify({ diskPressure: "warning" }));
+  const common = {
+    maxConcurrent: 4,
+    reservedInteractive: 1,
+    heavyCapacity: 4,
+    heavyWeight: 2,
+    ioHeavyCapacity: 2,
+    ioHeavyWeight: 2,
+    backgroundPriorityAgeMs: 1,
+    queueTimeoutMs: 2000,
+  };
+  const first = await acquireExecutionSlot({
+    ...common,
+    kind: "interactive",
+    resourceClass: "heavy",
+    weight: 2,
+    label: "pressure-aging-holder",
+  });
+  let background = null;
+  let light = null;
+  try {
+    const backgroundPromise = acquireExecutionSlot({
+      ...common,
+      kind: "background",
+      resourceClass: "heavy",
+      weight: 2,
+      label: "pressure-aged-heavy-background",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const started = performance.now();
+    light = await acquireExecutionSlot({
+      ...common,
+      kind: "interactive",
+      resourceClass: "light",
+      weight: 1,
+      queueTimeoutMs: 500,
+      label: "pressure-light-after-aged-heavy",
+    });
+    assert.ok(performance.now() - started < 400, "light request yielded to non-overlapping aged heavy waiter");
+    assert.ok(light.slot >= 2, `light request stole weighted corridor slot ${light.slot}`);
+    await light.release();
+    light = null;
+    await first.release();
+    background = await backgroundPromise;
+    assert.deepEqual(background.slots, [0, 1]);
+  } finally {
+    await light?.release().catch(() => {});
+    await background?.release().catch(() => {});
+    await first.release().catch(() => {});
+  }
+});
+
 test("aged background waiter gets a bounded priority turn ahead of new interactive work", async () => {
   const { acquireExecutionSlot } = await importIsolatedSlots();
   const blocker = await acquireExecutionSlot({
