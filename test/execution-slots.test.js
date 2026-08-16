@@ -278,6 +278,60 @@ test("shared FIFO prevents a later light job from overtaking an earlier heavy wa
 
 
 
+test("disk pressure light interactive bypasses a non-overlapping aged heavy background waiter", async () => {
+  const { acquireExecutionSlot, testSlotRoot } = await importIsolatedSlots();
+  await writeFile(path.join(testSlotRoot, ".disk-pressure.json"), JSON.stringify({ diskPressure: "warning" }));
+  const common = {
+    maxConcurrent: 4,
+    reservedInteractive: 1,
+    heavyCapacity: 4,
+    heavyWeight: 2,
+    ioHeavyCapacity: 2,
+    ioHeavyWeight: 2,
+    backgroundPriorityAgeMs: 1,
+    queueTimeoutMs: 2000,
+  };
+  const first = await acquireExecutionSlot({
+    ...common,
+    kind: "interactive",
+    resourceClass: "heavy",
+    weight: 2,
+    label: "pressure-aging-holder",
+  });
+  let background = null;
+  let light = null;
+  try {
+    const backgroundPromise = acquireExecutionSlot({
+      ...common,
+      kind: "background",
+      resourceClass: "heavy",
+      weight: 2,
+      label: "pressure-aged-heavy-background",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const started = performance.now();
+    light = await acquireExecutionSlot({
+      ...common,
+      kind: "interactive",
+      resourceClass: "light",
+      weight: 1,
+      queueTimeoutMs: 500,
+      label: "pressure-light-after-aged-heavy",
+    });
+    assert.ok(performance.now() - started < 400, "light request yielded to non-overlapping aged heavy waiter");
+    assert.ok(light.slot >= 2, `light request stole weighted corridor slot ${light.slot}`);
+    await light.release();
+    light = null;
+    await first.release();
+    background = await backgroundPromise;
+    assert.deepEqual(background.slots, [0, 1]);
+  } finally {
+    await light?.release().catch(() => {});
+    await background?.release().catch(() => {});
+    await first.release().catch(() => {});
+  }
+});
+
 test("aged background waiter gets a bounded priority turn ahead of new interactive work", async () => {
   const { acquireExecutionSlot } = await importIsolatedSlots();
   const blocker = await acquireExecutionSlot({

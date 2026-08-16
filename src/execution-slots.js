@@ -19,7 +19,7 @@ const DISK_PRESSURE_STATE_STALE_MS = 180_000;
 const DISK_PRESSURE_CACHE_MS = 1_000;
 const AGED_BACKGROUND_CACHE_MS = 250;
 let diskPressureCache = { sampledAtMs: 0, constrained: false };
-let agedBackgroundCache = { sampledAtMs: 0, thresholdMs: 0, result: false };
+let agedBackgroundCache = { sampledAtMs: 0, thresholdMs: 0, planKey: "", result: false };
 
 const metrics = {
   queued: 0,
@@ -437,11 +437,27 @@ const acquirePoolClaimLock = async (pool, { signal, deadlineMs }) => {
   return null;
 };
 
-const agedBackgroundWaiterExists = async (thresholdMs) => {
+const rangesOverlap = (firstStart, firstEnd, secondStart, secondEnd) =>
+  firstStart < secondEnd && secondStart < firstEnd;
+
+const agedBackgroundWaiterCompetes = async (thresholdMs, {
+  total,
+  reserved,
+  normalizedHeavyCapacity,
+  normalizedIoHeavyCapacity,
+  pressureConstrained,
+  interactiveStart,
+  interactiveEnd,
+}) => {
   const boundedThreshold = Math.max(1, Number(thresholdMs) || 30_000);
+  const planKey = [
+    total, reserved, normalizedHeavyCapacity, normalizedIoHeavyCapacity,
+    pressureConstrained ? 1 : 0, interactiveStart, interactiveEnd,
+  ].join(":");
   const now = Date.now();
   if (
     agedBackgroundCache.thresholdMs === boundedThreshold &&
+    agedBackgroundCache.planKey === planKey &&
     now - agedBackgroundCache.sampledAtMs < AGED_BACKGROUND_CACHE_MS
   ) return agedBackgroundCache.result;
 
@@ -451,12 +467,32 @@ const agedBackgroundWaiterExists = async (thresholdMs) => {
     const owner = await readFile(path.join(queueRoot, name), "utf8").then(JSON.parse).catch(() => null);
     if (!owner || await ticketShouldReap(name, owner)) continue;
     const queuedAt = Number(owner.queuedAtUnixMs);
-    if (Number.isFinite(queuedAt) && now - queuedAt >= boundedThreshold) {
+    if (!Number.isFinite(queuedAt) || now - queuedAt < boundedThreshold) continue;
+
+    const ownerClass = normalizeResourceClass(owner.resourceClass);
+    const ownerWeight = Math.max(1, Number(owner.weight) || 1);
+    const backgroundBase = Math.max(1, total - reserved);
+    let backgroundUsable = backgroundBase;
+    if (ownerClass === "heavy") {
+      const capacity = pressureConstrained
+        ? Math.min(normalizedHeavyCapacity, ownerWeight)
+        : normalizedHeavyCapacity;
+      backgroundUsable = Math.min(backgroundBase, Math.max(ownerWeight, capacity));
+    } else if (ownerClass === "io-heavy") {
+      const capacity = pressureConstrained
+        ? Math.min(normalizedIoHeavyCapacity, ownerWeight)
+        : normalizedIoHeavyCapacity;
+      backgroundUsable = Math.min(backgroundBase, Math.max(ownerWeight, capacity));
+    }
+
+    if (rangesOverlap(interactiveStart, interactiveEnd, 0, backgroundUsable)) {
       result = true;
       break;
     }
   }
-  agedBackgroundCache = { sampledAtMs: now, thresholdMs: boundedThreshold, result };
+  agedBackgroundCache = {
+    sampledAtMs: now, thresholdMs: boundedThreshold, planKey, result,
+  };
   return result;
 };
 
@@ -546,7 +582,15 @@ export const acquireExecutionSlot = async ({
         await sleep(Math.min(pollInterval(elapsed), timeoutMs - elapsed));
         continue;
       }
-      if (kind === "interactive" && await agedBackgroundWaiterExists(backgroundPriorityAgeMs)) {
+      if (kind === "interactive" && await agedBackgroundWaiterCompetes(backgroundPriorityAgeMs, {
+        total,
+        reserved,
+        normalizedHeavyCapacity,
+        normalizedIoHeavyCapacity,
+        pressureConstrained,
+        interactiveStart: protectedLowSlots,
+        interactiveEnd: usableSlots,
+      })) {
         const elapsed = Date.now() - queuedAt;
         if (elapsed >= timeoutMs) {
           metrics.timedOut += 1;
