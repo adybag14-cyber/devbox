@@ -53,7 +53,7 @@ windows-sys = { version = "0.61", features = [
 nix = { version = "0.31", features = ["process", "signal", "resource"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-sysinfo = "0.37"
+sysinfo = "0.38"
 
 [lints.rust]
 unsafe_code = "deny"
