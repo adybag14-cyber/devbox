@@ -15,7 +15,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 futures = "0.3"
 dotenvy = "0.15"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
-jsonwebtoken = "9.3"
+jsonwebtoken = "11.0"
 regex = "1.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rmcp = { version = "3.1.2", features = ["transport-streamable-http-server"] }
