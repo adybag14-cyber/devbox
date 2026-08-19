@@ -26,7 +26,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0",
     "express": "5.2.1",
-    "jose": "^6.2.8",
+    "jose": "^6.2.9",
     "zod": "4.4.3"
   },
   "engines": {
