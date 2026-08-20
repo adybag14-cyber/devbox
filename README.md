@@ -353,94 +353,86 @@ node bin/devbox.js stop
 
 DO NOT DELETED.."!
 ```
-let lastClicked = null;
-
-setInterval(() => {
-  const btn = [...document.querySelectorAll('button')].find(b => {
-    const rect = b.getBoundingClientRect();
-    const bg = getComputedStyle(b).backgroundColor;
-
-    const sizeMatch =
-      rect.width >= 195 && rect.width <= 199 &&
-      rect.height >= 35 && rect.height <= 37;
-
-    const colorMatch =
-      bg === 'rgb(13, 13, 13)' ||
-      bg === 'rgb(0, 0, 0)';
-
-    return sizeMatch && colorMatch ;
-  });
-
-  if (btn && btn !== lastClicked) {
-    lastClicked = btn;
-    console.log('Clicking:', btn.innerText.trim(), btn.getBoundingClientRect());
-    btn.click();
-  }
-}, 1000)
-```
-
-If you are lazy to type continue and press enter here's another console script for you. 
-```
-(function() {
-  function getMainBoxAndButton() {
-    // Find the first visible contenteditable box
-    const box = Array.from(document.querySelectorAll('[contenteditable="true"]'))
-                     .find(el => el.offsetParent !== null); // only visible elements
-
-    // Try to find a send button within the same container
-    let sendBtn = null;
-    if (box) {
-      const container = box.closest('div');
-      if (container) {
-        sendBtn = container.querySelector('button, input[type="submit"]');
-      }
-    }
-
-    return { box, sendBtn };
+(() => {
+  function visible(el) {
+    return !!el && el.getClientRects().length > 0;
   }
 
-  function typeAndSend() {
-    const { box, sendBtn } = getMainBoxAndButton();
+  async function typeAndSend() {
+    const box = [...document.querySelectorAll('[contenteditable="true"]')]
+      .find(el => visible(el));
+
     if (!box) {
-      console.warn('No visible typing box found!');
+      console.warn('No visible contenteditable found');
       return;
     }
 
-    // Focus the box
     box.focus();
 
-    // Move cursor to the end
+    // Put caret at end
     const sel = window.getSelection();
     const range = document.createRange();
+
     range.selectNodeContents(box);
     range.collapse(false);
+
     sel.removeAllRanges();
     sel.addRange(range);
 
-    // Insert the exact phrase "continue "
-    document.execCommand('insertText', false, 'continue ');
+    // Insert text
+    document.execCommand(
+      'insertText',
+      false,
+      'continue'
+    );
 
-    // Click send if a button exists
-    if (sendBtn && !sendBtn.disabled) {
-      sendBtn.click();
-    } else {
-      // If no button, try simulating Enter key
-      const enterEvent = new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true
-      });
-      box.dispatchEvent(enterEvent);
+    // Tell React/editor code that the value changed
+    box.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: 'continue'
+      })
+    );
+
+    // Give the UI time to enable Send
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    const form = box.closest('form');
+
+    const candidates = [
+      form?.querySelector('button[type="submit"]'),
+      form?.querySelector('button[aria-label*="send" i]'),
+      form?.querySelector('[data-testid*="send" i]'),
+      ...document.querySelectorAll(
+        'button[aria-label*="send" i], button[type="submit"]'
+      )
+    ].filter(Boolean);
+
+    const sendBtn = candidates.find(
+      btn => visible(btn) && !btn.disabled
+    );
+
+    if (!sendBtn) {
+      console.warn(
+        'Text inserted, but no enabled Send button found',
+        { box, form, candidates }
+      );
+      return;
     }
+
+    console.log('Clicking:', sendBtn);
+    sendBtn.click();
   }
 
-  // Run immediately
+  // Run once immediately
   typeAndSend();
 
-  // Repeat every 2 minutes
-  setInterval(typeAndSend, 2 * 60 * 1000);
+  // Then every TWO minutes
+  window.continueTimer = setInterval(
+    typeAndSend,
+    2 * 60 * 1000
+  );
 })();
 ```
 and the auto continue script above too. 
