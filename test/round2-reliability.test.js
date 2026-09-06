@@ -233,6 +233,7 @@ test("orphan reconciliation terminates a surviving detached child process tree",
     cwd: projectRoot,
     stdio: "ignore",
     windowsHide: true,
+    detached: process.platform !== "win32",
   });
   const childPid = child.pid;
   assert.ok(Number.isInteger(childPid) && childPid > 0);
@@ -342,7 +343,7 @@ test("Docker orphan cleanup terminates only the local docker client identity and
   process.env.MCP_JOBS_ROOT = jobsRoot;
   const href = pathToFileURL(path.join(projectRoot, "src/async-jobs.js")).href;
   const jobs = await import(`${href}?docker-orphan=${Date.now()}-${Math.random()}`);
-  const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: projectRoot, stdio: "ignore", windowsHide: true });
+  const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: projectRoot, stdio: "ignore", windowsHide: true, detached: process.platform !== "win32" });
   const childPid = child.pid;
   const id = `job-test-${Date.now().toString(36)}-docker12`;
   const paths = jobs.asyncJobsInternals.jobPaths(id);
