@@ -17,7 +17,7 @@
     "guardian": "node ./scripts/devbox-guardian.mjs",
     "guardian:check": "node ./scripts/devbox-guardian.mjs --once --no-repair",
     "test": "npm run test:unit && npm run test:mcp",
-    "test:unit": "node --test test/async-jobs.test.js test/async-locks.test.js test/env.test.js test/execution-slots.test.js test/guardian-container-repair.test.js test/guardian-core.test.js test/host-runtime.test.js test/host-runtime-rg.test.js test/host-tools.test.js test/large-file-cli.test.js test/launcher.test.js test/mcp-implementation.test.js test/oauth-state.test.js test/platform.test.js test/process-utils.test.js test/round2-reliability.test.js test/screen-capture.test.js test/tool-authorization.test.js test/disk-pressure-policy.test.js test/process-identity.test.js",
+    "test:unit": "node --test test/async-jobs.test.js test/async-locks.test.js test/env.test.js test/execution-slots.test.js test/guardian-container-repair.test.js test/guardian-core.test.js test/host-runtime.test.js test/host-runtime-rg.test.js test/host-tools.test.js test/large-file-cli.test.js test/launcher.test.js test/mcp-implementation.test.js test/oauth-state.test.js test/platform.test.js test/process-utils.test.js test/round2-reliability.test.js test/screen-capture.test.js test/tool-authorization.test.js test/disk-pressure-policy.test.js test/process-identity.test.js test/readme-continue.test.js",
     "test:mcp": "node --test test/mcp-http.test.js",
     "soak:live": "node scripts/run-live-mcp-soak.mjs",
     "usage:summary": "node scripts/summarize-mcp-telemetry.mjs",
