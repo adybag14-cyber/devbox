@@ -11,7 +11,7 @@ function fixture(options = {}) {
   let clicks = 0;
   let inserts = 0;
   const intervals = new Map();
-  const waits = [];
+  const waits = new Map();
   let nextId = 0;
   const element = (extra = {}) => ({
     isConnected: true, parentElement: null,
@@ -44,12 +44,30 @@ function fixture(options = {}) {
     window, document, location: { href: 'https://example.test/chat/one' },
     innerWidth: 1024, innerHeight: 768, getComputedStyle: el => el.style,
     Date: { now: () => now }, console: { warn() {} },
-    setInterval: fn => { const id = ++nextId; intervals.set(id, fn); return id; },
+    setInterval: (fn, delay) => { const id = ++nextId; intervals.set(id, { fn, delay, due: now + delay }); return id; },
     clearInterval: id => intervals.delete(id),
-    setTimeout: fn => { waits.push(fn); return ++nextId; },
+    setTimeout: (fn, delay) => { const id = ++nextId; waits.set(id, { fn, due: now + delay }); return id; },
   });
   const run = () => vm.runInContext(snippet, context);
-  const advance = async (ms = 100) => { now += ms; waits.splice(0).forEach(fn => fn()); await Promise.resolve(); await Promise.resolve(); };
+  const advance = async (ms = 100) => {
+    const target = now + ms;
+    let fired = 0;
+    while (true) {
+      const due = [...waits.entries(), ...intervals.entries()]
+        .filter(([, timer]) => timer.due <= target)
+        .sort((a, b) => a[1].due - b[1].due)[0];
+      if (!due) break;
+      assert.ok(++fired < 10000, 'timer loop exceeded the fixture budget');
+      const [id, timer] = due;
+      now = timer.due;
+      if (intervals.has(id)) timer.due += Math.max(1, timer.delay);
+      else waits.delete(id);
+      timer.fn();
+      await Promise.resolve(); await Promise.resolve();
+    }
+    now = target;
+    await Promise.resolve(); await Promise.resolve();
+  };
   return { context, window, document, box, button, run, advance, intervals, get clicks() { return clicks; }, get inserts() { return inserts; } };
 }
 
@@ -79,6 +97,22 @@ test('README helper polls button readiness without inserting twice', async () =>
   await f.window.devboxContinue.tick(); await f.advance();
   assert.equal(f.inserts, 1); assert.equal(f.clicks, 0);
   f.button.disabled = false; await f.advance(); assert.equal(f.clicks, 1);
+});
+
+test('README helper repeats at two minutes and retains exactly one active interval', async () => {
+  const f = fixture(); f.run();
+  assert.equal(f.clicks, 1);
+  await f.advance(119999); assert.equal(f.clicks, 1);
+  await f.advance(1); assert.equal(f.clicks, 2); assert.equal(f.intervals.size, 1);
+  await f.advance(120000); assert.equal(f.clicks, 3); assert.equal(f.intervals.size, 1);
+  f.window.devboxContinue.stop(); await f.advance(120000);
+  assert.equal(f.clicks, 3); assert.equal(f.intervals.size, 0);
+});
+
+test('README helper readiness polling honors its scheduled delay', async () => {
+  const f = fixture({ disabled: true }); f.run(); f.button.disabled = false;
+  await f.advance(99); assert.equal(f.clicks, 0);
+  await f.advance(1); assert.equal(f.clicks, 1);
 });
 
 test('README helper abandons a user edit during readiness polling', async () => {
