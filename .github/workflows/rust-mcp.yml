@@ -47,8 +47,11 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Audit production JavaScript dependencies
         run: npm audit --omit=dev --audit-level=high
-      - name: Test retained JavaScript runtime and rollback behavior
-        run: npm test
+      - name: Test retained JavaScript runtime
+        run: npm run test:unit
+      - name: Test Windows JavaScript MCP rollback behavior
+        if: runner.os == 'Windows'
+        run: npm run test:mcp
       - name: Install Rust 1.91.1 with quality components
         shell: bash
         run: |
