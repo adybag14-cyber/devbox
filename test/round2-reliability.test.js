@@ -240,7 +240,7 @@ test("orphan reconciliation terminates a surviving detached child process tree",
   const paths = jobs.asyncJobsInternals.jobPaths(id);
   await mkdir(paths.dir, { recursive: true });
   const old = new Date(Date.now() - 20000);
-  await writeFile(paths.status, `${JSON.stringify({ id, status: "running", runnerPid: 99999999, childPid, createdAtUtc: old.toISOString(), startedAtUtc: old.toISOString() })}\n`, "utf8");
+  await writeFile(paths.status, `${JSON.stringify({ id, status: "running", runtimeMode: "host", runnerPid: 99999999, childPid, createdAtUtc: old.toISOString(), startedAtUtc: old.toISOString() })}\n`, "utf8");
   await writeFile(paths.heartbeat, `${JSON.stringify({ pid: 99999999, status: "running", childPid, updatedAtUtc: old.toISOString() })}\n`, "utf8");
   await utimes(paths.heartbeat, old, old);
   try {

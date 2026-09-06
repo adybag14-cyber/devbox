@@ -17,19 +17,7 @@ on:
       - "scripts/ci/test-windows-managed-mcp-ownership.ps1"
       - ".github/workflows/rust-mcp.yml"
   pull_request:
-    paths:
-      - "rust-mcp/**"
-      - "rust-toolchain.toml"
-      - "package.json"
-      - "package-lock.json"
-      - "src/server.js"
-      - "src/launcher.js"
-      - "src/mcp-implementation.js"
-      - "scripts/Start-ChatGptDevboxMcp.ps1"
-      - "scripts/Stop-ChatGptDevboxMcp.ps1"
-      - "scripts/ci/test-windows-startup-contract.ps1"
-      - "scripts/ci/test-windows-managed-mcp-ownership.ps1"
-      - ".github/workflows/rust-mcp.yml"
+    # These job names are required by branch protection, including for docs PRs.
   workflow_dispatch:
 
 permissions:
@@ -59,6 +47,8 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Audit production JavaScript dependencies
         run: npm audit --omit=dev --audit-level=high
+      - name: Test retained JavaScript runtime and rollback behavior
+        run: npm test
       - name: Install Rust 1.91.1 with quality components
         shell: bash
         run: |

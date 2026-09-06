@@ -1835,7 +1835,10 @@ mod tests {
             max_concurrent: max,
             reserved_interactive: reserved,
             watch_max_concurrent: watch,
-            queue_timeout: Duration::from_millis(250),
+            // Successful acquisitions include real filesystem/process probes. Hosted
+            // Windows runners can take >250 ms even with no competing lease.
+            // Tests of saturation/deadlines set their own short request timeout.
+            queue_timeout: Duration::from_secs(5),
             heavy_capacity: 4,
             heavy_weight: 2,
             io_heavy_capacity: 2,
