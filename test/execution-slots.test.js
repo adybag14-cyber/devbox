@@ -7,6 +7,16 @@ import { pathToFileURL } from "node:url";
 import { currentProcessInstance } from "../src/process-identity.js";
 
 const importIsolatedSlots = async () => {
+  // These tests exercise scheduler ordering/capacity, not cold PowerShell
+  // startup. Establish the fixture's identity before starting short queue
+  // deadlines; process-identity.test.js covers probe failures and recovery.
+  const identityDeadline = Date.now() + 15000;
+  let identity = await currentProcessInstance();
+  while (identity === null && Date.now() < identityDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    identity = await currentProcessInstance();
+  }
+  assert.notEqual(identity, null, "scheduler fixture needs a verified current-process identity");
   const slotRoot = await mkdtemp(path.join(os.tmpdir(), "devbox-exec-slots-test-"));
   process.env.MCP_EXEC_SLOT_ROOT = slotRoot;
   const href = pathToFileURL(path.join(process.cwd(), "src/execution-slots.js")).href;
