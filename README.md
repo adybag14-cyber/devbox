@@ -349,101 +349,83 @@ curl --fail http://127.0.0.1:8100/healthz
 node bin/devbox.js stop
 ```
 
-## Free script to approve all messages. 
+## Optional browser console helper: send "continue"
 
-DO NOT DELETED.."!
-```
-let lastClicked = null;
+This helper sends `continue` immediately and every two minutes while this page remains visible. It requires exactly one visible, empty editable field inside a form and a unique Send button in that same form. It pauses while a response is running, leaves existing drafts alone, and stops on navigation. If the page structure is unsupported, it does nothing. This is a page-dependent convenience example; Devbox's persistent jobs are the supported way to keep commands running across requests.
 
-setInterval(() => {
-  const btn = [...document.querySelectorAll('button')].find(b => {
-    const rect = b.getBoundingClientRect();
-    const bg = getComputedStyle(b).backgroundColor;
+Stop it with `window.devboxContinue.stop()`. Pasting the snippet again stops the previous instance, including any pending attempt.
 
-    const sizeMatch =
-      rect.width >= 195 && rect.width <= 199 &&
-      rect.height >= 35 && rect.height <= 37;
-
-    const colorMatch =
-      bg === 'rgb(13, 13, 13)' ||
-      bg === 'rgb(0, 0, 0)';
-
-    return sizeMatch && colorMatch ;
-  });
-
-  if (btn && btn !== lastClicked) {
-    lastClicked = btn;
-    console.log('Clicking:', btn.innerText.trim(), btn.getBoundingClientRect());
-    btn.click();
-  }
-}, 1000)
-```
-
-If you are lazy to type continue and press enter here's another console script for you. 
-```
-(function() {
-  function getMainBoxAndButton() {
-    // Find the first visible contenteditable box
-    const box = Array.from(document.querySelectorAll('[contenteditable="true"]'))
-                     .find(el => el.offsetParent !== null); // only visible elements
-
-    // Try to find a send button within the same container
-    let sendBtn = null;
-    if (box) {
-      const container = box.closest('div');
-      if (container) {
-        sendBtn = container.querySelector('button, input[type="submit"]');
+<!-- devbox-auto-continue:start -->
+```javascript
+(() => {
+  window.devboxContinue?.stop();
+  clearInterval(window.continueTimer);
+  const route = location.href;
+  let stopped = false;
+  let busy = false;
+  const sendSelector = 'button[type="submit"], button[aria-label="Send message" i], button[data-testid="send-button"]';
+  const stopSelector = 'button[data-testid="stop-button"], button[aria-label="Stop streaming" i], button[aria-label="Stop generating" i]';
+  const visible = (el) => {
+    if (!el?.isConnected || !el.getClientRects().length) return false;
+    for (let parent = el; parent; parent = parent.parentElement) {
+      const style = getComputedStyle(parent);
+      if (style.visibility !== 'visible' || Number(style.opacity) === 0 || style.display === 'none') return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.bottom > 0 && rect.right > 0 && rect.top < innerHeight && rect.left < innerWidth;
+  };
+  const generating = () => [...document.querySelectorAll(stopSelector)].some(visible);
+  const sendButtons = (form) => [...form.querySelectorAll(sendSelector)].filter(visible);
+  const active = () => !stopped && location.href === route && document.visibilityState === 'visible';
+  const stop = () => {
+    stopped = true;
+    clearInterval(window.continueTimer);
+  };
+  async function tick() {
+    if (location.href !== route) stop();
+    if (!active() || busy || generating()) return;
+    const boxes = [...document.querySelectorAll('[contenteditable]')]
+      .filter(el => el.isContentEditable && visible(el));
+    if (boxes.length !== 1) return;
+    const box = boxes[0];
+    const form = box.closest('form');
+    if (!form || box.textContent.trim() || sendButtons(form).length !== 1) return;
+    busy = true;
+    try {
+      box.focus();
+      const selection = window.getSelection();
+      if (!selection) return;
+      const range = document.createRange();
+      range.selectNodeContents(box);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      if (!document.execCommand('insertText', false, 'continue')) return;
+      const deadline = Date.now() + 5_000;
+      while (active() && Date.now() < deadline) {
+        if (!visible(box) || box.closest('form') !== form || box.textContent.trim() !== 'continue' || generating()) return;
+        const buttons = sendButtons(form);
+        if (buttons.length !== 1) return;
+        const button = buttons[0];
+        if (!button.disabled && button.getAttribute('aria-disabled') !== 'true') {
+          button.click();
+          return;
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
-    }
-
-    return { box, sendBtn };
-  }
-
-  function typeAndSend() {
-    const { box, sendBtn } = getMainBoxAndButton();
-    if (!box) {
-      console.warn('No visible typing box found!');
-      return;
-    }
-
-    // Focus the box
-    box.focus();
-
-    // Move cursor to the end
-    const sel = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(box);
-    range.collapse(false);
-    sel.removeAllRanges();
-    sel.addRange(range);
-
-    // Insert the exact phrase "continue "
-    document.execCommand('insertText', false, 'continue ');
-
-    // Click send if a button exists
-    if (sendBtn && !sendBtn.disabled) {
-      sendBtn.click();
-    } else {
-      // If no button, try simulating Enter key
-      const enterEvent = new KeyboardEvent('keydown', {
-        key: 'Enter',
-        code: 'Enter',
-        keyCode: 13,
-        which: 13,
-        bubbles: true
-      });
-      box.dispatchEvent(enterEvent);
+    } catch (error) {
+      console.warn('Continue helper stopped this attempt:', error);
+    } finally {
+      busy = false;
     }
   }
-
-  // Run immediately
-  typeAndSend();
-
-  // Repeat every 2 minutes
-  setInterval(typeAndSend, 2 * 60 * 1000);
+  window.devboxContinue = { stop, tick };
+  window.continueTimer = setInterval(tick, 2 * 60 * 1000);
+  void tick();
 })();
 ```
-and the auto continue script above too. 
+<!-- devbox-auto-continue:end -->
+
 
 ### Windows named-tunnel source binding
 
