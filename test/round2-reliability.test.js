@@ -233,6 +233,7 @@ test("orphan reconciliation terminates a surviving detached child process tree",
     cwd: projectRoot,
     stdio: "ignore",
     windowsHide: true,
+    detached: process.platform !== "win32",
   });
   const childPid = child.pid;
   assert.ok(Number.isInteger(childPid) && childPid > 0);
@@ -240,7 +241,7 @@ test("orphan reconciliation terminates a surviving detached child process tree",
   const paths = jobs.asyncJobsInternals.jobPaths(id);
   await mkdir(paths.dir, { recursive: true });
   const old = new Date(Date.now() - 20000);
-  await writeFile(paths.status, `${JSON.stringify({ id, status: "running", runnerPid: 99999999, childPid, createdAtUtc: old.toISOString(), startedAtUtc: old.toISOString() })}\n`, "utf8");
+  await writeFile(paths.status, `${JSON.stringify({ id, status: "running", runtimeMode: "host", runnerPid: 99999999, childPid, createdAtUtc: old.toISOString(), startedAtUtc: old.toISOString() })}\n`, "utf8");
   await writeFile(paths.heartbeat, `${JSON.stringify({ pid: 99999999, status: "running", childPid, updatedAtUtc: old.toISOString() })}\n`, "utf8");
   await utimes(paths.heartbeat, old, old);
   try {
@@ -342,7 +343,7 @@ test("Docker orphan cleanup terminates only the local docker client identity and
   process.env.MCP_JOBS_ROOT = jobsRoot;
   const href = pathToFileURL(path.join(projectRoot, "src/async-jobs.js")).href;
   const jobs = await import(`${href}?docker-orphan=${Date.now()}-${Math.random()}`);
-  const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: projectRoot, stdio: "ignore", windowsHide: true });
+  const child = spawn(process.execPath, ["-e", "setInterval(()=>{},1000)"], { cwd: projectRoot, stdio: "ignore", windowsHide: true, detached: process.platform !== "win32" });
   const childPid = child.pid;
   const id = `job-test-${Date.now().toString(36)}-docker12`;
   const paths = jobs.asyncJobsInternals.jobPaths(id);

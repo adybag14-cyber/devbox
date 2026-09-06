@@ -408,10 +408,24 @@ try {
           : path.win32.resolve(args.working_dir || fixtureRoot, args.path))
       : null;
     if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
-    const jsResult = await js.client.callTool({ name, arguments: args });
+    let jsResult = await js.client.callTool({ name, arguments: args });
     if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
-    const rustResult = await rust.client.callTool({ name, arguments: args });
+    let rustResult = await rust.client.callTool({ name, arguments: args });
     if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
+    if (name === "devbox_status") {
+      // Both services sample scheduler counters asynchronously. Compare their
+      // eventual observable state after prior calls, retaining every counter in
+      // the oracle instead of treating an old cache sample as a regression.
+      const deadline = Date.now() + 5_000;
+      while (JSON.stringify(normalizedResult(name, jsResult)) !== JSON.stringify(normalizedResult(name, rustResult))
+        && Date.now() < deadline) {
+        await sleep(100);
+        [jsResult, rustResult] = await Promise.all([
+          js.client.callTool({ name, arguments: args }),
+          rust.client.callTool({ name, arguments: args }),
+        ]);
+      }
+    }
     compareResults(name, jsResult, rustResult);
   }
 

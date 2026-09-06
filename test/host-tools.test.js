@@ -161,7 +161,7 @@ test("runHostShellCommand executes a posix shell command on non-Windows hosts", 
   assert.equal(result.stdout, "host-shell-ok");
 });
 
-test("inspectWindowsFile flags mojibake-corrupted PowerShell scripts and reports repair hints", async () => {
+test("inspectWindowsFile flags mojibake-corrupted PowerShell scripts and reports repair hints", { skip: !hasPowerShell }, async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
   const scriptPath = path.join(tempDir, "corrupt.ps1");
   const corruptedScript = `Write-Host 'ok'\n${"\u00e2\u20ac\u201d"}\nif ($true {\n`;
@@ -195,7 +195,7 @@ test("PowerShell CLIXML progress is removed while serialized errors are decoded"
   assert.equal(cleanPowerShellOutput(serializedError).trim(), "real failure");
 });
 
-test("inspectWindowsFile skips corruption checks for PE executables", async () => {
+test("inspectWindowsFile skips corruption checks for PE executables", { skip: !hasPowerShell }, async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
   const executablePath = path.join(tempDir, "valid.exe");
 
@@ -212,7 +212,7 @@ test("inspectWindowsFile skips corruption checks for PE executables", async () =
   }
 });
 
-test("runAllowedProgram attaches bridge diagnostics for corrupted script failures", async () => {
+test("runAllowedProgram attaches bridge diagnostics for corrupted script failures", { skip: !hasPowerShell }, async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "docker-chatgpt-devbox-host-tools-test-"));
   const scriptPath = path.join(tempDir, "corrupt.ps1");
   const corruptedScript = `Write-Host 'ok'\n${"\u00e2\u20ac\u201d"}\nif ($true {\n`;
