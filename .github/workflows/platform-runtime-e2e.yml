@@ -4,19 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
-    paths:
-      - "src/**"
-      - "rust-mcp/**"
-      - "rust-toolchain.toml"
-      - "bin/**"
-      - "scripts/**"
-      - "bootstrap/**"
-      - "setup-tui/**"
-      - "test/**"
-      - "package.json"
-      - "package-lock.json"
-      - ".env.example"
-      - ".github/workflows/platform-runtime-e2e.yml"
+    # Required checks must also be reported for README-only changes.
   workflow_dispatch:
 
 permissions:
