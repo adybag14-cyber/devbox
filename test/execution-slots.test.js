@@ -219,6 +219,16 @@ test("disk pressure lets light interactive work bypass a blocked weighted waiter
 
 test("shared FIFO prevents a later light job from overtaking an earlier heavy waiter", async () => {
   const { acquireExecutionSlot, getExecutionSlotSnapshot } = await importIsolatedSlots();
+  const cancellation = new AbortController();
+  const waitForQueued = async (count) => {
+    const deadline = Date.now() + 5000;
+    do {
+      const snapshot = await getExecutionSlotSnapshot({ maxConcurrent: 2, reservedInteractive: 0, heavyCapacity: 2 });
+      if (snapshot.global_queued === count) return snapshot;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } while (Date.now() < deadline);
+    assert.fail(`Expected ${count} persisted FIFO waiters before continuing`);
+  };
   const blocker = await acquireExecutionSlot({
     kind: "background",
     resourceClass: "light",
@@ -230,36 +240,41 @@ test("shared FIFO prevents a later light job from overtaking an earlier heavy wa
   });
   let heavy;
   let light;
+  let heavyPromise;
+  let lightPromise;
   try {
-    const heavyPromise = acquireExecutionSlot({
+    heavyPromise = acquireExecutionSlot({
       kind: "background",
       resourceClass: "heavy",
       weight: 2,
       maxConcurrent: 2,
       reservedInteractive: 0,
       heavyCapacity: 2,
-      queueTimeoutMs: 2000,
+      queueTimeoutMs: 10000,
       label: "fifo-heavy-first",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    const lightPromise = acquireExecutionSlot({
+      signal: cancellation.signal,
+    }).then(lease => { heavy = lease; return lease; });
+    heavyPromise.catch(() => {});
+    await waitForQueued(1);
+    lightPromise = acquireExecutionSlot({
       kind: "background",
       resourceClass: "light",
       maxConcurrent: 2,
       reservedInteractive: 0,
       heavyCapacity: 2,
-      queueTimeoutMs: 2000,
+      queueTimeoutMs: 10000,
       label: "fifo-light-later",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 75));
-    const queued = await getExecutionSlotSnapshot({ maxConcurrent: 2, reservedInteractive: 0, heavyCapacity: 2 });
+      signal: cancellation.signal,
+    }).then(lease => { light = lease; return lease; });
+    lightPromise.catch(() => {});
+    const queued = await waitForQueued(2);
     assert.equal(queued.global_queued, 2);
     assert.equal(queued.global_queued_by_class["execution-background"], 2);
 
     await blocker.release();
     heavy = await heavyPromise;
     let lightResolved = false;
-    lightPromise.then(() => { lightResolved = true; });
+    lightPromise.then(() => { lightResolved = true; }, () => {});
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(lightResolved, false, "later light request overtook the earlier heavy FIFO head");
     assert.equal(heavy.weight, 2);
@@ -269,6 +284,8 @@ test("shared FIFO prevents a later light job from overtaking an earlier heavy wa
     light = await lightPromise;
     assert.equal(light.weight, 1);
   } finally {
+    cancellation.abort();
+    await Promise.allSettled([heavyPromise, lightPromise].filter(Boolean));
     await light?.release().catch(() => {});
     await heavy?.release().catch(() => {});
     await blocker.release().catch(() => {});
