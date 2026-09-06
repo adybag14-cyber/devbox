@@ -80,7 +80,12 @@ export const processInstance = async (pid, { bypassCache = false } = {}) => {
 };
 
 export const currentProcessInstance = () => {
-  currentProcessInstancePromise ??= processInstance(process.pid);
+  currentProcessInstancePromise ??= processInstance(process.pid, { bypassCache: true }).then(value => {
+    // A transient failed probe is not a permanent process identity. Share the
+    // in-flight request, but let a later operation retry after an unknown result.
+    if (value === null) currentProcessInstancePromise = null;
+    return value;
+  });
   return currentProcessInstancePromise;
 };
 

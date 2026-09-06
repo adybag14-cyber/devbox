@@ -10,6 +10,22 @@ import {
   processIdentityInternals,
 } from "../src/process-identity.js";
 
+test("current-process identity recovers after an indeterminate first probe", async () => {
+  const identity = await import(`../src/process-identity.js?retry=${Date.now()}`);
+  const originalKill = process.kill;
+  try {
+    process.kill = () => { const error = new Error("transient unavailable probe"); error.code = "ESRCH"; throw error; };
+    const first = identity.currentProcessInstance();
+    assert.equal(identity.currentProcessInstance(), first, "concurrent callers share the probe");
+    assert.equal(await first, null);
+  } finally {
+    process.kill = originalKill;
+  }
+  const recovered = await identity.currentProcessInstance();
+  assert.notEqual(recovered, null);
+  assert.equal(await identity.currentProcessInstance(), recovered);
+});
+
 test("process identity is stable for the current process and rejects a reused-instance token", async () => {
   const first = await currentProcessInstance();
   const second = await processInstance(process.pid);
