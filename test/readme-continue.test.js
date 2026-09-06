@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const snippet = readme.match(/<!-- devbox-auto-continue:start -->\s*```javascript\n([\s\S]*?)\n```/)[1];
 
 function fixture(options = {}) {
