@@ -323,6 +323,16 @@ bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expe
 bool process_alive(std::uint32_t pid) {
     if (pid == 0 || pid > static_cast<std::uint32_t>(INT32_MAX))
         return false;
+#ifdef __linux__
+    try {
+        const auto status = read_file(path_from_utf8("/proc/" + std::to_string(pid) + "/stat"), 8192);
+        const auto close = status.rfind(')');
+        if (close != std::string::npos && close + 2 < status.size() &&
+            (status[close + 2] == 'Z' || status[close + 2] == 'X'))
+            return false;
+    } catch (...) {
+    }
+#endif
     return ::kill(static_cast<pid_t>(pid), 0) == 0 || errno == EPERM;
 }
 std::optional<std::uint64_t> process_instance(std::uint32_t pid) {
@@ -775,9 +785,17 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     const bool already_pending = sigismember(&pending, SIGPIPE) == 1;
     ScopeExit restore_mask([&] {
         if (!already_pending) {
+#ifdef __APPLE__
+            sigset_t pending_now;
+            if (sigpending(&pending_now) == 0 && sigismember(&pending_now, SIGPIPE) == 1) {
+                int received = 0;
+                sigwait(&blocked, &received);
+            }
+#else
             timespec zero{};
             while (sigtimedwait(&blocked, nullptr, &zero) >= 0) {
             }
+#endif
         }
         pthread_sigmask(SIG_SETMASK, &previous, nullptr);
     });

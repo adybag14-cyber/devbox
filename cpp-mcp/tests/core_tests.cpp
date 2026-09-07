@@ -46,6 +46,37 @@ int main() {
             write_json_atomic(root / "state.json", Json{{"state", "old"}});
             write_json_atomic(root / "state.json", Json{{"state", "new"}});
             require(read_json(root / "state.json")["state"] == "new", "atomic JSON replacement");
+            const auto journal = root / "journal.json";
+            const auto padding = std::string(256 * 1024, 'x');
+            write_json_atomic(journal, Json{{"revision", 0}, {"padding", padding}});
+            std::atomic_bool stop_reader{false}, reader_started{false};
+            std::exception_ptr reader_error, writer_error;
+            std::jthread reader([&] {
+                reader_started = true;
+                try {
+                    while (!stop_reader) {
+                        const auto value = read_json(journal);
+                        require(value["padding"] == padding, "concurrent journal snapshot");
+                    }
+                } catch (...) {
+                    reader_error = std::current_exception();
+                }
+            });
+            while (!reader_started)
+                std::this_thread::yield();
+            try {
+                for (int i = 1; i <= 100; ++i)
+                    write_json_atomic(journal, Json{{"revision", i}, {"padding", padding}});
+            } catch (...) {
+                writer_error = std::current_exception();
+            }
+            stop_reader = true;
+            reader.join();
+            if (writer_error)
+                std::rethrow_exception(writer_error);
+            if (reader_error)
+                std::rethrow_exception(reader_error);
+            require(read_json(journal)["revision"] == 100, "journal readers permit atomic replacement");
         } catch (...) {
             fs::remove_all(root);
             throw;

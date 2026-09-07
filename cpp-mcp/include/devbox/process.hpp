@@ -66,6 +66,8 @@ bool process_matches_instance(std::uint32_t pid, std::optional<std::uint64_t> ex
 bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expected);
 ProcessOutput spawn_process(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options = {}, const Cancel& cancel = {});
+std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string>& args, const fs::path& cwd,
+                             const std::optional<Environment>& env = {});
 std::string summarize_process_failure(std::string_view file, int code, std::string_view stdout_text,
                                       std::string_view stderr_text);
 CaptureResult read_text_file_bounded(const fs::path& path, std::optional<std::size_t> limit);

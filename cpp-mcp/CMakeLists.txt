@@ -5,12 +5,20 @@ find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
 add_library(devbox_core
   src/common.cpp
+  src/state_file.cpp
   src/config.cpp
   src/result.cpp
   src/process.cpp
   src/storage.cpp
   src/runtime.cpp
   src/scheduler.cpp
+  src/job_logs.cpp
+  src/jobs.cpp
+  src/detached.cpp
+  src/resource_class.cpp
+  src/job_manager.cpp
+  src/job_runner.cpp
+  src/jobs_maintenance.cpp
 )
 target_include_directories(devbox_core PUBLIC include)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl Threads::Threads)
@@ -57,6 +65,13 @@ if(DEVBOX_BUILD_TESTS)
   endif()
   add_test(NAME scheduler COMMAND devbox-scheduler-tests)
   set_tests_properties(scheduler PROPERTIES TIMEOUT 60)
+  add_executable(devbox-jobs-tests tests/jobs_tests.cpp)
+  target_link_libraries(devbox-jobs-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-jobs-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME jobs COMMAND devbox-jobs-tests)
+  set_tests_properties(jobs PROPERTIES TIMEOUT 60)
 endif()
 if(MSVC)
   target_compile_options(devbox_core PRIVATE /W4 /permissive- /utf-8 /EHsc /bigobj)

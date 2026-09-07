@@ -10,7 +10,7 @@
     "transport": "pending",
     "oauth_gateway": "pending",
     "process_runtime": "native Windows/POSIX implementation; Windows process and shell tests pass; Docker, UAC and cross-platform gates pending",
-    "scheduler_jobs": "compatible weighted scheduler implemented and Windows contention tests pass; detached jobs pending",
+    "scheduler_jobs": "native scheduler, detached runners, receipts, heartbeat recovery, logs, retention and quota implemented; Windows behavioral tests pass; cross-runtime and cross-platform gates pending",
     "files_tasks_search": "atomic writes, binary transfer, task checkpoints and directory listing implemented with Windows tests passing; search pending",
     "capture": "pending",
     "monitoring": "pending",

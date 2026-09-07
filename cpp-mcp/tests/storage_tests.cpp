@@ -92,6 +92,19 @@ int run(int argc, char** argv) {
 #ifdef _WIN32
         atomic_write(target, "preserved");
         {
+            NativeHandle reader(CreateFileW(target.c_str(), GENERIC_READ,
+                                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                            OPEN_EXISTING, 0, nullptr));
+            require(static_cast<bool>(reader), "snapshot reader");
+            atomic_write(target, "replaced while reader remains open");
+            char previous[9]{};
+            DWORD count = 0;
+            require(ReadFile(reader.get(), previous, 9, &count, nullptr) &&
+                        std::string(previous, count) == "preserved",
+                    "atomic replacement preserves existing reader snapshot");
+        }
+        atomic_write(target, "preserved");
+        {
             NativeHandle blocker(CreateFileW(target.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                              nullptr, OPEN_EXISTING, 0, nullptr));
             require(static_cast<bool>(blocker), "replacement blocker");

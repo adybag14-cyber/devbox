@@ -1,4 +1,5 @@
 #include "devbox/common.hpp"
+#include "devbox/native.hpp"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -480,9 +481,46 @@ std::uint32_t process_id() {
 #endif
 }
 std::string read_file(const fs::path& path, std::size_t limit) {
+    return read_file_range(path, 0, limit);
+}
+std::string read_file_range(const fs::path& path, std::uint64_t offset, std::size_t limit) {
+    if (offset > static_cast<std::uint64_t>(INT64_MAX))
+        throw Error("File offset exceeds supported range");
+#ifdef _WIN32
+    NativeHandle file(CreateFileW(path.c_str(), GENERIC_READ,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (!file)
+        throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
+                                "open " + path_text(path));
+    if (offset) {
+        LARGE_INTEGER position{};
+        position.QuadPart = static_cast<LONGLONG>(offset);
+        if (!SetFilePointerEx(file.get(), position, nullptr, FILE_BEGIN))
+            throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
+    }
+    std::string out;
+    std::array<char, 65536> buffer{};
+    while (out.size() < limit) {
+        const auto wanted = static_cast<DWORD>(std::min(buffer.size(), limit - out.size()));
+        DWORD count = 0;
+        if (!ReadFile(file.get(), buffer.data(), wanted, &count, nullptr))
+            throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
+                                    "read " + path_text(path));
+        if (!count)
+            break;
+        out.append(buffer.data(), count);
+    }
+    return out;
+#else
     std::ifstream file(path, std::ios::binary);
     if (!file)
         throw std::system_error(errno, std::generic_category(), "open " + path_text(path));
+    if (offset) {
+        file.seekg(static_cast<std::streamoff>(offset));
+        if (!file)
+            throw Error("Cannot seek " + path_text(path));
+    }
     std::string out;
     std::array<char, 65536> buffer{};
     while (file && out.size() < limit) {
@@ -493,6 +531,7 @@ std::string read_file(const fs::path& path, std::size_t limit) {
     if (file.bad())
         throw Error("Cannot read " + path_text(path));
     return out;
+#endif
 }
 Json read_json(const fs::path& path, std::size_t limit) {
     const auto value = read_file(path, limit + 1);
@@ -536,9 +575,7 @@ void write_json_atomic(const fs::path& path, const Json& value) {
         if (!flushed)
             throw std::system_error(static_cast<int>(flush_error), std::system_category(),
                                     "flush JSON state");
-        if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-            throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
-                                    "replace JSON state");
+        replace_state_file(temporary, path);
 #else
         const int fd = open(temporary.c_str(), O_RDONLY | O_CLOEXEC);
         if (fd < 0)

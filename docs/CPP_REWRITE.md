@@ -24,3 +24,11 @@ Both the MCP runtime and Rust bootstrap installer are in scope. Existing job req
 | Installer and deployment | bootstrap, managed launchers | cpp-bootstrap and launcher integration | Fresh install, immutable C++ candidates, Guardian and rollback |
 
 Production changes are a separate final phase. Until every row is complete and cross-platform gates pass, no production checkout update, configuration edit, service restart, Rust binary replacement or tunnel change is permitted for this rewrite.
+
+## Native backend milestone
+
+The C++ core currently implements native processes, host/Docker shell adapters, conditional atomic writes, binary file transfer, task checkpoints, directory listing, weighted scheduling, detached job runners, operation receipts, heartbeat reconciliation, log rotation, retention and quota. Six Windows test executables cover these modules, including actual child processes and concurrent filesystem access. This milestone does not provide a complete MCP server and does not authorize a production cutover.
+
+Windows journal reads share delete access. Internal journal and queue replacements use `FileRenameInfoEx` with POSIX rename semantics so existing readers keep their previous snapshot while new readers open the replacement. Unsupported filesystems use a bounded classic-rename fallback. User-file replacements continue to use `ReplaceFileW` to preserve destination permissions, with a regression that keeps the previous file open while replacing it. Both behaviors follow the [Microsoft file rename contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information).
+
+The POSIX process backend owns a process group for each direct invocation. Detached runners handle termination signals and cancel their separately owned command group. A submitting process can exit without terminating an admitted detached job. Receipt retention is independent of normal job-result retention, and completed requests cannot be executed again by relaunching the C++ runner.

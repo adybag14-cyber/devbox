@@ -5,6 +5,8 @@
 #ifdef _WIN32
 #include <fcntl.h>
 #include <io.h>
+#else
+#include <sys/wait.h>
 #endif
 using namespace devbox;
 void require(bool condition, const char* message) {
@@ -33,6 +35,7 @@ int child(int argc, char** argv) {
         std::cout << "ready" << std::flush;
         std::this_thread::sleep_for(Millis(10000));
     } else if (mode == "tree") {
+#ifdef _WIN32
         ProcessOptions options;
         options.timeout = Millis(8000);
         options.on_pid = [](std::uint32_t pid) { std::cout << pid << '\n' << std::flush; };
@@ -41,6 +44,20 @@ int child(int argc, char** argv) {
         } catch (...) {
             return 1;
         }
+#else
+        const auto executable = path_text(executable_path());
+        const auto pid = ::fork();
+        if (pid < 0)
+            return 1;
+        if (pid == 0) {
+            ::execl(executable.c_str(), executable.c_str(), "--child", "sleep", nullptr);
+            ::_exit(127);
+        }
+        std::cout << pid << '\n' << std::flush;
+        int status = 0;
+        while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        }
+#endif
     } else if (mode == "exit") {
         std::cout << "out";
         std::cerr << "err";

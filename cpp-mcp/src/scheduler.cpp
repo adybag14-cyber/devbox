@@ -260,12 +260,7 @@ void replace_text(const fs::path& path, std::string_view text) {
         fs::remove(temporary, ec);
     });
     write_file(temporary, text);
-#ifdef _WIN32
-    if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-        throw Error(windows_error());
-#else
-    fs::rename(temporary, path);
-#endif
+    replace_state_file(temporary, path);
     cleanup.disarm();
 }
 std::string increment_sequence(std::string current) {
