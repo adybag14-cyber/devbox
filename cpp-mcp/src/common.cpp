@@ -1,5 +1,6 @@
 #include "devbox/common.hpp"
 #include "devbox/native.hpp"
+#include <ada.h>
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -687,72 +688,38 @@ Json query_parameters(std::string_view query) {
 }
 Url Url::parse(std::string_view value) {
     Url result;
-    auto text = trim(value);
-    const auto colon = text.find(':');
-    if (colon == text.npos || colon == 0)
-        throw Error("URL must be absolute");
-    result.scheme = lower(text.substr(0, colon));
-    std::string_view rest(text);
-    rest.remove_prefix(colon + 1);
-    if (rest.starts_with("//")) {
-        rest.remove_prefix(2);
-        const auto end = rest.find_first_of("/?#");
-        auto authority = rest.substr(0, end);
-        rest = end == rest.npos ? std::string_view{} : rest.substr(end);
-        const auto at = authority.rfind('@');
-        if (at != authority.npos) {
-            result.userinfo = std::string(authority.substr(0, at));
-            authority.remove_prefix(at + 1);
-        }
-        if (authority.starts_with('[')) {
-            const auto close = authority.find(']');
-            if (close == authority.npos)
-                throw Error("Invalid IPv6 URL");
-            result.host = lower(std::string(authority.substr(1, close - 1)));
-            if (close + 1 < authority.size()) {
-                if (authority[close + 1] != ':')
-                    throw Error("Invalid URL authority");
-                result.port = std::string(authority.substr(close + 2));
-            }
-        } else {
-            const auto port = authority.rfind(':');
-            result.host = lower(std::string(authority.substr(0, port)));
-            if (port != authority.npos)
-                result.port = std::string(authority.substr(port + 1));
-        }
-        if (result.host.empty())
-            throw Error("URL host is empty");
-    }
-    const auto hash = rest.find('#');
-    if (hash != rest.npos) {
-        result.fragment = std::string(rest.substr(hash + 1));
-        rest = rest.substr(0, hash);
-    }
-    const auto q = rest.find('?');
-    result.path = std::string(rest.substr(0, q));
-    if (q != rest.npos)
-        result.query = std::string(rest.substr(q + 1));
-    if (result.path.empty() && !result.host.empty())
-        result.path = "/";
-    if (!result.port.empty()) {
-        const auto p = digits(result.port);
-        if (p < 1 || p > 65535)
-            throw Error("Invalid URL port");
-        if ((result.scheme == "http" && p == 80) || (result.scheme == "https" && p == 443))
-            result.port.clear();
-    }
-    if ((result.scheme == "http" || result.scheme == "https") && result.host.empty())
-        throw Error("URL host is required");
+    const auto parsed = ada::parse<ada::url>(value);
+    if (!parsed)
+        throw Error("URL must be a valid absolute URL");
+    result.scheme = parsed->get_protocol();
+    result.scheme.pop_back();
+    result.host = parsed->get_hostname();
+    if (result.host.starts_with('[') && result.host.ends_with(']'))
+        result.host = result.host.substr(1, result.host.size() - 2);
+    result.port = parsed->get_port();
+    result.path = parsed->get_pathname();
+    result.has_query = parsed->has_search();
+    result.has_fragment = parsed->has_hash();
+    result.has_authority = parsed->has_hostname();
+    auto query = parsed->get_search(), fragment = parsed->get_hash();
+    result.query = query.empty() ? "" : query.substr(1);
+    result.fragment = fragment.empty() ? "" : fragment.substr(1);
+    result.userinfo = parsed->get_username();
+    if (!parsed->get_password().empty())
+        result.userinfo += ":" + parsed->get_password();
     return result;
 }
 std::string Url::origin() const {
-    if (host.empty())
-        return scheme + ":";
-    return scheme + "://" + (host.find(':') != host.npos ? "[" + host + "]" : host) +
-           (port.empty() ? "" : ":" + port);
+    const auto parsed = ada::parse(str());
+    return parsed ? parsed->get_origin() : "null";
 }
 std::string Url::str() const {
-    return origin() + path + (query.empty() ? "" : "?" + query) + (fragment.empty() ? "" : "#" + fragment);
+    auto prefix = scheme + ":";
+    if (has_authority)
+        prefix += "//" + (userinfo.empty() ? "" : userinfo + "@") +
+                  (host.find(':') != host.npos ? "[" + host + "]" : host) + (port.empty() ? "" : ":" + port);
+    return prefix + path + (has_query || !query.empty() ? "?" + query : "") +
+           (has_fragment || !fragment.empty() ? "#" + fragment : "");
 }
 
 HttpResult http_request(std::string_view method, std::string_view url, std::string_view body,

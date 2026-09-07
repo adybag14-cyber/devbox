@@ -96,6 +96,7 @@ std::string url_decode(std::string_view value, bool plus_space = true);
 Json query_parameters(std::string_view query);
 struct Url {
     std::string scheme, host, port, path, query, fragment, userinfo;
+    bool has_query = false, has_fragment = false, has_authority = false;
     static Url parse(std::string_view value);
     std::string origin() const;
     std::string str() const;

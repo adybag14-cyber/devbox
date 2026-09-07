@@ -1,4 +1,5 @@
-find_package(Boost REQUIRED COMPONENTS asio beast)
+find_package(Boost CONFIG REQUIRED COMPONENTS asio beast)
+find_package(ada CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
@@ -19,9 +20,13 @@ add_library(devbox_core
   src/job_manager.cpp
   src/job_runner.cpp
   src/jobs_maintenance.cpp
+  src/oauth.cpp
+  src/async.cpp
+  src/gateway.cpp
+  src/server.cpp
 )
 target_include_directories(devbox_core PUBLIC include)
-target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl Threads::Threads)
+target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl Threads::Threads ada::ada)
 target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_NO_DEPRECATED)
 if(WIN32)
   target_compile_definitions(devbox_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
@@ -72,6 +77,21 @@ if(DEVBOX_BUILD_TESTS)
   endif()
   add_test(NAME jobs COMMAND devbox-jobs-tests)
   set_tests_properties(jobs PROPERTIES TIMEOUT 60)
+  add_executable(devbox-oauth-tests tests/oauth_tests.cpp)
+  target_link_libraries(devbox-oauth-tests PRIVATE devbox_core)
+  target_compile_definitions(devbox-oauth-tests PRIVATE DEVBOX_CONTRACT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json")
+  if(MSVC)
+    target_compile_options(devbox-oauth-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME oauth COMMAND devbox-oauth-tests)
+  set_tests_properties(oauth PROPERTIES TIMEOUT 45)
+  add_executable(devbox-transport-tests tests/transport_tests.cpp)
+  target_link_libraries(devbox-transport-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-transport-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME transport COMMAND devbox-transport-tests)
+  set_tests_properties(transport PROPERTIES TIMEOUT 60)
 endif()
 if(MSVC)
   target_compile_options(devbox_core PRIVATE /W4 /permissive- /utf-8 /EHsc /bigobj)
