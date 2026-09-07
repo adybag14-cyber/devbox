@@ -19,6 +19,8 @@ fn build_snapshot() -> Value {
     json!({
         "gitSha": env!("DEVBOX_BUILD_GIT_SHA"),
         "gitRef": env!("DEVBOX_BUILD_GIT_REF"),
+        "sourceTree": env!("DEVBOX_BUILD_SOURCE_TREE"),
+        "sourceDirty": match env!("DEVBOX_BUILD_SOURCE_DIRTY") { "true" => Some(true), "false" => Some(false), _ => None },
         "buildUnixSeconds": env!("DEVBOX_BUILD_UNIX_SECONDS"),
         "rustc": env!("DEVBOX_BUILD_RUSTC"),
         "binarySha256": binary_sha256,

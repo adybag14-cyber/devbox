@@ -61,6 +61,9 @@ use crate::{
     usage::{ToolUsageDropGuard, ToolUsageInvocation, UsageService},
 };
 
+#[path = "agent_tools.rs"]
+mod agent_tools;
+
 #[derive(Debug, Clone)]
 pub struct DevboxMcp {
     config: Arc<Config>,
@@ -145,7 +148,7 @@ impl DevboxMcp {
             files: Arc::new(FileService::new()),
             docker_files: Arc::new(DockerFileBackend::new()),
             scheduler,
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router() + agent_tools::router(),
         }
     }
 
@@ -752,14 +755,30 @@ impl DevboxMcp {
 
     fn configured_tool(&self, mut tool: rmcp::model::Tool) -> rmcp::model::Tool {
         let mut schema = (*tool.input_schema).clone();
-        crate::schema_parity::configure_tool_input_schema(
-            tool.name.as_ref(),
-            &mut schema,
-            &self.config,
-        );
+        if crate::contract::AGENT_TOOL_NAMES.contains(&tool.name.as_ref()) {
+            agent_tools::configure_schema(&mut schema, &self.config);
+        } else {
+            crate::schema_parity::configure_tool_input_schema(
+                tool.name.as_ref(),
+                &mut schema,
+                &self.config,
+            );
+        }
         tool.input_schema = Arc::new(schema);
         crate::schema_parity::configure_tool_output_schema(&mut tool);
         crate::schema_parity::configure_tool_metadata(&mut tool, &self.config);
+        if crate::contract::AGENT_TOOL_NAMES.contains(&tool.name.as_ref()) {
+            let read = matches!(
+                required_tool_scope(tool.name.as_ref()),
+                Some("mcp:devbox:read")
+            );
+            let mut annotations = rmcp::model::ToolAnnotations::default();
+            annotations.read_only_hint = Some(read);
+            annotations.destructive_hint = Some(!read);
+            annotations.idempotent_hint = Some(true);
+            annotations.open_world_hint = Some(tool.name.as_ref() == "devbox_job_submit");
+            tool.annotations = Some(annotations);
+        }
         tool
     }
 
@@ -822,6 +841,7 @@ impl DevboxMcp {
         );
         data.insert("jobQuota".to_owned(), job_quota.unwrap_or(Value::Null));
         data.insert("execution".to_owned(), json!(execution));
+        data.insert("capabilities".to_owned(), self.capability_manifest());
         let performance = self.performance.snapshot();
         data.insert("performance".to_owned(), performance);
         let background_snapshot = self.background.snapshot();
@@ -2359,8 +2379,19 @@ impl DevboxMcp {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for DevboxMcp {
+    async fn on_initialized(&self, context: rmcp::service::NotificationContext<RoleServer>) {
+        let _ = tokio::time::timeout(
+            Duration::from_secs(1),
+            context.peer.notify_tool_list_changed(),
+        )
+        .await;
+    }
+
     fn get_info(&self) -> ServerInfo {
-        let mut capabilities = ServerCapabilities::builder().enable_tools().build();
+        let mut capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_tool_list_changed()
+            .build();
         capabilities.logging = Some(serde_json::Map::default());
         ServerInfo::new(capabilities).with_server_info(
             Implementation::new(self.config.server_name(), env!("CARGO_PKG_VERSION"))
@@ -2444,7 +2475,12 @@ impl ServerHandler for DevboxMcp {
 
 fn required_tool_scope(tool: &str) -> Option<&'static str> {
     match tool {
-        "devbox_status"
+        "devbox_capabilities"
+        | "devbox_file_state"
+        | "devbox_job_list"
+        | "devbox_task_get"
+        | "devbox_task_list"
+        | "devbox_status"
         | "devbox_github_auth_status"
         | "devbox_job_logs"
         | "devbox_job_status"
@@ -2454,7 +2490,10 @@ fn required_tool_scope(tool: &str) -> Option<&'static str> {
         | "devbox_search_files"
         | "devbox_wait"
         | "devbox_wait_for_file" => Some("mcp:devbox:read"),
-        "devbox_exec"
+        "devbox_write_file_atomic"
+        | "devbox_job_submit"
+        | "devbox_task_put"
+        | "devbox_exec"
         | "devbox_exec_readonly"
         | "devbox_exec_start"
         | "devbox_job_cancel"
@@ -3177,8 +3216,8 @@ async fn readyz(State(state): State<HttpState>) -> Response {
         let scheduler = cached_execution_value(&state.handler.execution_snapshot)
             .await
             .is_some();
-        let tool_contract =
-            state.handler.tool_router.list_all().len() == crate::contract::TARGET_TOOL_NAMES.len();
+        let tool_contract = state.handler.tool_router.list_all().len()
+            == crate::contract::TARGET_TOOL_NAMES.len() + crate::contract::AGENT_TOOL_NAMES.len();
         let background = state.handler.background.snapshot();
         let store_task = &background["execution-store-probe"];
         let store_task_fresh = store_task.get("running").and_then(Value::as_bool) == Some(true)
@@ -3496,9 +3535,14 @@ fn render_oversized_posix_capture_pid(
 }
 
 fn render_windows_capture_pid_binding_error(pid: u64) -> CallToolResult {
-    let summary = format!(
+    let mut summary = format!(
         "\u{1b}[31;1mcapture.ps1: \u{1b}[31;1mCannot process argument transformation on parameter 'TargetPid'. Cannot convert value \"{pid}\" to type \"System.Int32\". Error: \"Value was either too large or too small for an Int32.\"\u{1b}[0m"
     );
+    if std::env::var_os("NO_COLOR").is_some()
+        || std::env::var("TERM").is_ok_and(|term| term == "dumb")
+    {
+        summary = summary.replace("\u{1b}[31;1m", "").replace("\u{1b}[0m", "");
+    }
     ToolEnvelope::process_error(
         summary.clone(),
         None,

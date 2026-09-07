@@ -283,6 +283,7 @@ const normalizeImplementationDiagnostics = (name, value) => {
   for (const key of ["runnerProcessInstance", "childProcessInstance", "processInstance"]) delete data[key];
   if (name !== "devbox_status") return cloned;
   for (const key of [
+    "capabilities",
     "activeRequests",
     "activeRequestsIncludingCurrent",
     "backgroundTasks",

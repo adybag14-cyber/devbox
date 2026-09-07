@@ -124,7 +124,8 @@ See [bootstrap/README.md](./bootstrap/README.md) and [setup-tui/README.md](./set
 - `bootstrap/`: cross-platform Rust setup CLI and tests
 - `setup-tui/`: dependency-light C++17 interactive setup frontend
 - `bin/devbox.js`: installable `devbox` command
-- `src/server.js`: MCP server exposed over Streamable HTTP
+- `rust-mcp/`: production Rust MCP service, durable jobs, atomic checkpoints and native process control
+- `src/server.js`: retained legacy JavaScript compatibility implementation
 - `src/runtime.js`: runtime selector for Docker versus host mode
 - `src/docker-runtime.js`: Docker-backed runtime
 - `src/host-runtime.js`: host-backed runtime for Termux/Linux/macOS
@@ -140,7 +141,8 @@ The setup binaries can provision common prerequisites automatically where a supp
 
 ### All modes
 
-- Node.js 18 or newer
+- Node.js 18 or newer for the launcher and Guardian; Node.js 24 is the certified/tested supervisor profile
+- Rust/Cargo: repository toolchain 1.91.1, server MSRV 1.88.0 (the bootstrap CLI itself declares 1.74)
 - npm
 - Git when the installer needs to clone the repository
 
@@ -224,6 +226,8 @@ Windows users can also use:
 ```
 
 ## Configuration
+
+The Rust service exposes 45 tools: the 37 compatible legacy tools plus eight native agent APIs for durable submissions, job/task discovery, revisioned checkpoints, atomic files and capability inspection. See [the native agent runtime contract](docs/AGENT_RUNTIME.md). Production on Windows uses the Rust service under Guardian; ordinary Devbox shell commands honor `HOST_SHELL` and inherit the service token, while explicit `host_exec` retains the administrative PowerShell policy.
 
 Important `.env` values:
 

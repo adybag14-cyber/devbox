@@ -171,6 +171,16 @@ impl JobManager {
     }
 
     async fn persist_and_spawn(&self, request: JobRequest) -> Result<JobStartSummary> {
+        let _gate = crate::job_control::gate(&self.config.jobs_root).await?;
+        crate::job_control::admit(&self.store, &self.config, None).await?;
+        self.persist_and_spawn_unlocked(request, None).await
+    }
+
+    async fn persist_and_spawn_unlocked(
+        &self,
+        request: JobRequest,
+        agent: Option<&crate::job_control::Submission>,
+    ) -> Result<JobStartSummary> {
         let initial = json!({
             "id": request.id,
             "status": "queued",
@@ -184,7 +194,10 @@ impl JobManager {
             "resourceClass": request.resource_class.as_str(),
             "runtimeMode": request.runtime_mode,
         });
-        let request_value = serde_json::to_value(&request)?;
+        let mut request_value = serde_json::to_value(&request)?;
+        if let Some(agent) = agent {
+            request_value["agent"] = serde_json::to_value(agent)?;
+        }
         let paths = self
             .store
             .create_job(&request.id, &request_value, &initial)
@@ -220,6 +233,9 @@ impl JobManager {
         })
     }
 }
+
+#[path = "job_manager_agent.rs"]
+mod agent;
 
 #[must_use]
 pub fn job_store_config(config: &Config) -> JobStoreConfig {

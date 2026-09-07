@@ -1014,6 +1014,24 @@ function Start-CloudflaredQuickTunnel {
     throw "Cloudflare quick tunnel did not publish a URL. Logs:`n$logs"
 }
 
+function Get-RustSourceIdentity {
+    param([Parameter(Mandatory = $true)][string]$ProjectRoot)
+    $gitSha = ([string](& git -C $ProjectRoot rev-parse HEAD 2>$null | Select-Object -First 1)).Trim()
+    $sourceTree = ([string](& git -C $ProjectRoot rev-parse 'HEAD^{tree}' 2>$null | Select-Object -First 1)).Trim()
+    $trackedDirty = ((& git -C $ProjectRoot status --porcelain --untracked-files=no 2>$null | Out-String).Trim()).Length -gt 0
+    $untrackedRust = ((& git -C $ProjectRoot ls-files --others --exclude-standard -- rust-mcp 2>$null | Out-String).Trim()).Length -gt 0
+    if ($trackedDirty -or $untrackedRust -or $gitSha -notmatch '^[0-9a-f]{40}$' -or $sourceTree -notmatch '^[0-9a-f]{40}$') {
+        throw 'Production Rust preflight requires committed, clean tracked source and no untracked Rust build inputs. The existing MCP was not stopped.'
+    }
+    return [pscustomobject]@{ GitSha = $gitSha; SourceTree = $sourceTree; SourceDirty = $false }
+}
+
+function Test-RustSourceIdentity {
+    param($BuildInfo, [string]$GitSha, [string]$SourceTree)
+    if (-not $BuildInfo -or -not $BuildInfo.PSObject.Properties['SourceDirty'] -or -not $BuildInfo.PSObject.Properties['SourceTree'] -or -not $BuildInfo.PSObject.Properties['GitSha']) { return $false }
+    return ($BuildInfo.SourceDirty -is [bool] -and -not $BuildInfo.SourceDirty -and $BuildInfo.GitSha -eq $GitSha -and $BuildInfo.SourceTree -eq $SourceTree)
+}
+
 function Assert-McpReplacementReady {
     param(
         [Parameter(Mandatory = $true)][string]$Implementation,
@@ -1034,31 +1052,34 @@ function Assert-McpReplacementReady {
         $currentManifestPath = Join-Path $versionedBinDir 'current-rust.json'
         Ensure-Directory -Path $versionedBinDir
 
-        $gitSha = (& git -C $ProjectRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
-        if ([string]::IsNullOrWhiteSpace($gitSha)) {
-            $gitSha = 'unknown'
-        }
-        $trackedDirty = ((& git -C $ProjectRoot status --porcelain --untracked-files=no 2>$null | Out-String).Trim()).Length -gt 0
+        $source = Get-RustSourceIdentity -ProjectRoot $ProjectRoot
+        $gitSha = $source.GitSha
+        $sourceTree = $source.SourceTree
 
         # Fast boot path: only reuse a candidate that previously passed the complete
         # local/public startup gate and matches the current committed source tree.
-        if (-not $trackedDirty -and (Test-Path $currentManifestPath)) {
+        if (Test-Path $currentManifestPath) {
             try {
                 $current = Get-Content $currentManifestPath -Raw | ConvertFrom-Json
-                if ($current.GitSha -eq $gitSha -and $current.FilePath -and (Test-Path ([string]$current.FilePath))) {
+                $candidateUnderRoot = $current.FilePath -and ([IO.Path]::GetFullPath([string]$current.FilePath)).StartsWith(([IO.Path]::GetFullPath($versionedBinDir).TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)
+                if ((Test-RustSourceIdentity -BuildInfo $current -GitSha $gitSha -SourceTree $sourceTree) -and $candidateUnderRoot -and (Test-Path ([string]$current.FilePath))) {
                     $candidateHash = (Get-FileHash -LiteralPath ([string]$current.FilePath) -Algorithm SHA256).Hash
                     if ($candidateHash -eq [string]$current.Sha256) {
                         $previousErrorActionPreference = $ErrorActionPreference
                         try {
                             $ErrorActionPreference = 'Continue'
                             $parityOutput = & ([string]$current.FilePath) '--parity-report' 2>&1 | Out-String
-                            if ($LASTEXITCODE -eq 0) {
+                            $parityPassed = $LASTEXITCODE -eq 0
+                            $buildInfo = & ([string]$current.FilePath) '--build-info' | ConvertFrom-Json
+                            if ($parityPassed -and $LASTEXITCODE -eq 0 -and (Test-RustSourceIdentity -BuildInfo $buildInfo -GitSha $gitSha -SourceTree $sourceTree)) {
                                 return [pscustomobject]@{
                                     Implementation = 'rust'
                                     FilePath = [string]$current.FilePath
                                     ArgumentList = @()
                                     Generation = [string]$current.Generation
                                     GitSha = $gitSha
+                                    SourceTree = $sourceTree
+                                    SourceDirty = $false
                                     Sha256 = $candidateHash
                                     CandidateManifestPath = $currentManifestPath
                                     Reused = $true
@@ -1106,6 +1127,10 @@ function Assert-McpReplacementReady {
             if ($LASTEXITCODE -ne 0) {
                 throw "Rust MCP binary preflight failed before the existing MCP was stopped. Output:`n$parityOutput"
             }
+            $buildInfo = & $binaryPath '--build-info' | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0 -or -not (Test-RustSourceIdentity -BuildInfo $buildInfo -GitSha $gitSha -SourceTree $sourceTree)) {
+                throw 'Rust binary source provenance did not match the clean committed checkout. Existing MCP was not stopped.'
+            }
         } finally {
             $ErrorActionPreference = $previousErrorActionPreference
             Pop-Location
@@ -1117,6 +1142,8 @@ function Assert-McpReplacementReady {
             ArgumentList = @()
             Generation = $generation
             GitSha = $gitSha
+            SourceTree = $sourceTree
+            SourceDirty = $false
             Sha256 = $hash
             CandidateManifestPath = $currentManifestPath
             Reused = $false
@@ -1777,6 +1804,8 @@ if ($mcpImplementation -eq 'rust' -and $launchSpec.CandidateManifestPath) {
     }
     Write-JsonStateFile -Path $manifestPath -Value @{
         GitSha = [string]$launchSpec.GitSha
+        SourceTree = [string]$launchSpec.SourceTree
+        SourceDirty = [bool]$launchSpec.SourceDirty
         Sha256 = [string]$launchSpec.Sha256
         Generation = [string]$launchSpec.Generation
         FilePath = [string]$launchSpec.FilePath

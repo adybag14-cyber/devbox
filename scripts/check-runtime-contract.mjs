@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+const root=new URL('../',import.meta.url);
+const read=p=>readFile(new URL(p,root),'utf8');
+const toolchain=(await read('rust-toolchain.toml')).match(/channel\s*=\s*"([^"]+)"/)[1];
+const bootstrap=await read('bootstrap/src/main.rs');
+assert.equal(bootstrap.match(/const PINNED_RUST_TOOLCHAIN: &str = "([^"]+)"/)[1],toolchain,'Installer must provision the repository toolchain');
+const msrv=(await read('rust-mcp/Cargo.toml')).match(/rust-version\s*=\s*"([^"]+)"/)[1];
+assert.equal(bootstrap.match(/const MINIMUM_RUST_VERSION: \(u32, u32, u32\) = \((\d+), (\d+), (\d+)\)/).slice(1).map(Number).slice(0,2).join('.'),msrv);
+const workflow=await read('.github/workflows/rust-mcp.yml');
+assert(workflow.includes(`rustup toolchain install ${toolchain}`));
+assert(workflow.includes(`Rust MCP MSRV (${msrv}.0)`));
+console.log(JSON.stringify({ok:true,toolchain,serverMsrv:msrv,nodeCertified:24}));

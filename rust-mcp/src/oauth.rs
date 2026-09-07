@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     path::PathBuf,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -31,6 +31,39 @@ const REFRESH_TOKEN_TTL_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const AUTHORIZATION_CODE_TTL_MS: u64 = 10 * 60 * 1_000;
 const CLIENT_SECRET_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 const JWKS_CACHE_TTL_MS: u64 = 5 * 60 * 1_000;
+const JWKS_TIMEOUT: Duration = Duration::from_secs(10);
+const JWKS_MAX_BYTES: usize = 256 * 1024;
+
+async fn fetch_bounded_jwks(
+    client: &reqwest::Client,
+    url: &str,
+    timeout: Duration,
+) -> Result<JwkSet> {
+    tokio::time::timeout(timeout, async {
+        let mut response = client
+            .get(url)
+            .timeout(timeout)
+            .send()
+            .await?
+            .error_for_status()?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > JWKS_MAX_BYTES as u64)
+        {
+            anyhow::bail!("JWKS response exceeds the byte limit");
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if bytes.len().saturating_add(chunk.len()) > JWKS_MAX_BYTES {
+                anyhow::bail!("JWKS response exceeds the byte limit");
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        serde_json::from_slice(&bytes).context("parse bounded JWKS")
+    })
+    .await
+    .context("JWKS request deadline exceeded")?
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,6 +192,7 @@ pub struct OAuthService {
     cloudflare_jwks_url: Option<String>,
     http: reqwest::Client,
     jwks_cache: Arc<Mutex<Option<CachedJwks>>>,
+    jwks_refresh: Arc<Mutex<Option<Instant>>>,
     state: Arc<Mutex<OAuthState>>,
 }
 
@@ -375,6 +409,7 @@ impl OAuthService {
             }),
             http: reqwest::Client::new(),
             jwks_cache: Arc::new(Mutex::new(None)),
+            jwks_refresh: Arc::new(Mutex::new(None)),
             state: Arc::new(Mutex::new(OAuthState::default())),
         })
     }
@@ -531,6 +566,8 @@ impl OAuthService {
                     .with_safe_redirect_uri(&redirect_uri)
             })?;
         }
+        // External identity verification must never hold the token/state lock.
+        drop(state);
         let identity = if self.mode == AuthMode::CloudflareAccess {
             Some(
                 self.verify_cloudflare_access_identity(cloudflare_assertion, cloudflare_email)
@@ -540,6 +577,12 @@ impl OAuthService {
         } else {
             None
         };
+        let mut state = self.state.lock().await;
+        if state.clients.get(&request.client_id) != Some(&client) {
+            return Err(OAuthFailure::invalid_client(
+                "Client changed during authorization",
+            ));
+        }
         let code = Uuid::new_v4().to_string();
         state.authorization_codes.insert(
             code.clone(),
@@ -799,6 +842,18 @@ impl OAuthService {
         if let Some(key) = self.cached_decoding_key(kid).await? {
             return Ok(key);
         }
+        let mut refresh = tokio::time::timeout(JWKS_TIMEOUT, self.jwks_refresh.lock())
+            .await
+            .map_err(|_| OAuthFailure::server("Cloudflare key refresh wait timed out"))?;
+        if let Some(key) = self.cached_decoding_key(kid).await? {
+            return Ok(key);
+        }
+        if refresh.is_some_and(|last| last.elapsed() < Duration::from_secs(5)) {
+            return Err(OAuthFailure::server(
+                "Cloudflare key refresh is cooling down; retry shortly",
+            ));
+        }
+        *refresh = Some(Instant::now());
         self.refresh_jwks().await?;
         self.cached_decoding_key(kid).await?.ok_or_else(|| {
             OAuthFailure::server("Cloudflare Access JWT verification failed: unknown kid")
@@ -833,18 +888,7 @@ impl OAuthService {
             .cloudflare_jwks_url
             .as_deref()
             .ok_or_else(|| OAuthFailure::server("Cloudflare Access JWKS URL is not configured"))?;
-        let set = self
-            .http
-            .get(jwks_url)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(|error| {
-                OAuthFailure::server(format!(
-                    "Cloudflare Access JWT verification failed: {error}"
-                ))
-            })?
-            .json::<JwkSet>()
+        let set = fetch_bounded_jwks(&self.http, jwks_url, JWKS_TIMEOUT)
             .await
             .map_err(|error| {
                 OAuthFailure::server(format!(
@@ -1397,6 +1441,116 @@ fn unix_seconds() -> u64 {
 
 fn internal_failure(error: impl std::fmt::Display) -> OAuthFailure {
     OAuthFailure::server(error.to_string())
+}
+
+#[cfg(test)]
+mod reliability_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn jwks_headers_and_body_are_bounded() {
+        for headers in ["", "HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\n"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let task = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 4096];
+                assert!(socket.read(&mut buffer).await.unwrap() > 0);
+                socket.write_all(headers.as_bytes()).await.unwrap();
+                std::future::pending::<()>().await;
+            });
+            let started = Instant::now();
+            assert!(
+                fetch_bounded_jwks(
+                    &reqwest::Client::new(),
+                    &format!("http://{address}"),
+                    Duration::from_millis(150)
+                )
+                .await
+                .is_err()
+            );
+            assert!(started.elapsed() < Duration::from_secs(2));
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
+    #[tokio::test]
+    async fn stalled_jwks_does_not_block_existing_tokens_or_registration() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = crate::config::test_config(root.path());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (sent, received) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 4096];
+            assert!(socket.read(&mut buffer).await.unwrap() > 0);
+            let _ = sent.send(());
+            std::future::pending::<()>().await;
+        });
+        config.auth_mode = AuthMode::CloudflareAccess;
+        config.public_base_url = Some("http://localhost:8100".into());
+        config.cloudflare_access_team_domain = Some(format!("http://{address}"));
+        config.cloudflare_access_jwks_url = Some(format!("http://{address}"));
+        config.cloudflare_access_aud = "fixture".into();
+        let service = Arc::new(OAuthService::new(&config).unwrap());
+        let metadata = json!({"redirect_uris":["http://localhost/callback"],"token_endpoint_auth_method":"none"});
+        let client = service.register_client(metadata.clone()).await.unwrap();
+        service.state.lock().await.access_tokens.insert(
+            "existing".into(),
+            TokenRecord {
+                client_id: client["client_id"].as_str().unwrap().into(),
+                scopes: vec!["mcp:tools".into()],
+                resource: None,
+                identity: None,
+                expires_at: unix_millis() + 30000,
+            },
+        );
+        let worker = service.clone();
+        let authorization = tokio::spawn(async move {
+            let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256","kid":"fixture"}"#);
+            worker
+                .authorize(
+                    AuthorizationRequest {
+                        client_id: client["client_id"].as_str().unwrap().into(),
+                        redirect_uri: Some("http://localhost/callback".into()),
+                        response_type: "code".into(),
+                        code_challenge: "fixture".into(),
+                        code_challenge_method: "S256".into(),
+                        scope: None,
+                        state: None,
+                        resource: None,
+                    },
+                    Some(&format!("{header}.e30.AA")),
+                    None,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(3), received)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            service.verify_access_token("existing"),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            service.register_client(metadata),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        authorization.abort();
+        task.abort();
+        let _ = authorization.await;
+        let _ = task.await;
+    }
 }
 
 #[cfg(test)]

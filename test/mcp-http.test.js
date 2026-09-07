@@ -152,7 +152,7 @@ const connectClient = async (t, port) => {
 };
 
 const assertJpegToolResult = (result) => {
-  assert.equal(result.isError, undefined);
+  assert.equal(result.isError, undefined, `Capture failed: ${JSON.stringify(result)}`);
   assert.equal(result.structuredContent?.ok, true);
   assert.equal(result.structuredContent?.data?.mime_type, "image/jpeg");
   assert.match(result.structuredContent?.data?.sha256 ?? "", /^[a-f0-9]{64}$/);

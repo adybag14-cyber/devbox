@@ -7,6 +7,18 @@ import { createServer } from "node:http";
 
 import { buildServerUrl, getLauncherPaths, getServerStatus, parseLauncherArgs, startServerProcess, stopServerProcess, waitForServerReady } from "../src/launcher.js";
 
+test("launcher deadline bounds stalled response headers and bodies", async () => {
+  for (const headers of [false, true]) {
+    const server = createServer((_request, response) => { if (headers) { response.writeHead(200); response.flushHeaders(); } });
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const started = Date.now();
+    try {
+      await assert.rejects(waitForServerReady({ url: `http://127.0.0.1:${server.address().port}`, timeoutMs: 200, pollIntervalMs: 20 }), /Timed out/);
+      assert.ok(Date.now() - started < 1500, "health network read escaped the overall deadline");
+    } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
+  }
+});
+
 test("parseLauncherArgs defaults to background start and supports explicit commands", () => {
   assert.deepEqual(parseLauncherArgs([]), { command: "start", background: true });
   assert.deepEqual(parseLauncherArgs(["start"]), { command: "start", background: true });

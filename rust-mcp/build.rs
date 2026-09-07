@@ -43,9 +43,54 @@ fn main() {
     println!("cargo:rerun-if-env-changed=DEVBOX_BUILD_GIT_SHA");
     println!("cargo:rerun-if-env-changed=DEVBOX_BUILD_GIT_REF");
     emit_git_rerun_metadata();
-    let sha = env::var("DEVBOX_BUILD_GIT_SHA").unwrap_or_else(|_| git(&["rev-parse", "HEAD"]));
-    let git_ref = env::var("DEVBOX_BUILD_GIT_REF")
-        .unwrap_or_else(|_| git(&["rev-parse", "--abbrev-ref", "HEAD"]));
+    emit_git_rerun_path("index");
+    let sha = git(&["rev-parse", "HEAD"]);
+    let git_ref = git(&["rev-parse", "--abbrev-ref", "HEAD"]);
+    let tree = git(&["rev-parse", "HEAD^{tree}"]);
+    let dirty = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty());
+    let untracked = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard", "."])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty());
+    println!("cargo:rustc-env=DEVBOX_BUILD_SOURCE_TREE={tree}");
+    println!(
+        "cargo:rustc-env=DEVBOX_BUILD_SOURCE_DIRTY={}",
+        match (dirty, untracked) {
+            (Some(a), Some(b)) =>
+                if a || b {
+                    "true"
+                } else {
+                    "false"
+                },
+            _ => "unknown",
+        }
+    );
+    // Re-run provenance when any tracked build input changes, including uncommitted edits.
+    if let Some(root) = git_optional(&["rev-parse", "--show-toplevel"])
+        && let Ok(output) = Command::new("git")
+            .args(["-C", root.as_str(), "ls-files", "-z", "--full-name"])
+            .output()
+    {
+        for file in output
+            .stdout
+            .split(|byte| *byte == 0)
+            .filter(|p| !p.is_empty())
+        {
+            println!(
+                "cargo:rerun-if-changed={}",
+                PathBuf::from(&root)
+                    .join(String::from_utf8_lossy(file).as_ref())
+                    .display()
+            );
+        }
+    }
     let rustc_program = env::var("RUSTC").unwrap_or_else(|_| "rustc".to_owned());
     let rustc = Command::new(rustc_program)
         .arg("--version")

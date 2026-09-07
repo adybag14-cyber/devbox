@@ -1,7 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -10,8 +10,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::{
-    fs::{self, File, OpenOptions},
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, SeekFrom},
+    fs::{self, File},
+    io::{AsyncReadExt, AsyncSeekExt, SeekFrom},
     sync::RwLock,
 };
 use tokio_util::sync::CancellationToken;
@@ -74,9 +74,17 @@ pub struct ListOptions {
     pub exclude_directories: Vec<String>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FileService {
-    locks: Mutex<HashMap<PathBuf, Arc<RwLock<()>>>>,
+    locks: Vec<Arc<RwLock<()>>>,
+}
+
+impl Default for FileService {
+    fn default() -> Self {
+        Self {
+            locks: (0..256).map(|_| Arc::new(RwLock::new(()))).collect(),
+        }
+    }
 }
 
 impl FileService {
@@ -127,22 +135,14 @@ impl FileService {
     ) -> Result<ProcessResult> {
         let lock = self.lock_for(path);
         let _guard = lock.write().await;
-        ensure_parent(path, create_dirs).await?;
-        let mut options = OpenOptions::new();
-        options.write(true).create(true);
-        if append {
-            options.append(true);
-        } else {
-            options.truncate(true);
-        }
-        let mut file = options
-            .open(path)
-            .await
-            .with_context(|| format!("open {} for writing", path.display()))?;
-        file.write_all(content.as_bytes())
-            .await
-            .with_context(|| format!("write {}", path.display()))?;
-        file.flush().await.context("flush text write")?;
+        crate::atomic_file::write(
+            path.to_path_buf(),
+            content.as_bytes().to_vec(),
+            append,
+            create_dirs,
+            crate::atomic_file::Preconditions::default(),
+        )
+        .await?;
         Ok(ProcessResult::success(String::new(), String::new()))
     }
 
@@ -158,9 +158,10 @@ impl FileService {
     ) -> Result<LargeReadResult> {
         let lock = self.lock_for(path);
         let _guard = lock.read().await;
-        let metadata = fs::metadata(path)
+        let mut file = File::open(path)
             .await
             .map_err(|error| anyhow::anyhow!(javascript_stat_error(path, &error)))?;
+        let metadata = file.metadata().await?;
         if !metadata.is_file() {
             bail!("Not a regular file.");
         }
@@ -171,9 +172,6 @@ impl FileService {
         let bytes_to_read =
             usize::try_from(remaining.min(bytes_requested)).unwrap_or(max_bytes.max(1));
 
-        let mut file = File::open(path)
-            .await
-            .with_context(|| format!("open {} for reading", path.display()))?;
         file.seek(SeekFrom::Start(actual_offset))
             .await
             .context("seek large read")?;
@@ -237,24 +235,14 @@ impl FileService {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, 0),
             Err(error) => return Err(error).with_context(|| format!("inspect {}", path.display())),
         };
-        ensure_parent(path, create_dirs).await?;
-
-        let mut options = OpenOptions::new();
-        options.write(true).create(true);
-        if append {
-            options.append(true);
-        } else {
-            options.truncate(true);
-        }
-        let mut file = options
-            .open(path)
-            .await
-            .with_context(|| format!("open {} for exact write", path.display()))?;
-        file.write_all(&payload)
-            .await
-            .context("write exact payload")?;
-        file.flush().await.context("flush exact payload")?;
-        drop(file);
+        crate::atomic_file::write(
+            path.to_path_buf(),
+            payload.clone(),
+            append,
+            create_dirs,
+            crate::atomic_file::Preconditions::default(),
+        )
+        .await?;
 
         let final_metadata = fs::metadata(path)
             .await
@@ -393,14 +381,7 @@ impl FileService {
 
     fn lock_for(&self, path: &Path) -> Arc<RwLock<()>> {
         let key = absolute_lexical_path(path);
-        let mut locks = self
-            .locks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        locks
-            .entry(key)
-            .or_insert_with(|| Arc::new(RwLock::new(())))
-            .clone()
+        self.locks[crate::atomic_file::stripe(&key)].clone()
     }
 }
 
@@ -494,18 +475,6 @@ fn javascript_open_error(path: &Path, error: &std::io::Error) -> String {
     }
 }
 
-async fn ensure_parent(path: &Path, create_dirs: bool) -> Result<()> {
-    if create_dirs
-        && let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        fs::create_dir_all(parent)
-            .await
-            .with_context(|| format!("create parent directory {}", parent.display()))?;
-    }
-    Ok(())
-}
-
 fn normalize_expected_sha256(value: Option<&str>) -> Result<Option<String>> {
     let Some(raw) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -577,6 +546,21 @@ fn is_skippable_fs_error(error: &std::io::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unique_paths_do_not_grow_the_lock_registry() {
+        let files = FileService::new();
+        for index in 0..10000 {
+            let _lock = files.lock_for(Path::new(&format!("fixture-{index}")));
+        }
+        assert_eq!(files.locks.len(), 256);
+        let first = files.lock_for(Path::new("same"));
+        let second = files.lock_for(Path::new("same"));
+        let guard = first.try_write().unwrap();
+        assert!(second.try_write().is_err());
+        drop(guard);
+        assert!(second.try_write().is_ok());
+    }
 
     #[tokio::test]
     async fn large_read_pages_exact_bytes_and_clamps_eof() {

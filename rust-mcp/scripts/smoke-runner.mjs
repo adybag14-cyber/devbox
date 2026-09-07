@@ -69,7 +69,7 @@ const waitForHealth = async ({ baseUrl, exited }) => {
       throw new Error(`Rust MCP exited before readiness (code=${earlyExit.result.code}, signal=${earlyExit.result.signal}).`);
     }
     try {
-      const response = await fetch(new URL("healthz", baseUrl));
+      const response = await fetch(new URL("healthz", baseUrl), { signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))) });
       if (response.ok && (await response.text()) === "ok") return;
     } catch {
       // Startup races are expected; retry until the bounded deadline.

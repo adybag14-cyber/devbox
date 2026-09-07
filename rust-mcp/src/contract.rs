@@ -1,5 +1,16 @@
 use serde::Serialize;
 
+pub const AGENT_TOOL_NAMES: &[&str] = &[
+    "devbox_file_state",
+    "devbox_write_file_atomic",
+    "devbox_job_submit",
+    "devbox_job_list",
+    "devbox_task_get",
+    "devbox_task_put",
+    "devbox_task_list",
+    "devbox_capabilities",
+];
+
 pub const TARGET_TOOL_NAMES: &[&str] = &[
     "devbox_github_auth_status",
     "devbox_sync_github_auth_from_host",
@@ -82,6 +93,8 @@ pub const IMPLEMENTED_TOOL_NAMES: &[&str] = &[
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ParityReport {
+    pub contract_version: u32,
+    pub native_tools: Vec<&'static str>,
     pub target_count: usize,
     pub implemented_count: usize,
     pub missing_count: usize,
@@ -100,6 +113,8 @@ impl ParityReport {
             .collect::<Vec<_>>();
         let complete = missing.is_empty();
         Self {
+            contract_version: 2,
+            native_tools: AGENT_TOOL_NAMES.to_vec(),
             target_count: TARGET_TOOL_NAMES.len(),
             implemented_count: IMPLEMENTED_TOOL_NAMES.len(),
             missing_count: missing.len(),

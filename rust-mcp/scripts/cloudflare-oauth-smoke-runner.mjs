@@ -179,7 +179,7 @@ try {
   const transport = new StreamableHTTPClientTransport(baseUrl, { requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } } });
   await client.connect(transport);
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 37);
+  assert.equal(tools.tools.length, 45);
   await client.close();
   client = undefined;
 

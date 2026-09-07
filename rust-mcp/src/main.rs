@@ -27,6 +27,13 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if std::env::args().any(|arg| arg == "--build-info") {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&devbox_mcp::provenance::snapshot())?
+        );
+        return Ok(());
+    }
     let config = Arc::new(Config::load()?);
     if let Some(request_path) = job_runner_request()? {
         return devbox_mcp::job_runner::run_job_request(config, &request_path).await;

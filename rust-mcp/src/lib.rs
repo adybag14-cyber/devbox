@@ -1,4 +1,5 @@
 pub mod allocator_metrics;
+mod atomic_file;
 pub mod background;
 pub mod capture;
 pub mod config;
@@ -11,6 +12,7 @@ pub mod github_auth;
 pub mod hex;
 pub mod host_inspect;
 mod incident_task;
+mod job_control;
 pub mod job_logs;
 pub mod job_manager;
 pub mod job_runner;
@@ -29,6 +31,7 @@ pub mod runtime;
 pub mod schema_parity;
 pub mod search;
 pub mod server;
+mod task_store;
 pub mod usage;
 
 pub use config::{AuthMode, Config, Platform, RuntimeMode};
