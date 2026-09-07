@@ -1,0 +1,21 @@
+{
+  "baseline_revision": "cd8803c81ad3a14ec3b3fa2afa0d08256975b1e9",
+  "complete": false,
+  "production_cutover_allowed": false,
+  "target_tool_count": 45,
+  "areas": {
+    "shared_core": "initial implementation builds and passes core checks",
+    "configuration": "ported; full differential validation pending",
+    "wire_contract": "45-tool host and Docker baseline fixtures exported",
+    "transport": "pending",
+    "oauth_gateway": "pending",
+    "process_runtime": "pending",
+    "scheduler_jobs": "pending",
+    "files_tasks_search": "pending",
+    "capture": "pending",
+    "monitoring": "pending",
+    "bootstrap_installer": "pending",
+    "guardian_integration": "pending",
+    "cross_platform_certification": "pending"
+  }
+}

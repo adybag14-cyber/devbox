@@ -6,3 +6,7 @@ workspace/
 npm-debug.log*
 bootstrap/target/
 setup-tui/build/
+.cpp-build/
+vcpkg_installed/
+cpp-mcp/build/
+cpp-bootstrap/build/
