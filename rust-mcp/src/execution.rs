@@ -1829,6 +1829,53 @@ pub(crate) async fn process_alive(_: u32) -> bool {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn five_heavy_slots_preserve_the_sixth_interactive_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let mut scheduler = scheduler(root.path(), 6, 1, 4);
+        scheduler.config.heavy_capacity = 5;
+        scheduler.config.heavy_weight = 1;
+        let cancellation = CancellationToken::new();
+        let mut leases = Vec::new();
+        for index in 0..5 {
+            leases.push(
+                scheduler
+                    .acquire(
+                        AcquireRequest::background(
+                            format!("heavy-{index}"),
+                            ResourceClass::Heavy,
+                            1,
+                        ),
+                        &cancellation,
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert_eq!(scheduler.snapshot().await.unwrap().occupied, 5);
+        assert!(
+            scheduler
+                .acquire(
+                    AcquireRequest {
+                        queue_timeout: Some(Duration::from_millis(80)),
+                        ..AcquireRequest::background("blocked", ResourceClass::Heavy, 1)
+                    },
+                    &cancellation
+                )
+                .await
+                .is_err()
+        );
+        let mut interactive = scheduler
+            .acquire(AcquireRequest::interactive("reserved"), &cancellation)
+            .await
+            .unwrap();
+        assert_eq!(interactive.slot, Some(5));
+        interactive.release().await.unwrap();
+        for mut lease in leases {
+            lease.release().await.unwrap();
+        }
+    }
+
     fn scheduler(root: &Path, max: usize, reserved: usize, watch: usize) -> ExecutionScheduler {
         ExecutionScheduler::new(SchedulerConfig {
             root: root.to_path_buf(),

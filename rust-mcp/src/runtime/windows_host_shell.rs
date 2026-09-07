@@ -28,6 +28,117 @@ struct PowerShellSpawnRequest {
 }
 
 impl RuntimeExecutor {
+    /// Internal parser probes inherit the server token and never request elevation.
+    pub(crate) async fn run_windows_inspection_shell(
+        &self,
+        request: ShellRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ProcessOutput, RuntimeExecError> {
+        if !self.config.host_exec_enabled {
+            return Err(RuntimeExecError::HostExecDisabled);
+        }
+        self.spawn_windows_powershell(
+            PowerShellSpawnRequest {
+                args: windows_shell::encoded_command_args(&request.command),
+                cwd: request.working_dir,
+                timeout: request.timeout,
+                max_capture_chars: request.max_capture_chars,
+                output_tx: request.output_tx,
+                pid_tx: request.pid_tx,
+            },
+            cancellation,
+        )
+        .await
+        .map(clean_output)
+    }
+
+    pub(super) async fn run_windows_runtime_shell(
+        &self,
+        request: ShellRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ProcessOutput, RuntimeExecError> {
+        if !self.config.host_exec_enabled {
+            return Err(RuntimeExecError::HostExecDisabled);
+        }
+        let mut candidates = vec![self.config.host_shell.clone()];
+        if self.config.host_shell == self.config.power_shell_exe
+            && !self.config.power_shell_fallback_exe.is_empty()
+            && self.config.power_shell_fallback_exe != self.config.host_shell
+        {
+            candidates.push(self.config.power_shell_fallback_exe.clone());
+        }
+        let mut script = None;
+        let started = Instant::now();
+        for (index, shell) in candidates.iter().enumerate() {
+            if super::normalize_program(shell) == "cmd"
+                && request.command.encode_utf16().count() > 8000
+            {
+                return Err(RuntimeExecError::ShellCommandTooLong);
+            }
+            let powershell = matches!(
+                super::normalize_program(shell).as_str(),
+                "pwsh" | "powershell"
+            );
+            let args = if powershell && windows_shell::should_use_script_file(&request.command) {
+                if script.is_none() {
+                    let temporary = tempfile::Builder::new()
+                        .suffix(".ps1")
+                        .tempfile()
+                        .map_err(|e| RuntimeExecError::WindowsAdminProbe(e.to_string()))?;
+                    tokio::fs::write(temporary.path(), &request.command)
+                        .await
+                        .map_err(|e| RuntimeExecError::WindowsAdminProbe(e.to_string()))?;
+                    script = Some(temporary);
+                }
+                vec![
+                    "-NoLogo".into(),
+                    "-NoProfile".into(),
+                    "-NonInteractive".into(),
+                    "-ExecutionPolicy".into(),
+                    "Bypass".into(),
+                    "-File".into(),
+                    script
+                        .as_ref()
+                        .expect("script staged")
+                        .path()
+                        .to_string_lossy()
+                        .into_owned(),
+                ]
+            } else {
+                super::host_shell_args(shell, &request.command, true)
+            };
+            let result = spawn_process(
+                shell,
+                &args,
+                ProcessOptions {
+                    cwd: Some(request.working_dir.clone()),
+                    timeout: Some(
+                        request
+                            .timeout
+                            .saturating_sub(started.elapsed())
+                            .max(Duration::from_millis(1)),
+                    ),
+                    max_capture_chars: request.max_capture_chars,
+                    output_tx: request.output_tx.clone(),
+                    pid_tx: request.pid_tx.clone(),
+                    ..ProcessOptions::default()
+                },
+                cancellation.child_token(),
+            )
+            .await;
+            match result {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if index + 1 < candidates.len()
+                        && error.exit_code.is_none()
+                        && !error.timed_out
+                        && !error.aborted => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        unreachable!("nonempty shell candidates return their final result")
+    }
+
     pub(super) async fn windows_admin_state(
         &self,
         cancellation: CancellationToken,

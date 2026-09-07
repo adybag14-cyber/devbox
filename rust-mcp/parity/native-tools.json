@@ -1,0 +1,10 @@
+[
+  "devbox_capabilities",
+  "devbox_file_state",
+  "devbox_job_list",
+  "devbox_job_submit",
+  "devbox_task_get",
+  "devbox_task_list",
+  "devbox_task_put",
+  "devbox_write_file_atomic"
+]

@@ -216,11 +216,7 @@ async fn prepare_runner(
     let store = JobStore::new(job_store_config(&config));
     validate_request_path(&store, &request, request_path).await?;
     let initial = store.read_status_raw(&request.id).await.ok();
-    let already_cancelled = initial
-        .as_ref()
-        .and_then(|value| value.get("status"))
-        .and_then(Value::as_str)
-        == Some("cancelled")
+    let already_cancelled = initial.as_ref().is_some_and(crate::job_control::terminal)
         || store.cancellation_requested(&request.id).await?;
     if already_cancelled {
         return Ok(None);

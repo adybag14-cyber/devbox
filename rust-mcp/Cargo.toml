@@ -1,6 +1,6 @@
 [package]
 name = "devbox-mcp"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Native Rust replacement for Docker ChatGPT Devbox MCP"
@@ -50,7 +50,7 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.31", features = ["process", "signal", "resource"] }
+nix = { version = "0.31", features = ["process", "signal", "resource", "user"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 sysinfo = "0.38"

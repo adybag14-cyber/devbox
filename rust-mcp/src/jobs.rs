@@ -325,12 +325,12 @@ impl JobStore {
             );
         };
         let status = string_field(&object, "status").unwrap_or_default();
-        if is_terminal(status) {
+        if is_terminal(status) && status != "cancelled" {
             decorate_status(&mut object, paths, false, None);
             return Ok(Value::Object(object));
         }
 
-        if marker_exists(&paths.cancel).await? {
+        if status == "cancelled" || marker_exists(&paths.cancel).await? {
             return self.reconcile_cancelled(paths, object).await;
         }
 
@@ -349,6 +349,19 @@ impl JobStore {
             (Some(_), true) => runner_owner_alive(&object).await,
             (None, _) => false,
         };
+        if !heartbeat_stale {
+            if let Some(pid) = heartbeat
+                .value
+                .as_ref()
+                .and_then(|value| value.get("childPid"))
+                .filter(|value| !value.is_null())
+            {
+                object.insert("childPid".to_owned(), pid.clone());
+            }
+        } else if runner_alive {
+            object.insert("heartbeatStale".to_owned(), json!(true));
+            object.insert("monitoringWarning".to_owned(), json!("Runner is alive but its heartbeat is stale; inspect job progress and storage health"));
+        }
         if !runner_alive && heartbeat_stale {
             return self
                 .interrupt_orphan(paths, object, heartbeat.value, heartbeat_age)
@@ -369,12 +382,65 @@ impl JobStore {
         } else {
             false
         };
-        object.insert("status".to_owned(), json!("cancelled"));
+        let heartbeat = read_heartbeat(paths).await?;
+        let child_pid = heartbeat
+            .value
+            .as_ref()
+            .and_then(|v| v.get("childPid"))
+            .and_then(Value::as_u64)
+            .and_then(|v| u32::try_from(v).ok())
+            .or_else(|| u32_field(&object, "childPid"));
+        let instance = heartbeat
+            .value
+            .as_ref()
+            .and_then(|v| v.get("childProcessInstance"))
+            .and_then(|v| {
+                v.as_u64()
+                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            });
+        let child_alive = child_pid
+            .is_some_and(|pid| crate::process_identity::process_matches_instance(pid, instance));
+        let docker_unverified = string_field(&object, "runtimeMode") == Some("docker");
+        let pending = runner_alive || child_alive;
+        if !pending && docker_unverified {
+            object.insert("status".to_owned(), json!("interrupted"));
+            object.insert("completedAtUtc".to_owned(), json!(utc_now()));
+            object.insert("cancelRequested".to_owned(), json!(true));
+            object.insert("workloadTerminationVerified".to_owned(), json!(false));
+            object.insert("terminationDetail".to_owned(), json!("Local Docker runner stopped; termination of the workload in the shared container is unverified"));
+            object.remove("terminationPending");
+            object.remove("childAlive");
+            write_json_atomic(&paths.status, &Value::Object(object.clone())).await?;
+            decorate_status(&mut object, paths, false, None);
+            return Ok(Value::Object(object));
+        }
+        if !pending && string_field(&object, "status") == Some("cancelled") {
+            // Preserve the runner's final journal once termination has been verified.
+            decorate_status(&mut object, paths, false, None);
+            return Ok(Value::Object(object));
+        }
+        object.insert(
+            "status".to_owned(),
+            json!(if pending {
+                "cancel_requested"
+            } else {
+                "cancelled"
+            }),
+        );
         object.insert("cancelRequested".to_owned(), json!(true));
-        if object.get("completedAtUtc").is_none_or(Value::is_null) {
+        if pending {
+            object.insert("completedAtUtc".to_owned(), Value::Null);
+            object.insert("terminationPending".to_owned(), json!(true));
+            object.insert("childAlive".to_owned(), json!(child_alive));
+            if docker_unverified {
+                object.insert("terminationDetail".to_owned(), json!("Local Docker client termination does not verify the in-container workload stopped"));
+            }
+        } else if object.get("completedAtUtc").is_none_or(Value::is_null) {
             object.insert("completedAtUtc".to_owned(), json!(utc_now()));
         }
-        if !runner_alive {
+        if !pending {
+            object.remove("terminationPending");
+            object.remove("childAlive");
             write_json_atomic(&paths.status, &Value::Object(object.clone())).await?;
         }
         decorate_status(&mut object, paths, runner_alive, None);
@@ -1118,8 +1184,6 @@ impl JobStore {
         }
         let mut cancelled = status.as_object().cloned().unwrap_or_default();
         let completed = utc_now();
-        cancelled.insert("status".to_owned(), json!("cancelled"));
-        cancelled.insert("completedAtUtc".to_owned(), json!(completed.clone()));
         cancelled.insert("cancelRequested".to_owned(), json!(true));
         create_marker_once(&paths.cancel, &format!("{completed}\n")).await?;
         if let Some(pid) = u32_field(&cancelled, "runnerPid").filter(|_| runner_alive)
@@ -1127,9 +1191,36 @@ impl JobStore {
         {
             terminate_job_runner_gracefully(pid, &paths.status).await;
         }
-        cancelled.insert("runnerAlive".to_owned(), json!(false));
-        cancelled.insert("jobDir".to_owned(), json!(path_text(&paths.dir)));
-        Ok(Value::Object(cancelled))
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let mut current = self.get_status(job_id).await?;
+            if status_name(&current) != "cancel_requested"
+                || tokio::time::Instant::now() >= deadline
+            {
+                if status_name(&current) == "cancelled" && current["runnerAlive"] == false {
+                    // Keep the legacy acknowledgement snapshot, but only after the
+                    // authoritative status has verified runner/child termination.
+                    cancelled.insert("status".to_owned(), json!("cancelled"));
+                    cancelled.insert("runnerAlive".to_owned(), json!(false));
+                    cancelled.insert(
+                        "completedAtUtc".to_owned(),
+                        current["completedAtUtc"].clone(),
+                    );
+                    cancelled.remove("terminationPending");
+                    cancelled.remove("childAlive");
+                    return Ok(Value::Object(cancelled));
+                }
+                if let Some(age) = status.get("heartbeatAgeMs")
+                    && let Some(object) = current.as_object_mut()
+                {
+                    object
+                        .entry("heartbeatAgeMs")
+                        .or_insert_with(|| age.clone());
+                }
+                return Ok(current);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 }
 
@@ -1576,6 +1667,52 @@ fn path_text(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancellation_marker_does_not_claim_a_live_runner_stopped() {
+        let root = tempfile::tempdir().unwrap();
+        let store = store(root.path());
+        let paths=write_status(&store,"job-live-cancellation",json!({"id":"job-live-cancellation","status":"running","runnerPid":std::process::id(),"runnerProcessInstance":crate::process_identity::current_process_instance().map(|v|v.to_string()),"createdAtUtc":utc_now(),"runtimeMode":"host"})).await;
+        fs::write(&paths.cancel, b"requested").await.unwrap();
+        let status = store.get_status("job-live-cancellation").await.unwrap();
+        assert_eq!(status["status"], "cancel_requested");
+        assert_eq!(status["runnerAlive"], true);
+        assert!(status["completedAtUtc"].is_null());
+    }
+
+    #[tokio::test]
+    async fn verified_cancelled_runner_journal_is_preserved() {
+        let root = tempfile::tempdir().unwrap();
+        let store = store(root.path());
+        let id = "job-cancelled-final";
+        let journal = json!({"id":id,"status":"cancelled","runtimeMode":"host","completedAtUtc":utc_now(),"error":"Command cancelled by the MCP client.","logs":{"truncated":false}});
+        let paths = write_status(&store, id, journal.clone()).await;
+        fs::write(&paths.cancel, b"requested").await.unwrap();
+        let status = store.get_status(id).await.unwrap();
+        assert_eq!(status["runnerAlive"], false);
+        assert!(status.get("cancelRequested").is_none());
+        assert_eq!(store.read_status_raw(id).await.unwrap(), journal);
+    }
+
+    #[tokio::test]
+    async fn stopped_docker_runner_is_terminal_without_claiming_workload_termination() {
+        let root = tempfile::tempdir().unwrap();
+        let store = store(root.path());
+        let id = "job-docker-cancelled";
+        let paths = write_status(
+            &store,
+            id,
+            json!({"id":id,"status":"cancelled","runtimeMode":"docker","completedAtUtc":utc_now()}),
+        )
+        .await;
+        fs::write(&paths.cancel, b"requested").await.unwrap();
+        let status = store.get_status(id).await.unwrap();
+        assert_eq!(status["status"], "interrupted");
+        assert_eq!(status["runnerAlive"], false);
+        assert_eq!(status["workloadTerminationVerified"], false);
+        assert!(!status["completedAtUtc"].is_null());
+        assert_eq!(store.get_status(id).await.unwrap()["status"], "interrupted");
+    }
 
     fn store(root: &Path) -> JobStore {
         JobStore::new(JobStoreConfig {

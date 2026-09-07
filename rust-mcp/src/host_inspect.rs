@@ -313,21 +313,22 @@ async fn inspect_powershell_syntax(
     let command = format!(
         "$tokens=$null;$errors=$null;[System.Management.Automation.Language.Parser]::ParseFile('{escaped}',[ref]$tokens,[ref]$errors)|Out-Null;$r=@{{parse_ok=(@($errors).Count -eq 0);error_count=@($errors).Count;errors=@(@($errors)|Select-Object -First 8|ForEach-Object {{ @{{message=$_.Message;line=$_.Extent.StartLineNumber;column=$_.Extent.StartColumnNumber;text=$_.Extent.Text}} }})}};[Console]::Out.Write(($r|ConvertTo-Json -Compress -Depth 6))"
     );
-    match runtime
-        .run_host_shell_only(
-            ShellRequest {
-                command,
-                working_dir: working_dir.to_path_buf(),
-                timeout: Duration::from_secs(15),
-                user: String::new(),
-                max_capture_chars: Some(65_536),
-                output_tx: None,
-                pid_tx: None,
-            },
-            cancellation,
-        )
-        .await
-    {
+    let request = ShellRequest {
+        command,
+        working_dir: working_dir.to_path_buf(),
+        timeout: Duration::from_secs(15),
+        user: String::new(),
+        max_capture_chars: Some(65_536),
+        output_tx: None,
+        pid_tx: None,
+    };
+    #[cfg(windows)]
+    let output = runtime
+        .run_windows_inspection_shell(request, cancellation)
+        .await;
+    #[cfg(not(windows))]
+    let output = runtime.run_host_shell_only(request, cancellation).await;
+    match output {
         Ok(output) => serde_json::from_str(output.stdout.trim()).unwrap_or_else(|error| {
             syntax_failure(&format!("PowerShell parser returned invalid JSON: {error}"))
         }),
@@ -451,6 +452,30 @@ fn push_string(value: &mut Value, field: &str, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn powershell_inspection_uses_parser_without_elevation_or_configured_cmd_shell() {
+        let root = tempfile::tempdir().unwrap();
+        let config = crate::config::test_config(root.path());
+        assert_eq!(config.host_shell, "cmd.exe");
+        let runtime = Arc::new(RuntimeExecutor::new(Arc::new(config)));
+        let path = root.path().join("fixture.ps1");
+        fs::write(&path, "Write-Output 'valid'\n").await.unwrap();
+        let valid = inspect_powershell_syntax(
+            runtime.clone(),
+            &path,
+            root.path(),
+            CancellationToken::new(),
+        )
+        .await;
+        assert_eq!(valid["parse_ok"], true, "{valid}");
+        fs::write(&path, "function Broken {\n").await.unwrap();
+        let invalid =
+            inspect_powershell_syntax(runtime, &path, root.path(), CancellationToken::new()).await;
+        assert_eq!(invalid["parse_ok"], false, "{invalid}");
+        assert!(invalid["error_count"].as_u64().unwrap() > 0);
+    }
 
     #[test]
     fn detects_bom_binary_magic_and_line_endings() {

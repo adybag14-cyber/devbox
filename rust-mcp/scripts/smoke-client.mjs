@@ -21,8 +21,8 @@ const assertExecutionMetadata = (result) => {
   assert.equal(Object.hasOwn(execution, "slots"), false);
 };
 
-const assertShellResult = (result, { readOnly } = {}) => {
-  if (process.platform === "win32" && !expectedWindowsAdmin) {
+const assertShellResult = (result, { readOnly, administrative = false } = {}) => {
+  if (administrative && process.platform === "win32" && !expectedWindowsAdmin) {
     assert.equal(result.isError, true);
     assert.equal(result.structuredContent?.exitCode, 740);
     assert.equal(result.structuredContent?.data?.bridge_diagnostics?.suspected_elevation_gap, true);
@@ -135,7 +135,8 @@ try {
   assert.deepEqual(client.getServerCapabilities()?.logging, {});
   const listed = await client.listTools();
   const names = listed.tools.map((tool) => tool.name).sort();
-  assert.deepEqual(names, expectedTools);
+  const nativeTools = JSON.parse(await readFile(new URL("../parity/native-tools.json", import.meta.url), "utf8"));
+  assert.deepEqual(names, [...expectedTools, ...nativeTools].sort());
 
   const wait = await client.callTool({
     name: "devbox_wait",
@@ -342,7 +343,7 @@ try {
       name: toolName,
       arguments: { command: "git --version", max_output_chars: 2_000 },
     });
-    assertShellResult(hostShell);
+    assertShellResult(hostShell, { administrative: true });
   }
 
   if (process.platform === "win32" && expectedWindowsAdmin) {

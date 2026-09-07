@@ -58,6 +58,7 @@ pub enum RuntimeExecError {
     },
     WindowsElevationRequired,
     WindowsAdminProbe(String),
+    ShellCommandTooLong,
     Process(ProcessError),
 }
 
@@ -79,6 +80,7 @@ impl std::fmt::Display for RuntimeExecError {
                 "Windows host PowerShell requires the Devbox MCP process to already be elevated. This MCP process is medium-integrity, so host_exec refused to call Start-Process -Verb RunAs (that would spam UAC). Guardian treats unelevated MCP as unhealthy and restarts it via the Highest scheduled-task path. Retry after repair.",
             ),
             Self::WindowsAdminProbe(message) => formatter.write_str(message),
+            Self::ShellCommandTooLong => formatter.write_str("CMD inline commands are limited to 8000 UTF-16 units; save a .cmd script and run that file instead."),
             Self::Process(error) => std::fmt::Display::fmt(error, formatter),
         }
     }
@@ -427,7 +429,16 @@ impl RuntimeExecutor {
         cancellation: CancellationToken,
     ) -> Result<ProcessOutput, RuntimeExecError> {
         match self.config.runtime_mode {
-            RuntimeMode::Host => self.run_host_shell(request, cancellation).await,
+            RuntimeMode::Host => {
+                #[cfg(windows)]
+                {
+                    self.run_windows_runtime_shell(request, cancellation).await
+                }
+                #[cfg(not(windows))]
+                {
+                    self.run_host_shell(request, cancellation).await
+                }
+            }
             RuntimeMode::Docker => self.run_docker_shell(request, cancellation).await,
         }
     }
@@ -592,7 +603,6 @@ fn resolve_windows_program_path(program: &str) -> Option<PathBuf> {
     None
 }
 
-#[cfg(any(not(windows), test))]
 fn host_shell_args(shell: &str, command: &str, is_windows: bool) -> Vec<String> {
     let name = normalize_program(shell);
     if is_windows && matches!(name.as_str(), "powershell" | "pwsh") {
@@ -621,6 +631,46 @@ fn host_shell_args(shell: &str, command: &str, is_windows: bool) -> Vec<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn devbox_shell_honors_cmd_override_without_an_admin_probe() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = RuntimeExecutor::new(test_config(root.path()));
+        let output = runtime
+            .run_shell(
+                ShellRequest {
+                    command: "echo %COMSPEC%".to_owned(),
+                    working_dir: root.path().to_path_buf(),
+                    timeout: Duration::from_secs(5),
+                    user: String::new(),
+                    max_capture_chars: Some(4096),
+                    output_tx: None,
+                    pid_tx: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(output.stdout.to_ascii_lowercase().contains("cmd.exe"));
+        assert!(runtime.windows_admin_state.get().is_none());
+        let error = runtime
+            .run_shell(
+                ShellRequest {
+                    command: "x".repeat(9000),
+                    working_dir: root.path().to_path_buf(),
+                    timeout: Duration::from_secs(5),
+                    user: String::new(),
+                    max_capture_chars: Some(1024),
+                    output_tx: None,
+                    pid_tx: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RuntimeExecError::ShellCommandTooLong));
+    }
 
     #[test]
     fn program_normalization_matches_javascript_behavior() {

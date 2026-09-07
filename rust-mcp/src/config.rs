@@ -205,6 +205,9 @@ pub struct Config {
     pub job_retention_hours: u64,
     pub job_store_max_bytes: u64,
     pub job_store_max_terminal_jobs: usize,
+    pub job_max_active: usize,
+    pub job_max_per_task: usize,
+    pub job_max_operations: usize,
     pub screen_capture_attempt_timeout_ms: u64,
     pub screen_capture_retries: usize,
     pub screen_capture_queue_timeout_ms: u64,
@@ -240,6 +243,10 @@ impl Config {
     ///
     /// # Errors
     /// Returns an error when the project root cannot be found or runtime/auth values are invalid.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "explicit configuration-to-field mapping kept together for review"
+    )]
     pub fn load() -> Result<Self> {
         let project_root = discover_project_root()?;
         load_env_layers(&project_root);
@@ -335,6 +342,10 @@ impl Config {
             job_retention_hours: parse_env("MCP_JOB_RETENTION_HOURS", 168_u64),
             job_store_max_bytes: parse_env("MCP_JOB_STORE_MAX_BYTES", 2_u64 * 1024 * 1024 * 1024),
             job_store_max_terminal_jobs: parse_env("MCP_JOB_STORE_MAX_TERMINAL_JOBS", 5_000_usize),
+            job_max_active: parse_env("MCP_JOB_MAX_ACTIVE_RUNNERS", 16_usize).clamp(1, 128),
+            job_max_per_task: parse_env("MCP_JOB_MAX_RUNNERS_PER_TASK", 8_usize).clamp(1, 128),
+            job_max_operations: parse_env("MCP_JOB_MAX_OPERATION_RECEIPTS", 10_000_usize)
+                .clamp(1, 100_000),
             screen_capture_attempt_timeout_ms: screen_capture.attempt_timeout_ms,
             screen_capture_retries: screen_capture.retries,
             screen_capture_queue_timeout_ms: screen_capture.queue_timeout_ms,
@@ -944,6 +955,9 @@ pub(crate) fn test_config(root: &Path) -> Config {
         job_retention_hours: 168,
         job_store_max_bytes: 2 * 1024 * 1024 * 1024,
         job_store_max_terminal_jobs: 5_000,
+        job_max_active: 16,
+        job_max_per_task: 8,
+        job_max_operations: 10_000,
         screen_capture_attempt_timeout_ms: 8_000,
         screen_capture_retries: 1,
         screen_capture_queue_timeout_ms: 5_000,

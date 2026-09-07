@@ -61,16 +61,28 @@ export const waitForServerReady = async ({
     }
 
     try {
-      const response = await fetch(healthUrl);
-      if (response.ok) {
+      const response = await fetch(healthUrl, { signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))) });
+      const reader = response.body?.getReader();
+      let text = "";
+      try {
+        while (reader) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          text += new TextDecoder().decode(chunk.value);
+          if (text.length > 16) throw new Error("Unexpected health response body");
+        }
+      } finally { await reader?.cancel().catch(() => {}); }
+      if (response.ok && text.trim() === "ok") {
         return { healthUrl, status: response.status };
       }
-      lastError = new Error(`health endpoint returned HTTP ${response.status}`);
+      lastError = new Error(response.ok
+        ? `health endpoint returned HTTP ${response.status} with an unexpected body`
+        : `health endpoint returned HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
     }
 
-    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.min(pollIntervalMs, deadline - Date.now()))));
   }
 
   const detail = lastError instanceof Error && lastError.message ? ` Last error: ${lastError.message}` : "";

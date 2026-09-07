@@ -220,7 +220,7 @@ try {
   });
   await client.connect(transport);
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 37);
+  assert.equal(tools.tools.length, 45);
   const oauthWait = await client.callTool({
     name: "devbox_wait",
     arguments: { seconds: 0.05, reason: "oauth-context-smoke" },

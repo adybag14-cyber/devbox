@@ -226,7 +226,14 @@ const jsTools = await listJsTools();
 const rustTools = await listRustTools();
 const jsByName = new Map(jsTools.map((tool) => [tool.name, tool]));
 const rustByName = new Map(rustTools.map((tool) => [tool.name, tool]));
-assert.deepEqual([...rustByName.keys()].sort(), [...jsByName.keys()].sort());
+const nativeNames = JSON.parse(await readFile(path.join(projectRoot, "rust-mcp", "parity", "native-tools.json"), "utf8"));
+assert.deepEqual([...rustByName.keys()].sort(), [...jsByName.keys(), ...nativeNames].sort());
+for (const name of nativeNames) {
+  const tool = rustByName.get(name);
+  assert.equal(tool.inputSchema.type, "object");
+  assert.equal(collectNumericSchemaErrors(tool.inputSchema).length, 0, `Invalid native schema: ${name}`);
+  assert.equal(typeof tool.annotations?.readOnlyHint, "boolean", `Missing native tool annotations: ${name}`);
+}
 
 const comparableMetadata = (tool) => ({
   title: tool.title ?? null,

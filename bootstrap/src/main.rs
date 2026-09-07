@@ -13,7 +13,7 @@ const DEFAULT_REPO_URL: &str = "https://github.com/adybag14-cyber/devbox.git";
 const CANONICAL_TERMUX_REPO: &str = "https://github.com/adybag14-cyber/termux-app";
 const MINIMUM_NODE_MAJOR: u32 = 18;
 const MINIMUM_RUST_VERSION: (u32, u32, u32) = (1, 88, 0);
-const PINNED_RUST_TOOLCHAIN: &str = "1.97.1";
+const PINNED_RUST_TOOLCHAIN: &str = "1.91.1";
 const TERMUX_PACKAGES: &[&str] = &[
     "nodejs",
     "git",

@@ -138,4 +138,47 @@ if (Test-Path $legacy) {
     if ($LASTEXITCODE -ne 0) { throw "Windows PowerShell 5.1 parse validation failed with exit code $LASTEXITCODE." }
 }
 
-Write-Host 'Windows Devbox startup lifecycle contract checks passed.'
+$sourceAst = [System.Management.Automation.Language.Parser]::ParseFile($startPath, [ref]$null, [ref]$null)
+foreach ($name in @('Get-RustSourceIdentity', 'Test-RustSourceIdentity')) {
+    $function = $sourceAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    if (-not $function) { throw "Missing source provenance helper $name" }
+    . ([scriptblock]::Create($function.Extent.Text))
+}
+$sourceFixture = Join-Path ([IO.Path]::GetTempPath()) ('devbox-source-contract-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path (Join-Path $sourceFixture 'rust-mcp\src') -Force | Out-Null
+try {
+    git -C $sourceFixture init --quiet
+    git -C $sourceFixture config user.email 'fixture@example.test'
+    git -C $sourceFixture config user.name 'Devbox fixture'
+    $sourceFile = Join-Path $sourceFixture 'rust-mcp\src\main.rs'
+    [IO.File]::WriteAllText($sourceFile, 'fn main() {}')
+    git -C $sourceFixture add .
+    git -C $sourceFixture -c commit.gpgsign=false commit --quiet -m fixture
+    if ($LASTEXITCODE -ne 0) { throw 'Could not prepare provenance fixture repository' }
+    $clean = Get-RustSourceIdentity -ProjectRoot $sourceFixture
+    if (-not (Test-RustSourceIdentity -BuildInfo $clean -GitSha $clean.GitSha -SourceTree $clean.SourceTree)) { throw 'Clean provenance was not accepted' }
+    [IO.File]::AppendAllText($sourceFile, '// dirty input')
+    $refused = $false
+    try { Get-RustSourceIdentity -ProjectRoot $sourceFixture | Out-Null } catch { $refused = $_.Exception.Message -match 'clean tracked source' }
+    if (-not $refused) { throw 'Dirty source was not refused' }
+    git -C $sourceFixture restore -- 'rust-mcp/src/main.rs'
+    $restored = Get-RustSourceIdentity -ProjectRoot $sourceFixture
+    if ($restored.GitSha -ne $clean.GitSha) { throw 'Fixture HEAD unexpectedly changed' }
+    foreach ($candidate in @(
+        [pscustomobject]@{ GitSha=$clean.GitSha; SourceTree=$clean.SourceTree; SourceDirty=$true },
+        [pscustomobject]@{ GitSha=$clean.GitSha; SourceTree=$clean.SourceTree; SourceDirty='false' },
+        [pscustomobject]@{ GitSha=$clean.GitSha },
+        [pscustomobject]@{ GitSha=$clean.GitSha; SourceTree=('0'*40); SourceDirty=$false }
+    )) { if (Test-RustSourceIdentity -BuildInfo $candidate -GitSha $restored.GitSha -SourceTree $restored.SourceTree) { throw 'Untrusted candidate provenance was accepted after restoring the same HEAD' } }
+    [IO.File]::WriteAllText((Join-Path $sourceFixture 'rust-mcp\src\untracked.rs'), '// hidden build input')
+    $refused = $false
+    try { Get-RustSourceIdentity -ProjectRoot $sourceFixture | Out-Null } catch { $refused = $_.Exception.Message -match 'untracked Rust build inputs' }
+    if (-not $refused) { throw 'Untracked Rust source was not refused' }
+} finally {
+    $resolvedFixture = [IO.Path]::GetFullPath($sourceFixture)
+    $tempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    if (-not $resolvedFixture.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolvedFixture) -notlike 'devbox-source-contract-*') { throw 'Unsafe provenance fixture cleanup target' }
+    Remove-Item -LiteralPath $resolvedFixture -Recurse -Force
+}
+
+Write-Host 'Windows Devbox startup lifecycle and source provenance contract checks passed.'

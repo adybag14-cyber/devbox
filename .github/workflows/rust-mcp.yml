@@ -58,7 +58,10 @@ jobs:
           rustup toolchain install 1.91.1 --profile minimal --component rustfmt,clippy
           rustup default 1.91.1
       - name: Check JavaScript-to-Rust tool contract drift
-        run: node rust-mcp/scripts/check-contract-parity.mjs
+        shell: bash
+        run: |
+          node rust-mcp/scripts/check-contract-parity.mjs
+          node scripts/check-runtime-contract.mjs
       - name: Check formatting
         run: cargo fmt --manifest-path rust-mcp/Cargo.toml -- --check
       - name: Run strict Clippy
@@ -82,6 +85,8 @@ jobs:
           ./scripts/ci/test-windows-managed-mcp-ownership.ps1
       - name: Build Rust MCP shadow binary
         run: cargo build --manifest-path rust-mcp/Cargo.toml --locked
+      - name: Verify native durable agent APIs and restart recovery
+        run: node rust-mcp/scripts/agent-reliability-smoke.mjs
       - name: Reproduce Windows watcher contention and hard-deadline contract
         if: runner.os == 'Windows'
         run: node rust-mcp/scripts/windows-contention-smoke-runner.mjs
