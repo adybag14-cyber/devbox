@@ -63,8 +63,10 @@ const withCapturePolicy = async ({ signal, timeoutMs }, operation) =>
         lastError = error;
         if (attempt >= maxAttempts || !isTransientCaptureFailure(error)) throw error;
         const afterAttemptRemainingMs = deadlineMs - Date.now();
-        if (afterAttemptRemainingMs <= 0) throw error;
-        await abortableSleep(Math.min(retryBackoffMs, afterAttemptRemainingMs), signal);
+        // A timer may wake slightly before its requested deadline. Do not start
+        // another attempt when the remaining budget cannot fit the retry backoff.
+        if (afterAttemptRemainingMs <= retryBackoffMs) throw error;
+        await abortableSleep(retryBackoffMs, signal);
       }
     }
 
