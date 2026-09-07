@@ -28,6 +28,30 @@ struct PowerShellSpawnRequest {
 }
 
 impl RuntimeExecutor {
+    /// Internal parser probes inherit the server token and never request elevation.
+    pub(crate) async fn run_windows_inspection_shell(
+        &self,
+        request: ShellRequest,
+        cancellation: CancellationToken,
+    ) -> Result<ProcessOutput, RuntimeExecError> {
+        if !self.config.host_exec_enabled {
+            return Err(RuntimeExecError::HostExecDisabled);
+        }
+        self.spawn_windows_powershell(
+            PowerShellSpawnRequest {
+                args: windows_shell::encoded_command_args(&request.command),
+                cwd: request.working_dir,
+                timeout: request.timeout,
+                max_capture_chars: request.max_capture_chars,
+                output_tx: request.output_tx,
+                pid_tx: request.pid_tx,
+            },
+            cancellation,
+        )
+        .await
+        .map(clean_output)
+    }
+
     pub(super) async fn run_windows_runtime_shell(
         &self,
         request: ShellRequest,

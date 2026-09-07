@@ -162,6 +162,15 @@ pub(crate) async fn write(
     blocking(move || write_sync(&path, &payload, append, create_dirs, &expected)).await
 }
 
+#[cfg(unix)]
+fn reject_unix_hard_links(metadata: Option<&fs::Metadata>) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    if metadata.is_some_and(|metadata| metadata.nlink() > 1) {
+        bail!("Atomic replacement of a hard-linked target is unsupported");
+    }
+    Ok(())
+}
+
 pub(crate) fn write_sync(
     path: &Path,
     payload: &[u8],
@@ -234,12 +243,7 @@ pub(crate) fn write_sync(
         bail!("Target is read-only");
     }
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if metadata.nlink() > 1 {
-            bail!("Atomic replacement of a hard-linked target is unsupported");
-        }
-    }
+    reject_unix_hard_links(metadata.as_ref())?;
     let staged = tempfile::Builder::new()
         .prefix(".devbox-write-")
         .tempfile_in(target.parent().context("target parent")?)?;
