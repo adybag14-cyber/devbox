@@ -77,6 +77,7 @@ try{
     const page=await call('devbox_job_list',{limit:1});assert.equal(page.jobs.length,1);assert(page.next_cursor);
     const second=await call('devbox_job_list',{limit:1,cursor:page.next_cursor});assert.equal(second.jobs.length,1);assert.notEqual(page.jobs[0].id,second.jobs[0].id);
     const filtered=await call('devbox_job_list',{task_id:'task-a'});assert.equal(filtered.jobs.length,1);assert.equal(filtered.jobs[0].id,a.id);
+    assert(filtered.jobs.every(job=>Object.keys(job).every(key=>['id','status','createdAtUtc','startedAtUtc','completedAtUtc','exitCode','runnerAlive','agent'].includes(key))),'discovery omits detailed logs and process diagnostics');
   });
   await check('task CAS and reconnect recover work without resubmission',async()=>{
     await running(a.id);await running(b.id);
@@ -92,6 +93,13 @@ try{
   });
   await check('cancellation confirms both runner and child stopped',async()=>{
     for(const job of [a,b]){const before=await running(job.id);const result=await call('devbox_job_cancel',{job_id:job.id});assert.equal(result.status,'cancelled');assert.equal(result.runnerAlive,false);try{process.kill(before.childPid,0);assert.fail('child survived cancellation');}catch(error){if(error.code!=='ESRCH')throw error;}ownedJobs.delete(job.id);}
+  });
+  await check('nested task checkpoints retain bounded compact output',async()=>{
+    let state=Array(500).fill('checkpoint');for(let i=0;i<60;i++)state={next:state};
+    const r=await client.callTool({name:'devbox_task_put',arguments:{task_id:'nested',expected_revision:0,state}});
+    assert.equal(r.isError??false,false);assert.deepEqual(r.structuredContent.data.record.state,state);
+    const text=r.content.filter(c=>c.type==='text').map(c=>c.text).join('');
+    assert(text.length<JSON.stringify(r.structuredContent.data).length+300,'text rendering must not expand nested state through indentation');
   });
   if(process.platform==='win32')await check('native cold capture works through successive Rust server starts',async()=>{
     for(let attempt=0;attempt<3;attempt++){if(attempt){await stop();await start();}const r=await client.callTool({name:'host_capture_display',arguments:{quality:50,timeout_seconds:15}});assert.equal(r.isError??false,false,JSON.stringify(r.structuredContent));assert(r.content.some(c=>c.type==='image'&&c.data.length>200));}

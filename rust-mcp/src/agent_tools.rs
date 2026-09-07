@@ -146,7 +146,10 @@ const fn page_size() -> usize {
 }
 fn response(summary: &str, result: anyhow::Result<Value>) -> CallToolResult {
     match result {
-        Ok(value) => ToolEnvelope::success(summary, Some(value)),
+        Ok(value) => {
+            let text = format!("{summary}\n\n{value}");
+            ToolEnvelope::success_with_text(summary, Some(value), text)
+        }
         Err(error) => ToolEnvelope::error(error.to_string(), None),
     }
 }

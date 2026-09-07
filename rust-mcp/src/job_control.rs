@@ -129,7 +129,7 @@ pub(crate) async fn list(
         }) {
             continue;
         }
-        let mut status = store.get_status(&id).await?;
+        let status = store.get_status(&id).await?;
         if !status_filter.is_empty()
             && !status_filter
                 .iter()
@@ -141,10 +141,24 @@ pub(crate) async fn list(
             next_cursor = jobs.last().and_then(|v: &Value| v.get("id")).cloned();
             break;
         }
-        if let Some(agent) = request.get("agent") {
-            status["agent"] = agent.clone();
+        let mut summary = json!({});
+        for key in [
+            "id",
+            "status",
+            "createdAtUtc",
+            "startedAtUtc",
+            "completedAtUtc",
+            "exitCode",
+            "runnerAlive",
+        ] {
+            if let Some(value) = status.get(key) {
+                summary[key] = value.clone();
+            }
         }
-        jobs.push(status);
+        if let Some(agent) = request.get("agent") {
+            summary["agent"] = agent.clone();
+        }
+        jobs.push(summary);
     }
     Ok(json!({"jobs": jobs, "next_cursor": next_cursor, "order": "job_id", "limit": limit}))
 }
