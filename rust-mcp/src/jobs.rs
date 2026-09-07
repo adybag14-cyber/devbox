@@ -1197,6 +1197,19 @@ impl JobStore {
             if status_name(&current) != "cancel_requested"
                 || tokio::time::Instant::now() >= deadline
             {
+                if status_name(&current) == "cancelled" && current["runnerAlive"] == false {
+                    // Keep the legacy acknowledgement snapshot, but only after the
+                    // authoritative status has verified runner/child termination.
+                    cancelled.insert("status".to_owned(), json!("cancelled"));
+                    cancelled.insert("runnerAlive".to_owned(), json!(false));
+                    cancelled.insert(
+                        "completedAtUtc".to_owned(),
+                        current["completedAtUtc"].clone(),
+                    );
+                    cancelled.remove("terminationPending");
+                    cancelled.remove("childAlive");
+                    return Ok(Value::Object(cancelled));
+                }
                 if let Some(age) = status.get("heartbeatAgeMs")
                     && let Some(object) = current.as_object_mut()
                 {
