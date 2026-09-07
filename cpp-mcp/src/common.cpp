@@ -33,7 +33,13 @@ void Cancellation::cancel() noexcept {
 }
 bool Cancellation::wait_for(Millis duration) {
     std::unique_lock lock(mutex_);
-    return condition_.wait_for(lock, duration, [this] { return cancelled(); });
+    if (!parent_)
+        return condition_.wait_for(lock, duration, [this] { return cancelled(); });
+    const auto deadline = Clock::now() + duration;
+    while (!cancelled() && Clock::now() < deadline)
+        condition_.wait_until(lock, std::min(deadline, Clock::now() + Millis(25)),
+                              [this] { return cancelled(); });
+    return cancelled();
 }
 std::string trim(std::string_view value) {
     const auto a = value.find_first_not_of(" \t\r\n");

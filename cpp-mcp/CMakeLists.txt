@@ -1,5 +1,6 @@
 find_package(Boost CONFIG REQUIRED COMPONENTS asio beast)
 find_package(ada CONFIG REQUIRED)
+find_package(re2 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
@@ -24,9 +25,15 @@ add_library(devbox_core
   src/async.cpp
   src/gateway.cpp
   src/server.cpp
+  src/background.cpp
+  src/lifecycle.cpp
+  src/github_auth.cpp
+  src/docker_files.cpp
+  src/search.cpp
+  src/host_inspect.cpp
 )
 target_include_directories(devbox_core PUBLIC include)
-target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl Threads::Threads ada::ada)
+target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl Threads::Threads ada::ada re2::re2)
 target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_NO_DEPRECATED)
 if(WIN32)
   target_compile_definitions(devbox_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
@@ -92,6 +99,20 @@ if(DEVBOX_BUILD_TESTS)
   endif()
   add_test(NAME transport COMMAND devbox-transport-tests)
   set_tests_properties(transport PROPERTIES TIMEOUT 60)
+  add_executable(devbox-lifecycle-tests tests/lifecycle_tests.cpp)
+  target_link_libraries(devbox-lifecycle-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-lifecycle-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME lifecycle COMMAND devbox-lifecycle-tests)
+  set_tests_properties(lifecycle PROPERTIES TIMEOUT 45)
+  add_executable(devbox-search-tests tests/search_tests.cpp)
+  target_link_libraries(devbox-search-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-search-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME search COMMAND devbox-search-tests)
+  set_tests_properties(search PROPERTIES TIMEOUT 45)
 endif()
 if(MSVC)
   target_compile_options(devbox_core PRIVATE /W4 /permissive- /utf-8 /EHsc /bigobj)

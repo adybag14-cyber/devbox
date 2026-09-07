@@ -30,5 +30,6 @@ export VCPKG_MAX_CONCURRENCY=4
 "$deps_root/vcpkg/vcpkg" install --triplet x64-linux --x-manifest-root="$source_root" --x-install-root="$deps_root/installed"
 "$deps_root/cmake-${cmake_version}-linux-x86_64/bin/cmake" -S "$source_root" -B "$deps_root/build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release -DDEVBOX_BUILD_TUI=OFF -DDEVBOX_BUILD_TESTS=ON \
+  -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja \
   -DCMAKE_TOOLCHAIN_FILE="$deps_root/vcpkg/scripts/buildsystems/vcpkg.cmake" \
   -DVCPKG_INSTALLED_DIR="$deps_root/installed" -DVCPKG_TARGET_TRIPLET=x64-linux

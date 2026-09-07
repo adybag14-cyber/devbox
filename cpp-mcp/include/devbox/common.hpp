@@ -29,13 +29,15 @@ struct Cancelled : Error {
 };
 class Cancellation {
     std::atomic_bool cancelled_{false};
+    std::shared_ptr<Cancellation> parent_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
 
   public:
+    explicit Cancellation(std::shared_ptr<Cancellation> parent = {}) : parent_(std::move(parent)) {}
     void cancel() noexcept;
     bool cancelled() const noexcept {
-        return cancelled_.load(std::memory_order_acquire);
+        return cancelled_.load(std::memory_order_acquire) || (parent_ && parent_->cancelled());
     }
     void check() const {
         if (cancelled())
