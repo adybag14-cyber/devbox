@@ -402,6 +402,11 @@ impl JobStore {
             .is_some_and(|pid| crate::process_identity::process_matches_instance(pid, instance));
         let docker_unverified = string_field(&object, "runtimeMode") == Some("docker");
         let pending = runner_alive || child_alive || docker_unverified;
+        if !pending && string_field(&object, "status") == Some("cancelled") {
+            // Preserve the runner's final journal once termination has been verified.
+            decorate_status(&mut object, paths, false, None);
+            return Ok(Value::Object(object));
+        }
         object.insert(
             "status".to_owned(),
             json!(if pending {
@@ -1648,6 +1653,20 @@ mod tests {
         assert_eq!(status["status"], "cancel_requested");
         assert_eq!(status["runnerAlive"], true);
         assert!(status["completedAtUtc"].is_null());
+    }
+
+    #[tokio::test]
+    async fn verified_cancelled_runner_journal_is_preserved() {
+        let root = tempfile::tempdir().unwrap();
+        let store = store(root.path());
+        let id = "job-cancelled-final";
+        let journal = json!({"id":id,"status":"cancelled","runtimeMode":"host","completedAtUtc":utc_now(),"error":"Command cancelled by the MCP client.","logs":{"truncated":false}});
+        let paths = write_status(&store, id, journal.clone()).await;
+        fs::write(&paths.cancel, b"requested").await.unwrap();
+        let status = store.get_status(id).await.unwrap();
+        assert_eq!(status["runnerAlive"], false);
+        assert!(status.get("cancelRequested").is_none());
+        assert_eq!(store.read_status_raw(id).await.unwrap(), journal);
     }
 
     fn store(root: &Path) -> JobStore {
