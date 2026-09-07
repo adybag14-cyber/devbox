@@ -30,7 +30,18 @@ async function start(){
   client=new Client({name:'native-agent-reliability',version:'2'});
   await client.connect(new StreamableHTTPClientTransport(url));
 }
-async function stop(){await client?.close().catch(()=>{});client=null;if(server&&server.exitCode===null&&server.signalCode===null){server.kill();await Promise.race([exited,sleep(3000)]);assert(server.exitCode!==null||server.signalCode!==null,'owned test server stopped');}}
+async function stop({abrupt=false}={}){
+  await client?.close().catch(()=>{});client=null;
+  if(server&&server.exitCode===null&&server.signalCode===null){
+    server.kill(abrupt?'SIGKILL':'SIGTERM');
+    await Promise.race([exited,sleep(abrupt?3000:12000)]);
+    if(server.exitCode===null&&server.signalCode===null){
+      console.error(`Force-cleaning owned test server PID ${server.pid} after its shutdown deadline`);
+      server.kill('SIGKILL');await Promise.race([exited,sleep(3000)]);
+    }
+    assert(server.exitCode!==null||server.signalCode!==null,'owned test server stopped');
+  }
+}
 async function call(name,args={},failure=false){const r=await client.callTool({name,arguments:args});if(failure){assert.equal(r.isError,true,`${name} unexpectedly succeeded`);return r;}assert.equal(r.isError??false,false,`${name}: ${JSON.stringify(r.structuredContent)}`);assert.equal(r.structuredContent?.ok,true);return r.structuredContent.data;}
 async function check(name,body){const start=Date.now();await body();outcomes.push({name,ok:true,durationMs:Date.now()-start});}
 async function done(id){let value;const deadline=Date.now()+15000;do{value=await call('devbox_job_status',{job_id:id,wait_seconds:2,terminal_only:true});if(['succeeded','failed','cancelled','timed_out','interrupted'].includes(value.status))return value;}while(Date.now()<deadline);throw new Error(`Job did not reach terminal state: ${JSON.stringify(value)}`);}
@@ -86,7 +97,7 @@ try{
     assert.equal((await call('devbox_task_put',request)).record.revision,1);
     assert.equal((await call('devbox_task_put',request)).replayed,true);
     await call('devbox_task_put',{...request,state:{phase:'stale'}},true);
-    await stop();await start();
+    await stop({abrupt:true});await start();
     assert.deepEqual((await call('devbox_task_get',{task_id:'workflow'})).record.state,state);
     assert.equal((await call('devbox_job_submit',sleeper('task-a','work'))).replayed,true);
     assert.equal((await call('devbox_task_list')).tasks[0].task_id,'workflow');
