@@ -249,6 +249,11 @@ impl UsageLogSink {
         file.write_all(&line)
             .await
             .with_context(|| format!("append usage log {}", self.path.display()))?;
+        // Tokio can buffer write_all; complete that write before releasing the
+        // rotation lock or reporting append success to the writer.
+        file.flush()
+            .await
+            .with_context(|| format!("flush usage log {}", self.path.display()))?;
         state.bytes = Some(state.bytes.unwrap_or_default().saturating_add(line_bytes));
         Ok(())
     }
@@ -1078,7 +1083,33 @@ mod tests {
         let first = tokio::fs::read_to_string(rotation_path(&path, 1))
             .await
             .expect("rotated");
-        assert!(current.contains("cccc"));
-        assert!(first.contains("aaaa") || first.contains("bbbb"));
+        assert_eq!(current, "{\"event\":\"cccccccccccccccccccc\"}\n");
+        assert_eq!(
+            first,
+            "{\"event\":\"aaaaaaaaaaaaaaaaaaaa\"}\n{\"event\":\"bbbbbbbbbbbbbbbbbbbb\"}\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn awaited_appends_are_complete_and_ordered_before_returning() {
+        use std::fmt::Write as _;
+
+        let temp = tempfile::tempdir().expect("temp");
+        let path = temp.path().join("ordered.jsonl");
+        let logger = UsageLogger::new(path.clone(), 1024 * 1024, 2);
+        let mut expected = String::new();
+        for sequence in 0..64 {
+            logger
+                .append(&json!({"sequence":sequence}))
+                .await
+                .expect("append");
+            writeln!(&mut expected, "{{\"sequence\":{sequence}}}").expect("expected line");
+            assert_eq!(
+                tokio::fs::read_to_string(&path)
+                    .await
+                    .expect("read after append"),
+                expected
+            );
+        }
     }
 }
