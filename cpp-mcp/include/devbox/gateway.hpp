@@ -5,6 +5,7 @@
 namespace devbox {
 struct HttpRequest {
     std::string method, target, path, query, peer;
+    std::string usage_id = uuid(), started_at = utc_now();
     Json headers = Json::object();
     std::string body;
     bool is_local = false;

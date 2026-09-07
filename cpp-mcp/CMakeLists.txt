@@ -31,6 +31,9 @@ add_library(devbox_core
   src/docker_files.cpp
   src/search.cpp
   src/host_inspect.cpp
+  src/usage.cpp
+  src/allocator.cpp
+  src/performance.cpp
 )
 target_include_directories(devbox_core PUBLIC include)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl Threads::Threads ada::ada re2::re2)
@@ -43,6 +46,13 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-telemetry-tests tests/telemetry_tests.cpp)
+  target_link_libraries(devbox-telemetry-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-telemetry-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME telemetry COMMAND devbox-telemetry-tests)
+  set_tests_properties(telemetry PROPERTIES TIMEOUT 30)
   add_executable(devbox-core-tests tests/core_tests.cpp)
   target_link_libraries(devbox-core-tests PRIVATE devbox_core)
   if(MSVC)

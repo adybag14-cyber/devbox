@@ -50,3 +50,9 @@ Host inspection reads exact file bytes, distinguishes binary magic from text cor
 C++ owns lifecycle orchestration, deferred retired-container cleanup, Guardian desired-state writes, and GitHub CLI authentication integration. Docker filesystem operations retain the existing container-side Python helpers as external integrations; those scripts are compiled into the C++ executable from checked-in generated assets. The C++ runtime does not launch Rust or require the development extraction script. Lifecycle tests exercise replacement and migration rollback against an isolated Docker fixture; live-container validation remains required.
 
 Linux builds require a C++20 standard library with constexpr strings. On the Ubuntu 22.04 validation host, GCC 12 runtime components were already installed; the two missing C++ compiler/header packages are extracted into the task-owned dependency directory by `prepare-linux-gcc12.sh`. No system compiler selection or distro package installation is changed.
+
+## Telemetry milestone
+
+Usage logging has bounded 1,024-event writer queues, rotation, secret redaction, active invocation tracking, and visible write failures that recover only after a successful write. HTTP records omit authorization headers and query strings. The tool-scope refusal uses the existing MCP tool envelope and participates in the same invocation logging.
+
+The performance sampler attaches to the actual HTTP I/O executor and records 10-second, one-minute, and five-minute latency windows. Process telemetry includes RSS, CPU time, Windows handle/thread counts, and requested-byte accounting for all standard C++ new/delete forms; direct allocations made by C libraries are outside the latter metric. A dedicated test introduces an executor stall and confirms the measured latency, then verifies orderly cancellation. All eleven Windows native suites pass at this milestone. Production integration and the remaining completion gates are still required.

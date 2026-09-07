@@ -1,4 +1,5 @@
 #include "devbox/server.hpp"
+#include "devbox/result.hpp"
 #include <boost/beast.hpp>
 #include <iostream>
 #include <set>
@@ -91,6 +92,7 @@ struct HttpServer::Impl : std::enable_shared_from_this<HttpServer::Impl> {
     std::unordered_map<std::uint64_t, std::weak_ptr<Session>> sessions;
     std::atomic<std::uint64_t> sequence{0};
     std::atomic_bool started{false}, stopped{false};
+    Cancel shutdown = std::make_shared<Cancellation>();
     std::uint16_t bound_port = 0;
     Impl(std::shared_ptr<const Config> cfg, std::shared_ptr<McpBackend> handler)
         : config(std::move(cfg)), backend(std::move(handler)), gateway(*config) {
@@ -156,28 +158,43 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         sent_bytes += co_await asio::async_write(stream.socket(), http::make_chunk(asio::buffer(text)),
                                                  asio::use_awaitable);
     }
-    asio::awaitable<Json> call_tool(Json params) {
+    asio::awaitable<Json> call_tool(Json params, Json id) {
         if (!params.is_object() || !params.contains("name") || !params["name"].is_string() ||
             (params.contains("arguments") && !params["arguments"].is_object()))
             throw Error("tools/call requires a name and object arguments");
-        co_return co_await server->backend->call_tool(json_string(params, "name"),
-                                                      params.value("arguments", Json::object()), cancel);
+        const auto name = json_string(params, "name");
+        const auto args = params.value("arguments", Json::object());
+        Json context{{"request_id", id}};
+        for (const auto& [header, key] :
+             {std::pair{"mcp-session-id", "session_id"}, std::pair{"user-agent", "user_agent"}}) {
+            auto value = json_string(request.headers, header);
+            if (!trim(value).empty())
+                context[key] = value;
+        }
+        if (request.oauth)
+            context["client_id"] = json_string(*request.oauth, "clientId");
+        const auto invocation = server->backend->tool_started(name, args, context);
+        try {
+            Json result;
+            const auto scope = required_tool_scope(name);
+            if (request.oauth && scope && !oauth_scope_allows(json_strings(*request.oauth, "scopes"), *scope))
+                result = result_error(
+                    "OAuth token is missing the required scope " + *scope + " for tool " + name + ".",
+                    Json{{"requiredScope", *scope}, {"clientId", json_string(*request.oauth, "clientId")}});
+            else
+                result = co_await server->backend->call_tool(name, args, cancel);
+            server->backend->tool_finished(invocation, result);
+            co_return result;
+        } catch (const std::exception& e) {
+            server->backend->tool_failed(invocation, e.what());
+            throw;
+        }
     }
     asio::awaitable<void> tool_response(const Json& id, const Json& params, bool sse) {
         if (!params.is_object() || !params.contains("name") || !params["name"].is_string() ||
             (params.contains("arguments") && !params["arguments"].is_object())) {
             co_await send(HttpReply::json(
                 200, rpc_error(id, -32602, "tools/call requires a name and object arguments")));
-            co_return;
-        }
-        const auto scope = required_tool_scope(json_string(params, "name"));
-        if (request.oauth && scope && !oauth_scope_allows(json_strings(*request.oauth, "scopes"), *scope)) {
-            co_await send(HttpReply::json(
-                200, rpc_error(id, -32600,
-                               "OAuth token is missing the required scope " + *scope + " for tool " +
-                                   json_string(params, "name") + ".",
-                               Json{{"requiredScope", *scope},
-                                    {"grantedScopes", request.oauth->value("scopes", Json::array())}})));
             co_return;
         }
         auto registration = server->requests.register_request(request, id, cancel);
@@ -204,7 +221,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             };
             auto completion = std::make_shared<Completion>(co_await asio::this_coro::executor);
             const auto self = shared_from_this();
-            asio::co_spawn(stream.get_executor(), call_tool(params),
+            asio::co_spawn(stream.get_executor(), call_tool(params, id),
                            [completion, self, id](std::exception_ptr error, Json result) {
                                if (error) {
                                    try {
@@ -236,7 +253,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             completed = true;
         } else {
             try {
-                response = rpc_result(id, co_await call_tool(params));
+                response = rpc_result(id, co_await call_tool(params, id));
             } catch (const Cancelled& e) {
                 response = rpc_error(id, -32800, e.what());
             } catch (const std::exception& e) {
@@ -400,9 +417,10 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         const auto id = body["id"];
         if (method == "initialize") {
             const auto requested = json_string(params, "protocolVersion");
-            auto result = Json{{"protocolVersion", supported_protocol(requested) ? requested : "2025-11-25"},
-                               {"capabilities", {{"tools", {{"listChanged", false}}}}},
-                               {"serverInfo", server->backend->server_info()}};
+            auto result =
+                Json{{"protocolVersion", supported_protocol(requested) ? requested : "2025-11-25"},
+                     {"capabilities", {{"tools", {{"listChanged", true}}}, {"logging", Json::object()}}},
+                     {"serverInfo", server->backend->server_info()}};
             co_await send(HttpReply::json(200, rpc_result(id, result)));
         } else if (method == "ping")
             co_await send(HttpReply::json(200, rpc_result(id, Json::object())));
@@ -524,6 +542,7 @@ std::uint16_t HttpServer::Impl::start() {
     return bound_port;
 }
 void HttpServer::Impl::stop() {
+    shutdown->cancel();
     if (stopped.exchange(true) || threads.empty())
         return;
     requests.cancel_all();
@@ -564,5 +583,11 @@ std::uint16_t HttpServer::port() const {
 }
 std::size_t HttpServer::active_requests() const {
     return impl_->requests.active_count();
+}
+asio::any_io_executor HttpServer::executor() const {
+    return impl_->io.get_executor();
+}
+Cancel HttpServer::stop_token() const {
+    return impl_->shutdown;
 }
 } // namespace devbox

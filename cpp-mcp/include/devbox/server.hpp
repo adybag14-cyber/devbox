@@ -11,6 +11,11 @@ class McpBackend {
     virtual asio::awaitable<Json> call_tool(std::string name, Json arguments, Cancel cancel) = 0;
     virtual asio::awaitable<Json> metadata(const HttpRequest& request) = 0;
     virtual bool ready() const = 0;
+    virtual std::string tool_started(const std::string&, const Json&, const Json&) {
+        return {};
+    }
+    virtual void tool_finished(const std::string&, const Json&) {}
+    virtual void tool_failed(const std::string&, const std::string&) {}
     virtual void observe_http(const HttpRequest& request, int status, std::uint64_t bytes, Millis duration,
                               bool disconnected) = 0;
 };
@@ -27,5 +32,7 @@ class HttpServer {
     void stop();
     std::uint16_t port() const;
     std::size_t active_requests() const;
+    asio::any_io_executor executor() const;
+    Cancel stop_token() const;
 };
 } // namespace devbox

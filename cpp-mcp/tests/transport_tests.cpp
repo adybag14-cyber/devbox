@@ -263,7 +263,8 @@ int main(int argc, char** argv) {
         authorized["authorization"] = "Bearer narrow";
         const auto denied =
             Json::parse(http_request("POST", reopened_base, call("host_exec").dump(), authorized).body);
-        require(denied.contains("error") && denied["error"]["data"]["requiredScope"] == "mcp:host:exec",
+        require(denied.contains("result") && denied["result"]["isError"] == true &&
+                    denied["result"]["structuredContent"]["data"]["requiredScope"] == "mcp:host:exec",
                 "HTTP tool scope enforcement");
         require(Json::parse(http_request("POST", reopened_base, call("devbox_wait").dump(), authorized).body)
                     .contains("result"),
