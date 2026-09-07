@@ -525,6 +525,17 @@ void write_json_atomic(const fs::path& path, const Json& value) {
     try {
         write_file(temporary, value.dump(2));
 #ifdef _WIN32
+        const auto flush_handle = CreateFileW(temporary.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+                                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (flush_handle == INVALID_HANDLE_VALUE)
+            throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
+                                    "open JSON state for flush");
+        const bool flushed = FlushFileBuffers(flush_handle) != FALSE;
+        const auto flush_error = GetLastError();
+        CloseHandle(flush_handle);
+        if (!flushed)
+            throw std::system_error(static_cast<int>(flush_error), std::system_category(),
+                                    "flush JSON state");
         if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
                                     "replace JSON state");
