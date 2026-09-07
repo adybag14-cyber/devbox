@@ -14,6 +14,8 @@ class BackgroundTasks {
     Json& state_locked(const std::string& name);
     asio::awaitable<void> run_periodic(std::string name, Millis initial, Millis interval,
                                        std::function<void(const Cancel&)> action, bool once);
+    asio::awaitable<void> run_adaptive(std::string name, Millis initial,
+                                       std::function<Millis(const Cancel&)> action);
 
   public:
     BackgroundTasks() = default;
@@ -23,6 +25,7 @@ class BackgroundTasks {
     void periodic(std::string name, Millis initial, Millis interval,
                   std::function<void(const Cancel&)> action);
     void once(std::string name, Millis delay, std::function<void(const Cancel&)> action);
+    void adaptive(std::string name, Millis initial, std::function<Millis(const Cancel&)> action);
     void mark_started(const std::string& name, std::string kind = "event-driven");
     void mark_stopped(const std::string& name, std::optional<std::string> error = {});
     void attempt(const std::string& name);

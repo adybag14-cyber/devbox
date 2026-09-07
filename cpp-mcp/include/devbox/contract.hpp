@@ -1,0 +1,20 @@
+#pragma once
+#include "config.hpp"
+#include <set>
+namespace devbox {
+Json build_snapshot();
+std::string build_version();
+class ToolContract {
+    Json tools_;
+
+  public:
+    explicit ToolContract(const Config& config);
+    Json all() const {
+        return tools_;
+    }
+    Json selected(const std::set<std::string>& implemented) const;
+    Json tool(std::string_view name) const;
+    Json arguments(std::string_view name, const Json& supplied) const;
+    Json capabilities(const Config& config, const std::set<std::string>& implemented) const;
+};
+} // namespace devbox

@@ -24,6 +24,19 @@ extern char** environ;
 
 namespace devbox {
 namespace {
+std::atomic<std::uint64_t> probe_count{0}, probe_total_ns{0}, probe_max_ns{0};
+struct ProcessProbeTiming {
+    Clock::time_point started = Clock::now();
+    ~ProcessProbeTiming() {
+        const auto ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started).count());
+        probe_count.fetch_add(1, std::memory_order_relaxed);
+        probe_total_ns.fetch_add(ns, std::memory_order_relaxed);
+        auto prior = probe_max_ns.load(std::memory_order_relaxed);
+        while (prior < ns && !probe_max_ns.compare_exchange_weak(prior, ns, std::memory_order_relaxed)) {
+        }
+    }
+};
 std::vector<std::string> characters(std::string_view text) {
     std::vector<std::string> values;
     for (std::size_t i = 0; i < text.size();) {
@@ -254,6 +267,7 @@ std::optional<std::uint64_t> handle_instance(HANDLE process) {
 }
 } // namespace
 bool process_alive(std::uint32_t pid) {
+    ProcessProbeTiming timing;
     if (!pid)
         return false;
     NativeHandle process(OpenProcess(SYNCHRONIZE, FALSE, pid));
@@ -321,6 +335,7 @@ bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expe
 }
 #else
 bool process_alive(std::uint32_t pid) {
+    ProcessProbeTiming timing;
     if (pid == 0 || pid > static_cast<std::uint32_t>(INT32_MAX))
         return false;
 #ifdef __linux__
@@ -914,5 +929,20 @@ ProcessOutput spawn_process(std::string_view file, const std::vector<std::string
             *raw.code,
             raw.pid,
             elapsed(started)};
+}
+Json process_probe_metrics() {
+    const auto count = probe_count.load(std::memory_order_relaxed),
+               total = probe_total_ns.load(std::memory_order_relaxed),
+               maximum = probe_max_ns.load(std::memory_order_relaxed);
+    return Json{{"count", count},
+                {"averageMs", static_cast<double>(count ? total / count : 0) / 1000000.0},
+                {"maxMs", static_cast<double>(maximum) / 1000000.0},
+                {"backend",
+#ifdef _WIN32
+                 "win32-openprocess"
+#else
+                 "posix-process-identity"
+#endif
+                }};
 }
 } // namespace devbox

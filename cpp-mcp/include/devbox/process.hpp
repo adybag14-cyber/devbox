@@ -60,6 +60,7 @@ std::optional<fs::path> find_program(std::string_view program, const Environment
 std::string quote_windows_argument(std::string_view value);
 bool is_administrator();
 bool process_alive(std::uint32_t pid);
+Json process_probe_metrics();
 std::optional<std::uint64_t> process_instance(std::uint32_t pid);
 bool process_matches_instance(std::uint32_t pid, std::optional<std::uint64_t> expected);
 // Only callers holding a stored process identity may request cross-process termination.

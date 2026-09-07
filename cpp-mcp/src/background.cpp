@@ -1,5 +1,36 @@
 #include "devbox/background.hpp"
 namespace devbox {
+asio::awaitable<void> BackgroundTasks::run_adaptive(std::string name, Millis initial,
+                                                    std::function<Millis(const Cancel&)> action) {
+    mark_started(name, "periodic");
+    auto delay = initial;
+    try {
+        while (!cancel_->cancelled()) {
+            co_await async_delay(delay, cancel_);
+            attempt(name);
+            try {
+                delay = co_await workers_.run([action, cancel = cancel_] { return action(cancel); }, cancel_);
+                delay = std::max(Millis(1), delay);
+                success(name);
+            } catch (const Cancelled&) {
+                break;
+            } catch (const std::exception& e) {
+                failure(name, e.what());
+                delay = Millis(10000);
+            }
+        }
+        mark_stopped(name);
+    } catch (const Cancelled&) {
+        mark_stopped(name);
+    } catch (const std::exception& e) {
+        mark_stopped(name, e.what());
+    }
+}
+void BackgroundTasks::adaptive(std::string name, Millis initial,
+                               std::function<Millis(const Cancel&)> action) {
+    start();
+    asio::co_spawn(io_, run_adaptive(std::move(name), initial, std::move(action)), [](std::exception_ptr) {});
+}
 BackgroundTasks::~BackgroundTasks() {
     stop();
 }

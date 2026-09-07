@@ -339,7 +339,7 @@ ProcessOutput RuntimeExecutor::run_host_shell_only(const ShellRequest& request, 
 #ifdef _WIN32
     if (!is_administrator()) {
         if (!config_->allow_windows_host_exec_uac)
-            throw Error(elevation_message);
+            throw ElevationRequired(elevation_message);
         return elevated_shell(request, cancel);
     }
     return powershell(request, cancel, true);

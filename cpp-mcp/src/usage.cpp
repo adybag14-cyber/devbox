@@ -163,9 +163,9 @@ Json summarize_arguments(const Json& arguments) {
 }
 UsageTelemetry::UsageTelemetry(const Config& config, BackgroundTasks& background)
     : tools_(config.project_root / "run" / "tool-usage.jsonl", config.usage_log_max_bytes,
-             config.usage_log_rotations, background, "tool-usage-writer"),
+             config.usage_log_rotations, background, "usage-tool-writer"),
       http_(config.project_root / "run" / "http-usage.jsonl", config.usage_log_max_bytes,
-            config.usage_log_rotations, background, "http-usage-writer") {}
+            config.usage_log_rotations, background, "usage-http-writer") {}
 Json UsageTelemetry::Invocation::event(std::string type) const {
     return Json{{"type", type},           {"invocation_id", id}, {"tool", tool}, {"started_at", started_at},
                 {"arguments", arguments}, {"context", context}};

@@ -127,13 +127,72 @@ Json powershell_syntax(const RuntimeExecutor& runtime, const fs::path& path, con
 } // namespace
 fs::path resolve_host_path(std::string_view requested, const fs::path& workdir) {
     const auto text = trim(requested);
+    if (text.empty())
+        throw Error("path must not be empty");
+    if (text.find("://") != text.npos || text.starts_with('$'))
+        throw Error("Could not resolve a Windows host path from \"" + std::string(requested) + "\".");
+#ifdef _WIN32
+    auto drive = [](std::string_view value) -> std::string {
+        return value.size() >= 2 && value[1] == ':' && std::isalpha(static_cast<unsigned char>(value[0]))
+                   ? std::string(value.substr(0, 2))
+                   : "";
+    };
+    auto absolute = [](std::string_view value) {
+        return !value.empty() &&
+               (value[0] == '/' || value[0] == '\\' ||
+                (value.size() >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\')));
+    };
+    auto normalize = [&](std::string value) {
+        value = replace_all(std::move(value), "/", "\\");
+        auto prefix = drive(value);
+        const auto tail = prefix.empty() ? value : value.substr(2);
+        const bool rooted = tail.starts_with('\\'), unc = prefix.empty() && tail.starts_with("\\\\");
+        std::vector<std::string> parts;
+        for (const auto& part : split(tail, '\\', false)) {
+            if (part == ".")
+                continue;
+            if (part == "..") {
+                if (!parts.empty() && parts.back() != "..")
+                    parts.pop_back();
+                else if (!rooted)
+                    parts.push_back(part);
+            } else
+                parts.push_back(part);
+        }
+        auto result = prefix + (unc ? "\\\\" : rooted ? "\\" : "") + join(parts, "\\");
+        return result.empty() ? std::string(".") : result;
+    };
+    auto resolve = [&](const std::string& base, const std::string& value) {
+        if (absolute(value)) {
+            auto result = normalize(value);
+            const auto prefix = drive(base);
+            return drive(value).empty() && !prefix.empty() ? prefix + result : result;
+        }
+        return normalize(base + (base.ends_with('/') || base.ends_with('\\') ? "" : "\\") + value);
+    };
     if (text.starts_with('~')) {
-        const auto home = path_from_utf8(env_or("USERPROFILE", env_or("HOME", path_text(workdir))));
+        auto home = environment("USERPROFILE");
+        if (!home)
+            home = environment("HOME");
+        if (!home)
+            throw Error("Could not resolve the host home directory.");
+        return path_from_utf8(resolve(*home, text.substr(1)));
+    }
+    return path_from_utf8(absolute(text) ? normalize(text) : resolve(path_text(workdir), text));
+#else
+    if (text.starts_with('~')) {
+        auto value = environment("HOME");
+        if (!value)
+            value = environment("USERPROFILE");
+        if (!value)
+            throw Error("Could not resolve the host home directory.");
+        const auto home = path_from_utf8(*value);
         const auto first = text.find_first_not_of("/\\", 1);
         return first == text.npos ? home : home / path_from_utf8(text.substr(first));
     }
     const auto path = path_from_utf8(text);
-    return path.is_absolute() ? path : workdir / path;
+    return (path.is_absolute() ? path : workdir / path).lexically_normal();
+#endif
 }
 Json inspect_host_file(const Config& config, const RuntimeExecutor& runtime,
                        const InspectFileRequest& request, const Cancel& cancel) {

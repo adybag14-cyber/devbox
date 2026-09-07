@@ -5,6 +5,19 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(Threads REQUIRED)
+set(DEVBOX_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+file(MAKE_DIRECTORY "${DEVBOX_GENERATED_DIR}")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json" reference_hex HEX)
+string(REGEX REPLACE "(..)" "0x\\1," reference_bytes "${reference_hex}")
+file(WRITE "${DEVBOX_GENERATED_DIR}/reference_contract.hpp.tmp" "inline constexpr unsigned char embedded_contract[] = {${reference_bytes}};\n")
+file(COPY_FILE "${DEVBOX_GENERATED_DIR}/reference_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/reference_contract.hpp" ONLY_IF_DIFFERENT)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json")
+add_custom_target(devbox-build-identity
+  COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${PROJECT_SOURCE_DIR}" "-DOUTPUT_DIR=${DEVBOX_GENERATED_DIR}"
+    "-DCOMPILER=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}" "-DVERSION=${PROJECT_VERSION}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/generate_identity.cmake"
+  BYPRODUCTS "${DEVBOX_GENERATED_DIR}/build_identity.hpp"
+  VERBATIM)
 add_library(devbox_core
   src/common.cpp
   src/state_file.cpp
@@ -34,10 +47,24 @@ add_library(devbox_core
   src/usage.cpp
   src/allocator.cpp
   src/performance.cpp
+  src/provenance.cpp
+  src/contract.cpp
+  src/monitoring.cpp
+  src/engine.cpp
+  src/engine_execution.cpp
+  src/engine_files.cpp
+  src/engine_waits.cpp
 )
+add_dependencies(devbox_core devbox-build-identity)
+target_include_directories(devbox_core PRIVATE "${DEVBOX_GENERATED_DIR}")
 target_include_directories(devbox_core PUBLIC include)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl Threads::Threads ada::ada re2::re2)
 target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_NO_DEPRECATED)
+add_executable(devbox-mcp src/main.cpp)
+target_link_libraries(devbox-mcp PRIVATE devbox_core)
+if(MSVC)
+  target_compile_options(devbox-mcp PRIVATE /utf-8)
+endif()
 if(WIN32)
   target_compile_definitions(devbox_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
   target_link_libraries(devbox_core PUBLIC ws2_32 bcrypt crypt32 advapi32 psapi userenv shell32 ole32 windowscodecs gdi32 dwmapi shcore)
@@ -46,6 +73,14 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-engine-tests tests/engine_tests.cpp)
+  target_link_libraries(devbox-engine-tests PRIVATE devbox_core)
+  target_compile_definitions(devbox-engine-tests PRIVATE DEVBOX_CONTRACT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json")
+  if(MSVC)
+    target_compile_options(devbox-engine-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME engine COMMAND devbox-engine-tests)
+  set_tests_properties(engine PROPERTIES TIMEOUT 60)
   add_executable(devbox-telemetry-tests tests/telemetry_tests.cpp)
   target_link_libraries(devbox-telemetry-tests PRIVATE devbox_core)
   if(MSVC)

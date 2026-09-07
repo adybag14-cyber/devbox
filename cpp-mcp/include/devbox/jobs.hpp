@@ -86,7 +86,7 @@ class JobManager {
     Json start_shell(const ShellRequest& options, std::string_view resource = "auto", bool read_only = false);
     Json start_program(const ProgramRequest& options, std::string_view resource = "auto");
     Json submit_shell(const ShellRequest& options, const Submission& agent,
-                      std::string_view resource = "auto");
+                      std::string_view resource = "auto", bool read_only = false);
     Json submit_program(const ProgramRequest& options, const Submission& agent,
                         std::string_view resource = "auto");
 };

@@ -2,6 +2,9 @@
 #include "config.hpp"
 #include "process.hpp"
 namespace devbox {
+struct ElevationRequired : Error {
+    using Error::Error;
+};
 struct ProgramRequest {
     std::string program;
     std::vector<std::string> args;

@@ -125,9 +125,9 @@ Json JobManager::persist_and_spawn(Json request, const std::optional<Submission>
                 {"mode", request["mode"]},
                 {"resourceClass", request["resourceClass"]}};
 }
-Json JobManager::submit_shell(const ShellRequest& options, const Submission& agent,
-                              std::string_view resource) {
-    return submit(shell_request(options, resource, false), agent);
+Json JobManager::submit_shell(const ShellRequest& options, const Submission& agent, std::string_view resource,
+                              bool read_only) {
+    return submit(shell_request(options, resource, read_only), agent);
 }
 Json JobManager::submit_program(const ProgramRequest& options, const Submission& agent,
                                 std::string_view resource) {
