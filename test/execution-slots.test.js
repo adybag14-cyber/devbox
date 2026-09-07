@@ -348,7 +348,7 @@ test("aged background ticket from another pool does not block interactive execut
 });
 
 test("disk pressure light interactive bypasses a non-overlapping aged heavy background waiter", async () => {
-  const { acquireExecutionSlot, testSlotRoot } = await importIsolatedSlots();
+  const { acquireExecutionSlot, getExecutionSlotSnapshot, testSlotRoot } = await importIsolatedSlots();
   await writeFile(path.join(testSlotRoot, ".disk-pressure.json"), JSON.stringify({ diskPressure: "warning" }));
   const common = {
     maxConcurrent: 4,
@@ -358,7 +358,7 @@ test("disk pressure light interactive bypasses a non-overlapping aged heavy back
     ioHeavyCapacity: 2,
     ioHeavyWeight: 2,
     backgroundPriorityAgeMs: 1,
-    queueTimeoutMs: 2000,
+    queueTimeoutMs: 10000,
   };
   const first = await acquireExecutionSlot({
     ...common,
@@ -369,25 +369,39 @@ test("disk pressure light interactive bypasses a non-overlapping aged heavy back
   });
   let background = null;
   let light = null;
+  let backgroundPromise = null;
+  const backgroundController = new AbortController();
   try {
-    const backgroundPromise = acquireExecutionSlot({
+    backgroundPromise = acquireExecutionSlot({
       ...common,
       kind: "background",
       resourceClass: "heavy",
       weight: 2,
       label: "pressure-aged-heavy-background",
-    });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    const started = performance.now();
+      signal: backgroundController.signal,
+    }).then((lease) => { background = lease; return lease; });
+    // Observe the published queue ticket before testing ordering. A fixed sleep
+    // can race ticket creation on Windows and accidentally benchmark disk latency.
+    backgroundPromise.catch(() => {});
+    const fixtureDeadline = Date.now() + 5000;
+    let snapshot = await getExecutionSlotSnapshot(common);
+    while (!snapshot.global_queued && Date.now() < fixtureDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      snapshot = await getExecutionSlotSnapshot(common);
+    }
+    assert.equal(snapshot.global_queued, 1, "heavy waiter must be queued before the light request");
+    await new Promise((resolve) => setTimeout(resolve, 10));
     light = await acquireExecutionSlot({
       ...common,
       kind: "interactive",
       resourceClass: "light",
       weight: 1,
-      queueTimeoutMs: 500,
+      queueTimeoutMs: 5000,
       label: "pressure-light-after-aged-heavy",
     });
-    assert.ok(performance.now() - started < 400, "light request yielded to non-overlapping aged heavy waiter");
+    // The heavy holder stays leased until light acquires: yielding to its blocked
+    // background waiter would time out regardless of host scheduling speed.
+    assert.equal(background, null, "heavy background waiter acquired the occupied corridor");
     assert.ok(light.slot >= 2, `light request stole weighted corridor slot ${light.slot}`);
     await light.release();
     light = null;
@@ -395,6 +409,8 @@ test("disk pressure light interactive bypasses a non-overlapping aged heavy back
     background = await backgroundPromise;
     assert.deepEqual(background.slots, [0, 1]);
   } finally {
+    backgroundController.abort();
+    await backgroundPromise?.catch(() => {});
     await light?.release().catch(() => {});
     await background?.release().catch(() => {});
     await first.release().catch(() => {});
