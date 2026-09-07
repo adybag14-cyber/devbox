@@ -10,6 +10,8 @@ Managed production startup rejects dirty tracked source, untracked Rust build in
 
 Ordinary `devbox_exec` and detached shell jobs honor `HOST_SHELL` and inherit the MCP token. Explicit Windows `host_exec` remains the administrative PowerShell interface. Guardian runs the production Rust service elevated, without per-command UAC prompts. Use a verified previous Rust candidate for operational rollback.
 
+CMD inline commands are limited to 8,000 UTF-16 units and return a clear error before launch when oversized; save longer commands to a script file. Ordinary PowerShell retains the configured-shell output behavior, while the administrative PowerShell interface retains its quiet/normalized output contract.
+
 ## Native tools
 
 | Tool | Purpose |
@@ -46,7 +48,7 @@ Exactly one of `program` or `command` is required. `args` and `input` belong to 
 
 Receipts outlive ordinary job/log retention. A retry after the retained job is gone returns `result_expired` without re-execution. Corrupted/unreadable existing job state returns `JOB_STATE_UNAVAILABLE` rather than being mislabeled as normal expiry. Receipt capacity is bounded and new operation IDs are refused when it is full; receipts are not silently evicted. Archiving operation receipts is an explicit operator action that ends their deduplication protection.
 
-`devbox_job_list` supports `task_id`, `statuses`, `limit` (1-100) and `cursor`. Ordering is by job ID. A cursor is returned only when another matching page exists. Each listing is a fresh view; restart pagination when concurrently inserted jobs must be discovered. The scan is bounded to 10,000 job directories; retention should keep the store below that bound.
+`devbox_job_list` supports `task_id`, `statuses`, `limit` (1-100) and `cursor`. Ordering is by the authoritative job directory ID. A cursor is returned only when another matching page exists. Each listing is a fresh view; restart pagination when concurrently inserted jobs must be discovered. Discovery has a five-second deadline and scans at most 10,000 job directories; retention should keep the store below that bound.
 
 Save the returned job IDs and next action with `devbox_task_put`, using `expected_revision: 0` to create a task. Later writes must use the current revision. Stale updates conflict; an identical retry returns the committed revision. Task state is capped at 65,536 bytes and the store at 10,000 records. Store large artifacts separately and retain their paths and hashes in the task state. The agent remains responsible for plans, dependencies, human approvals and artifact verification.
 
@@ -57,6 +59,8 @@ Get the previous digest/length through `devbox_file_state`. Supply that digest a
 Existing host-runtime text and large-file writes also stage complete replacement contents. Staging is flushed before atomic replacement; Windows replacement preserves the destination ACL. An overwrite or append leaves a complete old or new file after a process crash. Atomic append copies the previous contents using bounded memory, so its I/O cost grows with file size. Use an appropriate checkpoint size and separate large streaming artifacts.
 
 The service uses 256 fixed lock stripes and an OS lock protocol shared by cooperating processes under the same OS account. It never accumulates a lock object per filename. Blocking atomic I/O is limited to two workers, and a worker retains its permit even if the caller disconnects. A disconnected request may have committed: inspect/retry its intended state rather than assuming it did nothing.
+
+Persistent locks live under the account profile's `.devbox/atomic-locks-v2` directory (under `LOCALAPPDATA` on Windows and `HOME` on Unix). Unix directories must be owned by the current account and private; symlinks, publicly accessible lock files and hard-linked lock files are rejected. The shared system temporary directory is not used for this lock protocol.
 
 Valid symlinks resolve to their target. Dangling links and multiply hard-linked targets are rejected before replacement, because replacing a name cannot atomically update every hard-link alias. Cooperative API writers are serialized; arbitrary external programs must honor the same coordination or remain outside the compare-and-swap guarantee. The service also checks for changes during staging, but no ordinary rename API can provide a transaction with an uncooperative external editor.
 
@@ -79,7 +83,7 @@ Heavy capacity is weighted capacity, not a promise of five simultaneous heavy jo
 
 Cancellation is `cancel_requested` while a verified runner or child is alive. A completed cancellation is reported only after the host processes are observed stopped. Job status exposes fresh child PIDs and flags stale heartbeats even when the runner remains alive. A runner refuses to resurrect a job already marked terminal.
 
-Legacy Docker cancellation does not claim that terminating the local Docker client stopped the workload inside a shared container. It remains pending/unverified in that case. Durable host submission does not offer a misleading Docker workload-termination guarantee.
+Legacy Docker cancellation stays pending while the local runner or child remains alive. Once those local processes stop, the job becomes terminal `interrupted`, with `workloadTerminationVerified: false` and an explicit explanation. This releases local runner admission without claiming the workload inside a shared container stopped. Durable host submission does not offer a Docker workload-termination guarantee.
 
 ## Authentication, deadlines and connector refresh
 

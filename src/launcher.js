@@ -75,7 +75,9 @@ export const waitForServerReady = async ({
       if (response.ok && text.trim() === "ok") {
         return { healthUrl, status: response.status };
       }
-      lastError = new Error(`health endpoint returned HTTP ${response.status}`);
+      lastError = new Error(response.ok
+        ? `health endpoint returned HTTP ${response.status} with an unexpected body`
+        : `health endpoint returned HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
     }

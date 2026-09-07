@@ -70,6 +70,11 @@ impl RuntimeExecutor {
         let mut script = None;
         let started = Instant::now();
         for (index, shell) in candidates.iter().enumerate() {
+            if super::normalize_program(shell) == "cmd"
+                && request.command.encode_utf16().count() > 8000
+            {
+                return Err(RuntimeExecError::ShellCommandTooLong);
+            }
             let powershell = matches!(
                 super::normalize_program(shell).as_str(),
                 "pwsh" | "powershell"

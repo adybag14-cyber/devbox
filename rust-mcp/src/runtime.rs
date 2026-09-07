@@ -58,6 +58,7 @@ pub enum RuntimeExecError {
     },
     WindowsElevationRequired,
     WindowsAdminProbe(String),
+    ShellCommandTooLong,
     Process(ProcessError),
 }
 
@@ -79,6 +80,7 @@ impl std::fmt::Display for RuntimeExecError {
                 "Windows host PowerShell requires the Devbox MCP process to already be elevated. This MCP process is medium-integrity, so host_exec refused to call Start-Process -Verb RunAs (that would spam UAC). Guardian treats unelevated MCP as unhealthy and restarts it via the Highest scheduled-task path. Retry after repair.",
             ),
             Self::WindowsAdminProbe(message) => formatter.write_str(message),
+            Self::ShellCommandTooLong => formatter.write_str("CMD inline commands are limited to 8000 UTF-16 units; save a .cmd script and run that file instead."),
             Self::Process(error) => std::fmt::Display::fmt(error, formatter),
         }
     }
@@ -652,6 +654,22 @@ mod tests {
             .unwrap();
         assert!(output.stdout.to_ascii_lowercase().contains("cmd.exe"));
         assert!(runtime.windows_admin_state.get().is_none());
+        let error = runtime
+            .run_shell(
+                ShellRequest {
+                    command: "x".repeat(9000),
+                    working_dir: root.path().to_path_buf(),
+                    timeout: Duration::from_secs(5),
+                    user: String::new(),
+                    max_capture_chars: Some(1024),
+                    output_tx: None,
+                    pid_tx: None,
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, RuntimeExecError::ShellCommandTooLong));
     }
 
     #[test]

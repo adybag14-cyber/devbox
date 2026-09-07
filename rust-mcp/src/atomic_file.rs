@@ -99,18 +99,87 @@ pub(crate) fn stripe(path: &Path) -> usize {
     usize::from(Sha256::digest(key.as_bytes())[0])
 }
 
-// Exactly 256 persistent lock files; never unlink a lock held by another process.
+fn private_directory(path: &Path) -> Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    match builder.create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.into()),
+    }
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        bail!("Atomic lock directory must be a private ordinary directory");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.uid() != nix::unistd::geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
+            bail!("Atomic lock directory must be owned by this account with mode 0700");
+        }
+    }
+    Ok(())
+}
+
+fn lock_root() -> Result<PathBuf> {
+    let key = if cfg!(windows) {
+        "LOCALAPPDATA"
+    } else {
+        "HOME"
+    };
+    let profile = PathBuf::from(
+        std::env::var_os(key).context("Account profile is required for atomic locks")?,
+    );
+    if !profile.is_absolute() || !profile.is_dir() {
+        bail!("Atomic locks require an absolute account profile directory");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = fs::metadata(&profile)?;
+        if metadata.uid() != nix::unistd::geteuid().as_raw() || metadata.mode() & 0o022 != 0 {
+            bail!(
+                "Atomic lock profile must belong to this account and not be writable by other accounts"
+            );
+        }
+    }
+    let parent = profile.join(".devbox");
+    private_directory(&parent)?;
+    let root = parent.join("atomic-locks-v2");
+    private_directory(&root)?;
+    Ok(root)
+}
+
+// Exactly 256 persistent lock files per account; never unlink an active lock.
 fn lock(path: &Path) -> Result<File> {
-    let root = std::env::temp_dir().join("devbox-atomic-locks-v1");
-    fs::create_dir_all(&root)?;
+    let root = lock_root()?;
     let mut options = OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options
+            .mode(0o600)
+            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC);
     }
     let file = options.open(root.join(format!("{}.lock", stripe(path))))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = file.metadata()?;
+        if !metadata.is_file()
+            || metadata.uid() != nix::unistd::geteuid().as_raw()
+            || metadata.mode() & 0o077 != 0
+            || metadata.nlink() != 1
+        {
+            bail!("Atomic lock file must be private, account-owned and unaliased");
+        }
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match file.try_lock_exclusive() {
@@ -388,6 +457,31 @@ fn replace(source: &Path, target: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn lock_directories_are_private_and_reject_public_or_symlinked_paths() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+        let root = tempfile::tempdir().unwrap();
+        let private = root.path().join("private");
+        private_directory(&private).unwrap();
+        assert_eq!(fs::metadata(&private).unwrap().mode() & 0o777, 0o700);
+        fs::set_permissions(&private, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            private_directory(&private)
+                .unwrap_err()
+                .to_string()
+                .contains("0700")
+        );
+        let alias = root.path().join("alias");
+        symlink(&private, &alias).unwrap();
+        assert!(
+            private_directory(&alias)
+                .unwrap_err()
+                .to_string()
+                .contains("ordinary directory")
+        );
+    }
 
     #[cfg(windows)]
     #[tokio::test]

@@ -58,6 +58,7 @@ jobs:
           rustup toolchain install 1.91.1 --profile minimal --component rustfmt,clippy
           rustup default 1.91.1
       - name: Check JavaScript-to-Rust tool contract drift
+        shell: bash
         run: |
           node rust-mcp/scripts/check-contract-parity.mjs
           node scripts/check-runtime-contract.mjs

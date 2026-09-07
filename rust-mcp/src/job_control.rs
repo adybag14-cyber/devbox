@@ -117,50 +117,53 @@ pub(crate) async fn list(
     if !(1..=100).contains(&limit) {
         bail!("limit must be between 1 and 100");
     }
-    let mut jobs = Vec::new();
-    let mut next_cursor = None;
-    for id in ids(&store.config().root).await? {
-        if cursor.is_some_and(|cursor| id.as_str() <= cursor) {
-            continue;
-        }
-        let request = store.read_request(&id).await?;
-        if task.is_some_and(|task| {
-            request.pointer("/agent/taskId").and_then(Value::as_str) != Some(task)
-        }) {
-            continue;
-        }
-        let status = store.get_status(&id).await?;
-        if !status_filter.is_empty()
-            && !status_filter
-                .iter()
-                .any(|filter| status.get("status").and_then(Value::as_str) == Some(filter))
-        {
-            continue;
-        }
-        if jobs.len() == limit {
-            next_cursor = jobs.last().and_then(|v: &Value| v.get("id")).cloned();
-            break;
-        }
-        let mut summary = json!({});
-        for key in [
-            "id",
-            "status",
-            "createdAtUtc",
-            "startedAtUtc",
-            "completedAtUtc",
-            "exitCode",
-            "runnerAlive",
-        ] {
-            if let Some(value) = status.get(key) {
-                summary[key] = value.clone();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut jobs = Vec::new();
+        let mut next_cursor = None;
+        for id in ids(&store.config().root).await? {
+            if cursor.is_some_and(|cursor| id.as_str() <= cursor) {
+                continue;
             }
+            let request = store.read_request(&id).await?;
+            if task.is_some_and(|task| {
+                request.pointer("/agent/taskId").and_then(Value::as_str) != Some(task)
+            }) {
+                continue;
+            }
+            let status = store.get_status(&id).await?;
+            if !status_filter.is_empty()
+                && !status_filter
+                    .iter()
+                    .any(|filter| status.get("status").and_then(Value::as_str) == Some(filter))
+            {
+                continue;
+            }
+            if jobs.len() == limit {
+                next_cursor = jobs.last().and_then(|v: &Value| v.get("id")).cloned();
+                break;
+            }
+            let mut summary = json!({"id": id});
+            for key in [
+                "status",
+                "createdAtUtc",
+                "startedAtUtc",
+                "completedAtUtc",
+                "exitCode",
+                "runnerAlive",
+            ] {
+                if let Some(value) = status.get(key) {
+                    summary[key] = value.clone();
+                }
+            }
+            if let Some(agent) = request.get("agent") {
+                summary["agent"] = agent.clone();
+            }
+            jobs.push(summary);
         }
-        if let Some(agent) = request.get("agent") {
-            summary["agent"] = agent.clone();
-        }
-        jobs.push(summary);
-    }
-    Ok(json!({"jobs": jobs, "next_cursor": next_cursor, "order": "job_id", "limit": limit}))
+        Ok(json!({"jobs": jobs, "next_cursor": next_cursor, "order": "job_id", "limit": limit}))
+    })
+    .await
+    .context("Job discovery exceeded its five-second deadline")?
 }
 
 pub(crate) async fn read_receipt(root: &Path, id: &str) -> Result<Option<Value>> {
@@ -225,5 +228,26 @@ mod tests {
         assert!(admit(&store, &config, None).await.is_err());
         let page = list(&store, Some("task-a"), &[], None, 1).await.unwrap();
         assert_eq!(page["jobs"][0]["id"], "job-pending-fixture");
+    }
+
+    #[tokio::test]
+    async fn discovery_uses_directory_identity_when_journal_omits_id() {
+        let root = tempfile::tempdir().unwrap();
+        let config = crate::config::test_config(root.path());
+        let store = JobStore::new(crate::job_manager::job_store_config(&config));
+        for id in ["job-directory-a", "job-directory-b"] {
+            store
+                .create_job(id, &json!({}), &json!({"status":"succeeded"}))
+                .await
+                .unwrap();
+        }
+        let first = list(&store, None, &[], None, 1).await.unwrap();
+        assert_eq!(first["jobs"][0]["id"], "job-directory-a");
+        assert_eq!(first["next_cursor"], "job-directory-a");
+        let second = list(&store, None, &[], first["next_cursor"].as_str(), 1)
+            .await
+            .unwrap();
+        assert_eq!(second["jobs"][0]["id"], "job-directory-b");
+        assert!(second["next_cursor"].is_null());
     }
 }

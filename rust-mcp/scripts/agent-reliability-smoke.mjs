@@ -103,7 +103,7 @@ try{
     assert.equal((await call('devbox_task_list')).tasks[0].task_id,'workflow');
   });
   await check('cancellation confirms both runner and child stopped',async()=>{
-    for(const job of [a,b]){const before=await running(job.id);const result=await call('devbox_job_cancel',{job_id:job.id});assert.equal(result.status,'cancelled');assert.equal(result.runnerAlive,false);try{process.kill(before.childPid,0);assert.fail('child survived cancellation');}catch(error){if(error.code!=='ESRCH')throw error;}ownedJobs.delete(job.id);}
+    for(const job of [a,b]){const before=await running(job.id);const acknowledgement=await call('devbox_job_cancel',{job_id:job.id});assert(['cancel_requested','cancelled'].includes(acknowledgement.status));const result=await done(job.id);assert.equal(result.status,'cancelled');assert.equal(result.runnerAlive,false);try{process.kill(before.childPid,0);assert.fail('child survived cancellation');}catch(error){if(error.code!=='ESRCH')throw error;}ownedJobs.delete(job.id);}
   });
   await check('nested task checkpoints retain bounded compact output',async()=>{
     let state=Array(500).fill('checkpoint');for(let i=0;i<60;i++)state={next:state};
