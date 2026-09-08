@@ -1,6 +1,6 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/async.hpp"
 #include "devbox/native.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <future>
 #include <iostream>
 using namespace devbox;
@@ -72,7 +72,11 @@ asio::awaitable<void> exercise(WorkPool& pool, const std::shared_ptr<std::string
         throw Error("Stalled worker ignored its caller deadline");
     if (Clock::now() - started > Millis(180) || after_timeout.expired())
         throw Error("Caller deadline waited for or destroyed the running worker payload");
-    co_await async_delay(Millis(280));
+    // A shared CI runner can delay the worker after its sleep. Observe actual
+    // release with a bound instead of assuming a fixed scheduling interval.
+    const auto release_deadline = Clock::now() + Millis(3000);
+    while (!after_timeout.expired() && Clock::now() < release_deadline)
+        co_await async_delay(Millis(10));
     if (!after_timeout.expired())
         throw Error("Late worker completion retained its payload");
 

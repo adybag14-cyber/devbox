@@ -52,10 +52,15 @@ test("C++ preflight stages a verified immutable executable and promotes only aft
     const second = await prepareCppImplementation(f.root, { runProcess: f.runner, build: async () => { throw new Error("Unexpected rebuild"); } });
     assert.equal(second.file, spec.file);
     assert.equal(second.candidate.Reused, true);
+    assert.equal(second.candidate.Generation, spec.candidate.Generation);
+    assert.equal(second.env.DEVBOX_DEPLOYMENT_GENERATION, spec.env.DEVBOX_DEPLOYMENT_GENERATION);
     await promoteCppImplementation(second, 12346);
     const restarted = JSON.parse(await readFile(spec.candidate.CandidateManifestPath, "utf8"));
     assert.equal(restarted.FirstPromotedAtUtc, current.FirstPromotedAtUtc);
     assert.equal(restarted.ProcessId, 12346);
+    const explicit = await prepareCppImplementation(f.root, { env: { ...process.env, CPP_MCP_EXE: f.binary }, runProcess: f.runner });
+    assert.equal(explicit.candidate.Generation, current.Generation);
+    assert.equal(explicit.candidate.Reused, true);
     assert(!f.calls.some((call) => /cargo|rustc/u.test(call.file)));
   } finally { await f.close(); }
 });

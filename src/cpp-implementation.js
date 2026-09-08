@@ -118,11 +118,16 @@ export const prepareCppImplementation = async (root, {
   }
   if (await digest(file) !== inspected.hash) throw new Error("Existing immutable C++ candidate hash mismatch");
   await access(file, constants.X_OK);
-  const generation = `${Date.now()}-${randomUUID()}`;
+  let previous;
+  try { previous = JSON.parse(await readFile(currentManifest, "utf8")); } catch {}
+  const reused = previous?.GitSha === source.GitSha && previous?.SourceTree === source.SourceTree
+    && previous?.SourceDirty === false && previous?.Sha256 === inspected.hash && previous?.FilePath === file
+    && /^\d+-[0-9a-f-]{36}$/u.test(String(previous?.Generation ?? ""));
+  const generation = reused ? previous.Generation : `${Date.now()}-${randomUUID()}`;
   const candidate = {
     Implementation: "cpp", FilePath: file, ArgumentList: [], Generation: generation,
     ...source, SourceFingerprint: inspected.info.sourceFingerprint, Sha256: inspected.hash,
-    CandidateManifestPath: currentManifest, Reused: file === selected,
+    CandidateManifestPath: currentManifest, Reused: reused,
   };
   return { implementation: "cpp", file, args: [], env: { ...childEnv, DEVBOX_DEPLOYMENT_GENERATION: generation }, candidate };
 };
