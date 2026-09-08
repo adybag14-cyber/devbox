@@ -5,11 +5,12 @@ C++ setup TUI and JavaScript/PowerShell launchers remain the integration surface
 The C++ executable runs its own HTTP server, tools, job runners, capture workers,
 and Windows elevation workers; it does not invoke the Rust executable.
 
-The candidate remains under certification. Its `--parity-report` returns
-`complete: false` and `cutover_allowed: false`, and managed launch refuses it
-before stopping an existing runtime. [port-status.json](../cpp-mcp/port-status.json)
-records the implementation and validation status. This branch does not change the
-existing production deployment.
+The implementation is complete and the candidate is undergoing final managed
+startup and platform certification. Its `--parity-report` checks all 45 native
+handlers. Managed launch verifies the clean source and binary hash; publishing
+requires the complete CI matrix and package gate for the exact commit.
+[port-status.json](../cpp-mcp/port-status.json) records validation progress.
+This branch does not change the existing production deployment.
 
 ## Compatibility authority
 
@@ -61,6 +62,12 @@ X11 discovery utilities; macOS discovers windows with CoreGraphics/libproc and
 uses `screencapture`. macOS no longer requires Python Quartz bindings for discovery.
 Platform permissions and graphical-session requirements still apply.
 
+TLS certificate and hostname verification remain enabled. Windows uses its
+native Schannel trust store; POSIX builds locate the deployment host's CA bundle,
+including Termux and Fedora paths. Explicit `CURL_CA_BUNDLE`/`SSL_CERT_FILE`
+settings take precedence. The platform workflow exercises actual HTTPS key
+retrieval and rejects an invalid configured CA bundle.
+
 ## Build and verification
 
 Use CMake 3.24 or newer, a C++20 compiler, and the vcpkg revision pinned by
@@ -100,8 +107,9 @@ private state directories, owned process IDs, and uniquely named containers.
 
 ## Promotion requirements
 
-Before changing the default or a production deployment, finish the platform and
-managed-launcher gates, publish the complete three-binary installer artifacts,
+The feature branch selects C++ for isolated managed-start certification. Before
+changing a production deployment, finish the platform and managed-launcher gates,
+publish the complete three-binary installer artifacts,
 and verify the exact committed source, executable digest, readiness, and rollback
 path. The launcher stages immutable executables and promotes the manifest only
 after the selected process passes readiness. Source drift, untracked build inputs,
@@ -124,5 +132,5 @@ the actual Termux x86-64 runtime gate. These packages are unreleased until the
 complete certification workflow passes for a version tag.
 
 Repository protection currently names the older Rust/platform checks. Transition
-those required statuses to the completed C++ certification checks when landing
+those required statuses to `C++ complete certification` when landing
 the rewrite; do not bypass protection or treat skipped integration jobs as passed.

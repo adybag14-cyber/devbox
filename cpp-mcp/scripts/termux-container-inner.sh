@@ -15,6 +15,11 @@ if ! apt-get update; then
   apt-get update
 fi
 apt-get install -y nodejs git python ripgrep curl ca-certificates
+# Complete Termux's one-time login-profile bootstrap before MCP shell probes.
+# Otherwise the first login shell includes package postinst output in stdout.
+"$PREFIX/bin/bash" -lc ':'
+login_git=$("$PREFIX/bin/bash" -lc 'git --version')
+[[ "$login_git" = "$(git --version)" ]]
 node --version
 npm --version
 git --version
@@ -57,4 +62,6 @@ node rust-mcp/scripts/oauth-smoke-runner.mjs
 node rust-mcp/scripts/cloudflare-oauth-smoke-runner.mjs
 node rust-mcp/scripts/disconnect-smoke-runner.mjs
 node rust-mcp/scripts/smoke-runner.mjs
+node cpp-mcp/scripts/https-sdk-smoke.mjs
+DEVBOX_E2E_ISOLATED_CHECKOUT=1 DEVBOX_E2E_EXPECT_PLATFORM=termux sh scripts/ci/run-posix-runtime-e2e.sh
 printf 'Real Termux C++ installer, MCP and persistent-state gates passed.\n'

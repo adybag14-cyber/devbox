@@ -108,6 +108,7 @@ struct HttpResult {
     std::string body;
     Json headers = Json::object();
 };
+std::optional<fs::path> tls_ca_bundle();
 HttpResult http_request(std::string_view method, std::string_view url, std::string_view body = {},
                         const Json& headers = Json::object(), Millis timeout = Millis(10000),
                         std::size_t max_bytes = 256 * 1024, const Cancel& cancel = {});

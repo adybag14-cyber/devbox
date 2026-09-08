@@ -751,7 +751,7 @@ function Resolve-NodeExecutable {
 function Resolve-McpImplementation {
     param([string]$ConfiguredValue)
 
-    $value = if ([string]::IsNullOrWhiteSpace($ConfiguredValue)) { 'rust' } else { $ConfiguredValue.Trim().ToLowerInvariant() }
+    $value = if ([string]::IsNullOrWhiteSpace($ConfiguredValue)) { 'cpp' } else { $ConfiguredValue.Trim().ToLowerInvariant() }
     if ($value -notin @('cpp', 'rust', 'js')) {
         throw "Invalid DEVBOX_MCP_IMPLEMENTATION=$ConfiguredValue. Expected cpp, rust or js."
     }

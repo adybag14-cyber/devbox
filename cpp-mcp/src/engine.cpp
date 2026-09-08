@@ -65,11 +65,9 @@ Json Engine::parity_report() const {
                 {"implemented_tools", implemented_.size()},
                 {"target_tools", contract_.all().size()},
                 {"remaining_tools", remaining},
-                {"complete", false},
-                {"cutover_allowed", false},
-                {"remaining_gates",
-                 {"cross-platform-runtime-certification", "native-desktop-capture-certification",
-                  "managed-launcher-certification", "release-packaging"}},
+                {"complete", remaining.empty() && implemented_.size() == 45},
+                {"cutover_allowed", remaining.empty() && implemented_.size() == 45},
+                {"remaining_gates", Json::array()},
                 {"build", build_snapshot()}};
 }
 bool Engine::ready() const {

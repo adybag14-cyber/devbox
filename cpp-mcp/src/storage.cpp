@@ -168,7 +168,7 @@ std::string hash_stream(DiskFile& file, std::uint64_t limit, std::uint64_t& coun
     ScopeExit release([&] { EVP_MD_CTX_free(digest); });
     if (EVP_DigestInit_ex(digest, EVP_sha256(), nullptr) != 1)
         throw Error("Cannot initialize SHA-256");
-    std::array<char, 65536> buffer{};
+    std::vector<char> buffer(65536);
     count = 0;
     while (count < limit) {
         const auto n = file.read(std::span(buffer).first(
@@ -472,7 +472,9 @@ WriteReceipt atomic_write(const fs::path& path, std::string_view payload, bool a
     });
     DiskFile output(staged, true);
     if (append && previous.exists) {
-        std::array<char, 65536> buffer{};
+        // Hash validation below can be nested in this function. Keep I/O
+        // buffers off musl's small default worker-thread stacks.
+        std::vector<char> buffer(65536);
         std::uint64_t remaining = previous.bytes;
         while (remaining) {
             const auto n = prior.read(std::span(buffer).first(

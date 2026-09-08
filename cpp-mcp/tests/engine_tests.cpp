@@ -139,8 +139,9 @@ int main(int argc, char** argv) {
             engine->stop();
         });
         require(engine->list_tools("2025-11-25").size() == 45 &&
-                    !json_bool(engine->parity_report(), "cutover_allowed"),
-                "all implemented tools advertised; certification still required before cutover");
+                    json_bool(engine->parity_report(), "complete") &&
+                    json_bool(engine->parity_report(), "cutover_allowed"),
+                "complete native implementation advertises all 45 tools");
         const auto capabilities = data(invoke(base, "devbox_capabilities"));
         require(capabilities["implementation"] == "cpp" && capabilities["tools"].size() == 45 &&
                     capabilities["schema_sha256"].get<std::string>().size() == 64,

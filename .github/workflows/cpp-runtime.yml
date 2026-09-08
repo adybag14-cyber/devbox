@@ -80,7 +80,9 @@ jobs:
         if: runner.os != 'Windows'
         run: node cpp-bootstrap/scripts/download-install.mjs
       - name: Launcher and retained runtime tests
-        run: npm run test:unit
+        run: |
+          node scripts/check-runtime-contract.mjs
+          npm run test:unit
       - name: Production JavaScript dependency audit
         if: matrix.name == 'Linux GCC'
         run: npm audit --omit=dev --audit-level=high
@@ -102,6 +104,8 @@ jobs:
           node rust-mcp/scripts/cloudflare-oauth-smoke-runner.mjs
           node rust-mcp/scripts/disconnect-smoke-runner.mjs
           node rust-mcp/scripts/smoke-runner.mjs
+      - name: Native HTTPS uses platform trust and rejects invalid configured CAs
+        run: node cpp-mcp/scripts/https-sdk-smoke.mjs
       - name: Windows concurrency and process ownership
         if: runner.os == 'Windows'
         shell: pwsh
@@ -109,6 +113,16 @@ jobs:
           node rust-mcp/scripts/windows-contention-smoke-runner.mjs
           ./scripts/ci/test-windows-startup-contract.ps1
           ./scripts/ci/test-windows-managed-mcp-ownership.ps1
+      - name: Windows managed C++ startup and Guardian lifecycle
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci/run-windows-runtime-e2e.ps1
+      - name: Windows JavaScript rollback interoperability
+        if: runner.os == 'Windows'
+        run: npm run test:mcp
+      - name: POSIX managed C++ startup, Guardian and JavaScript rollback
+        if: runner.os != 'Windows' && matrix.sanitizers == '0'
+        run: sh scripts/ci/run-posix-runtime-e2e.sh
       - name: Live Docker files, processes, authentication and lifecycle
         if: matrix.name == 'Linux GCC'
         run: node cpp-mcp/scripts/docker-sdk-smoke.mjs
@@ -224,6 +238,8 @@ jobs:
   distributions:
     name: C++ Linux runtime on ${{ matrix.distribution }}
     needs: native
+    # Exercise a completed Linux artifact even if another native platform fails.
+    if: always() && !cancelled()
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -300,3 +316,19 @@ jobs:
           name: cpp-release-assets
           path: .cpp-build/release-assets/
           if-no-files-found: error
+
+  complete:
+    name: C++ complete certification
+    needs: package
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require the complete platform and packaging dependency graph
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+        run: |
+          if [ "$PACKAGE_RESULT" != success ]; then
+            echo 'C++ certification requires every native, Android, container, lifecycle, and package gate to pass.' >&2
+            exit 1
+          fi

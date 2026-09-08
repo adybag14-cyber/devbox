@@ -1,23 +1,8 @@
-name: Rust MCP replacement
+name: Frozen Rust reference verification
 
+# The C++ workflow owns release certification. This manual reference workflow
+# remains available for investigating compatibility with the retained Rust code.
 on:
-  push:
-    branches: [main]
-    paths:
-      - "rust-mcp/**"
-      - "rust-toolchain.toml"
-      - "package.json"
-      - "package-lock.json"
-      - "src/server.js"
-      - "src/launcher.js"
-      - "src/mcp-implementation.js"
-      - "scripts/Start-ChatGptDevboxMcp.ps1"
-      - "scripts/Stop-ChatGptDevboxMcp.ps1"
-      - "scripts/ci/test-windows-startup-contract.ps1"
-      - "scripts/ci/test-windows-managed-mcp-ownership.ps1"
-      - ".github/workflows/rust-mcp.yml"
-  pull_request:
-    # These job names are required by branch protection, including for docs PRs.
   workflow_dispatch:
 
 permissions:

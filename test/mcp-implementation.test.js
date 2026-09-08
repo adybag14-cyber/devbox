@@ -14,8 +14,10 @@ import {
   resolveMcpImplementation,
 } from "../src/mcp-implementation.js";
 
-test("MCP implementation defaults to Rust and keeps JS as explicit rollback", () => {
-  assert.equal(resolveMcpImplementation({}), "rust");
+test("MCP implementation defaults to C++ and retains explicit legacy selections", () => {
+  assert.equal(resolveMcpImplementation({}), "cpp");
+  assert.equal(resolveMcpImplementation({ DEVBOX_MCP_IMPLEMENTATION: " " }), "cpp");
+  assert.equal(resolveMcpImplementation({ DEVBOX_MCP_IMPLEMENTATION: " CPP " }), "cpp");
   assert.equal(resolveMcpImplementation({ DEVBOX_MCP_IMPLEMENTATION: " RUST " }), "rust");
   assert.equal(resolveMcpImplementation({ DEVBOX_MCP_IMPLEMENTATION: "js" }), "js");
   assert.throws(
@@ -114,6 +116,30 @@ test("checked preflight terminates stalled processes at its deadline", async () 
     }),
     /deadline-test timed out after 50 ms/u,
   );
+});
+
+test("checked preflight drains inherited POSIX pipes after the root process exits", {
+  skip: process.platform === 'win32' ? 'Windows closes these inherited pipe endpoints with the direct child' : false,
+}, async () => {
+  const descendant = "process.send('ready');process.disconnect();setTimeout(()=>{process.stdout.write('late stdout');process.stderr.write('late stderr')},150)";
+  const parent = "const {spawn}=require('child_process');const child=spawn(process.execPath,['-e',process.argv[1]],{stdio:['ignore',1,2,'ipc'],windowsHide:true});child.once('message',()=>process.exit(0))";
+  const result = await runCheckedProcess(process.execPath, ['-e', parent, descendant], {
+    label: 'output-drain-test', timeoutMs: 10000,
+  });
+  assert.equal(result.stdout, 'late stdout');
+  assert.equal(result.stderr, 'late stderr');
+});
+
+test("checked preflight captures both complete streams from short-lived probes", async () => {
+  const stdout = 'αβ-output\n'.repeat(512) + 'final stdout';
+  const stderr = 'error-output\n'.repeat(512) + 'final stderr';
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const result = await runCheckedProcess(process.execPath,
+      ['-e', 'process.stdout.write(process.argv[1]);process.stderr.write(process.argv[2])', stdout, stderr],
+      { label: 'short-probe-output', timeoutMs: 10000 });
+    assert.equal(result.stdout, stdout);
+    assert.equal(result.stderr, stderr);
+  }
 });
 
 test("checked preflight timeout terminates spawned descendants", async () => {

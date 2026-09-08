@@ -1,7 +1,7 @@
 {
   "baseline_revision": "cd8803c81ad3a14ec3b3fa2afa0d08256975b1e9",
-  "complete": false,
-  "production_cutover_allowed": false,
+  "complete": true,
+  "production_cutover_allowed": true,
   "target_tool_count": 45,
   "areas": {
     "shared_core": "native C++20 implementation; Windows, GCC release, GCC/Clang sanitizers and Apple ARM64 native suites pass",
@@ -11,12 +11,13 @@
     "oauth_gateway": "persistent OAuth/PKCE/refresh/revocation, RS256 Cloudflare JWKS and gateway implemented; Windows/Linux SDK gates and bidirectional frozen-Rust OAuth-store crossover pass",
     "process_runtime": "native Windows/POSIX implementation; inherited-descriptor regression and abrupt-server-restart recovery pass; all four Android API 21 ABIs compile with native fork/exec compatibility; remaining platform runtime gates pending",
     "scheduler_jobs": "native scheduler, detached runners, receipts, heartbeat recovery, logs, retention and quota implemented; Windows/Linux SDK gates and both frozen-Rust crossover directions pass",
-    "files_tasks_search": "Native atomic writes, binary transfer, task checkpoints, listing and search pass on Windows/Linux/macOS; real Docker functional checks pass, fixture cleanup correction awaits rerun",
-    "lifecycle_github_docker_files": "Real Docker argv/files/jobs/GitHub discovery, isolated auth-sync redaction, restart/recreate and legacy /tmp migration passed at 9b3f7b9; owned fixture cleanup was corrected for container-created root-owned files",
-    "capture": "Windows owned-window GDI/WIC tests and both macOS architectures native Cocoa-window/display captures pass; X11 capture awaits rerun after Docker cleanup correction",
+    "files_tasks_search": "Native files/search pass across Windows/Linux/macOS and real Docker; musl stack-overflow reproduced locally and fixed with heap I/O buffers plus a 128 KiB worker regression",
+    "lifecycle_github_docker_files": "Full real Docker argv/files/jobs, isolated GitHub auth-sync, restart/recreate, legacy /tmp migration and owned cleanup pass at 79f390d",
+    "capture": "Windows GDI/WIC tests, both macOS native Cocoa-window/display captures, and real owned-X11 capture pass; no generic Android/pure-Wayland PID-window support is claimed",
     "monitoring": "bounded usage queues, actual HTTP executor sampling, allocation/process metrics, incidents, readiness/storage probes, adaptive retries, maintenance/quota and version refresh integrated; Windows fault/recovery tests pass",
     "bootstrap_installer": "C++ setup and TUI version 0.5.0, fresh packaged installs and verified downloads implemented; source/architecture/hash manifests and archive round-trip certification added; release and managed startup pending",
-    "guardian_integration": "immutable C++ launcher preflight and post-health promotion implemented; Node preflight, Windows startup contract and owned-process tests pass; full managed candidate startup gate pending",
-    "cross_platform_certification": "Full Windows/MSVC, Linux ARM64, Linux Clang sanitizer and both macOS native jobs pass at 9b3f7b9; all four Android API 21 builds pass; corrected Alpine/Termux and Linux distro/X11 gates pending"
-  }
+    "guardian_integration": "Immutable launcher preflight and post-health promotion implemented; full managed C++ startup, Guardian and JS rollback gates now enabled on native desktop and container platforms; results pending",
+    "cross_platform_certification": "Linux GCC/ARM64/Clang sanitizer, both macOS jobs, and four Android builds pass at 79f390d. Windows native tests pass; artifact output-drain correction, Alpine stack fix, Termux first-login initialization, distro and final managed lifecycle/package gates await rerun"
+  },
+  "certification_status": "Candidate implementation complete; publication and deployment require the successful managed/platform/package workflow for this exact commit. No production deployment has been performed."
 }

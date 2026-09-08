@@ -376,7 +376,7 @@ std::string sha256_file(const fs::path& path, std::optional<std::uint64_t> limit
     if (!file)
         throw Error("Cannot open file for SHA-256: " + path_text(path));
     Digest digest;
-    std::array<char, 65536> block{};
+    std::vector<char> block(65536);
     std::uint64_t read = 0;
     while (file) {
         auto size = limit ? std::min<std::uint64_t>(block.size(), *limit - read) : block.size();
@@ -473,7 +473,7 @@ fs::path executable_path() {
         throw Error("Cannot resolve executable path");
     return fs::weakly_canonical(path_from_utf8(path.c_str()));
 #else
-    std::array<char, 65536> path{};
+    std::vector<char> path(65536);
     const auto n = readlink("/proc/self/exe", path.data(), path.size());
     if (n < 0)
         throw Error("Cannot resolve executable path");
@@ -507,7 +507,7 @@ std::string read_file_range(const fs::path& path, std::uint64_t offset, std::siz
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
     }
     std::string out;
-    std::array<char, 65536> buffer{};
+    std::vector<char> buffer(65536);
     while (out.size() < limit) {
         const auto wanted = static_cast<DWORD>(std::min(buffer.size(), limit - out.size()));
         DWORD count = 0;
@@ -529,7 +529,7 @@ std::string read_file_range(const fs::path& path, std::uint64_t offset, std::siz
             throw Error("Cannot seek " + path_text(path));
     }
     std::string out;
-    std::array<char, 65536> buffer{};
+    std::vector<char> buffer(65536);
     while (file && out.size() < limit) {
         const auto n = std::min(buffer.size(), limit - out.size());
         file.read(buffer.data(), static_cast<std::streamsize>(n));
@@ -728,6 +728,29 @@ std::string Url::str() const {
            (has_fragment || !fragment.empty() ? "#" + fragment : "");
 }
 
+std::optional<fs::path> tls_ca_bundle() {
+    for (const auto name : {"CURL_CA_BUNDLE", "SSL_CERT_FILE"})
+        if (const auto configured = environment(name); configured && !configured->empty())
+            return path_from_utf8(*configured);
+#ifndef _WIN32
+    // Cross-built libcurl cannot infer the deployment host's CA bundle path.
+    // Termux and Fedora differ from the build runner's Debian-style layout.
+    std::vector<fs::path> candidates;
+    if (const auto prefix = environment("PREFIX"); prefix && !prefix->empty())
+        candidates.push_back(path_from_utf8(*prefix) / "etc" / "tls" / "cert.pem");
+    for (const auto path :
+         {"/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/cert.pem", "/etc/pki/tls/certs/ca-bundle.crt",
+          "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"})
+        candidates.emplace_back(path);
+    for (const auto& candidate : candidates) {
+        std::error_code error;
+        if (fs::is_regular_file(candidate, error))
+            return candidate;
+    }
+#endif
+    // Schannel uses the Windows root store when CAINFO remains unset.
+    return std::nullopt;
+}
 HttpResult http_request(std::string_view method, std::string_view url, std::string_view body,
                         const Json& headers, Millis timeout, std::size_t max_bytes, const Cancel& cancel) {
     static const bool initialized = []() {
@@ -767,6 +790,12 @@ HttpResult http_request(std::string_view method, std::string_view url, std::stri
     curl_easy_setopt(handle.get(), CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(handle.get(), CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(handle.get(), CURLOPT_SSL_VERIFYHOST, 2L);
+    if (const auto certificates = tls_ca_bundle()) {
+        const auto file = path_text(*certificates);
+        curl_easy_setopt(handle.get(), CURLOPT_CAINFO, file.c_str());
+        if (!env_or("CURL_CA_BUNDLE", "").empty() || !env_or("SSL_CERT_FILE", "").empty())
+            curl_easy_setopt(handle.get(), CURLOPT_CAPATH, nullptr);
+    }
     if (!body.empty() || verb == "POST" || verb == "PUT") {
         curl_easy_setopt(handle.get(), CURLOPT_POSTFIELDS, body.data());
         curl_easy_setopt(handle.get(), CURLOPT_POSTFIELDSIZE_LARGE, static_cast<curl_off_t>(body.size()));

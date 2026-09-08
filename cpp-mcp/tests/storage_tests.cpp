@@ -2,6 +2,9 @@
 #include <future>
 #include <iostream>
 #include <thread>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 using namespace devbox;
 void require(bool condition, const char* message) {
     if (!condition)
@@ -17,6 +20,42 @@ template <class F> void rejects(F&& operation, std::string_view part) {
     }
     throw Error("Expected rejection: " + std::string(part));
 }
+#ifndef _WIN32
+void small_stack_file_io(const fs::path& root) {
+    struct State {
+        fs::path file;
+        std::exception_ptr error;
+    } state{root / "small-stack.bin", {}};
+    pthread_attr_t attributes;
+    require(pthread_attr_init(&attributes) == 0, "initialize small-stack attributes");
+    ScopeExit destroy([&] { pthread_attr_destroy(&attributes); });
+    require(pthread_attr_setstacksize(&attributes, 128 * 1024) == 0, "128 KiB worker stack");
+    pthread_t worker;
+    require(pthread_create(
+                &worker, &attributes,
+                [](void* opaque) -> void* {
+                    auto& state = *static_cast<State*>(opaque);
+                    try {
+                        std::string payload(3 * 65536, 's');
+                        atomic_write(state.file, payload, false, false);
+                        atomic_write(state.file, "tail", true, false);
+                        payload += "tail";
+                        require(file_state(state.file).sha256 == sha256(payload),
+                                "small-stack atomic append hash");
+                        require(sha256_file(state.file) == sha256(payload), "small-stack streamed hash");
+                        require(read_file(state.file) == payload, "small-stack streamed read");
+                    } catch (...) {
+                        state.error = std::current_exception();
+                    }
+                    return nullptr;
+                },
+                &state) == 0,
+            "start small-stack storage worker");
+    require(pthread_join(worker, nullptr) == 0, "join small-stack storage worker");
+    if (state.error)
+        std::rethrow_exception(state.error);
+}
+#endif
 int run(int argc, char** argv) {
     if (argc == 4 && std::string(argv[1]) == "--append") {
         for (int i = 0; i < 12; ++i)
@@ -41,6 +80,9 @@ int run(int argc, char** argv) {
         fs::remove_all(root, ec);
     });
     try {
+#ifndef _WIN32
+        small_stack_file_io(root);
+#endif
         const auto target = root / "target.bin";
         require(!file_state(target).exists, "missing file state");
         const auto first = atomic_write(target, "hello", false, false, {"missing", {}});

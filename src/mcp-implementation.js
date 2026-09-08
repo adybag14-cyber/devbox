@@ -9,7 +9,7 @@ const MAX_PREFLIGHT_OUTPUT_CHARS = 12000;
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 15 * 60 * 1000;
 
 export const resolveMcpImplementation = (env = process.env) => {
-  const value = String(env.DEVBOX_MCP_IMPLEMENTATION ?? "rust").trim().toLowerCase() || "rust";
+  const value = String(env.DEVBOX_MCP_IMPLEMENTATION ?? "cpp").trim().toLowerCase() || "cpp";
   if (!VALID_IMPLEMENTATIONS.has(value)) {
     throw new Error(`Invalid DEVBOX_MCP_IMPLEMENTATION=${JSON.stringify(value)}; expected cpp, rust or js.`);
   }
@@ -88,6 +88,8 @@ export const runCheckedProcess = (file, args, {
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
+    child?.stdout?.destroy();
+    child?.stderr?.destroy();
     callback(value);
   };
   try {
@@ -109,7 +111,9 @@ export const runCheckedProcess = (file, args, {
   child.once("error", (error) => {
     finish(reject, new Error(`${label} could not start: ${error.message}`));
   });
-  child.once("exit", (code, signal) => {
+  // Process exit can precede the final pipe data, especially on Windows.
+  // Keep the existing deadline active until both output streams have closed.
+  child.once("close", (code, signal) => {
     if (timedOut) return;
     if (code === 0) {
       finish(resolve, { stdout, stderr, exitCode: 0 });

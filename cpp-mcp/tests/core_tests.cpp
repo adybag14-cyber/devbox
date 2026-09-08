@@ -1,6 +1,7 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/config.hpp"
+#include "devbox/native.hpp"
 #include "devbox/result.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <iostream>
 #include <thread>
 
@@ -11,6 +12,18 @@ void require(bool condition, const char* message) {
 }
 int main() {
     try {
+        {
+            const auto saved_curl = environment("CURL_CA_BUNDLE"), saved_ssl = environment("SSL_CERT_FILE");
+            ScopeExit restore([&] {
+                set_environment("CURL_CA_BUNDLE", saved_curl);
+                set_environment("SSL_CERT_FILE", saved_ssl);
+            });
+            set_environment("SSL_CERT_FILE", "explicit-ssl-ca.pem");
+            set_environment("CURL_CA_BUNDLE", "explicit-curl-ca.pem");
+            require(tls_ca_bundle() == path_from_utf8("explicit-curl-ca.pem"), "explicit curl CA priority");
+            set_environment("CURL_CA_BUNDLE", "");
+            require(tls_ca_bundle() == path_from_utf8("explicit-ssl-ca.pem"), "explicit SSL CA fallback");
+        }
         require(join({"", "", "x"}, "\n") == "\n\nx", "leading empty lines");
         require(sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
                 "SHA256");

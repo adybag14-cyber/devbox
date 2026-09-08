@@ -203,10 +203,21 @@ fs::path locate_repo(const Options& options) {
     }
     if (fs::exists(root) && (!fs::is_directory(root) || !fs::is_empty(root)))
         throw Error(path_text(root) + " is not a Devbox checkout and is not empty");
+    const auto identity = build_snapshot();
+    const auto revision = json_string(identity, "gitSha");
+    if (identity.value("sourceDirty", Json()) != false || revision.size() != 40 ||
+        !std::all_of(revision.begin(), revision.end(),
+                     [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); }))
+        throw Error("New installations require an installer built from a clean committed source. "
+                    "Use a verified release bundle or provide an existing checkout with --repo.");
     if (!options.dry_run)
         fs::create_directories(root.parent_path());
-    command("git", {"clone", "--depth", "1", options.repo_url, path_text(root)}, root.parent_path(),
+    command("git", {"clone", "--depth", "1", "--", options.repo_url, path_text(root)}, root.parent_path(),
             options.dry_run);
+    // The default branch may have advanced since this installer was released.
+    // Only a newly created checkout is moved to the binary's source revision.
+    command("git", {"fetch", "--depth", "1", "origin", revision}, root, options.dry_run);
+    command("git", {"checkout", "--detach", revision}, root, options.dry_run);
     if (!options.dry_run && !is_repo(root))
         throw Error("Clone completed but destination does not look like a C++ Devbox checkout");
     return root;
@@ -543,8 +554,15 @@ fs::path build_runtime(const fs::path& root, const Options& options) {
 #endif
     std::optional<fs::path> candidate = options.runtime_binary;
     if (!candidate) {
-        for (const auto& path :
-             {executable_path().parent_path() / basename, root / "bin" / "native" / basename})
+        const auto executable = executable_path();
+        std::vector<fs::path> candidates{executable.parent_path() / basename};
+        const auto self_name = path_text(executable.filename());
+        const std::string prefix = "devbox-setup-";
+        if (starts_with(self_name, prefix))
+            candidates.push_back(executable.parent_path() /
+                                 path_from_utf8("devbox-mcp-" + self_name.substr(prefix.size())));
+        candidates.push_back(root / "bin" / "native" / basename);
+        for (const auto& path : candidates)
             if (fs::is_regular_file(path)) {
                 candidate = path;
                 break;
@@ -656,8 +674,9 @@ void run(const Options& options) {
                       << "\nUse node bin/devbox.js or rerun npm link later.\n";
         }
     }
+    // A --no-start installation must still be ready for a later launcher start.
+    (void)build_runtime(root, options);
     if (options.start) {
-        (void)build_runtime(root, options);
         command("node", {"bin/devbox.js", "start"}, root, options.dry_run, prepared.environment);
         if (!options.dry_run) {
             const auto deadline = Clock::now() + Millis(30000);

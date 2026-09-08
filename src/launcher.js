@@ -356,7 +356,7 @@ export const stopServerProcess = async (root = projectRoot, statusOptions = {}) 
   return { ...status, stopped: true };
 };
 
-const runForegroundRustServer = async (spec, root) => new Promise((resolve, reject) => {
+const runForegroundNativeServer = async (spec, root) => new Promise((resolve, reject) => {
   const child = spawn(spec.file, spec.args, {
     cwd: root,
     env: spec.env,
@@ -368,7 +368,7 @@ const runForegroundRustServer = async (spec, root) => new Promise((resolve, reje
     if (code === 0 || signal === "SIGINT" || signal === "SIGTERM") {
       resolve();
     } else {
-      reject(new Error(`Rust MCP foreground process exited with code=${code ?? "null"}, signal=${signal ?? "null"}.`));
+      reject(new Error(`Native ${spec.implementation} MCP foreground process exited with code=${code ?? "null"}, signal=${signal ?? "null"}.`));
     }
   });
 });
@@ -384,7 +384,7 @@ export const runLauncher = async (argv = process.argv.slice(2), root = projectRo
     if (spec.implementation === "js") {
       await import("./server.js");
     } else {
-      await runForegroundRustServer(spec, root);
+      await runForegroundNativeServer(spec, root);
     }
     return { command: "run", implementation: spec.implementation, url: buildServerUrl() };
   }

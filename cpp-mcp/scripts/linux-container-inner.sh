@@ -68,6 +68,8 @@ node rust-mcp/scripts/oauth-smoke-runner.mjs
 node rust-mcp/scripts/cloudflare-oauth-smoke-runner.mjs
 node rust-mcp/scripts/disconnect-smoke-runner.mjs
 node rust-mcp/scripts/smoke-runner.mjs
+node cpp-mcp/scripts/https-sdk-smoke.mjs
+DEVBOX_E2E_ISOLATED_CHECKOUT=1 sh scripts/ci/run-posix-runtime-e2e.sh
 if [ "$DEVBOX_DISTRO_FAMILY" = apk ]; then
   mkdir -p /output/bin
   cp .cpp-build/package/bin/* /output/bin/

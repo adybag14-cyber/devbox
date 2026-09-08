@@ -265,6 +265,12 @@ std::optional<std::string> locate_bootstrap(const std::optional<std::string>& ex
     const fs::path executable_dir = executable_path().parent_path();
     const fs::path sibling = executable_dir / filename;
     if (fs::exists(sibling)) return sibling.string();
+    const std::string self_name = executable_path().filename().string();
+    const std::string self_prefix = "devbox-tui-";
+    if (self_name.rfind(self_prefix, 0) == 0) {
+        const auto matching = executable_dir / ("devbox-setup-" + self_name.substr(self_prefix.size()));
+        if (fs::is_regular_file(matching)) return matching.string();
+    }
     try {
         std::vector<fs::path> named_release_candidates;
         for (const auto& entry : fs::directory_iterator(executable_dir)) {
@@ -281,7 +287,7 @@ std::optional<std::string> locate_bootstrap(const std::optional<std::string>& ex
 #endif
         }
         std::sort(named_release_candidates.begin(), named_release_candidates.end());
-        if (!named_release_candidates.empty()) return named_release_candidates.front().string();
+        if (named_release_candidates.size() == 1) return named_release_candidates.front().string();
     } catch (...) {
     }
     if (command_available(filename, "--version")) return std::string(filename);
@@ -609,10 +615,9 @@ int interactive_setup(const Theme& theme, const PlatformInfo& platform, const st
         config.repo_path = fs::path(prompt_text(clone ? "Clone destination" : "Existing checkout path", fallback.string()));
     }
 
-    const bool docker_ok = has_tool(tools, "Docker");
     std::size_t recommended_runtime = 1;
 #ifdef _WIN32
-    recommended_runtime = docker_ok ? 0 : 1;
+    recommended_runtime = has_tool(tools, "Docker") ? 0 : 1;
 #else
     recommended_runtime = 1;
 #endif
