@@ -5,6 +5,7 @@ on:
     branches: [main, rewrite/cpp-devbox-20260907]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -80,6 +81,15 @@ jobs:
         run: node cpp-bootstrap/scripts/download-install.mjs
       - name: Launcher and retained runtime tests
         run: npm run test:unit
+      - name: Production JavaScript dependency audit
+        if: matrix.name == 'Linux GCC'
+        run: npm audit --omit=dev --audit-level=high
+      - name: Frozen tool schema compatibility profiles
+        run: |
+          node rust-mcp/scripts/schema-parity-audit.mjs
+          node --input-type=module -e "process.env.SCHEMA_PARITY_RUNTIME_MODE='docker';await import('./rust-mcp/scripts/schema-parity-audit.mjs')"
+          node --input-type=module -e "Object.assign(process.env,{SCHEMA_PARITY_MAX_TEXT_OUTPUT_CHARS:'50',SCHEMA_PARITY_MAX_COMMAND_OUTPUT_CHARS:'50',SCHEMA_PARITY_MAX_MCP_TRANSFER_CHARS:'1',SCHEMA_PARITY_MCP_WAIT_MAX_SECONDS:'1'});await import('./rust-mcp/scripts/schema-parity-audit.mjs')"
+          node --input-type=module -e "process.env.SCHEMA_PARITY_MAX_MCP_TRANSFER_CHARS='unlimited';await import('./rust-mcp/scripts/schema-parity-audit.mjs')"
       - name: Native MCP SDK and persistent agent state
         run: |
           node cpp-mcp/scripts/engine-sdk-smoke.mjs
@@ -178,6 +188,7 @@ jobs:
           cp '.cpp-build/android/${{ matrix.abi }}/cpp-bootstrap/devbox-setup' .cpp-build/android-package/
           cp '.cpp-build/android/${{ matrix.abi }}/setup-tui/devbox-tui' .cpp-build/android-package/
           file .cpp-build/android-package/*
+          node cpp-mcp/scripts/record-artifacts.mjs --android '${{ matrix.abi }}' --package .cpp-build/android-package
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: cpp-android-${{ matrix.abi }}
@@ -253,9 +264,39 @@ jobs:
           key: cpp-vcpkg-alpine-3.23-${{ hashFiles('vcpkg.json') }}
       - name: Build and validate against native musl userspace
         run: node cpp-mcp/scripts/linux-distro-smoke.mjs alpine
+      - name: Upload verified musl artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cpp-musl-alpine-3.23
+          path: .cpp-build/musl-package/
+          if-no-files-found: error
       - name: Save completed musl dependency builds
         if: always() && steps.alpine-dependencies.outputs.cache-hit != 'true'
         uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .cpp-build/alpine-cache
           key: cpp-vcpkg-alpine-3.23-${{ hashFiles('vcpkg.json') }}
+
+  package:
+    name: C++ verified release packages
+    needs: [native, android, termux, distributions, alpine]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: cpp-*
+          path: .cpp-build/release-input
+      - name: Verify every binary and round-trip every release archive
+        run: node cpp-mcp/scripts/package-release.mjs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cpp-release-assets
+          path: .cpp-build/release-assets/
+          if-no-files-found: error

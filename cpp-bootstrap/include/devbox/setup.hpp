@@ -2,6 +2,7 @@
 #include "devbox/config.hpp"
 #include "devbox/process.hpp"
 namespace devbox::setup {
+inline constexpr std::string_view installer_version = DEVBOX_SETUP_VERSION;
 enum class PlatformKind { windows, macos, linux, termux, other };
 struct Options {
     std::optional<fs::path> repo, workspace, runtime_binary;

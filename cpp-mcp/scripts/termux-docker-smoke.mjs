@@ -25,13 +25,14 @@ try {
   await run('git', ['bundle', 'create', path.join(input, 'source.bundle'), 'HEAD']);
   const source = (await run('git', ['rev-parse', 'HEAD'])).stdout.trim();
   assert.match(source, /^[a-f0-9]{40}$/);
-  const files = ['bin/devbox-mcp', 'bin/devbox-setup', 'bin/devbox-tui', 'source.bundle', 'run.sh'];
+  await writeFile(path.join(input, 'source-id'), `${source}\n`);
+  const files = ['bin/devbox-mcp', 'bin/devbox-setup', 'bin/devbox-tui', 'source.bundle', 'source-id', 'run.sh'];
   const checksums = await Promise.all(files.map(async file =>
     `${createHash('sha256').update(await readFile(path.join(input, file))).digest('hex')}  ${file}\n`));
   await writeFile(path.join(input, 'SHA256SUMS'), checksums.join(''));
   await run('docker', ['pull', image], { timeoutMs: 10 * 60 * 1000, stdio: 'inherit' });
   await run('docker', ['run', '--rm', '--name', identity, '--label', `${label}=${identity}`,
-    '-e', `DEVBOX_EXPECTED_SOURCE=${source}`, '-v', `${input}:/input:ro`, image, 'bash', '/input/run.sh'],
+    '-v', `${input}:/input:ro`, image, 'bash', '/input/run.sh'],
     { timeoutMs: 30 * 60 * 1000, stdio: 'inherit' });
   console.log(JSON.stringify({ ok: true, image, source, abi: 'x86_64', api: 21 }));
 } finally {

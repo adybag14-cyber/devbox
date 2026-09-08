@@ -33,7 +33,8 @@ const base = `http://127.0.0.1:${server.address().port}`;
 const results = [];
 try {
   const arch = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
-  const platform = process.platform === 'darwin' ? 'macos' : 'linux';
+  const platform = process.platform === 'darwin' ? 'macos'
+    : process.report.getReport().header.glibcVersionRuntime ? 'linux' : 'linux-musl';
   for (const mode of ['posix', 'termux-download-fixture']) {
     const install = path.join(root, mode, 'bin'); await mkdir(install, { recursive: true });
     const suffix = mode === 'posix' ? `${platform}-${arch}` : `android-${arch === 'aarch64' ? 'arm64-v8a' : arch}`;

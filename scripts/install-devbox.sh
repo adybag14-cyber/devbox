@@ -14,6 +14,9 @@ case "$os" in
       aarch64|arm64) suffix="linux-aarch64" ;;
       *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
     esac
+    if ldd --version 2>&1 | grep -qi musl; then
+      suffix="linux-musl-${suffix#linux-}"
+    fi
     ;;
   Darwin)
     case "$arch" in

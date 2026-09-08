@@ -27,6 +27,7 @@ await run('cmake', args);
 await run('cmake', ['--build', build, '--config', configuration, '--parallel', '4']);
 await run('ctest', ['--test-dir', build, '-C', configuration, '--output-on-failure']);
 await run('cmake', ['--install', build, '--config', configuration, '--prefix', packageRoot]);
+await run(process.execPath, ['cpp-mcp/scripts/record-artifacts.mjs', '--package', packageRoot]);
 const extension = process.platform === 'win32' ? '.exe' : '';
 const exported = {
   DEVBOX_MCP_TEST_BINARY: path.join(packageRoot, 'bin/devbox-mcp' + extension),

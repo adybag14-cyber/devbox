@@ -619,7 +619,7 @@ fs::path build_runtime(const fs::path& root, const Options& options) {
     return destination;
 }
 void run(const Options& options) {
-    std::cout << "Devbox C++ MCP setup " << build_version()
+    std::cout << "Devbox C++ MCP setup " << installer_version
               << "\nPlatform: " << platform_name(platform_kind()) << '\n';
     if (options.build_only) {
         const auto root = locate_repo(options);

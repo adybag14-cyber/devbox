@@ -16,7 +16,7 @@ int main_impl(const std::vector<std::string>& args) {
         return 0;
     }
     if (options.version) {
-        std::cout << "devbox-setup " << devbox::build_version() << " (C++)\n";
+        std::cout << "devbox-setup " << devbox::setup::installer_version << " (C++)\n";
         return 0;
     }
     try {

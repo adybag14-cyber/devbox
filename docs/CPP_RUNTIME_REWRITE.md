@@ -75,6 +75,12 @@ integration jobs cover the supported Linux distributions, native musl, real Term
 userspace, live Docker operations, and capture of owned X11/Cocoa test windows.
 These are certification targets; pending targets are listed in `port-status.json`.
 
+The 9b3f7b9 candidate passed the full Windows, Linux ARM64, Linux Clang sanitizer,
+and both macOS native jobs, plus all four Android builds. Both macOS jobs passed
+native window/display capture. Linux Docker functional checks passed; fixture
+ownership cleanup, Alpine build prerequisites, and Termux fixture environment
+transfer required corrections before the remaining integration jobs could pass.
+
 The focused scripts are:
 
 - `cpp-mcp/scripts/runtime-crossover.mjs`: bidirectional Rust/C++ job, receipt,
@@ -100,3 +106,23 @@ and verify the exact committed source, executable digest, readiness, and rollbac
 path. The launcher stages immutable executables and promotes the manifest only
 after the selected process passes readiness. Source drift, untracked build inputs,
 hash mismatches, incomplete certification, or sanitizer builds fail preflight.
+
+## C++ release packages
+
+The installer and TUI share `cpp-bootstrap/VERSION` (0.5.0); the MCP protocol
+server keeps its independent 0.3.0 version. `record-artifacts.mjs` records the
+source commit/tree, compiler, dependency baseline, and hashes of all three native
+executables. `package-release.mjs` requires the same clean source for every
+platform, checks executable architectures, and extracts each archive to verify
+its bytes. The release workflow uses these tested artifacts and refuses to
+overwrite an existing versioned release.
+
+Packages cover Windows x86-64, Linux x86-64/ARM64, macOS Intel/Apple Silicon,
+Alpine musl x86-64, and the four Android ABIs. The POSIX downloader detects musl
+and selects its matching package. Android cross-builds are distinguished from
+the actual Termux x86-64 runtime gate. These packages are unreleased until the
+complete certification workflow passes for a version tag.
+
+Repository protection currently names the older Rust/platform checks. Transition
+those required statuses to the completed C++ certification checks when landing
+the rewrite; do not bypass protection or treat skipped integration jobs as passed.

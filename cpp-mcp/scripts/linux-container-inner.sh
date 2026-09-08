@@ -9,7 +9,7 @@ case "$DEVBOX_DISTRO_FAMILY" in
   pacman) pacman -Syu --noconfirm --needed nodejs npm git python ripgrep curl ca-certificates bash ;;
   apk)
     apk add --no-cache nodejs npm git python3 ripgrep curl ca-certificates bash \
-      g++ linux-headers cmake ninja zip unzip tar pkgconf autoconf automake libtool perl
+      g++ linux-headers cmake ninja make zip unzip tar pkgconf autoconf automake libtool perl
     ;;
   *) echo 'Unknown isolated distro fixture family' >&2; exit 2 ;;
 esac
@@ -36,6 +36,7 @@ if [ "$DEVBOX_DISTRO_FAMILY" = apk ]; then
   export VCPKG_FORCE_SYSTEM_BINARIES=1
   export VCPKG_DEFAULT_BINARY_CACHE=/cache
   export VCPKG_ROOT="$PWD/.cpp-build/vcpkg"
+  export CMAKE_GENERATOR=Ninja
   sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -musl -disableMetrics
   node cpp-mcp/scripts/ci-native.mjs
 else
@@ -67,4 +68,9 @@ node rust-mcp/scripts/oauth-smoke-runner.mjs
 node rust-mcp/scripts/cloudflare-oauth-smoke-runner.mjs
 node rust-mcp/scripts/disconnect-smoke-runner.mjs
 node rust-mcp/scripts/smoke-runner.mjs
+if [ "$DEVBOX_DISTRO_FAMILY" = apk ]; then
+  mkdir -p /output/bin
+  cp .cpp-build/package/bin/* /output/bin/
+  cp .cpp-build/package/build-manifest.json /output/
+fi
 printf 'Native C++ distro installer and MCP checks passed.\n'

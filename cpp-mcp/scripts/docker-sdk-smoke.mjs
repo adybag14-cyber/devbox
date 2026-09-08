@@ -182,6 +182,11 @@ try {
       const info = await inspect(name);
       assert.equal(info.Image, imageId, 'cleanup requires the fixture image identity');
       assert(info.Mounts.some(mount => mount.Source === workspace && mount.Destination === '/workspace'));
+      // Container file APIs intentionally run as root in this fixture. Restore
+      // the test runner's ownership only after verifying this exact bind mount.
+      if (!info.State.Running) await docker('start', info.Id);
+      await docker('exec', '--user', '0', info.Id, 'chown', '-R', '-h',
+        `${process.getuid()}:${process.getgid()}`, '/workspace');
       await docker('rm', '-f', info.Id);
     }
     const volumes = (await docker('volume', 'ls', '--format', '{{.Name}}', '--filter', `label=${label}=${identity}`)).stdout.trim().split('\n').filter(Boolean);

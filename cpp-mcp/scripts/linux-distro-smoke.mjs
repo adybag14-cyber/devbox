@@ -18,6 +18,7 @@ const identity = `devbox-cpp-${distribution}-${randomUUID()}`;
 const label = 'io.devbox.cpp.fixture';
 const root = await mkdtemp(path.join(os.tmpdir(), 'devbox-cpp-distro-'));
 const input = path.join(root, 'input'); await mkdir(path.join(input, 'bin'), { recursive: true });
+const output = path.join(root, 'output'); await mkdir(output);
 async function run(file, args, options = {}) {
   return runCheckedProcess(file, args, { cwd: repo, timeoutMs: 120000,
     label: 'Native Linux distro certification', ...options });
@@ -39,10 +40,16 @@ try {
     '-e', `DEVBOX_EXPECTED_SOURCE=${source}`, '-e', `DEVBOX_DISTRO_FAMILY=${family}`, '-v', `${input}:/input:ro`];
   if (distribution === 'alpine') {
     const cache = path.join(repo, '.cpp-build/alpine-cache'); await mkdir(cache, { recursive: true });
-    args.push('-v', `${cache}:/cache`);
+    args.push('-v', `${cache}:/cache`, '-v', `${output}:/output`);
   }
   args.push(imageInfo.Id, 'sh', '/input/run.sh');
   await run('docker', args, { timeoutMs: (distribution === 'alpine' ? 75 : 30) * 60 * 1000, stdio: 'inherit' });
+  if (distribution === 'alpine') {
+    const destination = path.join(repo, '.cpp-build/musl-package');
+    await mkdir(path.join(destination, 'bin'), { recursive: true });
+    for (const file of ['build-manifest.json', 'bin/devbox-mcp', 'bin/devbox-setup', 'bin/devbox-tui'])
+      await copyFile(path.join(output, file), path.join(destination, file));
+  }
   console.log(JSON.stringify({ ok: true, distribution, imageId: imageInfo.Id, source }));
 } finally {
   const names = (await run('docker', ['ps', '-a', '--filter', `label=${label}=${identity}`, '--format', '{{.Names}}'])).stdout.trim().split('\n').filter(Boolean);

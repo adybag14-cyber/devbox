@@ -6,6 +6,9 @@ case "${PREFIX:-}" in
 esac
 cd /input
 sha256sum -c SHA256SUMS
+# The Termux image enters Android through a login shell that clears Docker env.
+export DEVBOX_EXPECTED_SOURCE=$(cat /input/source-id)
+[[ "$DEVBOX_EXPECTED_SOURCE" =~ ^[a-f0-9]{40}$ ]]
 printf 'deb https://packages.termux.dev/apt/termux-main stable main\n' > "$PREFIX/etc/apt/sources.list"
 if ! apt-get update; then
   printf 'deb https://packages-cf.termux.dev/apt/termux-main stable main\n' > "$PREFIX/etc/apt/sources.list"

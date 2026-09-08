@@ -1,243 +1,49 @@
-name: Build bootstrap binaries
+name: Build and release C++ binaries
 
 on:
   push:
-    branches: [main]
-    tags:
-      - "bootstrap-v*"
-  pull_request:
-    paths:
-      - "bootstrap/**"
-      - "setup-tui/**"
-      - "scripts/install-devbox.sh"
-      - "scripts/install-termux.sh"
-      - "scripts/install-guardian.sh"
-      - "scripts/Start-ChatGptDevboxMcp.ps1"
-      - "scripts/Install-ChatGptDevboxGuardian.ps1"
-      - "scripts/Run-Start-ChatGptDevboxMcp.vbs"
-      - "scripts/ci/test-windows-startup-contract.ps1"
-      - "scripts/devbox-guardian.mjs"
-      - "src/guardian-core.js"
-      - "test/guardian-core.test.js"
-      - "docs/TERMUX.md"
-      - "docs/HOST_COMPATIBILITY.md"
-      - ".github/workflows/bootstrap-binaries.yml"
+    tags: ['bootstrap-v*']
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  desktop:
-    name: ${{ matrix.artifact }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            artifact: devbox-setup-linux-x86_64
-            rust_binary: bootstrap/target/release/devbox-setup
-            rust_output: devbox-setup-linux-x86_64
-            tui_binary: setup-tui/build/devbox-tui
-            tui_output: devbox-tui-linux-x86_64
-            cloudflare_hint: pkg.cloudflare.com/cloudflare-main.gpg
-          - os: windows-2025
-            artifact: devbox-setup-windows-x86_64
-            rust_binary: bootstrap/target/release/devbox-setup.exe
-            rust_output: devbox-setup-windows-x86_64.exe
-            tui_binary: setup-tui/build/Release/devbox-tui.exe
-            tui_output: devbox-tui-windows-x86_64.exe
-            cloudflare_hint: winget install --id Cloudflare.cloudflared --exact
-          - os: macos-15-intel
-            artifact: devbox-setup-macos-x86_64
-            rust_binary: bootstrap/target/release/devbox-setup
-            rust_output: devbox-setup-macos-x86_64
-            tui_binary: setup-tui/build/devbox-tui
-            tui_output: devbox-tui-macos-x86_64
-            cloudflare_hint: brew install cloudflared
-          - os: macos-15
-            artifact: devbox-setup-macos-aarch64
-            rust_binary: bootstrap/target/release/devbox-setup
-            rust_output: devbox-setup-macos-aarch64
-            tui_binary: setup-tui/build/devbox-tui
-            tui_output: devbox-tui-macos-aarch64
-            cloudflare_hint: brew install cloudflared
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Select pinned Rust 1.91.1
-        run: |
-          rustup toolchain install 1.91.1 --profile minimal --component rustfmt
-          rustup default 1.91.1
-      - name: Format check
-        run: cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
-      - name: Test Rust bootstrap
-        run: cargo test --manifest-path bootstrap/Cargo.toml
-      - name: Build Rust bootstrap
-        run: cargo build --release --manifest-path bootstrap/Cargo.toml
-      - name: Validate Windows startup lifecycle contract
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/ci/test-windows-startup-contract.ps1
-      - name: Build C++ setup TUI
-        run: |
-          cmake -S setup-tui -B setup-tui/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build setup-tui/build --config Release
-      - name: Prepare named binaries
-        shell: bash
-        run: |
-          cp "${{ matrix.rust_binary }}" "${{ matrix.rust_output }}"
-          cp "${{ matrix.tui_binary }}" "${{ matrix.tui_output }}"
-          chmod +x "${{ matrix.rust_output }}" "${{ matrix.tui_output }}" || true
-      - name: Smoke test binaries
-        shell: bash
-        run: |
-          "./${{ matrix.rust_output }}" --version
-          "./${{ matrix.tui_output }}" --version
-          "./${{ matrix.tui_output }}" --diagnostics --no-color
-          "./${{ matrix.tui_output }}" --cloudflare-help --no-color | tee cloudflare-help.txt
-          grep -F "${{ matrix.cloudflare_hint }}" cloudflare-help.txt
-      - name: Upload binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: ${{ matrix.artifact }}
-          path: |
-            ${{ matrix.rust_output }}
-            ${{ matrix.tui_output }}
-          if-no-files-found: error
-
-  linux-arm64:
-    name: devbox-setup-linux-aarch64
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Select pinned Rust 1.91.1
-        run: |
-          rustup toolchain install 1.91.1 --profile minimal --component rustfmt
-          rustup default 1.91.1
-      - name: Format and test
-        run: |
-          cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
-          cargo test --manifest-path bootstrap/Cargo.toml
-      - name: Build native ARM64 binaries
-        run: |
-          cargo build --release --manifest-path bootstrap/Cargo.toml
-          cmake -S setup-tui -B setup-tui/build -DCMAKE_BUILD_TYPE=Release
-          cmake --build setup-tui/build --config Release
-          cp bootstrap/target/release/devbox-setup devbox-setup-linux-aarch64
-          cp setup-tui/build/devbox-tui devbox-tui-linux-aarch64
-          chmod +x devbox-setup-linux-aarch64 devbox-tui-linux-aarch64
-          ./devbox-setup-linux-aarch64 --version
-          ./devbox-tui-linux-aarch64 --version
-          ./devbox-tui-linux-aarch64 --diagnostics --no-color
-          ./devbox-tui-linux-aarch64 --cloudflare-help --no-color | tee cloudflare-help-arm64.txt
-          grep -F "pkg.cloudflare.com/cloudflare-main.gpg" cloudflare-help-arm64.txt
-      - name: Upload ARM64 binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: devbox-setup-linux-aarch64
-          path: |
-            devbox-setup-linux-aarch64
-            devbox-tui-linux-aarch64
-          if-no-files-found: error
-
-  android:
-    name: Android and Termux binaries
-    runs-on: ubuntu-24.04
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - name: Select pinned Rust 1.91.1
-        run: |
-          rustup toolchain install 1.91.1 --profile minimal --component rustfmt
-          rustup default 1.91.1
-      - name: Install Android Rust targets
-        run: >-
-          rustup target add
-          aarch64-linux-android
-          armv7-linux-androideabi
-          x86_64-linux-android
-          i686-linux-android
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --version 4.1.2 --locked
-      - name: Format check
-        run: cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
-      - name: Test host logic
-        run: cargo test --manifest-path bootstrap/Cargo.toml
-      - name: Build Android API 21 Rust binaries
-        working-directory: bootstrap
-        run: |
-          for abi in arm64-v8a armeabi-v7a x86_64 x86; do
-            cargo ndk --platform 21 -t "$abi" build --release
-          done
-      - name: Build Android API 21 C++ TUI binaries
-        shell: bash
-        run: |
-          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_ROOT:-}}"
-          if [ -z "$NDK" ]; then
-            echo "Android NDK path is unavailable" >&2
-            exit 1
-          fi
-          PREBUILT="$(find "$NDK/toolchains/llvm/prebuilt" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-          mkdir -p release-assets
-          "$PREBUILT/bin/aarch64-linux-android21-clang++" -std=c++17 -O2 -DNDEBUG -static-libstdc++ setup-tui/src/main.cpp -o release-assets/devbox-tui-android-arm64-v8a
-          "$PREBUILT/bin/armv7a-linux-androideabi21-clang++" -std=c++17 -O2 -DNDEBUG -static-libstdc++ setup-tui/src/main.cpp -o release-assets/devbox-tui-android-armeabi-v7a
-          "$PREBUILT/bin/x86_64-linux-android21-clang++" -std=c++17 -O2 -DNDEBUG -static-libstdc++ setup-tui/src/main.cpp -o release-assets/devbox-tui-android-x86_64
-          "$PREBUILT/bin/i686-linux-android21-clang++" -std=c++17 -O2 -DNDEBUG -static-libstdc++ setup-tui/src/main.cpp -o release-assets/devbox-tui-android-x86
-      - name: Prepare Android artifacts
-        run: |
-          mkdir -p release-assets
-          cp bootstrap/target/aarch64-linux-android/release/devbox-setup release-assets/devbox-setup-android-arm64-v8a
-          cp bootstrap/target/armv7-linux-androideabi/release/devbox-setup release-assets/devbox-setup-android-armeabi-v7a
-          cp bootstrap/target/x86_64-linux-android/release/devbox-setup release-assets/devbox-setup-android-x86_64
-          cp bootstrap/target/i686-linux-android/release/devbox-setup release-assets/devbox-setup-android-x86
-          chmod +x release-assets/devbox-*
-          file release-assets/*
-      - name: Upload Android binaries
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: devbox-setup-android
-          path: release-assets/*
-          if-no-files-found: error
+  certify:
+    name: Certify every C++ runtime and installer
+    uses: ./.github/workflows/cpp-runtime.yml
 
   release:
-    name: Publish bootstrap release
+    name: Publish immutable C++ release
     if: startsWith(github.ref, 'refs/tags/bootstrap-v')
-    needs: [desktop, linux-arm64, android]
+    needs: certify
     runs-on: ubuntu-24.04
-
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
-      - name: Download all binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: devbox-setup-*
+          name: cpp-release-assets
           path: release-assets
-          merge-multiple: true
-      - name: Generate checksums
-        run: |
-          cd release-assets
-          sha256sum devbox-* > SHA256SUMS
-          cat SHA256SUMS
+      - name: Verify packaged release checksums
+        working-directory: release-assets
+        run: sha256sum --strict --check SHA256SUMS
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > release-notes.md <<'EOF'
-          Cross-platform Devbox setup binaries and the interactive C++ setup TUI.
+          Native C++ Devbox MCP server, command-line installer, and setup TUI.
 
-          Platforms: Windows x86-64, Linux x86-64/ARM64, macOS Intel/Apple Silicon,
-          and Android API 21+ Termux builds for arm64-v8a, armeabi-v7a, x86_64, and x86.
+          Desktop packages: Windows x86-64, Linux x86-64/ARM64, macOS Intel/Apple Silicon,
+          plus a native musl package for Alpine Linux x86-64.
+          Android API 21 builds: arm64-v8a, armeabi-v7a, x86_64, and x86.
+          Android runtime certification runs in real Termux x86-64 userspace.
 
-          The Rust `devbox-setup` CLI remains the automation-friendly installer. `devbox-tui`
-          is the guided interactive frontend and is distributed beside the Rust binary.
+          Each archive contains all three native executables and its build manifest.
+          SHA256SUMS and build-provenance.json cover the standalone binaries and archives.
+          Packaged installation does not require Rust or a C++ compiler.
 
           Canonical Termux app: https://github.com/adybag14-cyber/termux-app
           EOF
@@ -246,4 +52,4 @@ jobs:
             exit 1
           fi
           gh release create "$GITHUB_REF_NAME" release-assets/* --repo "$GITHUB_REPOSITORY" \
-            --title "Devbox bootstrap $GITHUB_REF_NAME" --notes-file release-notes.md --latest
+            --verify-tag --title "Devbox C++ $GITHUB_REF_NAME" --notes-file release-notes.md --latest
