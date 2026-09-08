@@ -8,6 +8,12 @@ class McpBackend {
     virtual ~McpBackend() = default;
     virtual Json server_info() const = 0;
     virtual Json list_tools(std::string_view protocol) const = 0;
+    virtual bool has_tool(std::string_view name) const {
+        for (const auto& tool : list_tools("2025-11-25"))
+            if (json_string(tool, "name") == name)
+                return true;
+        return false;
+    }
     virtual asio::awaitable<Json> call_tool(std::string name, Json arguments, Cancel cancel) = 0;
     virtual asio::awaitable<Json> metadata(const HttpRequest& request) = 0;
     virtual bool ready() const = 0;

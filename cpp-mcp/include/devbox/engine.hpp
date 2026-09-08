@@ -49,6 +49,9 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     void stop();
     Json server_info() const override;
     Json list_tools(std::string_view protocol) const override;
+    bool has_tool(std::string_view name) const override {
+        return implemented_.contains(std::string(name));
+    }
     Json parity_report() const;
     asio::awaitable<Json> call_tool(std::string name, Json arguments, Cancel cancel) override;
     asio::awaitable<Json> metadata(const HttpRequest& request) override;

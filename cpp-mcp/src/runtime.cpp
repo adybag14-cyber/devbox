@@ -129,6 +129,16 @@ ProcessError cleaned_error(const ProcessError& original) {
     return result;
 }
 } // namespace
+ProcessOutput run_native_program(std::string_view program, const std::vector<std::string>& args,
+                                 ProcessOptions options, const Cancel& cancel) {
+#ifdef _WIN32
+    const auto resolved = find_program(program, options.env ? &*options.env : nullptr);
+    const auto path = resolved ? path_text(*resolved) : std::string(program);
+#else
+    const auto path = std::string(program);
+#endif
+    return run_resolved(path, args, std::move(options), cancel);
+}
 std::string quote_batch_argument(std::string_view argument) {
     if (argument.find_first_of("\r\n") != std::string_view::npos ||
         argument.find('\0') != std::string_view::npos)

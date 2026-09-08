@@ -28,6 +28,10 @@ struct ShellRequest {
 std::string clean_powershell_output(std::string_view value);
 std::vector<std::string> encoded_powershell_args(std::string_view command);
 std::string quote_batch_argument(std::string_view argument);
+// Native process launch plus the Windows .cmd/.bat executable-file wrapper.
+// The installer shares the same tested quoting and process-tree ownership.
+ProcessOutput run_native_program(std::string_view program, const std::vector<std::string>& args,
+                                 ProcessOptions options, const Cancel& cancel = {});
 class RuntimeExecutor {
     std::shared_ptr<const Config> config_;
     mutable std::mutex versions_mutex_;

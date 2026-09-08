@@ -57,6 +57,42 @@ bool type_matches(const Json& value, std::string_view type) {
         return value.is_object();
     return true;
 }
+std::string parameter_type(const Json& schema) {
+    const auto types = schema.value("type", Json("object"));
+    auto type = types.is_string() ? types.get<std::string>() : std::string("object");
+    if (types.is_array())
+        for (const auto& item : types)
+            if (item != "null") {
+                type = item.get<std::string>();
+                break;
+            }
+    if (type == "number")
+        return "f64";
+    if (type == "integer") {
+        const auto format = json_string(schema, "format");
+        return format == "uint32" ? "u32" : format == "int64" ? "i64" : "u64";
+    }
+    if (type == "boolean")
+        return "a boolean";
+    if (type == "string")
+        return "a string";
+    if (type == "array")
+        return "a sequence";
+    return "a map";
+}
+std::string unexpected_value(const Json& value) {
+    if (value.is_string())
+        return "string " + value.dump();
+    if (value.is_boolean())
+        return "boolean `" + value.dump() + "`";
+    if (value.is_number())
+        return std::string(value.is_number_integer() ? "integer `" : "floating point `") + value.dump() + "`";
+    if (value.is_array())
+        return "sequence";
+    if (value.is_null())
+        return "null";
+    return "map";
+}
 void validate(const Json& value, const Json& schema, const Json& root, const std::string& path,
               unsigned depth = 0) {
     if (depth > 64)
@@ -96,7 +132,8 @@ void validate(const Json& value, const Json& schema, const Json& root, const std
             for (const auto& type : types)
                 allowed = allowed || type_matches(value, type.get<std::string>());
         if (!allowed)
-            throw Error(path + ": wrong value type");
+            throw ParameterError("failed to deserialize parameters: invalid type: " +
+                                 unexpected_value(value) + ", expected " + parameter_type(schema));
     }
     if (schema.contains("enum") &&
         std::find(schema["enum"].begin(), schema["enum"].end(), value) == schema["enum"].end())
@@ -131,7 +168,8 @@ void validate(const Json& value, const Json& schema, const Json& root, const std
     if (value.is_object()) {
         for (const auto& key : schema.value("required", Json::array()))
             if (!value.contains(key.get<std::string>()))
-                throw Error(path + "." + key.get<std::string>() + ": required argument is missing");
+                throw ParameterError("failed to deserialize parameters: missing field `" +
+                                     key.get<std::string>() + "`");
         const auto properties = schema.value("properties", Json::object());
         for (auto it = value.begin(); it != value.end(); ++it) {
             if (properties.contains(it.key()))

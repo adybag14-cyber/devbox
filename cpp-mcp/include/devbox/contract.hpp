@@ -4,6 +4,10 @@
 namespace devbox {
 Json build_snapshot();
 std::string build_version();
+class ParameterError : public Error {
+  public:
+    using Error::Error;
+};
 class ToolContract {
     Json tools_;
 

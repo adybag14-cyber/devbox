@@ -1,6 +1,7 @@
 #include "devbox/setup.hpp"
 #include "devbox/contract.hpp"
 #include "devbox/native.hpp"
+#include "devbox/runtime.hpp"
 #include <algorithm>
 #include <charconv>
 #include <iostream>
@@ -72,7 +73,7 @@ ProcessOutput command(std::string program, std::vector<std::string> args,
             output.write(text.data(), static_cast<std::streamsize>(text.size()));
             output.flush();
         };
-    return spawn_process(command_name(program), args, options);
+    return run_native_program(command_name(program), args, options);
 }
 std::optional<std::string> capture(std::string program, std::vector<std::string> args) {
     try {

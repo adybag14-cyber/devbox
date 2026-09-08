@@ -23,6 +23,91 @@ bool supported_protocol(std::string_view value) {
     return value == "2024-11-05" || value == "2025-03-26" || value == "2025-06-18" || value == "2025-11-25" ||
            value == "2026-07-28";
 }
+Json supported_protocols() {
+    return Json::array({"2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28"});
+}
+bool modern_protocol(const HttpRequest& request) {
+    return json_string(request.headers, "mcp-protocol-version") >= "2026-07-28";
+}
+Json capabilities() {
+    return Json{{"logging", Json::object()}, {"tools", {{"listChanged", true}}}};
+}
+// The frozen rmcp 3.1.4 server is the compatibility authority. Modern requests
+// carry their own lifecycle metadata; legacy SDKs retain the initialize flow.
+std::optional<HttpReply> validate_protocol_request(const HttpRequest& request, const Json& body) {
+    const auto id = body.value("id", Json(nullptr));
+    const auto method = json_string(body, "method");
+    const auto header = json_string(request.headers, "mcp-protocol-version");
+    const auto params = body.value("params", Json::object());
+    const auto meta = params.is_object() ? params.value("_meta", Json::object()) : Json::object();
+    const auto version_key = "io.modelcontextprotocol/protocolVersion";
+    const auto caps_key = "io.modelcontextprotocol/clientCapabilities";
+    const auto meta_version = json_string(meta, version_key);
+    const auto fail = [&](int code, const std::string& message, const Json& data = nullptr) {
+        return HttpReply::json(400, rpc_error(id, code, message, data));
+    };
+    if (!header.empty() && !supported_protocol(header))
+        return fail(-32022, "Unsupported protocol version",
+                    Json{{"requested", header}, {"supported", supported_protocols()}});
+    if (method == "initialize") {
+        const auto requested = json_string(params, "protocolVersion");
+        if (!header.empty() && header != requested)
+            return fail(-32600, "Invalid Request: MCP-Protocol-Version header (" + header +
+                                    ") does not match initialize params.protocolVersion (" + requested + ")");
+        return {};
+    }
+    if (!body.contains("id"))
+        return {};
+    if (!meta_version.empty()) {
+        if (header.empty())
+            return fail(-32020, "request _meta protocolVersion requires MCP-Protocol-Version header");
+        if (header != meta_version)
+            return fail(-32020, "MCP-Protocol-Version header (" + header +
+                                    ") does not match request _meta protocolVersion (" + meta_version + ")");
+    }
+    if (modern_protocol(request) || method == "server/discover") {
+        std::string missing;
+        if (meta_version.empty())
+            missing = version_key;
+        if (!meta.is_object() || !meta.contains(caps_key) || !meta[caps_key].is_object()) {
+            if (!missing.empty())
+                missing += ", ";
+            missing += caps_key;
+        }
+        if (!missing.empty())
+            return fail(-32602, std::string(meta_version.empty() ? "Invalid params: " : "") +
+                                    "request _meta is missing or has malformed required fields: " + missing);
+    }
+    if (!modern_protocol(request))
+        return {};
+    const auto mirrored_method = json_string(request.headers, "mcp-method");
+    if (mirrored_method.empty())
+        return fail(-32020, "missing required Mcp-Method header");
+    if (mirrored_method != method)
+        return fail(-32020, "Mcp-Method header `" + mirrored_method + "` does not match body method `" +
+                                method + "`");
+    if (method == "tools/call" || method == "resources/read" || method == "prompts/get") {
+        const auto field = method == "resources/read" ? "uri" : "name";
+        const auto expected = json_string(params, field);
+        if (!request.headers.contains("mcp-name"))
+            return fail(-32020, "missing required Mcp-Name header for `" + method + "`");
+        auto mirrored = json_string(request.headers, "mcp-name");
+        if (mirrored.starts_with("=?base64?") && mirrored.ends_with("?=")) {
+            try {
+                const auto bytes = base64_decode(std::string_view(mirrored).substr(9, mirrored.size() - 11));
+                mirrored.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+                // dump() validates decoded UTF-8; malformed header bytes never reach dispatch.
+                (void)Json(mirrored).dump();
+            } catch (...) {
+                return fail(-32020, "Mcp-Name header is not valid Base64");
+            }
+        }
+        if (mirrored != expected)
+            return fail(-32020,
+                        "Mcp-Name header `" + mirrored + "` does not match body value `" + expected + "`");
+    }
+    return {};
+}
 Json bounded_json(std::string_view body) {
     return Json::parse(body, [](int depth, Json::parse_event_t, Json&) {
         if (depth > 128)
@@ -161,7 +246,15 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     }
     asio::awaitable<void> send_rpc(Json value) {
         auto reply = HttpReply::json(200, value);
-        if (json_string(request.headers, "accept").find("text/event-stream") != std::string::npos) {
+        if (modern_protocol(request) && value.contains("error")) {
+            const auto code = value["error"].value("code", 0);
+            if (code == -32601)
+                reply.status = 404;
+            else if (code == -32602 || code == -32021 || code == -32022)
+                reply.status = 400;
+        }
+        if (reply.status == 200 &&
+            json_string(request.headers, "accept").find("text/event-stream") != std::string::npos) {
             reply.body =
                 "event: message\ndata: " + value.dump(-1, ' ', false, Json::error_handler_t::replace) +
                 "\n\n";
@@ -173,10 +266,13 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     }
     asio::awaitable<Json> call_tool(Json params, Json id) {
         if (!params.is_object() || !params.contains("name") || !params["name"].is_string() ||
-            (params.contains("arguments") && !params["arguments"].is_object()))
+            (params.contains("arguments") && !params["arguments"].is_null() &&
+             !params["arguments"].is_object()))
             throw Error("tools/call requires a name and object arguments");
         const auto name = json_string(params, "name");
-        const auto args = params.value("arguments", Json::object());
+        const auto args = !params.contains("arguments") || params["arguments"].is_null()
+                              ? Json::object()
+                              : params["arguments"];
         Json context{{"request_id", id}};
         for (const auto& [header, key] :
              {std::pair{"mcp-session-id", "session_id"}, std::pair{"user-agent", "user_agent"}}) {
@@ -197,6 +293,8 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             else
                 result = co_await server->backend->call_tool(name, args, cancel);
             server->backend->tool_finished(invocation, result);
+            if (modern_protocol(request))
+                result["resultType"] = "complete";
             co_return result;
         } catch (const std::exception& e) {
             server->backend->tool_failed(invocation, e.what());
@@ -205,8 +303,13 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     }
     asio::awaitable<void> tool_response(const Json& id, const Json& params, bool sse) {
         if (!params.is_object() || !params.contains("name") || !params["name"].is_string() ||
-            (params.contains("arguments") && !params["arguments"].is_object())) {
+            (params.contains("arguments") && !params["arguments"].is_null() &&
+             !params["arguments"].is_object())) {
             co_await send_rpc(rpc_error(id, -32602, "tools/call requires a name and object arguments"));
+            co_return;
+        }
+        if (!server->backend->has_tool(json_string(params, "name"))) {
+            co_await send_rpc(rpc_error(id, -32602, "tool not found"));
             co_return;
         }
         auto registration = server->requests.register_request(request, id, cancel);
@@ -393,11 +496,6 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             co_return;
         }
         const auto protocol = json_string(request.headers, "mcp-protocol-version", "2025-03-26");
-        if (!supported_protocol(protocol)) {
-            co_await send(
-                HttpReply::json(400, rpc_error(nullptr, -32000, "Unsupported MCP protocol version")));
-            co_return;
-        }
         if (accept.find("application/json") == accept.npos &&
             accept.find("text/event-stream") == accept.npos && accept != "*/*") {
             co_await send(HttpReply::json(
@@ -424,6 +522,10 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         }
         const auto method = json_string(body, "method");
         const auto params = body.value("params", Json::object());
+        if (auto invalid = validate_protocol_request(request, body)) {
+            co_await send(std::move(*invalid));
+            co_return;
+        }
         if (!body.contains("id")) {
             if (method == "notifications/cancelled" && params.is_object() && params.contains("requestId"))
                 server->requests.cancel(request, params["requestId"]);
@@ -433,21 +535,45 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         const auto id = body["id"];
         if (method == "initialize") {
             const auto requested = json_string(params, "protocolVersion");
-            auto result =
-                Json{{"protocolVersion", supported_protocol(requested) ? requested : "2025-11-25"},
-                     {"capabilities", {{"tools", {{"listChanged", true}}}, {"logging", Json::object()}}},
-                     {"serverInfo", server->backend->server_info()}};
+            auto result = Json{{"protocolVersion", supported_protocol(requested) ? requested : "2025-11-25"},
+                               {"capabilities", capabilities()},
+                               {"serverInfo", server->backend->server_info()}};
             co_await send_rpc(rpc_result(id, result));
-        } else if (method == "ping")
+        } else if (method == "server/discover") {
+            const Json result{
+                {"resultType", "complete"},
+                {"supportedVersions", supported_protocols()},
+                {"capabilities", capabilities()},
+                {"ttlMs", 0},
+                {"cacheScope", "private"},
+                {"_meta", {{"io.modelcontextprotocol/serverInfo", server->backend->server_info()}}}};
+            co_await send_rpc(rpc_result(id, result));
+        } else if (method == "ping" && !modern_protocol(request))
             co_await send_rpc(rpc_result(id, Json::object()));
         else if (method == "tools/list") {
             // Materialize initializer lists before suspension (also supports GCC 12 coroutines).
-            const Json result{{"tools", server->backend->list_tools(protocol)}};
+            Json result = Json::object();
+            if (modern_protocol(request)) {
+                result["resultType"] = "complete";
+                result["ttlMs"] = 0;
+                result["cacheScope"] = "public";
+            }
+            result["tools"] = server->backend->list_tools(protocol);
             co_await send_rpc(rpc_result(id, result));
         } else if (method == "tools/call")
             co_await tool_response(id, params, accept.find("text/event-stream") != accept.npos);
-        else
-            co_await send_rpc(rpc_error(id, -32601, "Method not found"));
+        else if (method == "resources/list" || method == "resources/templates/list" ||
+                 method == "prompts/list") {
+            Json result = Json::object();
+            if (modern_protocol(request))
+                result["resultType"] = "complete";
+            const auto field = method == "resources/list"             ? "resources"
+                               : method == "resources/templates/list" ? "resourceTemplates"
+                                                                      : "prompts";
+            result[field] = Json::array();
+            co_await send_rpc(rpc_result(id, result));
+        } else
+            co_await send_rpc(rpc_error(id, -32601, method));
     }
     asio::awaitable<void> run() {
         std::optional<HttpReply> failure;

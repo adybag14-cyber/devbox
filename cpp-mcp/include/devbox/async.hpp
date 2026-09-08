@@ -2,12 +2,14 @@
 #include "common.hpp"
 #include <boost/asio.hpp>
 #include <deque>
+#include <future>
 #include <thread>
 #include <type_traits>
 #include <variant>
 
 namespace devbox {
 namespace asio = boost::asio;
+asio::awaitable<void> async_delay(Millis delay, Cancel cancel = {});
 class WorkPool {
     std::mutex mutex_;
     std::condition_variable changed_;
@@ -20,6 +22,49 @@ class WorkPool {
         std::exception_ptr error;
         std::optional<T> value;
     };
+
+    template <class Fn>
+    asio::awaitable<std::optional<std::conditional_t<std::is_void_v<std::invoke_result_t<Fn>>, std::monostate,
+                                                     std::invoke_result_t<Fn>>>>
+    run_until_owned(std::shared_ptr<Fn> work, Clock::time_point deadline, Cancel cancel) {
+        using T = std::conditional_t<std::is_void_v<std::invoke_result_t<Fn>>, std::monostate,
+                                     std::invoke_result_t<Fn>>;
+        auto promise = std::make_shared<std::promise<T>>();
+        auto future = promise->get_future();
+        // This completion has no executor or coroutine reference. A slow OS
+        // filesystem operation may finish after the caller's deadline safely.
+        auto task = [promise, work, deadline, cancel] {
+            try {
+                if (cancel)
+                    cancel->check();
+                if (Clock::now() >= deadline)
+                    throw Error("Worker operation expired before leaving its bounded queue");
+                if constexpr (std::is_void_v<std::invoke_result_t<Fn>>) {
+                    (*work)();
+                    promise->set_value(std::monostate{});
+                } else
+                    promise->set_value((*work)());
+            } catch (...) {
+                promise->set_exception(std::current_exception());
+            }
+        };
+        if (!enqueue(std::move(task)))
+            throw Error("Bounded worker queue is full; retry shortly.");
+        while (future.wait_for(Millis(0)) != std::future_status::ready) {
+            if (cancel)
+                cancel->check();
+            const auto now = Clock::now();
+            if (now >= deadline)
+                co_return std::nullopt;
+            co_await async_delay(std::min(Millis(10), std::chrono::duration_cast<Millis>(deadline - now)),
+                                 cancel);
+        }
+        if (cancel)
+            cancel->check();
+        if (Clock::now() >= deadline)
+            co_return std::nullopt;
+        co_return std::optional<T>(future.get());
+    }
 
     template <class Fn>
     asio::awaitable<std::conditional_t<std::is_void_v<std::invoke_result_t<Fn>>, std::monostate,
@@ -78,6 +123,10 @@ class WorkPool {
         // when lambda construction and co_await appear in one expression.
         return run_owned(std::make_shared<Fn>(std::move(fn)), std::move(cancel));
     }
+    template <class Fn> auto run_until(Fn fn, Clock::time_point deadline, Cancel cancel = {}) {
+        // The callable must own its state because it can outlive the awaiter.
+        // As with run(), bind the awaitable before co_await on GCC 12.
+        return run_until_owned(std::make_shared<Fn>(std::move(fn)), deadline, std::move(cancel));
+    }
 };
-asio::awaitable<void> async_delay(Millis delay, Cancel cancel = {});
 } // namespace devbox

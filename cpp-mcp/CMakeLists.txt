@@ -24,6 +24,7 @@ add_library(devbox_core
   src/config.cpp
   src/result.cpp
   src/process.cpp
+  src/posix_process.cpp
   src/storage.cpp
   src/runtime.cpp
   src/scheduler.cpp
@@ -64,6 +65,9 @@ target_include_directories(devbox_core PRIVATE "${DEVBOX_GENERATED_DIR}")
 target_include_directories(devbox_core PUBLIC include)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl Threads::Threads ada::ada re2::re2)
 target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_NO_DEPRECATED)
+if(DEVBOX_FORCE_FORK_EXEC)
+  target_compile_definitions(devbox_core PRIVATE DEVBOX_FORCE_FORK_EXEC=1)
+endif()
 add_executable(devbox-mcp src/main.cpp)
 target_link_libraries(devbox-mcp PRIVATE devbox_core)
 if(MSVC)

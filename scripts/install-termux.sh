@@ -31,19 +31,19 @@ pkg install -y curl ca-certificates
 
 setup_asset="devbox-setup-${suffix}"
 tui_asset="devbox-tui-${suffix}"
+runtime_asset="devbox-mcp-${suffix}"
 setup_path="${DEVBOX_SETUP_INSTALL_PATH:-${PREFIX}/bin/devbox-setup}"
 tui_path="${DEVBOX_TUI_INSTALL_PATH:-${PREFIX}/bin/devbox-tui}"
+runtime_path="${DEVBOX_MCP_INSTALL_PATH:-$(dirname "$setup_path")/devbox-mcp}"
 release_base="${DEVBOX_SETUP_RELEASE_BASE:-${DEVBOX_REPO}/releases/latest/download}"
-tmpdir="${TMPDIR:-${PREFIX}/tmp}/devbox-install.$$"
-mkdir -p "$tmpdir"
+tmpdir=$(mktemp -d "${TMPDIR:-${PREFIX}/tmp}/devbox-install.XXXXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
 checksums="$tmpdir/SHA256SUMS"
 
 curl --fail --location --retry 3 --output "$checksums" "$release_base/SHA256SUMS"
 
-install_asset() {
+verify_asset() {
   asset=$1
-  target=$2
   temp="$tmpdir/$asset"
   echo "Downloading ${asset} from ${release_base}/${asset}"
   curl --fail --location --retry 3 --output "$temp" "$release_base/$asset"
@@ -53,14 +53,17 @@ install_asset() {
     echo "Checksum verification failed for ${asset}." >&2
     exit 1
   fi
-  mkdir -p "$(dirname "$target")"
   chmod 0755 "$temp"
-  mv -f "$temp" "$target"
 }
 
 echo "Canonical Termux app: ${TERMUX_REPO}"
-install_asset "$setup_asset" "$setup_path"
-install_asset "$tui_asset" "$tui_path"
+verify_asset "$setup_asset"
+verify_asset "$tui_asset"
+verify_asset "$runtime_asset"
+mkdir -p "$(dirname "$setup_path")" "$(dirname "$tui_path")" "$(dirname "$runtime_path")"
+mv -f "$tmpdir/$runtime_asset" "$runtime_path"
+mv -f "$tmpdir/$setup_asset" "$setup_path"
+mv -f "$tmpdir/$tui_asset" "$tui_path"
 
 trap - EXIT HUP INT TERM
 rm -rf "$tmpdir"

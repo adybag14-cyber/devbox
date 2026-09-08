@@ -285,10 +285,12 @@ std::optional<std::string> locate_bootstrap(const std::optional<std::string>& ex
     } catch (...) {
     }
     if (command_available(filename, "--version")) return std::string(filename);
-    const fs::path repo_build = fs::current_path() / "bootstrap" / "target" / "release" / filename;
-    if (fs::exists(repo_build)) return repo_build.string();
-    const fs::path repo_debug = fs::current_path() / "bootstrap" / "target" / "debug" / filename;
-    if (fs::exists(repo_debug)) return repo_debug.string();
+    for (const auto& relative : {fs::path(".cpp-build/windows/cpp-bootstrap/Release"),
+                                 fs::path(".cpp-build/posix/cpp-bootstrap"),
+                                 fs::path(".cpp-build/native/cpp-bootstrap"), fs::path("bin/native")}) {
+        const auto candidate = fs::current_path() / relative / filename;
+        if (fs::is_regular_file(candidate)) return candidate.string();
+    }
     return std::nullopt;
 }
 
@@ -523,7 +525,7 @@ void print_diagnostics(const Theme& theme, const PlatformInfo& platform) {
     std::cout << "\nPackage manager: " << package_manager(platform) << "\n";
     std::cout << "Repository URL: " << kRepoUrl << "\n";
     const auto bootstrap = locate_bootstrap();
-    std::cout << "Rust bootstrap: " << (bootstrap ? *bootstrap : "not found") << "\n";
+    std::cout << "C++ installer: " << (bootstrap ? *bootstrap : "not found") << "\n";
 }
 
 std::vector<std::string> build_bootstrap_args(const std::string& bootstrap, const SetupConfig& config) {
@@ -584,7 +586,7 @@ int interactive_setup(const Theme& theme, const PlatformInfo& platform, const st
 
     auto bootstrap = locate_bootstrap(explicit_bootstrap);
     if (!bootstrap) {
-        std::cerr << theme.paint(theme.red, "Rust bootstrap binary not found.") << "\n"
+        std::cerr << theme.paint(theme.red, "C++ installer binary not found.") << "\n"
                   << "Keep devbox-tui beside devbox-setup in the release bundle, or pass --bootstrap <path>.\n";
         return 2;
     }
@@ -710,7 +712,7 @@ void print_help() {
               << "  --bootstrap <path>  Explicit devbox-setup binary\n"
               << "  --diagnostics       Print platform/tool diagnostics and exit\n"
               << "  --cloudflare-help   Print platform-specific Cloudflare Tunnel setup instructions\n"
-              << "  --dry-run           Guide through setup but make the Rust bootstrap print its plan only\n"
+              << "  --dry-run           Guide through setup and print the installer plan\n"
               << "  --no-color          Disable ANSI color\n"
               << "  -h, --help          Show this help\n"
               << "  -V, --version       Show version\n";

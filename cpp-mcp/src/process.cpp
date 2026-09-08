@@ -1,5 +1,6 @@
 #include "devbox/process.hpp"
 #include "devbox/native.hpp"
+#include "devbox/posix_process.hpp"
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -727,36 +728,10 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
                             CaptureAccumulator& err) {
     auto input_pipe = make_pipe(), stdout_pipe = make_pipe(), stderr_pipe = make_pipe();
-    posix_spawn_file_actions_t actions;
-    int error = posix_spawn_file_actions_init(&actions);
-    if (error)
-        throw Error(std::strerror(error));
-    ScopeExit release_actions([&] { posix_spawn_file_actions_destroy(&actions); });
     const auto checked = [](int result) {
         if (result)
             throw Error(std::strerror(result));
     };
-    checked(posix_spawn_file_actions_adddup2(&actions, input_pipe.read.get(), STDIN_FILENO));
-    checked(posix_spawn_file_actions_adddup2(&actions, stdout_pipe.write.get(), STDOUT_FILENO));
-    checked(posix_spawn_file_actions_adddup2(&actions, stderr_pipe.write.get(), STDERR_FILENO));
-    for (const auto fd : {input_pipe.read.get(), input_pipe.write.get(), stdout_pipe.read.get(),
-                          stdout_pipe.write.get(), stderr_pipe.read.get(), stderr_pipe.write.get()})
-        if (fd > STDERR_FILENO)
-            checked(posix_spawn_file_actions_addclose(&actions, fd));
-    if (options.cwd)
-        checked(posix_spawn_file_actions_addchdir_np(&actions, options.cwd->c_str()));
-    posix_spawnattr_t attributes;
-    checked(posix_spawnattr_init(&attributes));
-    ScopeExit release_attributes([&] { posix_spawnattr_destroy(&attributes); });
-    checked(posix_spawnattr_setflags(&attributes,
-                                     POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF));
-    checked(posix_spawnattr_setpgroup(&attributes, 0));
-    sigset_t empty, defaults;
-    sigemptyset(&empty);
-    sigemptyset(&defaults);
-    sigaddset(&defaults, SIGPIPE);
-    checked(posix_spawnattr_setsigmask(&attributes, &empty));
-    checked(posix_spawnattr_setsigdefault(&attributes, &defaults));
     std::vector<std::string> arguments{std::string(file)};
     arguments.insert(arguments.end(), args.begin(), args.end());
     std::vector<char*> argv;
@@ -781,10 +756,12 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     const auto program = resolved ? path_text(*resolved) : std::string(file);
     if (cancel)
         cancel->check();
-    pid_t child = 0;
     const auto started = Clock::now();
-    checked(posix_spawn(&child, program.c_str(), &actions, &attributes, argv.data(),
-                        options.env ? envp.data() : environ));
+    const std::array close_fds{input_pipe.read.get(),   input_pipe.write.get(), stdout_pipe.read.get(),
+                               stdout_pipe.write.get(), stderr_pipe.read.get(), stderr_pipe.write.get()};
+    const pid_t child = spawn_posix(
+        program, argv.data(), options.env ? envp.data() : environ, options.cwd ? &*options.cwd : nullptr,
+        {input_pipe.read.get(), stdout_pipe.write.get(), stderr_pipe.write.get()}, close_fds, true);
     bool reaped = false;
     ScopeExit terminate_on_error([&] {
         if (!reaped) {
@@ -811,7 +788,7 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     const bool already_pending = sigismember(&pending, SIGPIPE) == 1;
     ScopeExit restore_mask([&] {
         if (!already_pending) {
-#ifdef __APPLE__
+#if defined(__APPLE__) || (defined(__ANDROID__) && __ANDROID_API__ < 23)
             sigset_t pending_now;
             if (sigpending(&pending_now) == 0 && sigismember(&pending_now, SIGPIPE) == 1) {
                 int received = 0;

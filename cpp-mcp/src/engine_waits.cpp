@@ -117,8 +117,27 @@ asio::awaitable<Json> Engine::wait_job(Json args, Cancel cancel) {
     const auto wait = Millis(static_cast<Millis::rep>(json_number(args, "wait_seconds") * 1000));
     const auto deadline = Clock::now() + wait;
     try {
-        auto pending = files_.run([this, id] { return jobs_.store().get_status(id); }, cancel);
-        auto state = co_await std::move(pending);
+        const auto store = jobs_.store();
+        Json state;
+        if (wait.count() == 0) {
+            auto pending = files_.run([store, id] { return store.get_status(id); }, cancel);
+            state = co_await std::move(pending);
+        } else {
+            auto initial_read =
+                files_.run_until([store, id] { return store.read_status_raw(id); }, deadline, cancel);
+            auto raw = co_await std::move(initial_read);
+            if (!raw)
+                throw Error("Job status wait exceeded its " + std::to_string(wait.count() / 1000) +
+                            "s deadline before an initial state could be read.");
+            state = std::move(*raw);
+            auto reconcile = files_.run_until([store, id] { return store.get_status(id); }, deadline, cancel);
+            if (auto reconciled = co_await std::move(reconcile))
+                state = std::move(*reconciled);
+            else {
+                state["waitTimedOut"] = true;
+                state["waitedMs"] = wait.count();
+            }
+        }
         const auto initial = json_string(state, "status");
         if (wait.count() > 0 && !terminal_status(initial)) {
             for (;;) {
@@ -130,8 +149,14 @@ asio::awaitable<Json> Engine::wait_job(Json args, Cancel cancel) {
                 }
                 co_await async_delay(
                     std::min(Millis(500), std::chrono::duration_cast<Millis>(deadline - now)), cancel);
-                auto next = files_.run([this, id] { return jobs_.store().get_status(id); }, cancel);
-                state = co_await std::move(next);
+                auto next = files_.run_until([store, id] { return store.get_status(id); }, deadline, cancel);
+                if (auto current = co_await std::move(next))
+                    state = std::move(*current);
+                else {
+                    state["waitTimedOut"] = true;
+                    state["waitedMs"] = wait.count();
+                    break;
+                }
                 if (terminal_status(json_string(state, "status")) ||
                     (!json_bool(args, "terminal_only", true) && json_string(state, "status") != initial))
                     break;

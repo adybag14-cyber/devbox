@@ -164,8 +164,32 @@ int main(int argc, char** argv) {
                 "per-request SSE and heartbeat");
         auto version = headers();
         version["mcp-protocol-version"] = "2026-07-28";
-        require(http_request("POST", base, rpc("ping").dump(), version).status == 200,
-                "new revision JSON transport");
+        require(http_request("POST", base, rpc("tools/list").dump(), version).status == 400,
+                "new revision requires per-request lifecycle metadata");
+        version["mcp-method"] = "tools/list";
+        const Json meta{{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
+                        {"io.modelcontextprotocol/clientCapabilities", Json::object()}};
+        const auto modern_list =
+            http_request("POST", base, rpc("tools/list", 1, Json{{"_meta", meta}}).dump(), version);
+        const auto modern_result = Json::parse(modern_list.body)["result"];
+        require(modern_list.status == 200 && modern_result["resultType"] == "complete" &&
+                    modern_result["ttlMs"] == 0 && modern_result["cacheScope"] == "public" &&
+                    modern_result["tools"].size() == 2,
+                "new revision complete result and tool cache hints");
+        version["mcp-method"] = "tools/call";
+        const Json modern_call{{"name", "devbox_wait"}, {"arguments", Json::object()}, {"_meta", meta}};
+        require(http_request("POST", base, rpc("tools/call", 1, modern_call).dump(), version).status == 400,
+                "missing mirrored tool name rejected before execution");
+        version["mcp-name"] = "devbox_wait";
+        const auto modern_tool =
+            http_request("POST", base, rpc("tools/call", 1, modern_call).dump(), version);
+        require(modern_tool.status == 200 &&
+                    Json::parse(modern_tool.body)["result"]["resultType"] == "complete",
+                "modern tool response discriminator");
+        version["mcp-method"] = "ping";
+        require(http_request("POST", base, rpc("ping", 1, Json{{"_meta", meta}}).dump(), version).status ==
+                    404,
+                "legacy ping is not a modern protocol method");
         version["mcp-protocol-version"] = "unknown";
         require(http_request("POST", base, rpc("ping").dump(), version).status == 400,
                 "unsupported revision rejected");

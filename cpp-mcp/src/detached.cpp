@@ -1,4 +1,5 @@
 #include "devbox/native.hpp"
+#include "devbox/posix_process.hpp"
 #include "devbox/process.hpp"
 #include <algorithm>
 #include <thread>
@@ -109,26 +110,9 @@ std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string
     NativeHandle process(information.hProcess), thread(information.hThread);
     return information.dwProcessId;
 #else
-    const auto checked = [](int result) {
-        if (result)
-            throw std::system_error(result, std::generic_category());
-    };
     NativeHandle null(::open("/dev/null", O_RDWR | O_CLOEXEC));
     if (!null)
         throw std::system_error(errno, std::generic_category());
-    posix_spawn_file_actions_t actions;
-    checked(posix_spawn_file_actions_init(&actions));
-    ScopeExit release_actions([&] { posix_spawn_file_actions_destroy(&actions); });
-    for (int fd = 0; fd < 3; ++fd)
-        checked(posix_spawn_file_actions_adddup2(&actions, null.get(), fd));
-    if (null.get() > 2)
-        checked(posix_spawn_file_actions_addclose(&actions, null.get()));
-    checked(posix_spawn_file_actions_addchdir_np(&actions, cwd.c_str()));
-    posix_spawnattr_t attributes;
-    checked(posix_spawnattr_init(&attributes));
-    ScopeExit release_attributes([&] { posix_spawnattr_destroy(&attributes); });
-    checked(posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP));
-    checked(posix_spawnattr_setpgroup(&attributes, 0));
     std::vector<std::string> arguments{path_text(file)};
     arguments.insert(arguments.end(), args.begin(), args.end());
     std::vector<char*> argv;
@@ -150,8 +134,9 @@ std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string
     }
     // Initialize the reaper before spawning so an allocation failure cannot lose a child.
     static ChildReaper reaper;
-    pid_t pid = 0;
-    checked(posix_spawn(&pid, file.c_str(), &actions, &attributes, argv.data(), env ? envp.data() : environ));
+    const std::array close_fds{null.get()};
+    const auto pid = spawn_posix(file, argv.data(), env ? envp.data() : environ, &cwd,
+                                 {null.get(), null.get(), null.get()}, close_fds, false);
     reaper.add(pid);
     return static_cast<std::uint32_t>(pid);
 #endif

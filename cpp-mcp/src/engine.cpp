@@ -203,6 +203,9 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         auto& pool = name.find("write") != name.npos ? atomic_ : files_;
         auto pending = pool.run([this, name, args, cancel] { return files(name, args, cancel); }, cancel);
         co_return co_await std::move(pending);
+    } catch (const ParameterError& e) {
+        co_return Json{{"content", Json::array({Json{{"type", "text"}, {"text", e.what()}}})},
+                       {"isError", true}};
     } catch (const std::exception& e) {
         co_return result_error(e.what());
     }
@@ -261,7 +264,7 @@ Json Engine::durable(std::string name, const Json& args) {
             summary = "Committed atomic file write.";
         }
     }
-    return result_explicit(summary, value, summary + "\n\n" + canonical_json(value).dump());
+    return result_explicit(summary, value, summary + "\n\n" + value.dump());
 }
 Json Engine::detached(std::string name, const Json& args) {
     const bool agent = name == "devbox_job_submit";
@@ -317,7 +320,7 @@ Json Engine::detached(std::string name, const Json& args) {
     }
     if (agent)
         return result_explicit("Submitted or recovered durable job.", value,
-                               "Submitted or recovered durable job.\n\n" + canonical_json(value).dump());
+                               "Submitted or recovered durable job.\n\n" + value.dump());
     return result_success(std::string(shell ? "Started background " : "Started direct background ") +
                               config_->runtime_label() + " job " + json_string(value, "id") + ".",
                           value);

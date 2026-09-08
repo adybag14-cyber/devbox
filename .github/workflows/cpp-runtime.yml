@@ -1,0 +1,144 @@
+name: C++ native runtime
+
+on:
+  push:
+    branches: [main, rewrite/cpp-devbox-20260907]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cpp-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: C++ ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows MSVC, os: windows-2025, sanitizers: '0' }
+          - { name: Linux GCC, os: ubuntu-24.04, sanitizers: '0' }
+          - { name: Linux Clang sanitizers, os: ubuntu-24.04, sanitizers: '1', cc: clang, cxx: clang++ }
+          - { name: macOS arm64, os: macos-15, sanitizers: '0' }
+          - { name: macOS x86_64, os: macos-15-intel, sanitizers: '0' }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          cache: npm
+      - name: Pinned dependency manager
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: microsoft/vcpkg
+          ref: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+          path: .cpp-build/vcpkg
+          persist-credentials: false
+      - name: Bootstrap vcpkg on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.cpp-build/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+      - name: Bootstrap vcpkg on POSIX
+        if: runner.os != 'Windows'
+        run: sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+      - name: Select private dependency checkout
+        shell: bash
+        run: |
+          node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'VCPKG_ROOT=' + require('path').resolve('.cpp-build/vcpkg') + '\n')"
+      - name: Install SDK and launcher test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Select Clang sanitizer compiler
+        if: matrix.sanitizers == '1'
+        shell: bash
+        run: |
+          echo 'CC=clang' >> "$GITHUB_ENV"
+          echo 'CXX=clang++' >> "$GITHUB_ENV"
+      - name: Build, test and stage native C++ artifacts
+        env:
+          DEVBOX_CI_SANITIZERS: ${{ matrix.sanitizers }}
+        run: node cpp-mcp/scripts/ci-native.mjs
+      - name: Fresh packaged installer and TUI discovery
+        run: node cpp-bootstrap/scripts/fresh-install.mjs
+      - name: Launcher and retained runtime tests
+        run: npm run test:unit
+      - name: Native MCP SDK and persistent agent state
+        run: |
+          node cpp-mcp/scripts/engine-sdk-smoke.mjs
+          node rust-mcp/scripts/agent-reliability-smoke.mjs
+      - name: OAuth, gateway, configuration and disconnect
+        run: |
+          node rust-mcp/scripts/config-parity-smoke-runner.mjs
+          node rust-mcp/scripts/gateway-smoke-runner.mjs
+          node rust-mcp/scripts/oauth-smoke-runner.mjs
+          node rust-mcp/scripts/cloudflare-oauth-smoke-runner.mjs
+          node rust-mcp/scripts/disconnect-smoke-runner.mjs
+          node rust-mcp/scripts/smoke-runner.mjs
+      - name: Windows concurrency and process ownership
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          node rust-mcp/scripts/windows-contention-smoke-runner.mjs
+          ./scripts/ci/test-windows-startup-contract.ps1
+          ./scripts/ci/test-windows-managed-mcp-ownership.ps1
+      - name: Upload native artifacts and test evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cpp-native-${{ matrix.os }}-${{ matrix.sanitizers }}
+          path: |
+            .cpp-build/package/
+            .cpp-build/ci-native-result.json
+            .cpp-build/ci/Testing/Temporary/
+          if-no-files-found: warn
+
+  android:
+    name: C++ Android API 21 ${{ matrix.abi }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64, x86]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: microsoft/vcpkg
+          ref: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+          path: .cpp-build/vcpkg
+          persist-credentials: false
+      - name: Bootstrap pinned C++ and Android toolchains
+        shell: bash
+        run: |
+          sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          sdkmanager --install 'ndk;29.0.14206865'
+          echo "VCPKG_ROOT=$GITHUB_WORKSPACE/.cpp-build/vcpkg" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+      - name: Build all native components for Android API 21
+        run: node cpp-mcp/scripts/build-android.mjs --abi ${{ matrix.abi }}
+      - name: Stage Android bundle
+        shell: bash
+        run: |
+          mkdir -p .cpp-build/android-package
+          cp '.cpp-build/android/${{ matrix.abi }}/cpp-mcp/devbox-mcp' .cpp-build/android-package/
+          cp '.cpp-build/android/${{ matrix.abi }}/cpp-bootstrap/devbox-setup' .cpp-build/android-package/
+          cp '.cpp-build/android/${{ matrix.abi }}/setup-tui/devbox-tui' .cpp-build/android-package/
+          file .cpp-build/android-package/*
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cpp-android-${{ matrix.abi }}
+          path: .cpp-build/android-package/
+          if-no-files-found: error
