@@ -1,4 +1,5 @@
 #pragma once
+#include "capture.hpp"
 #include "contract.hpp"
 #include "docker_files.hpp"
 #include "lifecycle.hpp"
@@ -20,6 +21,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     SearchService search_;
     LifecycleService lifecycle_;
     GithubAuthService github_;
+    CaptureService capture_;
     UsageTelemetry usage_;
     PerformanceMonitor performance_;
     HttpServer* server_ = nullptr;
@@ -30,6 +32,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     asio::awaitable<ExecutionLease> acquire(AcquireRequest request, Cancel cancel);
     asio::awaitable<Json> execute(std::string name, Json args, Cancel cancel);
     asio::awaitable<Json> search(Json args, Cancel cancel);
+    asio::awaitable<Json> capture(std::string name, Json args, Cancel cancel);
     asio::awaitable<Json> wait_file(Json args, Cancel cancel);
     asio::awaitable<Json> wait_job(Json args, Cancel cancel);
     Json files(std::string name, const Json& args, const Cancel& cancel);

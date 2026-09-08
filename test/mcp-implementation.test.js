@@ -20,7 +20,7 @@ test("MCP implementation defaults to Rust and keeps JS as explicit rollback", ()
   assert.equal(resolveMcpImplementation({ DEVBOX_MCP_IMPLEMENTATION: "js" }), "js");
   assert.throws(
     () => resolveMcpImplementation({ DEVBOX_MCP_IMPLEMENTATION: "auto" }),
-    /expected rust or js/u,
+    /expected cpp, rust or js/u,
   );
 });
 

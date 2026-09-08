@@ -20,10 +20,13 @@ int run(const std::vector<std::string>& args) {
     using namespace devbox;
     try {
         const auto mode = args.empty() ? "" : args.front();
+        if (mode == "--capture-worker")
+            return run_capture_worker(std::vector<std::string>(args.begin() + 1, args.end()));
         if (mode == "--help" || mode == "-h") {
-            std::cout << "Devbox C++ MCP " << build_version()
-                      << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
-                         "PATH|--elevated-shell-worker PATH]\n";
+            std::cout
+                << "Devbox C++ MCP " << build_version()
+                << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
+                   "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]]\n";
             return 0;
         }
         if (mode == "--build-info") {

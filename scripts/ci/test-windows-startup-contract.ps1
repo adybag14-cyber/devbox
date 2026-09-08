@@ -50,7 +50,7 @@ Assert-Contains $start 'Get-EnvValue -FilePath $envFile -Name ''DEVBOX_MCP_PREFL
 Assert-Contains $start 'Reset-StartupDeadlineWindow -TimeoutSeconds $preflightTimeoutSeconds -Phase ''preflighting-mcp-replacement''' 'Cold candidate builds must receive their own preflight deadline window.'
 Assert-Contains $start 'Reset-StartupDeadlineWindow -TimeoutSeconds $startupTimeoutSeconds -Phase ''cutover-ready''' 'The destructive handover must refresh its deadline after candidate preflight.'
 Assert-Contains $start '$value = if ([string]::IsNullOrWhiteSpace($ConfiguredValue)) { ''rust'' }' 'Rust must be the managed MCP default when no implementation override is configured.'
-Assert-Contains $start '$value -notin @(''rust'', ''js'')' 'Managed MCP implementation selection must reject unknown values.'
+Assert-Contains $start '$value -notin @(''cpp'', ''rust'', ''js'')' 'Managed MCP implementation selection must reject unknown values.'
 Assert-Contains $start ". (Join-Path `$PSScriptRoot 'DevboxMcpOwnership.ps1')" 'Start lifecycle must load the shared ownership classifier.'
 Assert-Contains $stop ". (Join-Path `$PSScriptRoot 'DevboxMcpOwnership.ps1')" 'Stop lifecycle must load the shared ownership classifier.'
 Assert-Contains $start 'if ([IO.Path]::IsPathRooted($candidate) -and (Test-Path -LiteralPath $candidate))' 'Cargo resolution must not execute a bare cargo.exe from the current directory.'

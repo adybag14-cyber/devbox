@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { spawn, spawnSync } from "node:child_process";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, "..", "..");
-const binaryPath = path.join(
+const binaryPath = process.env.DEVBOX_MCP_TEST_BINARY || path.join(
   projectRoot,
   "rust-mcp",
   "target",
@@ -142,6 +142,10 @@ try {
     RUST_MCP_EXPECT_WINDOWS_ADMIN: windowsAdmin === null ? "" : windowsAdmin ? "1" : "0",
   });
 } catch (error) {
+  try {
+    const usage = await readFile(path.join(runtimeDir, "run", "tool-usage.jsonl"), "utf8");
+    console.error(`\n--- recent tool telemetry ---\n${usage.slice(-16000)}`);
+  } catch {}
   if (stdout.trim()) console.error(`\n--- Rust MCP stdout ---\n${stdout}`);
   if (stderr.trim()) console.error(`\n--- Rust MCP stderr ---\n${stderr}`);
   throw error;

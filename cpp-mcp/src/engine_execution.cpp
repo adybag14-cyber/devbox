@@ -73,13 +73,15 @@ Json render_file_output(std::string summary, const ProcessOutput& output, std::s
                           out.text, err.text, output.exit_code, true, out.truncated || err.truncated);
 }
 asio::awaitable<ExecutionLease> Engine::acquire(AcquireRequest request, Cancel cancel) {
-    auto waiter = co_await controls_.run(
+    auto pending = controls_.run(
         [this, request = std::move(request)] {
             return std::make_shared<ExecutionWaiter>(scheduler_.begin(request));
         },
         cancel);
+    auto waiter = co_await std::move(pending);
     for (;;) {
-        auto lease = co_await controls_.run([waiter, cancel] { return waiter->poll(cancel); }, cancel);
+        auto attempt = controls_.run([waiter, cancel] { return waiter->poll(cancel); }, cancel);
+        auto lease = co_await std::move(attempt);
         if (lease)
             co_return std::move(*lease);
         co_await async_delay(waiter->poll_interval(), cancel);
@@ -114,7 +116,7 @@ asio::awaitable<Json> Engine::execute(std::string name, Json args, Cancel cancel
     std::exception_ptr failure;
     const auto dir = working_dir(args, host);
     try {
-        output = co_await commands_.run(
+        auto pending = commands_.run(
             [this, args, shell, host, dir, command, program, cancel] {
                 const auto seconds = json_uint(args, "timeout_seconds", 90) + (host ? 5 : 0);
                 const auto capture =
@@ -140,10 +142,12 @@ asio::awaitable<Json> Engine::execute(std::string name, Json args, Cancel cancel
                 return host ? runtime_.run_host_program_only(run, cancel) : runtime_.run_program(run, cancel);
             },
             cancel);
+        output = co_await std::move(pending);
     } catch (...) {
         failure = std::current_exception();
     }
-    co_await controls_.run([&lease] { lease.release(); });
+    auto release = controls_.run([&lease] { lease.release(); });
+    co_await std::move(release);
     if (failure) {
         try {
             std::rethrow_exception(failure);
@@ -186,17 +190,21 @@ asio::awaitable<Json> Engine::search(Json args, Cancel cancel) {
     request.include_ignored = json_bool(args, "include_ignored");
     AcquireRequest admission;
     admission.label = "devbox_search_files";
+    admission.resource_class = ResourceClass::io_heavy;
+    admission.weight = config_->exec_io_heavy_weight;
     admission.queue_timeout = Millis(config_->exec_queue_timeout_ms);
     auto lease = co_await acquire(std::move(admission), cancel);
     ProcessOutput output;
     std::exception_ptr failure;
     try {
-        output = co_await commands_.run([this, request, cancel] { return search_.search(request, cancel); },
-                                        cancel);
+        auto pending =
+            commands_.run([this, request, cancel] { return search_.search(request, cancel); }, cancel);
+        output = co_await std::move(pending);
     } catch (...) {
         failure = std::current_exception();
     }
-    co_await controls_.run([&lease] { lease.release(); });
+    auto release = controls_.run([&lease] { lease.release(); });
+    co_await std::move(release);
     if (failure) {
         try {
             std::rethrow_exception(failure);
@@ -210,8 +218,8 @@ asio::awaitable<Json> Engine::search(Json args, Cancel cancel) {
     auto response = render_file_output("Searched " + request.path + " for \"" + request.pattern +
                                            "\" inside the " + config_->runtime_label() + ".",
                                        output, maximum);
-    auto data = response["structuredContent"]["data"];
-    data["execution"] = execution_data(lease);
+    Json data{{"execution", execution_data(lease)},
+              {"output", response["structuredContent"]["data"]["output"]}};
     const auto& envelope = response["structuredContent"];
     co_return result_process(json_string(envelope, "summary"), data, json_string(envelope, "stdout"),
                              json_string(envelope, "stderr"), output.exit_code, true,

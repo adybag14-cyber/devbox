@@ -27,7 +27,7 @@ try {
   client=new Client({name:'cpp-engine-sdk-smoke',version:'1'}, {capabilities:{}});
   await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
   const listed=(await client.listTools()).tools;
-  assert(listed.length>=40,'implemented tool family');
+  assert.equal(listed.length,45,'complete implemented tool family');
   const invoke=async(name,args={})=>{const result=await client.callTool({name,arguments:args});assert.equal(result.isError,false,JSON.stringify(result));return result.structuredContent;};
   const capabilities=await invoke('devbox_capabilities');
   assert.equal(capabilities.data.implementation,'cpp');assert.equal(capabilities.data.build.binarySha256,binaryHash);

@@ -54,6 +54,10 @@ add_library(devbox_core
   src/engine_execution.cpp
   src/engine_files.cpp
   src/engine_waits.cpp
+  src/capture.cpp
+  src/capture_windows.cpp
+  src/capture_posix.cpp
+  src/engine_capture.cpp
 )
 add_dependencies(devbox_core devbox-build-identity)
 target_include_directories(devbox_core PRIVATE "${DEVBOX_GENERATED_DIR}")
@@ -69,10 +73,21 @@ if(WIN32)
   target_compile_definitions(devbox_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
   target_link_libraries(devbox_core PUBLIC ws2_32 bcrypt crypt32 advapi32 psapi userenv shell32 ole32 windowscodecs gdi32 dwmapi shcore)
 endif()
+if(APPLE)
+  target_link_libraries(devbox_core PUBLIC "-framework ApplicationServices")
+endif()
 if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-async-tests tests/async_tests.cpp)
+  target_link_libraries(devbox-async-tests PRIVATE devbox_core)
+  add_test(NAME async COMMAND devbox-async-tests)
+  set_tests_properties(async PROPERTIES TIMEOUT 30)
+  add_executable(devbox-capture-tests tests/capture_tests.cpp)
+  target_link_libraries(devbox-capture-tests PRIVATE devbox_core)
+  add_test(NAME capture COMMAND devbox-capture-tests)
+  set_tests_properties(capture PROPERTIES TIMEOUT 45)
   add_executable(devbox-engine-tests tests/engine_tests.cpp)
   target_link_libraries(devbox-engine-tests PRIVATE devbox_core)
   target_compile_definitions(devbox-engine-tests PRIVATE DEVBOX_CONTRACT_FILE="${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json")

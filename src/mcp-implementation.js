@@ -2,15 +2,16 @@ import path from "node:path";
 import { access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { spawn } from "node:child_process";
+import { getCppMcpBinaryPath, prepareCppImplementation } from "./cpp-implementation.js";
 
-const VALID_IMPLEMENTATIONS = new Set(["rust", "js"]);
+const VALID_IMPLEMENTATIONS = new Set(["cpp", "rust", "js"]);
 const MAX_PREFLIGHT_OUTPUT_CHARS = 12000;
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 15 * 60 * 1000;
 
 export const resolveMcpImplementation = (env = process.env) => {
   const value = String(env.DEVBOX_MCP_IMPLEMENTATION ?? "rust").trim().toLowerCase() || "rust";
   if (!VALID_IMPLEMENTATIONS.has(value)) {
-    throw new Error(`Invalid DEVBOX_MCP_IMPLEMENTATION=${JSON.stringify(value)}; expected rust or js.`);
+    throw new Error(`Invalid DEVBOX_MCP_IMPLEMENTATION=${JSON.stringify(value)}; expected cpp, rust or js.`);
   }
   return value;
 };
@@ -146,7 +147,7 @@ export const getMcpLaunchSpec = (root, {
   }
   return {
     implementation,
-    file: getRustMcpBinaryPath(root, platform),
+    file: implementation === "cpp" ? getCppMcpBinaryPath(root, platform) : getRustMcpBinaryPath(root, platform),
     args: [],
     env: {
       ...env,
@@ -162,6 +163,7 @@ export const prepareMcpImplementation = async (root, {
   implementation = resolveMcpImplementation(env),
   runProcess = runCheckedProcess,
 } = {}) => {
+  if (implementation === "cpp") return prepareCppImplementation(root, { env, platform, runProcess });
   if (implementation === "js") {
     return getMcpLaunchSpec(root, { env, platform, implementation });
   }

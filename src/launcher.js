@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 
 import { config } from "./config.js";
 import { prepareMcpImplementation } from "./mcp-implementation.js";
+import { promoteCppImplementation } from "./cpp-implementation.js";
 import { parseEnvText } from "./env.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -128,7 +129,7 @@ const readPidFile = async (pidFile) => {
 const readImplementationFile = async (implementationFile) => {
   try {
     const value = String(await readFile(implementationFile, "utf8")).trim().toLowerCase();
-    return ["rust", "js"].includes(value) ? value : null;
+    return ["cpp", "rust", "js"].includes(value) ? value : null;
   } catch {
     return null;
   }
@@ -266,6 +267,7 @@ export const startServerProcess = async (root = projectRoot, { preparedSpec = nu
       cwd: root,
       env: spec.env,
       detached: true,
+      windowsHide: true,
       stdio: ["ignore", logHandle.fd, logHandle.fd],
     });
     await waitForChildSpawn(child);
@@ -286,6 +288,7 @@ export const startServerProcess = async (root = projectRoot, { preparedSpec = nu
   const spawnedStatus = await getServerStatus(root);
   try {
     await waitForServerReady({ url: spawnedStatus.url, pid: child.pid });
+    await promoteCppImplementation(spec, child.pid);
   } catch (error) {
     let logTail = "";
     try {

@@ -280,8 +280,8 @@ ProcessOutput SearchService::search(SearchRequest request, const Cancel& cancel)
     request.timeout = std::max(Millis(1), request.timeout);
     const Pattern pattern(request.pattern, request.case_sensitive);
     if (config_->runtime_mode == RuntimeMode::host &&
-        (config_->host_search_backend == "rust" || config_->host_search_backend == "cpp" ||
-         config_->host_search_backend == "native"))
+        (config_->host_search_backend == "js" || config_->host_search_backend == "rust" ||
+         config_->host_search_backend == "cpp" || config_->host_search_backend == "native"))
         return fallback(*config_, request, pattern, cancel);
     auto args = rg_arguments(request, pattern.literal);
     std::string program = "rg";

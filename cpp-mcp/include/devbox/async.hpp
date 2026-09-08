@@ -21,20 +21,13 @@ class WorkPool {
         std::optional<T> value;
     };
 
-  public:
-    explicit WorkPool(std::size_t workers, std::size_t capacity = 128);
-    ~WorkPool();
-    WorkPool(const WorkPool&) = delete;
-    WorkPool& operator=(const WorkPool&) = delete;
-    std::size_t queued() const;
     template <class Fn>
     asio::awaitable<std::conditional_t<std::is_void_v<std::invoke_result_t<Fn>>, std::monostate,
                                        std::invoke_result_t<Fn>>>
-    run(Fn fn, Cancel cancel = {}) {
+    run_owned(std::shared_ptr<Fn> work, Cancel cancel) {
         using T = std::conditional_t<std::is_void_v<std::invoke_result_t<Fn>>, std::monostate,
                                      std::invoke_result_t<Fn>>;
-        auto initiate = [this, work = std::make_shared<Fn>(std::move(fn)),
-                         cancel = std::move(cancel)](auto handler) mutable {
+        auto initiate = [this, work = std::move(work), cancel = std::move(cancel)](auto handler) mutable {
             auto executor = asio::get_associated_executor(handler);
             auto guard =
                 std::make_shared<decltype(asio::make_work_guard(executor))>(asio::make_work_guard(executor));
@@ -71,6 +64,20 @@ class WorkPool {
             std::rethrow_exception(result.error);
         co_return std::move(*result.value);
     }
+
+  public:
+    explicit WorkPool(std::size_t workers, std::size_t capacity = 128);
+    ~WorkPool();
+    WorkPool(const WorkPool&) = delete;
+    WorkPool& operator=(const WorkPool&) = delete;
+    std::size_t queued() const;
+    template <class Fn> auto run(Fn fn, Cancel cancel = {}) {
+        // Transfer the callable before constructing a suspended coroutine. Callers
+        // bind this returned awaitable to a local, then co_await it in a separate
+        // expression: GCC PR101243 can destroy temporary lambda captures twice
+        // when lambda construction and co_await appear in one expression.
+        return run_owned(std::make_shared<Fn>(std::move(fn)), std::move(cancel));
+    }
 };
-asio::awaitable<void> async_delay(Millis delay, const Cancel& cancel = {});
+asio::awaitable<void> async_delay(Millis delay, Cancel cancel = {});
 } // namespace devbox

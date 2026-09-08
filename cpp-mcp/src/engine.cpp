@@ -15,14 +15,13 @@ Engine::Engine(std::shared_ptr<const Config> config)
     : config_(std::move(config)), contract_(*config_),
       commands_(std::clamp<std::size_t>(config_->exec_max_concurrent + 1, 2, 16), 128), runtime_(config_),
       scheduler_(SchedulerConfig::from(*config_)), jobs_(config_), docker_files_(config_), search_(config_),
-      lifecycle_(config_, background_), github_(config_, runtime_, lifecycle_), usage_(*config_, background_),
-      performance_(*config_, background_, build_snapshot),
+      lifecycle_(config_, background_), github_(config_, runtime_, lifecycle_), capture_(config_),
+      usage_(*config_, background_), performance_(*config_, background_, build_snapshot),
       monitoring_(config_, background_, scheduler_, jobs_.store(), runtime_, performance_, usage_,
                   [this] { return server_ ? server_->active_requests() : 0; }) {
     for (const auto& tool : contract_.all()) {
         const auto name = json_string(tool, "name");
-        if (name.find("capture") == name.npos)
-            implemented_.insert(name);
+        implemented_.insert(name);
     }
 }
 Engine::~Engine() {
@@ -108,6 +107,8 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         if (!implemented_.contains(name))
             throw Error("Unknown tool: " + name);
         auto args = contract_.arguments(name, arguments);
+        if (name.find("capture") != name.npos)
+            co_return co_await capture(name, std::move(args), cancel);
         if (name == "devbox_wait") {
             const auto start = Clock::now();
             const auto seconds = json_number(args, "seconds");
@@ -131,18 +132,24 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
             co_return co_await execute(name, std::move(args), cancel);
         if (name == "devbox_search_files")
             co_return co_await search(std::move(args), cancel);
-        if (name == "devbox_exec_start" || name == "devbox_run_program_start" || name == "devbox_job_submit")
-            co_return co_await controls_.run([this, name, args] { return detached(name, args); }, cancel);
-        if (name == "devbox_status")
-            co_return co_await controls_.run([this, cancel] { return status(cancel); }, cancel);
+        if (name == "devbox_exec_start" || name == "devbox_run_program_start" ||
+            name == "devbox_job_submit") {
+            auto pending = controls_.run([this, name, args] { return detached(name, args); }, cancel);
+            co_return co_await std::move(pending);
+        }
+        if (name == "devbox_status") {
+            auto pending = controls_.run([this, cancel] { return status(cancel); }, cancel);
+            co_return co_await std::move(pending);
+        }
         if (name == "host_status" || name == "windows_host_status")
             co_return host_status();
         if (name == "devbox_start" || name == "devbox_stop" || name == "devbox_restart" ||
-            name == "devbox_recreate")
-            co_return co_await controls_.run([this, name, cancel] { return lifecycle(name, cancel); },
-                                             cancel);
+            name == "devbox_recreate") {
+            auto pending = controls_.run([this, name, cancel] { return lifecycle(name, cancel); }, cancel);
+            co_return co_await std::move(pending);
+        }
         if (name == "devbox_github_auth_status" || name == "devbox_sync_github_auth_from_host") {
-            co_return co_await commands_.run(
+            auto pending = commands_.run(
                 [this, name, cancel] {
                     try {
                         if (name == "devbox_github_auth_status")
@@ -161,9 +168,10 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
                     }
                 },
                 cancel);
+            co_return co_await std::move(pending);
         }
         if (name == "devbox_job_logs" || name == "devbox_job_cancel") {
-            co_return co_await controls_.run(
+            auto pending = controls_.run(
                 [this, name, args] {
                     const auto id = json_string(args, "job_id");
                     try {
@@ -183,15 +191,18 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
                     }
                 },
                 cancel);
+            co_return co_await std::move(pending);
         }
         if (name == "devbox_file_state" || name == "devbox_write_file_atomic" || name == "devbox_task_get" ||
             name == "devbox_task_put" || name == "devbox_task_list" || name == "devbox_job_list" ||
             name == "devbox_capabilities") {
             auto& pool = name == "devbox_write_file_atomic" ? atomic_ : files_;
-            co_return co_await pool.run([this, name, args] { return durable(name, args); }, cancel);
+            auto pending = pool.run([this, name, args] { return durable(name, args); }, cancel);
+            co_return co_await std::move(pending);
         }
         auto& pool = name.find("write") != name.npos ? atomic_ : files_;
-        co_return co_await pool.run([this, name, args, cancel] { return files(name, args, cancel); }, cancel);
+        auto pending = pool.run([this, name, args, cancel] { return files(name, args, cancel); }, cancel);
+        co_return co_await std::move(pending);
     } catch (const std::exception& e) {
         co_return result_error(e.what());
     }
@@ -436,13 +447,17 @@ asio::awaitable<Json> Engine::metadata(const HttpRequest& request) {
                             {"devboxWorkspacePath", path_text(config_->devbox_workspace_path)},
                             {"hostWorkspacePath", path_text(config_->host_workspace_path)},
                             {"hostExecEnabled", config_->host_exec_enabled}};
-    value["devbox"] = co_await controls_.run([this] {
-        try {
-            return lifecycle_.status();
-        } catch (const std::exception& e) {
-            return Json{{"exists", false}, {"running", false}, {"status", std::string("error: ") + e.what()}};
-        }
-    });
+    auto pending = controls_.run(
+        [this, cancel = request.cancellation] {
+            try {
+                return lifecycle_.status(cancel);
+            } catch (const std::exception& e) {
+                return Json{
+                    {"exists", false}, {"running", false}, {"status", std::string("error: ") + e.what()}};
+            }
+        },
+        request.cancellation);
+    value["devbox"] = co_await std::move(pending);
     co_return value;
 }
 } // namespace devbox

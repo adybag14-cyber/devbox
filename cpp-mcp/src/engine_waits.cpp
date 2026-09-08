@@ -77,7 +77,8 @@ asio::awaitable<Json> Engine::wait_file(Json args, Cancel cancel) {
     std::optional<Clock::time_point> stable;
     try {
         for (;;) {
-            auto state = co_await files_.run([path] { return path_state(path); }, cancel);
+            auto pending = files_.run([path] { return path_state(path); }, cancel);
+            auto state = co_await std::move(pending);
             const bool condition =
                 json_bool(args, "should_exist", true)
                     ? json_bool(state, "exists") && json_uint(state, "size") >= json_uint(args, "min_bytes")
@@ -116,7 +117,8 @@ asio::awaitable<Json> Engine::wait_job(Json args, Cancel cancel) {
     const auto wait = Millis(static_cast<Millis::rep>(json_number(args, "wait_seconds") * 1000));
     const auto deadline = Clock::now() + wait;
     try {
-        auto state = co_await files_.run([this, id] { return jobs_.store().get_status(id); }, cancel);
+        auto pending = files_.run([this, id] { return jobs_.store().get_status(id); }, cancel);
+        auto state = co_await std::move(pending);
         const auto initial = json_string(state, "status");
         if (wait.count() > 0 && !terminal_status(initial)) {
             for (;;) {
@@ -128,7 +130,8 @@ asio::awaitable<Json> Engine::wait_job(Json args, Cancel cancel) {
                 }
                 co_await async_delay(
                     std::min(Millis(500), std::chrono::duration_cast<Millis>(deadline - now)), cancel);
-                state = co_await files_.run([this, id] { return jobs_.store().get_status(id); }, cancel);
+                auto next = files_.run([this, id] { return jobs_.store().get_status(id); }, cancel);
+                state = co_await std::move(next);
                 if (terminal_status(json_string(state, "status")) ||
                     (!json_bool(args, "terminal_only", true) && json_string(state, "status") != initial))
                     break;

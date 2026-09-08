@@ -10,3 +10,4 @@ setup-tui/build/
 vcpkg_installed/
 cpp-mcp/build/
 cpp-bootstrap/build/
+bin/native/

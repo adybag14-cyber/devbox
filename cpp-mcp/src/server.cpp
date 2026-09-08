@@ -119,6 +119,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         boost::system::error_code ec;
         auto endpoint = stream.socket().remote_endpoint(ec);
         request.peer = ec ? "" : endpoint.address().to_string();
+        request.cancellation = cancel;
     }
     ~Session() {
         std::lock_guard lock(server->sessions_mutex);
@@ -158,6 +159,18 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         sent_bytes += co_await asio::async_write(stream.socket(), http::make_chunk(asio::buffer(text)),
                                                  asio::use_awaitable);
     }
+    asio::awaitable<void> send_rpc(Json value) {
+        auto reply = HttpReply::json(200, value);
+        if (json_string(request.headers, "accept").find("text/event-stream") != std::string::npos) {
+            reply.body =
+                "event: message\ndata: " + value.dump(-1, ' ', false, Json::error_handler_t::replace) +
+                "\n\n";
+            reply.headers["content-type"] = "text/event-stream";
+            reply.headers["cache-control"] = "no-cache, no-transform";
+            reply.headers["x-accel-buffering"] = "no";
+        }
+        co_await send(std::move(reply));
+    }
     asio::awaitable<Json> call_tool(Json params, Json id) {
         if (!params.is_object() || !params.contains("name") || !params["name"].is_string() ||
             (params.contains("arguments") && !params["arguments"].is_object()))
@@ -193,8 +206,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     asio::awaitable<void> tool_response(const Json& id, const Json& params, bool sse) {
         if (!params.is_object() || !params.contains("name") || !params["name"].is_string() ||
             (params.contains("arguments") && !params["arguments"].is_object())) {
-            co_await send(HttpReply::json(
-                200, rpc_error(id, -32602, "tools/call requires a name and object arguments")));
+            co_await send_rpc(rpc_error(id, -32602, "tools/call requires a name and object arguments"));
             co_return;
         }
         auto registration = server->requests.register_request(request, id, cancel);
@@ -244,7 +256,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                     co_await send_chunk(": heartbeat\n\n");
             }
             response = std::move(completion->response);
-            if (cancel->cancelled())
+            if (disconnected)
                 co_return;
             co_await send_chunk("event: message\ndata: " +
                                 response.dump(-1, ' ', false, Json::error_handler_t::replace) + "\n\n");
@@ -278,7 +290,8 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         }
         if (get && request.path == "/readyz") {
             const bool ready = server->backend->ready();
-            co_await send(HttpReply::json(ready ? 200 : 503, Json{{"ok", ready}}));
+            const Json body{{"ok", ready}};
+            co_await send(HttpReply::json(ready ? 200 : 503, body));
             co_return;
         }
         auto* oauth = server->oauth_service.get();
@@ -307,8 +320,9 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 }
             }
             auto self = shared_from_this();
-            auto reply = co_await server->auth_pool.run(
+            auto pending = server->auth_pool.run(
                 [self, oauth] { return oauth_route(*oauth, self->request, self->cancel); }, cancel);
+            auto reply = co_await std::move(pending);
             co_await send(std::move(reply));
             co_return;
         }
@@ -329,8 +343,9 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                     throw OAuthFailure("invalid_token",
                                        "Invalid Authorization header format, expected 'Bearer TOKEN'", 401);
                 const auto token = authorization.substr(space + 1);
-                auto info = co_await server->auth_pool.run(
+                auto pending = server->auth_pool.run(
                     [oauth, token] { return oauth->verify_access_token(token); }, cancel);
+                auto info = co_await std::move(pending);
                 request.oauth.emplace(std::move(info));
             } catch (const OAuthFailure& e) {
                 failure.emplace(oauth_failure(e));
@@ -351,10 +366,11 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         const auto accept = json_string(request.headers, "accept");
         if (get) {
             if (accept.find("text/event-stream") != accept.npos) {
-                co_await send(HttpReply{200, ": mcp-sse-probe\n\n",
-                                        Json{{"content-type", "text/event-stream"},
-                                             {"cache-control", "no-cache, no-transform"},
-                                             {"x-accel-buffering", "no"}}});
+                HttpReply probe{200, ": mcp-sse-probe\n\n",
+                                Json{{"content-type", "text/event-stream"},
+                                     {"cache-control", "no-cache, no-transform"},
+                                     {"x-accel-buffering", "no"}}};
+                co_await send(std::move(probe));
             } else if (request.path == "/") {
                 auto metadata = co_await server->backend->metadata(request);
                 metadata["gateway_bridge"] = server->gateway.bridge_info(request.is_local);
@@ -421,16 +437,17 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 Json{{"protocolVersion", supported_protocol(requested) ? requested : "2025-11-25"},
                      {"capabilities", {{"tools", {{"listChanged", true}}}, {"logging", Json::object()}}},
                      {"serverInfo", server->backend->server_info()}};
-            co_await send(HttpReply::json(200, rpc_result(id, result)));
+            co_await send_rpc(rpc_result(id, result));
         } else if (method == "ping")
-            co_await send(HttpReply::json(200, rpc_result(id, Json::object())));
-        else if (method == "tools/list")
-            co_await send(
-                HttpReply::json(200, rpc_result(id, Json{{"tools", server->backend->list_tools(protocol)}})));
-        else if (method == "tools/call")
+            co_await send_rpc(rpc_result(id, Json::object()));
+        else if (method == "tools/list") {
+            // Materialize initializer lists before suspension (also supports GCC 12 coroutines).
+            const Json result{{"tools", server->backend->list_tools(protocol)}};
+            co_await send_rpc(rpc_result(id, result));
+        } else if (method == "tools/call")
             co_await tool_response(id, params, accept.find("text/event-stream") != accept.npos);
         else
-            co_await send(HttpReply::json(200, rpc_error(id, -32601, "Method not found")));
+            co_await send_rpc(rpc_error(id, -32601, "Method not found"));
     }
     asio::awaitable<void> run() {
         std::optional<HttpReply> failure;
@@ -442,7 +459,8 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             boost::system::error_code ec;
             co_await http::async_read(stream, buffer, parser, asio::redirect_error(asio::use_awaitable, ec));
             if (ec == http::error::body_limit) {
-                co_await send(HttpReply::json(413, Json{{"error", "request entity too large"}}));
+                const Json body{{"error", "request entity too large"}};
+                co_await send(HttpReply::json(413, body));
             } else if (ec) {
                 if (ec != http::error::end_of_stream && ec != asio::error::operation_aborted)
                     failure.emplace(HttpReply::text(400, "Invalid HTTP request"));

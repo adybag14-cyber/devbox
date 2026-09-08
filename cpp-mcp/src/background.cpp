@@ -9,7 +9,8 @@ asio::awaitable<void> BackgroundTasks::run_adaptive(std::string name, Millis ini
             co_await async_delay(delay, cancel_);
             attempt(name);
             try {
-                delay = co_await workers_.run([action, cancel = cancel_] { return action(cancel); }, cancel_);
+                auto pending = workers_.run([action, cancel = cancel_] { return action(cancel); }, cancel_);
+                delay = co_await std::move(pending);
                 delay = std::max(Millis(1), delay);
                 success(name);
             } catch (const Cancelled&) {
@@ -141,7 +142,8 @@ asio::awaitable<void> BackgroundTasks::run_periodic(std::string name, Millis ini
         while (!cancel_->cancelled()) {
             attempt(name);
             try {
-                co_await workers_.run([action, cancel = cancel_] { action(cancel); }, cancel_);
+                auto pending = workers_.run([action, cancel = cancel_] { action(cancel); }, cancel_);
+                co_await std::move(pending);
                 success(name);
             } catch (const Cancelled&) {
                 break;

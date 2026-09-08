@@ -240,6 +240,17 @@ std::optional<fs::path> find_program(std::string_view program, const Environment
 #ifndef _WIN32
             if (::access(candidate.c_str(), X_OK) != 0)
                 continue;
+#else
+            // PATHEXT is commonly uppercase; report the spelling owned by the filesystem.
+            const auto length = GetLongPathNameW(candidate.c_str(), nullptr, 0);
+            if (length) {
+                std::wstring actual(length, L'\0');
+                const auto written = GetLongPathNameW(candidate.c_str(), actual.data(), length);
+                if (written && written < length) {
+                    actual.resize(written);
+                    candidate = fs::path(actual);
+                }
+            }
 #endif
             return fs::absolute(candidate);
         }

@@ -144,9 +144,11 @@ void OperationalMonitor::start() {
                          [this](const Cancel&) { scheduler_iteration(); });
     background_.periodic("job-maintenance", Millis(17000), Millis(60000),
                          [this](const Cancel&) { job_iteration(false); });
-    background_.once("job-quota-initial", Millis(0), [this](const Cancel&) { job_iteration(true); });
-    background_.periodic("job-quota", Millis(37000), Millis(60000),
-                         [this](const Cancel&) { job_iteration(true); });
+    background_.adaptive("job-quota", Millis(0),
+                         [this, first = std::make_shared<std::atomic_bool>(true)](const Cancel&) {
+                             job_iteration(true);
+                             return first->exchange(false) ? Millis(37000) : Millis(60000);
+                         });
     background_.periodic("incident-monitor", Millis(7000), Millis(10000),
                          [this](const Cancel&) { incident_iteration(); });
     background_.periodic(

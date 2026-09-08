@@ -9,7 +9,7 @@ import { spawn } from "node:child_process";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, "..", "..");
-const binaryPath = path.join(
+const binaryPath = process.env.DEVBOX_MCP_TEST_BINARY || path.join(
   projectRoot,
   "rust-mcp",
   "target",

@@ -119,9 +119,9 @@ int main(int argc, char** argv) {
             }
             require(failed && monitor.store_health()["ok"] == false && !monitor.ready(45),
                     "failed storage probe rejects readiness");
-            require(monitor.store_health()["jobsWritable"]==false &&
-                    disk_pressure(128ULL*1024*1024,1024ULL*1024*1024,true)=="critical" &&
-                    !monitor.reject_disk_work(ResourceClass::heavy,true,"cmake --build").has_value(),
+            require(monitor.store_health()["jobsWritable"] == false &&
+                        disk_pressure(128ULL * 1024 * 1024, 1024ULL * 1024 * 1024, true) == "critical" &&
+                        !monitor.reject_disk_work(ResourceClass::heavy, true, "cmake --build").has_value(),
                     "storage probe failure and advisory read-only admission");
             fs::remove(probe_config->jobs_root);
             monitor.probe_store();
@@ -138,10 +138,11 @@ int main(int argc, char** argv) {
             server.stop();
             engine->stop();
         });
-        require(engine->list_tools("2025-11-25").size() == 40 && !engine->ready(),
-                "only implemented tools advertised; incomplete rewrite not ready for cutover");
+        require(engine->list_tools("2025-11-25").size() == 45 &&
+                    !json_bool(engine->parity_report(), "cutover_allowed"),
+                "all implemented tools advertised; certification still required before cutover");
         const auto capabilities = data(invoke(base, "devbox_capabilities"));
-        require(capabilities["implementation"] == "cpp" && capabilities["tools"].size() == 40 &&
+        require(capabilities["implementation"] == "cpp" && capabilities["tools"].size() == 45 &&
                     capabilities["schema_sha256"].get<std::string>().size() == 64,
                 "native capabilities match actual dispatch");
         require(build_snapshot()["binarySha256"] == sha256_file(executable_path()),
@@ -259,6 +260,9 @@ int main(int argc, char** argv) {
         require(status["executionStore"]["ok"] == true &&
                     status["performance"]["process"]["pid"] == process_id(),
                 "live status integrates actual operational health");
+        require(json_uint(status["backgroundTasks"]["job-quota"], "lastSuccessUnixMs") > 0 &&
+                    !status["backgroundTasks"].contains("job-quota-initial"),
+                "initial quota enforcement is recorded on the supervised quota task");
         const auto before = Clock::now();
         std::vector<std::future<Json>> waits;
         for (int i = 0; i < 20; ++i)

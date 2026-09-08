@@ -5,18 +5,18 @@
   "target_tool_count": 45,
   "areas": {
     "shared_core": "initial implementation builds and passes core checks",
-    "configuration": "ported; full differential validation pending",
+    "configuration": "ported; all four frozen schema profiles and the legacy configuration SDK gate pass on Windows",
     "wire_contract": "all 45 embedded schemas and metadata match frozen Rust across host, Docker, constrained and unlimited-transfer profiles except the declared implementation name",
-    "transport": "standalone C++ MCP executable serves 40 implemented tools; real SDK covers initialization, bytes, checkpoints, detached jobs, retries, cancellation and 32 passive waits; capture and full protocol/platform integration gates pending",
-    "oauth_gateway": "persistent OAuth/PKCE/refresh/revocation, RS256 Cloudflare JWKS and Host/CORS gateway implemented; Windows functional and stalled-JWKS concurrency tests pass; cross-runtime state and full SDK authentication gates pending",
+    "transport": "all 45 handlers implemented; Windows result audit matches all 41 non-display calls; full SDK, explicit SSE cancellation, bounded 128 MiB output and watcher-contention gates pass",
+    "oauth_gateway": "persistent OAuth/PKCE/refresh/revocation, RS256 Cloudflare JWKS and gateway implemented; both OAuth SDK gates and the gateway SDK gate pass on Windows; cross-runtime persisted-state gate pending",
     "process_runtime": "native Windows/POSIX implementation; Windows process and shell tests pass; Docker, UAC and cross-platform gates pending",
     "scheduler_jobs": "native scheduler, detached runners, receipts, heartbeat recovery, logs, retention and quota implemented; Windows behavioral tests pass; cross-runtime and cross-platform gates pending",
     "files_tasks_search": "native atomic writes, binary transfer, task checkpoints, directory listing, RE2/ripgrep search and host byte/syntax inspection implemented; Windows functional tests pass; full result and platform parity gates pending",
     "lifecycle_github_docker_files": "C++ lifecycle, Guardian desired-state, GitHub CLI integration and existing external Docker/Python file helpers ported; lifecycle rollback fixture passes; actual Docker and GitHub integration gates pending",
-    "capture": "pending",
+    "capture": "Windows native GDI/WIC and isolated killable workers implemented and validated against owned test windows; Linux external backends and native macOS Quartz discovery implemented; platform UI certification pending",
     "monitoring": "bounded usage queues, actual HTTP executor sampling, allocation/process metrics, incidents, readiness/storage probes, adaptive retries, maintenance/quota and version refresh integrated; Windows fault/recovery tests pass",
-    "bootstrap_installer": "pending",
-    "guardian_integration": "pending",
-    "cross_platform_certification": "pending"
+    "bootstrap_installer": "native C++ CLI, configuration, prerequisite checks, source build, verified binary staging and Guardian calls implemented; fixture tests pass on Windows and Linux; packaged fresh-install gates pending",
+    "guardian_integration": "immutable C++ launcher preflight and post-health promotion implemented; Node preflight, Windows startup contract and owned-process tests pass; full managed candidate startup gate pending",
+    "cross_platform_certification": "15 native suites pass on Windows; all 15 pass on Linux release and address/undefined-behavior sanitizer builds; macOS, additional Linux distributions and Android release matrix pending"
   }
 }

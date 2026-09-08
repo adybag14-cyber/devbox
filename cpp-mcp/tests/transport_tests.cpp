@@ -36,7 +36,7 @@ struct FixtureBackend : McpBackend {
             if (name == "devbox_wait")
                 co_await async_delay(delay, cancel);
             else if (name == "host_exec") {
-                co_await workers.run(
+                auto pending = workers.run(
                     [delay, cancel] {
                         const auto deadline = Clock::now() + delay;
                         while (Clock::now() < deadline) {
@@ -46,6 +46,7 @@ struct FixtureBackend : McpBackend {
                         cancel->check();
                     },
                     cancel);
+                co_await std::move(pending);
             } else
                 throw Error("Unknown fixture tool");
         } catch (const Cancelled&) {
@@ -127,10 +128,30 @@ int main(int argc, char** argv) {
                          rpc("initialize", 0, Json{{"protocolVersion", "2025-11-25"}}).dump(), headers());
         require(Json::parse(initialize.body)["result"]["protocolVersion"] == "2025-11-25",
                 "legacy SDK handshake");
+        const auto initialize_sse = http_request(
+            "POST", base + "/mcp", rpc("initialize", 1, Json{{"protocolVersion", "2025-06-18"}}).dump(),
+            headers("application/json, text/event-stream"));
+        require(json_string(initialize_sse.headers, "content-type").starts_with("text/event-stream") &&
+                    initialize_sse.body.find("event: message\ndata:") != initialize_sse.body.npos &&
+                    initialize_sse.body.find("2025-06-18") != initialize_sse.body.npos,
+                "legacy initialize negotiates the requested SSE transport");
         auto notify = rpc("notifications/initialized");
         notify.erase("id");
         require(http_request("POST", base + "/mcp", notify.dump(), headers()).status == 202,
                 "initialized notification");
+        auto cancelled_stream = std::async(std::launch::async, [&] {
+            return http_request("POST", base + "/mcp", call("devbox_wait", 10000, "stream-cancel").dump(),
+                                headers("application/json, text/event-stream"), Millis(2500));
+        });
+        until([&] { return server.active_requests() == 1; }, "SSE cancellation target registered");
+        auto cancel_stream = rpc("notifications/cancelled", 0, Json{{"requestId", "stream-cancel"}});
+        cancel_stream.erase("id");
+        require(http_request("POST", base + "/mcp", cancel_stream.dump(), headers()).status == 202,
+                "SSE cancellation notification accepted");
+        const auto cancelled_response = cancelled_stream.get();
+        require(cancelled_response.body.find("event: message") != std::string::npos &&
+                    cancelled_response.body.find("-32800") != std::string::npos,
+                "explicit cancellation returns a terminal SSE response to the connected client");
         require(Json::parse(http_request("POST", base + "/mcp", rpc("tools/list").dump(), headers())
                                 .body)["result"]["tools"]
                         .size() == 2,

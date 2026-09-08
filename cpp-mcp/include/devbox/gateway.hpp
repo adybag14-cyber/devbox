@@ -10,6 +10,7 @@ struct HttpRequest {
     std::string body;
     bool is_local = false;
     std::optional<Json> oauth;
+    Cancel cancellation;
 };
 struct HttpReply {
     int status = 200;

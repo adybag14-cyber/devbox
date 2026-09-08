@@ -31,7 +31,7 @@ int main() {
         config->platform = Platform::detect();
         config->runtime_mode = RuntimeMode::host;
         config->host_exec_enabled = true;
-        config->host_search_backend = "native";
+        config->host_search_backend = "js";
         config->devbox_workspace_path = root;
         config->host_default_workdir = root;
         config->power_shell_exe = "powershell.exe";
@@ -82,7 +82,7 @@ int main() {
             require(split(one.stdout_text, '\n', false).size() == 1,
                     "ripgrep match-limit termination is successful");
         }
-        config->host_search_backend = "native";
+        config->host_search_backend = "js";
         write_file(root / "linear.txt", std::string(200000, 'a') + "X\n");
         request.path = path_text(root / "linear.txt");
         request.pattern = "(a+)+$";

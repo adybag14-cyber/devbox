@@ -43,7 +43,7 @@ std::size_t WorkPool::queued() const {
     std::lock_guard lock(self.mutex_);
     return self.queue_.size();
 }
-asio::awaitable<void> async_delay(Millis delay, const Cancel& cancel) {
+asio::awaitable<void> async_delay(Millis delay, Cancel cancel) {
     asio::steady_timer timer(co_await asio::this_coro::executor);
     const auto deadline = Clock::now() + std::max(Millis(0), delay);
     while (Clock::now() < deadline) {
