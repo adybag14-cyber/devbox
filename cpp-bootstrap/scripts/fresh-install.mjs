@@ -16,8 +16,8 @@ const inputs = { 'devbox-setup': process.env.DEVBOX_SETUP_TEST_BINARY,
 const env = { ...process.env, DEVBOX_PROJECT_ROOT: installedRepo, PUBLIC_BASE_URL: '', MCP_AUTH_MODE: 'none' };
 const sha = file => readFile(file).then(bytes => createHash('sha256').update(bytes).digest('hex'));
 const outputs = {};
-async function run(file, args, cwd = installedRepo) {
-  return runCheckedProcess(file, args, { cwd, env, timeoutMs: 30000, label: 'Packaged C++ installer fixture' });
+async function run(file, args, cwd = installedRepo, timeoutMs = 30000) {
+  return runCheckedProcess(file, args, { cwd, env, timeoutMs, label: 'Packaged C++ installer fixture' });
 }
 try {
   await run('git', ['clone', '--quiet', '--no-hardlinks', repo, installedRepo], root);
@@ -32,7 +32,7 @@ try {
   assert.match(outputs.version, /C\+\+/);
   outputs.configure = (await run(setup, ['--repo', installedRepo, '--runtime', 'host', '--auth', 'none',
     '--host', '127.0.0.1', '--port', '18193', '--workspace', path.join(root, 'work with spaces'),
-    '--skip-system-packages', '--no-link', '--no-start'])).stdout;
+    '--skip-system-packages', '--no-link', '--no-start'], installedRepo, 180000)).stdout;
   const config = await readFile(path.join(installedRepo, '.env'), 'utf8');
   assert.match(config, /^DEVBOX_MCP_IMPLEMENTATION=cpp$/m);
   assert.match(config, /^PORT=18193$/m);

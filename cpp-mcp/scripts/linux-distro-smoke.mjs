@@ -18,7 +18,9 @@ const identity = `devbox-cpp-${distribution}-${randomUUID()}`;
 const label = 'io.devbox.cpp.fixture';
 const root = await mkdtemp(path.join(os.tmpdir(), 'devbox-cpp-distro-'));
 const input = path.join(root, 'input'); await mkdir(path.join(input, 'bin'), { recursive: true });
-const output = path.join(root, 'output'); await mkdir(output);
+// Keep the export directories owned by the host so cleanup can unlink files
+// produced by the root user inside the isolated Alpine container.
+const output = path.join(root, 'output'); await mkdir(path.join(output, 'bin'), { recursive: true });
 async function run(file, args, options = {}) {
   return runCheckedProcess(file, args, { cwd: repo, timeoutMs: 120000,
     label: 'Native Linux distro certification', ...options });

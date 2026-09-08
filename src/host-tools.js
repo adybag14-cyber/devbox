@@ -315,6 +315,7 @@ const sanitizePreview = (value, maxChars = 400) => String(value).slice(0, maxCha
 
 const resolveHostPathCandidate = (candidate, workingDir) => {
   const raw = String(candidate ?? "").trim();
+  const hostPath = platform.isWindows ? path.win32 : path.posix;
   if (!raw) {
     return "";
   }
@@ -324,16 +325,16 @@ const resolveHostPathCandidate = (candidate, workingDir) => {
   }
 
   if (raw.startsWith("~")) {
-    return path.win32.resolve(os.homedir(), raw.slice(1));
+    return hostPath.resolve(os.homedir(), raw.slice(1).replace(/^[\\/]+/u, ""));
   }
 
-  return path.win32.isAbsolute(raw) ? path.win32.normalize(raw) : path.win32.resolve(workingDir, raw);
+  return hostPath.isAbsolute(raw) ? hostPath.normalize(raw) : hostPath.resolve(workingDir, raw);
 };
 
 const resolveRequiredHostFilePath = (filePath, workingDir) => {
   const resolvedPath = resolveHostPathCandidate(filePath, workingDir);
   if (!resolvedPath) {
-    throw new HostCommandError(`Could not resolve a Windows host path from "${filePath}".`);
+    throw new HostCommandError(`Could not resolve a host path from "${filePath}".`);
   }
 
   return resolvedPath;
