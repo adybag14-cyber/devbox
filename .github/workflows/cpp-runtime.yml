@@ -53,6 +53,12 @@ jobs:
         shell: bash
         run: |
           node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'VCPKG_ROOT=' + require('path').resolve('.cpp-build/vcpkg') + '\n')"
+          node -e "const fs=require('fs'),p=require('path').resolve('.cpp-build/vcpkg-cache');fs.mkdirSync(p,{recursive:true});fs.appendFileSync(process.env.GITHUB_ENV,'VCPKG_DEFAULT_BINARY_CACHE='+p+'\n')"
+      - name: Cache pinned native dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: .cpp-build/vcpkg-cache
+          key: cpp-vcpkg-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.sanitizers }}-${{ hashFiles('vcpkg.json') }}
       - name: Install SDK and launcher test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Select Clang sanitizer compiler
@@ -67,6 +73,9 @@ jobs:
         run: node cpp-mcp/scripts/ci-native.mjs
       - name: Fresh packaged installer and TUI discovery
         run: node cpp-bootstrap/scripts/fresh-install.mjs
+      - name: Verified POSIX and Termux download flows
+        if: runner.os != 'Windows'
+        run: node cpp-bootstrap/scripts/download-install.mjs
       - name: Launcher and retained runtime tests
         run: npm run test:unit
       - name: Native MCP SDK and persistent agent state
@@ -88,6 +97,9 @@ jobs:
           node rust-mcp/scripts/windows-contention-smoke-runner.mjs
           ./scripts/ci/test-windows-startup-contract.ps1
           ./scripts/ci/test-windows-managed-mcp-ownership.ps1
+      - name: Live Docker files, processes, authentication and lifecycle
+        if: matrix.name == 'Linux GCC'
+        run: node cpp-mcp/scripts/docker-sdk-smoke.mjs
       - name: Upload native artifacts and test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -98,6 +110,7 @@ jobs:
             .cpp-build/ci-native-result.json
             .cpp-build/ci/Testing/Temporary/
           if-no-files-found: warn
+          include-hidden-files: true
 
   android:
     name: C++ Android API 21 ${{ matrix.abi }}
@@ -124,9 +137,17 @@ jobs:
         shell: bash
         run: |
           sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -disableMetrics
-          sdkmanager --install 'ndk;29.0.14206865'
+          android_sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          "$android_sdk_root/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;29.0.14206865'
           echo "VCPKG_ROOT=$GITHUB_WORKSPACE/.cpp-build/vcpkg" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=$android_sdk_root/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          mkdir -p .cpp-build/vcpkg-cache
+          echo "VCPKG_DEFAULT_BINARY_CACHE=$GITHUB_WORKSPACE/.cpp-build/vcpkg-cache" >> "$GITHUB_ENV"
+      - name: Cache pinned Android dependencies
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: .cpp-build/vcpkg-cache
+          key: cpp-vcpkg-android-r29-api21-${{ matrix.abi }}-${{ hashFiles('vcpkg.json', 'cpp-mcp/cmake/triplets/*') }}
       - name: Build all native components for Android API 21
         run: node cpp-mcp/scripts/build-android.mjs --abi ${{ matrix.abi }}
       - name: Stage Android bundle

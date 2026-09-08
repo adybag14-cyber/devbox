@@ -1,3 +1,4 @@
+#include "devbox/scoped_thread.hpp"
 #include "devbox/native.hpp"
 #include "devbox/posix_process.hpp"
 #include "devbox/process.hpp"
@@ -17,11 +18,11 @@ class ChildReaper {
     std::mutex mutex_;
     std::condition_variable wake_;
     std::vector<pid_t> children_;
-    std::jthread thread_;
+    ScopedThread thread_;
 
   public:
     ChildReaper()
-        : thread_([this](std::stop_token stop) {
+        : thread_([this](ThreadStopToken stop) {
               std::unique_lock lock(mutex_);
               while (!stop.stop_requested()) {
                   std::erase_if(children_, [](pid_t pid) {

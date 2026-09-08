@@ -1,3 +1,4 @@
+#include "devbox/scoped_thread.hpp"
 #include "devbox/jobs.hpp"
 #include <algorithm>
 #include <csignal>
@@ -16,7 +17,7 @@ class RunnerMonitor {
     std::mutex mutex_, write_mutex_;
     Cancel stop_ = std::make_shared<Cancellation>();
     Cancel cancel_ = std::make_shared<Cancellation>();
-    std::jthread thread_;
+    ScopedThread thread_;
     void write() {
         std::lock_guard writer(write_mutex_);
         Json value;
@@ -37,7 +38,7 @@ class RunnerMonitor {
         : store_(std::move(store)), id_(request["id"].get<std::string>()),
           runtime_(request["runtimeMode"].get<std::string>()) {
         write();
-        thread_ = std::jthread([this, interval] {
+        thread_ = ScopedThread([this, interval] {
             auto next_heartbeat = Clock::now() + Millis(std::max<std::uint64_t>(1000, interval));
             while (!stop_->wait_for(Millis(50))) {
                 try {

@@ -1,3 +1,4 @@
+#include "devbox/scoped_thread.hpp"
 #include "devbox/native.hpp"
 #include "devbox/process.hpp"
 #include <iostream>
@@ -6,6 +7,8 @@
 #include <fcntl.h>
 #include <io.h>
 #else
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #endif
 using namespace devbox;
@@ -62,6 +65,18 @@ int child(int argc, char** argv) {
         std::cout << "out";
         std::cerr << "err";
         return 7;
+#ifndef _WIN32
+    } else if (mode == "fd-identity" && argc >= 6) {
+        struct stat descriptor{};
+        const bool inherited = ::fstat(std::stoi(argv[3]), &descriptor) == 0 &&
+            static_cast<std::uint64_t>(descriptor.st_dev) == std::stoull(argv[4]) &&
+            static_cast<std::uint64_t>(descriptor.st_ino) == std::stoull(argv[5]);
+        const auto report = Json{{"inherited", inherited}}.dump();
+        if (argc == 7)
+            write_file(path_from_utf8(argv[6]), report);
+        else
+            std::cout << report;
+#endif
     } else
         return 90;
     return 0;
@@ -124,6 +139,30 @@ int test_main(int argc, char** argv) {
         require(fs::equivalent(path_from_utf8(echoed["cwd"].get<std::string>()), root),
                 "child working directory");
         require(environment("DEVBOX_PROCESS_TEST") != "isolated=child é", "parent environment unchanged");
+#ifndef _WIN32
+        const auto private_path = root / "parent-private-descriptor";
+        write_file(private_path, "parent-only");
+        NativeHandle private_fd(::open(private_path.c_str(), O_RDONLY));
+        struct stat private_info{};
+        require(private_fd && ::fstat(private_fd.get(), &private_info) == 0, "private descriptor fixture");
+        const std::vector<std::string> descriptor_args{
+            "--child", "fd-identity", std::to_string(private_fd.get()),
+            std::to_string(private_info.st_dev), std::to_string(private_info.st_ino)};
+        const auto descriptor = spawn_process(self, descriptor_args, options);
+        require(!json_bool(Json::parse(descriptor.stdout_text), "inherited"),
+                "foreground child inherited an unrelated parent descriptor");
+        auto detached_args = descriptor_args;
+        const auto report = root / "detached-fd-report.json";
+        detached_args.push_back(path_text(report));
+        const auto detached = spawn_detached(executable_path(), detached_args, root, options.env);
+        const auto descriptor_deadline = Clock::now() + Millis(3000);
+        while ((!fs::exists(report) || process_alive(detached)) && Clock::now() < descriptor_deadline)
+            std::this_thread::sleep_for(Millis(10));
+        require(!process_alive(detached), "descriptor fixture child did not finish");
+        require(!json_bool(read_json(report), "inherited"),
+                "detached child inherited an unrelated parent descriptor");
+        std::cout << "PASS child descriptor isolation\n";
+#endif
         std::cout << "PASS identity, arguments, cwd, environment\n" << std::flush;
         options.input = std::string(1024 * 1024, 'i');
         options.max_capture_chars = 256;
@@ -172,7 +211,7 @@ int test_main(int argc, char** argv) {
                 "timeout terminates owned child");
         options.timeout = Millis(5000);
         auto cancel = std::make_shared<Cancellation>();
-        std::jthread canceller([&] {
+        ScopedThread canceller([&] {
             cancel->wait_for(Millis(200));
             cancel->cancel();
         });

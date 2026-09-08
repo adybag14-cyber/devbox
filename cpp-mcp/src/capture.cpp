@@ -1,3 +1,4 @@
+#include "devbox/scoped_thread.hpp"
 #include "devbox/capture.hpp"
 #include "devbox/native.hpp"
 #include <algorithm>
@@ -175,7 +176,7 @@ int run_capture_worker(const std::vector<std::string>& arguments) {
             std::signal(SIGINT, old_int);
             std::signal(SIGTERM, old_term);
         });
-        std::jthread signals([cancel](std::stop_token stop) {
+        ScopedThread signals([cancel](ThreadStopToken stop) {
             while (!stop.stop_requested()) {
                 if (capture_interrupted) {
                     cancel->cancel();

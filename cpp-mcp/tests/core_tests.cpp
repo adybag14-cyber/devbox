@@ -1,3 +1,4 @@
+#include "devbox/scoped_thread.hpp"
 #include "devbox/config.hpp"
 #include "devbox/result.hpp"
 #include <iostream>
@@ -51,7 +52,7 @@ int main() {
             write_json_atomic(journal, Json{{"revision", 0}, {"padding", padding}});
             std::atomic_bool stop_reader{false}, reader_started{false};
             std::exception_ptr reader_error, writer_error;
-            std::jthread reader([&] {
+            ScopedThread reader([&] {
                 reader_started = true;
                 try {
                     while (!stop_reader) {

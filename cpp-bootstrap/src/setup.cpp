@@ -6,6 +6,7 @@
 #include <charconv>
 #include <iostream>
 #include <set>
+#include <thread>
 namespace devbox::setup {
 namespace {
 constexpr auto vcpkg_revision = "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4";

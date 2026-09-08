@@ -1,3 +1,4 @@
+#include "devbox/scoped_thread.hpp"
 #include "devbox/jobs.hpp"
 #include <algorithm>
 #include <deque>
@@ -130,7 +131,7 @@ struct JobLogPump::State {
     bool closing = false;
     std::optional<std::string> queue_failure;
     Json result;
-    std::jthread worker;
+    ScopedThread worker;
     State(const fs::path& out, const fs::path& err, std::uint64_t maximum, std::size_t rotations)
         : stdout_sink(out, maximum, rotations), stderr_sink(err, maximum, rotations),
           worker([this] { run(); }) {}

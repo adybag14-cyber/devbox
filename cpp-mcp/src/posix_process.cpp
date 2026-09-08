@@ -1,13 +1,46 @@
 #include "devbox/posix_process.hpp"
 #ifndef _WIN32
+#include <algorithm>
 #include <cerrno>
 #include <fcntl.h>
+#include <limits>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
+
+#if defined(__GLIBC__)
+#if __GLIBC_PREREQ(2, 34)
+#define DEVBOX_SPAWN_CLOSEFROM 1
+#endif
+#endif
+#if defined(__ANDROID__) || defined(DEVBOX_FORCE_FORK_EXEC) || \
+    (defined(__linux__) && !defined(DEVBOX_SPAWN_CLOSEFROM))
+#define DEVBOX_USE_FORK_LAUNCH 1
+#endif
 
 namespace devbox {
+#ifdef DEVBOX_USE_FORK_LAUNCH
+namespace {
+void close_child_descriptors(unsigned first, unsigned last, unsigned fallback_limit) noexcept {
+    if (first > last)
+        return;
+#if defined(__linux__) && defined(SYS_close_range)
+    if (::syscall(SYS_close_range, first, last, 0U) == 0)
+        return;
+#endif
+    // Old Android kernels lack close_range. The bound is captured before fork;
+    // this fallback performs only async-signal-safe close calls in the child.
+    const auto end = std::min(last, fallback_limit - 1);
+    for (auto descriptor = first; descriptor <= end; ++descriptor)
+        ::close(static_cast<int>(descriptor));
+}
+} // namespace
+#endif
 pid_t spawn_posix(const fs::path& file, char* const* argv, char* const* envp, const fs::path* cwd,
                   const std::array<int, 3>& stdio, std::span<const int> close_fds, bool reset_signals) {
     const auto checked = [](int result) {
@@ -18,7 +51,7 @@ pid_t spawn_posix(const fs::path& file, char* const* argv, char* const* envp, co
     sigemptyset(&empty);
     sigemptyset(&defaults);
     sigaddset(&defaults, SIGPIPE);
-#if (defined(__ANDROID__) && __ANDROID_API__ < 34) || defined(DEVBOX_FORCE_FORK_EXEC)
+#ifdef DEVBOX_USE_FORK_LAUNCH
     // Android posix_spawn starts at API 28; its chdir action starts at API 34.
     // Keep the API 21 release contract without weak-linking unavailable symbols.
     int pipes[2];
@@ -44,8 +77,12 @@ pid_t spawn_posix(const fs::path& file, char* const* argv, char* const* envp, co
     const char* executable = file.c_str();
     const char* directory = cwd ? cwd->c_str() : nullptr;
     const int* redirects = stdio.data();
-    const int* closes = close_fds.data();
-    const auto close_count = close_fds.size();
+    (void)close_fds;
+    struct rlimit descriptor_limit{};
+    if (::getrlimit(RLIMIT_NOFILE, &descriptor_limit) != 0)
+        checked(errno);
+    const auto fallback_limit = static_cast<unsigned>(
+        std::min<rlim_t>(descriptor_limit.rlim_cur, std::numeric_limits<int>::max()));
     struct sigaction default_signal{};
     default_signal.sa_handler = SIG_DFL;
     sigemptyset(&default_signal.sa_mask);
@@ -64,9 +101,12 @@ pid_t spawn_posix(const fs::path& file, char* const* argv, char* const* envp, co
             } else if (::dup2(redirects[fd], fd) < 0)
                 failure = errno;
         }
-        for (std::size_t i = 0; i < close_count; ++i)
-            if (closes[i] > STDERR_FILENO && closes[i] != error_write)
-                ::close(closes[i]);
+        // A detached runner must never retain the parent's listening sockets,
+        // locks, or another request's pipes. Preserve only stdio and the private
+        // exec-error pipe, which closes atomically on successful execve.
+        close_child_descriptors(3, static_cast<unsigned>(error_write) - 1, fallback_limit);
+        close_child_descriptors(static_cast<unsigned>(error_write) + 1,
+                                std::numeric_limits<unsigned>::max(), fallback_limit);
         if (!failure && directory && ::chdir(directory) != 0)
             failure = errno;
         if (!failure && reset_signals &&
@@ -139,6 +179,9 @@ pid_t spawn_posix(const fs::path& file, char* const* argv, char* const* envp, co
     for (const int fd : close_fds)
         if (fd > STDERR_FILENO)
             checked(posix_spawn_file_actions_addclose(&actions, fd));
+#ifdef DEVBOX_SPAWN_CLOSEFROM
+    checked(posix_spawn_file_actions_addclosefrom_np(&actions, STDERR_FILENO + 1));
+#endif
     if (cwd)
         checked(posix_spawn_file_actions_addchdir_np(&actions, cwd->c_str()));
     posix_spawnattr_t attributes;
@@ -147,6 +190,9 @@ pid_t spawn_posix(const fs::path& file, char* const* argv, char* const* envp, co
     checked(posix_spawnattr_setflags(
         &attributes,
         static_cast<short>(POSIX_SPAWN_SETPGROUP |
+#ifdef __APPLE__
+                           POSIX_SPAWN_CLOEXEC_DEFAULT |
+#endif
                            (reset_signals ? POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF : 0))));
     checked(posix_spawnattr_setpgroup(&attributes, 0));
     if (reset_signals) {

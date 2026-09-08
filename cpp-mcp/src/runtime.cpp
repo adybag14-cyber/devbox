@@ -1,3 +1,4 @@
+#include "devbox/scoped_thread.hpp"
 #include "devbox/runtime.hpp"
 #include "devbox/native.hpp"
 #include <algorithm>
@@ -556,7 +557,7 @@ int elevated_shell_worker(const fs::path& request_path) {
         shell.max_capture_chars = request["max_capture_chars"].get<std::size_t>();
     auto cancel = std::make_shared<Cancellation>();
     std::atomic_bool done{false};
-    std::jthread watcher([&] {
+    ScopedThread watcher([&] {
         while (!done && !cancel->wait_for(Millis(25))) {
             std::error_code ec;
             if (fs::exists(request_path.parent_path() / "cancel.json", ec))
