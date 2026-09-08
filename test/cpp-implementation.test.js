@@ -22,7 +22,7 @@ const fixture = async () => {
   await writeFile(binary, "native candidate fixture");
   if (process.platform !== "win32") await chmod(binary, 0o755);
   const hash = createHash("sha256").update(await readFile(binary)).digest("hex");
-  const info = { implementation: "cpp", sourceDirty: false, gitSha: source.GitSha, sourceTree: source.SourceTree, sourceFingerprint: "a".repeat(64), binarySha256: hash };
+  const info = { implementation: "cpp", sanitizers: false, sourceDirty: false, gitSha: source.GitSha, sourceTree: source.SourceTree, sourceFingerprint: "a".repeat(64), binarySha256: hash };
   const report = { implementation: "cpp", complete: true, cutover_allowed: true, implemented_tools: 45, target_tools: 45 };
   const calls = [];
   const runner = async (file, args, options) => {
@@ -87,6 +87,11 @@ test("C++ preflight rejects dirty source, mismatched hashes, and a source change
     f.info.sourceDirty = true;
     await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /provenance did not match/u);
     f.info.sourceDirty = false;
+    f.info.sanitizers = true;
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /Instrumented C\+\+ test builds/u);
+    delete f.info.sanitizers;
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /provenance did not match/u);
+    f.info.sanitizers = false;
     const runner = async (...args) => {
       const result = await f.runner(...args);
       if (args[1][0] === "--parity-report") {

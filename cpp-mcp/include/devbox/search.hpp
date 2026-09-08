@@ -24,6 +24,9 @@ struct InspectFileRequest {
     std::size_t max_bytes = 65536;
 };
 fs::path resolve_host_path(std::string_view requested, const fs::path& working_dir);
+// The legacy windows_host_* MCP tools keep Windows lexical path rules even
+// when served on another OS; ordinary Devbox file tools use native paths.
+fs::path resolve_windows_host_path(std::string_view requested, const fs::path& working_dir);
 Json inspect_host_file(const Config& config, const RuntimeExecutor& runtime,
                        const InspectFileRequest& request, const Cancel& cancel = {});
 } // namespace devbox

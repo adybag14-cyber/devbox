@@ -26,6 +26,13 @@ Json build_snapshot() {
                     {"buildUnixSeconds", build_identity::built},
                     {"compiler", build_identity::compiler},
                     {"implementation", "cpp"},
+                    {"sanitizers",
+#ifdef DEVBOX_SANITIZERS
+                     true
+#else
+                     false
+#endif
+                    },
                     {"binarySha256", binary},
                     {"executableName", path_text(path.filename())},
                     {"deploymentGeneration", generation ? Json(*generation) : Json()}};

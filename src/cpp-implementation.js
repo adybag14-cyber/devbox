@@ -21,7 +21,7 @@ export const readCppSourceIdentity = async (root, { env = process.env, runProces
 };
 
 export const matchesCppSource = (info, source) => info?.implementation === "cpp"
-  && info.sourceDirty === false && info.gitSha === source.GitSha && info.sourceTree === source.SourceTree
+  && info.sanitizers === false && info.sourceDirty === false && info.gitSha === source.GitSha && info.sourceTree === source.SourceTree
   && /^[0-9a-f]{64}$/u.test(String(info.sourceFingerprint ?? ""));
 
 export const buildCppImplementation = async (root, { env = process.env, platform = process.platform, runProcess }) => {
@@ -83,6 +83,7 @@ export const prepareCppImplementation = async (root, {
   const childEnv = { ...env, DEVBOX_PROJECT_ROOT: root, DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE: "1" };
   const inspect = async (file) => {
     const info = JSON.parse((await run(runProcess, file, ["--build-info"], root, childEnv, "C++ candidate provenance")).stdout);
+    if (info.sanitizers === true) throw new Error("Instrumented C++ test builds cannot replace a managed runtime. The existing MCP was not stopped.");
     const hash = await digest(file);
     if (!matchesCppSource(info, source) || info.binarySha256 !== hash) throw new Error("C++ candidate provenance did not match the committed checkout and executable hash.");
     const report = JSON.parse((await run(runProcess, file, ["--parity-report"], root, childEnv, "C++ completion gate")).stdout);

@@ -160,19 +160,19 @@ int main() {
         require(inspect_host_file(*config, runtime, inspection)["last_modified_utc"] ==
                     "1970-01-01T00:00:00.736Z",
                 "native timestamp rounds to JavaScript milliseconds");
-#ifdef _WIN32
-        require(path_text(resolve_host_path("one/../two.txt", path_from_utf8("C:\\base"))) ==
+        require(path_text(resolve_windows_host_path("one/../two.txt", path_from_utf8("C:\\base"))) ==
                     "C:\\base\\two.txt",
                 "Windows host path normalization");
-        require(path_text(resolve_host_path("\\root.txt", path_from_utf8("C:\\base"))) == "\\root.txt",
+        require(path_text(resolve_windows_host_path("\\root.txt", path_from_utf8("C:\\base"))) == "\\root.txt",
                 "rooted Windows host path contract");
         bool rejected = false;
         try {
-            (void)resolve_host_path("$env:TEMP/file.txt", root);
+            (void)resolve_windows_host_path("$env:TEMP/file.txt", root);
         } catch (const Error&) {
             rejected = true;
         }
         require(rejected, "literal host path does not interpolate shell syntax");
+#ifdef _WIN32
         write_file(root / "valid.ps1", "Write-Output 'valid'\n");
         inspection.path = "valid.ps1";
         inspected = inspect_host_file(*config, runtime, inspection);

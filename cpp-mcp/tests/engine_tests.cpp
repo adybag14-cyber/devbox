@@ -251,8 +251,14 @@ int main(int argc, char** argv) {
         const auto host = data(invoke(base, "host_status"));
         require(host == data(invoke(base, "windows_host_status")), "host status aliases");
         const auto inspect = data(invoke(base, "windows_host_inspect_file", Json{{"path", path_text(file)}}));
+#ifdef _WIN32
         require(inspect["resolved_path"] == path_text(file) && inspect["utf8_valid"] == true,
                 "file inspection dispatch");
+#else
+        require(inspect["resolved_path"] == replace_all(path_text(file), "/", "\\") &&
+                    inspect["exists"] == false,
+                "legacy Windows file tools retain Windows paths on POSIX");
+#endif
         const auto stopped = data(invoke(base, "devbox_stop"));
         require(stopped.contains("controlMessage") && process_alive(process_id()),
                 "host lifecycle stop preserves serving process");

@@ -24,6 +24,7 @@ jobs:
         include:
           - { name: Windows MSVC, os: windows-2025, sanitizers: '0' }
           - { name: Linux GCC, os: ubuntu-24.04, sanitizers: '0' }
+          - { name: Linux ARM64 GCC, os: ubuntu-24.04-arm, sanitizers: '0' }
           - { name: Linux Clang sanitizers, os: ubuntu-24.04, sanitizers: '1', cc: clang, cxx: clang++ }
           - { name: macOS arm64, os: macos-15, sanitizers: '0' }
           - { name: macOS x86_64, os: macos-15-intel, sanitizers: '0' }
@@ -55,7 +56,8 @@ jobs:
           node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'VCPKG_ROOT=' + require('path').resolve('.cpp-build/vcpkg') + '\n')"
           node -e "const fs=require('fs'),p=require('path').resolve('.cpp-build/vcpkg-cache');fs.mkdirSync(p,{recursive:true});fs.appendFileSync(process.env.GITHUB_ENV,'VCPKG_DEFAULT_BINARY_CACHE='+p+'\n')"
       - name: Cache pinned native dependencies
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        id: native-dependencies
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .cpp-build/vcpkg-cache
           key: cpp-vcpkg-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.sanitizers }}-${{ hashFiles('vcpkg.json') }}
@@ -100,6 +102,15 @@ jobs:
       - name: Live Docker files, processes, authentication and lifecycle
         if: matrix.name == 'Linux GCC'
         run: node cpp-mcp/scripts/docker-sdk-smoke.mjs
+      - name: Capture real windows on an owned X11 display
+        if: matrix.name == 'Linux GCC'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev xvfb xdotool x11-utils imagemagick
+          node cpp-mcp/scripts/x11-capture-smoke.mjs
+      - name: Capture owned native Cocoa windows and display
+        if: runner.os == 'macOS'
+        run: node cpp-mcp/scripts/macos-capture-smoke.mjs
       - name: Upload native artifacts and test evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -108,9 +119,17 @@ jobs:
           path: |
             .cpp-build/package/
             .cpp-build/ci-native-result.json
+            .cpp-build/x11-capture-result.json
+            .cpp-build/macos-capture-result.json
             .cpp-build/ci/Testing/Temporary/
           if-no-files-found: warn
           include-hidden-files: true
+      - name: Save completed dependency builds even if a runtime check failed
+        if: always() && steps.native-dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: .cpp-build/vcpkg-cache
+          key: cpp-vcpkg-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.sanitizers }}-${{ hashFiles('vcpkg.json') }}
 
   android:
     name: C++ Android API 21 ${{ matrix.abi }}
@@ -144,7 +163,8 @@ jobs:
           mkdir -p .cpp-build/vcpkg-cache
           echo "VCPKG_DEFAULT_BINARY_CACHE=$GITHUB_WORKSPACE/.cpp-build/vcpkg-cache" >> "$GITHUB_ENV"
       - name: Cache pinned Android dependencies
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
+        id: android-dependencies
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: .cpp-build/vcpkg-cache
           key: cpp-vcpkg-android-r29-api21-${{ matrix.abi }}-${{ hashFiles('vcpkg.json', 'cpp-mcp/cmake/triplets/*') }}
@@ -163,3 +183,79 @@ jobs:
           name: cpp-android-${{ matrix.abi }}
           path: .cpp-build/android-package/
           if-no-files-found: error
+      - name: Save completed Android dependency builds
+        if: always() && steps.android-dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: .cpp-build/vcpkg-cache
+          key: cpp-vcpkg-android-r29-api21-${{ matrix.abi }}-${{ hashFiles('vcpkg.json', 'cpp-mcp/cmake/triplets/*') }}
+
+  termux:
+    name: C++ real Termux x86_64 runtime
+    needs: android
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: cpp-android-x86_64
+          path: .cpp-build/termux-artifact
+      - name: Validate native Android binaries in real Termux userspace
+        run: node cpp-mcp/scripts/termux-docker-smoke.mjs .cpp-build/termux-artifact
+
+  distributions:
+    name: C++ Linux runtime on ${{ matrix.distribution }}
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [ubuntu, debian, fedora, arch]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: cpp-native-ubuntu-24.04-0
+          path: .cpp-build/distro-artifact
+      - name: Validate packaged binaries and installer in the distro
+        run: node cpp-mcp/scripts/linux-distro-smoke.mjs ${{ matrix.distribution }}
+
+  alpine:
+    name: C++ Alpine musl build and runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        id: alpine-dependencies
+        with:
+          path: .cpp-build/alpine-cache
+          key: cpp-vcpkg-alpine-3.23-${{ hashFiles('vcpkg.json') }}
+      - name: Build and validate against native musl userspace
+        run: node cpp-mcp/scripts/linux-distro-smoke.mjs alpine
+      - name: Save completed musl dependency builds
+        if: always() && steps.alpine-dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: .cpp-build/alpine-cache
+          key: cpp-vcpkg-alpine-3.23-${{ hashFiles('vcpkg.json') }}

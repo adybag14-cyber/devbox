@@ -234,10 +234,15 @@ try {
   assert.equal(statusData.backgroundTasks?.["execution-store-probe"]?.consecutiveFailures, 0);
   assert.ok(statusData.backgroundTasks?.["execution-store-probe"]?.lastSuccessUnixMs > 0);
   const allocator = statusData.performance?.process?.memory?.allocator;
-  assert.equal(allocator?.backend, metadata.build?.implementation === "cpp" ? "cpp-global-new" : "std::alloc::System tracked requested bytes");
-  assert.equal(Number.isFinite(allocator?.currentRequestedBytes), true);
-  assert.equal(allocator?.peakRequestedBytes > 0, true);
-  assert.equal(allocator?.allocationCalls > 0, true);
+  if (metadata.build?.implementation === "cpp") assert.equal(typeof metadata.build.sanitizers, "boolean");
+  if (metadata.build?.implementation === "cpp" && metadata.build.sanitizers) {
+    assert.deepEqual(allocator, { backend: "sanitizer", available: false });
+  } else {
+    assert.equal(allocator?.backend, metadata.build?.implementation === "cpp" ? "cpp-global-new" : "std::alloc::System tracked requested bytes");
+    assert.equal(Number.isFinite(allocator?.currentRequestedBytes), true);
+    assert.equal(allocator?.peakRequestedBytes > 0, true);
+    assert.equal(allocator?.allocationCalls > 0, true);
+  }
   assert.equal(statusData.versionsCached, true);
   assert.ok(Array.isArray(statusData.versions));
   for (const program of process.platform === "win32"

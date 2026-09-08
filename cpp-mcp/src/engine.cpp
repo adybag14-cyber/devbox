@@ -68,8 +68,8 @@ Json Engine::parity_report() const {
                 {"complete", false},
                 {"cutover_allowed", false},
                 {"remaining_gates",
-                 {"native-capture", "bootstrap-installer", "cross-platform-certification",
-                  "full-integration-parity"}},
+                 {"cross-platform-runtime-certification", "native-desktop-capture-certification",
+                  "managed-launcher-certification", "release-packaging"}},
                 {"build", build_snapshot()}};
 }
 bool Engine::ready() const {

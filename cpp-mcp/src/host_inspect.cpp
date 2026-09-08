@@ -125,13 +125,12 @@ Json powershell_syntax(const RuntimeExecutor& runtime, const fs::path& path, con
     }
 }
 } // namespace
-fs::path resolve_host_path(std::string_view requested, const fs::path& workdir) {
+fs::path resolve_windows_host_path(std::string_view requested, const fs::path& workdir) {
     const auto text = trim(requested);
     if (text.empty())
         throw Error("path must not be empty");
     if (text.find("://") != text.npos || text.starts_with('$'))
         throw Error("Could not resolve a Windows host path from \"" + std::string(requested) + "\".");
-#ifdef _WIN32
     auto drive = [](std::string_view value) -> std::string {
         return value.size() >= 2 && value[1] == ':' && std::isalpha(static_cast<unsigned char>(value[0]))
                    ? std::string(value.substr(0, 2))
@@ -179,7 +178,14 @@ fs::path resolve_host_path(std::string_view requested, const fs::path& workdir) 
         return path_from_utf8(resolve(*home, text.substr(1)));
     }
     return path_from_utf8(absolute(text) ? normalize(text) : resolve(path_text(workdir), text));
+}
+fs::path resolve_host_path(std::string_view requested, const fs::path& workdir) {
+#ifdef _WIN32
+    return resolve_windows_host_path(requested, workdir);
 #else
+    const auto text = trim(requested);
+    if (text.empty())
+        throw Error("path must not be empty");
     if (text.starts_with('~')) {
         auto value = environment("HOME");
         if (!value)
