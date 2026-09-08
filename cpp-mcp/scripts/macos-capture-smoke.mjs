@@ -20,15 +20,15 @@ const run = (file, args) => runCheckedProcess(file, args, { cwd: root, timeoutMs
 let child, exited, output = '';
 try {
   await run('/usr/bin/clang++', ['-std=c++17', '-fobjc-arc',
-    path.join(repo, 'cpp-mcp/tests/capture_macos_fixture.mm'), '-framework', 'Cocoa', '-o', fixture]);
+    path.join(repo, 'cpp-mcp/tests/capture_macos_fixture.mm'), '-framework', 'Cocoa',
+    '-framework', 'CoreGraphics', '-o', fixture]);
   child = spawn(fixture, [], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
   for (const stream of [child.stdout, child.stderr]) stream.on('data', bytes => { output = (output + bytes).slice(-16000); });
   exited = new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
-  const deadline = Date.now() + 10000;
+  const deadline = Date.now() + 20000;
   while (!output.includes('ready ')) {
     assert.equal(child.exitCode, null, output); assert(Date.now() < deadline, output); await delay(50);
   }
-  await delay(250);
   const checks = [];
   for (const mode of ['program', 'display']) {
     const file = path.join(root, `${mode}.png`);

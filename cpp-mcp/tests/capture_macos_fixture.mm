@@ -1,4 +1,6 @@
 #import <Cocoa/Cocoa.h>
+#import <CoreGraphics/CoreGraphics.h>
+#include <chrono>
 #include <csignal>
 #include <iostream>
 #include <string>
@@ -47,6 +49,7 @@ int main(int argc, char** argv) {
         std::signal(SIGINT, interrupted);
         NSApplication* app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyAccessory];
+        [app finishLaunching];
         auto window = [](CGFloat x, CGFloat y, CGFloat width, CGFloat height) {
             NSWindow* value = [[NSWindow alloc] initWithContentRect:NSMakeRect(x, y, width, height)
                                                           styleMask:NSWindowStyleMaskBorderless
@@ -66,7 +69,8 @@ int main(int argc, char** argv) {
         [small display];
         [large display];
         [app updateWindows];
-        std::cout << "ready " << getpid() << '\n' << std::flush;
+        bool ready = false;
+        const auto visibleDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
         while (!stop) {
             @autoreleasepool {
                 NSEvent* event = [app nextEventMatchingMask:NSEventMaskAny
@@ -76,6 +80,28 @@ int main(int argc, char** argv) {
                 if (event)
                     [app sendEvent:event];
                 [app updateWindows];
+                if (!ready) {
+                    // AppKit can accept orderFront before WindowServer publishes
+                    // the windows. Readiness must use the same visible-window
+                    // authority that the separate capture worker will inspect.
+                    NSArray* windows = CFBridgingRelease(
+                        CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID));
+                    bool smallVisible = false, largeVisible = false;
+                    for (NSDictionary* info in windows) {
+                        if ([info[(__bridge NSString*)kCGWindowOwnerPID] intValue] != getpid())
+                            continue;
+                        const auto number = [info[(__bridge NSString*)kCGWindowNumber] integerValue];
+                        smallVisible |= number == small.windowNumber;
+                        largeVisible |= number == large.windowNumber;
+                    }
+                    if (smallVisible && largeVisible) {
+                        ready = true;
+                        std::cout << "ready " << getpid() << '\n' << std::flush;
+                    } else if (std::chrono::steady_clock::now() >= visibleDeadline) {
+                        std::cerr << "Owned Cocoa windows did not become visible to WindowServer.\n";
+                        return 5;
+                    }
+                }
             }
         }
         [small close];
