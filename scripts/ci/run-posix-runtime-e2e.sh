@@ -4,8 +4,15 @@ set -eu
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 PORT=${DEVBOX_E2E_PORT:-18180}
 EXPECT_PLATFORM=${DEVBOX_E2E_EXPECT_PLATFORM:-}
-WORKSPACE=${DEVBOX_E2E_WORKSPACE:-"$ROOT_DIR/.ci-platform-workspace"}
+if [ "${GITHUB_ACTIONS:-}" != true ] && [ "${DEVBOX_E2E_ISOLATED_CHECKOUT:-}" != 1 ]; then
+  echo 'Run managed lifecycle certification only in an explicitly isolated checkout.' >&2
+  exit 2
+fi
+mkdir -p "$ROOT_DIR/run"
+WORKSPACE=$(mktemp -d "$ROOT_DIR/run/ci-workspace.XXXXXXXX")
 HOST_SHELL_VALUE=${HOST_SHELL:-$(command -v bash 2>/dev/null || command -v sh)}
+export CPP_MCP_EXE="${CPP_MCP_EXE:-${DEVBOX_MCP_TEST_BINARY:?Supply the verified C++ candidate}}"
+export DEVBOX_MCP_IMPLEMENTATION=cpp
 
 export HOST=127.0.0.1
 export PORT
@@ -27,16 +34,13 @@ cd "$ROOT_DIR"
 sh -n scripts/install-cloudflare-tunnel.sh
 sh -n scripts/restart-cloudflare-tunnel.sh
 sh scripts/ci/test-cloudflare-tunnel-errors.sh
-rm -rf "$WORKSPACE"
-mkdir -p "$WORKSPACE"
 node bin/devbox.js stop >/dev/null 2>&1 || true
 
 npm ci
-node scripts/ci/screen-capture-platform-e2e.mjs
 node bin/devbox.js start
 STATUS_OUTPUT=$(node bin/devbox.js status)
 printf '%s\n' "$STATUS_OUTPUT"
-printf '%s\n' "$STATUS_OUTPUT" | grep -q '^implementation: rust$'
+printf '%s\n' "$STATUS_OUTPUT" | grep -q '^implementation: cpp$'
 node scripts/ci/platform-runtime-e2e.mjs \
   --url "http://127.0.0.1:$PORT/" \
   --workspace "$WORKSPACE" \
@@ -52,9 +56,9 @@ printf '%s\n' "$ROLLBACK_STATUS"
 printf '%s\n' "$ROLLBACK_STATUS" | grep -q '^implementation: js$'
 curl -fsS "http://127.0.0.1:$PORT/healthz" | grep -q 'ok'
 
-echo '=== Return to Rust default ==='
+echo 'Return to the verified C++ runtime'
 node bin/devbox.js stop
-DEVBOX_MCP_IMPLEMENTATION=rust node bin/devbox.js start
+DEVBOX_MCP_IMPLEMENTATION=cpp node bin/devbox.js start
 FINAL_STATUS=$(node bin/devbox.js status)
 printf '%s\n' "$FINAL_STATUS"
-printf '%s\n' "$FINAL_STATUS" | grep -q '^implementation: rust$'
+printf '%s\n' "$FINAL_STATUS" | grep -q '^implementation: cpp$'

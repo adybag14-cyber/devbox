@@ -1,0 +1,32 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "windows",
+      "displayName": "Native Windows C++",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/.cpp-build/windows",
+      "cacheVariables": {
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/.cpp-build/vcpkg_installed",
+        "DEVBOX_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "posix",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.cpp-build/posix",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "DEVBOX_BUILD_TESTS": "ON" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "windows", "configurePreset": "windows", "configuration": "Release", "jobs": 4 },
+    { "name": "posix", "configurePreset": "posix", "jobs": 4 }
+  ],
+  "testPresets": [
+    { "name": "windows", "configurePreset": "windows", "configuration": "Release", "output": { "outputOnFailure": true } },
+    { "name": "posix", "configurePreset": "posix", "output": { "outputOnFailure": true } }
+  ]
+}

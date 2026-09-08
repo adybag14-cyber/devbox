@@ -14,6 +14,9 @@ case "$os" in
       aarch64|arm64) suffix="linux-aarch64" ;;
       *) echo "Unsupported Linux architecture: $arch" >&2; exit 1 ;;
     esac
+    if ldd --version 2>&1 | grep -qi musl; then
+      suffix="linux-musl-${suffix#linux-}"
+    fi
     ;;
   Darwin)
     case "$arch" in
@@ -30,11 +33,12 @@ esac
 
 setup_asset="devbox-setup-${suffix}"
 tui_asset="devbox-tui-${suffix}"
+runtime_asset="devbox-mcp-${suffix}"
 mkdir -p "$INSTALL_DIR"
 setup_path="$INSTALL_DIR/devbox-setup"
 tui_path="$INSTALL_DIR/devbox-tui"
-tmpdir="${TMPDIR:-/tmp}/devbox-install.$$"
-mkdir -p "$tmpdir"
+runtime_path="$INSTALL_DIR/devbox-mcp"
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/devbox-install.XXXXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
 
 fetch() {
@@ -64,9 +68,8 @@ sha256_file() {
 checksums="$tmpdir/SHA256SUMS"
 fetch "$RELEASE_BASE/SHA256SUMS" "$checksums"
 
-install_asset() {
+verify_asset() {
   asset=$1
-  target=$2
   temp="$tmpdir/$asset"
   echo "Downloading $asset"
   fetch "$RELEASE_BASE/$asset" "$temp"
@@ -77,14 +80,18 @@ install_asset() {
     exit 1
   fi
   chmod 0755 "$temp"
-  mv -f "$temp" "$target"
 }
 
-install_asset "$setup_asset" "$setup_path"
-install_asset "$tui_asset" "$tui_path"
+verify_asset "$setup_asset"
+verify_asset "$tui_asset"
+verify_asset "$runtime_asset"
+mv -f "$tmpdir/$runtime_asset" "$runtime_path"
+mv -f "$tmpdir/$setup_asset" "$setup_path"
+mv -f "$tmpdir/$tui_asset" "$tui_path"
 
 echo "Installed: $setup_path"
 echo "Installed: $tui_path"
+echo "Installed: $runtime_path"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) echo "Tip: add $INSTALL_DIR to PATH for future shells." ;;

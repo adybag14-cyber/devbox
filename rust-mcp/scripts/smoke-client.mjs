@@ -130,6 +130,21 @@ assert.equal(expectedTools.length, 37);
 
 const transport = new StreamableHTTPClientTransport(baseUrl);
 const client = new Client({ name: "rust-parity-smoke", version: "0.1.0" });
+if (process.env.DEVBOX_MCP_TEST_TRACE === "1") {
+  const invoke = client.callTool.bind(client);
+  client.callTool = async (...args) => {
+    const started = Date.now();
+    console.error(`start ${args[0]?.name}`);
+    try {
+      const result = await invoke(...args);
+      console.error(`finish ${args[0]?.name} ${Date.now() - started}ms`);
+      return result;
+    } catch (error) {
+      console.error(`failed ${args[0]?.name} ${Date.now() - started}ms: ${error.message}`);
+      throw error;
+    }
+  };
+}
 try {
   await client.connect(transport);
   assert.deepEqual(client.getServerCapabilities()?.logging, {});
@@ -219,10 +234,15 @@ try {
   assert.equal(statusData.backgroundTasks?.["execution-store-probe"]?.consecutiveFailures, 0);
   assert.ok(statusData.backgroundTasks?.["execution-store-probe"]?.lastSuccessUnixMs > 0);
   const allocator = statusData.performance?.process?.memory?.allocator;
-  assert.equal(allocator?.backend, "std::alloc::System tracked requested bytes");
-  assert.equal(Number.isFinite(allocator?.currentRequestedBytes), true);
-  assert.equal(allocator?.peakRequestedBytes > 0, true);
-  assert.equal(allocator?.allocationCalls > 0, true);
+  if (metadata.build?.implementation === "cpp") assert.equal(typeof metadata.build.sanitizers, "boolean");
+  if (metadata.build?.implementation === "cpp" && metadata.build.sanitizers) {
+    assert.deepEqual(allocator, { backend: "sanitizer", available: false });
+  } else {
+    assert.equal(allocator?.backend, metadata.build?.implementation === "cpp" ? "cpp-global-new" : "std::alloc::System tracked requested bytes");
+    assert.equal(Number.isFinite(allocator?.currentRequestedBytes), true);
+    assert.equal(allocator?.peakRequestedBytes > 0, true);
+    assert.equal(allocator?.allocationCalls > 0, true);
+  }
   assert.equal(statusData.versionsCached, true);
   assert.ok(Array.isArray(statusData.versions));
   for (const program of process.platform === "win32"

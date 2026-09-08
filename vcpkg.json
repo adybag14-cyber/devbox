@@ -1,0 +1,14 @@
+{
+  "name": "devbox-cpp",
+  "version-string": "0.3.0",
+  "builtin-baseline": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
+  "dependencies": [
+    "ada-url",
+    "re2",
+    "boost-asio",
+    "boost-beast",
+    "nlohmann-json",
+    "openssl",
+    { "name": "curl", "default-features": false, "features": ["ssl"] }
+  ]
+}

@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, "..", "..");
-const binaryPath = path.join(projectRoot, "rust-mcp", "target", "debug", process.platform === "win32" ? "devbox-mcp.exe" : "devbox-mcp");
+const binaryPath = process.env.DEVBOX_MCP_TEST_BINARY || path.join(projectRoot, "rust-mcp", "target", "debug", process.platform === "win32" ? "devbox-mcp.exe" : "devbox-mcp");
 
 const reservePort = () => new Promise((resolve, reject) => {
   const server = net.createServer();

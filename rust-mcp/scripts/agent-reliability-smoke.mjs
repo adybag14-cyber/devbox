@@ -11,7 +11,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const root=await mkdtemp(path.join(os.tmpdir(),'devbox-agent-reliability-'));
-const binary=path.join(repo,'rust-mcp/target/debug',process.platform==='win32'?'devbox-mcp.exe':'devbox-mcp');
+const binary=process.env.DEVBOX_MCP_TEST_BINARY||path.join(repo,'rust-mcp/target/debug',process.platform==='win32'?'devbox-mcp.exe':'devbox-mcp');
 const port=await new Promise((resolve,reject)=>{const s=net.createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
 const url=new URL(`http://127.0.0.1:${port}/`);
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));

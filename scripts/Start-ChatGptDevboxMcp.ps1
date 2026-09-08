@@ -751,9 +751,9 @@ function Resolve-NodeExecutable {
 function Resolve-McpImplementation {
     param([string]$ConfiguredValue)
 
-    $value = if ([string]::IsNullOrWhiteSpace($ConfiguredValue)) { 'rust' } else { $ConfiguredValue.Trim().ToLowerInvariant() }
-    if ($value -notin @('rust', 'js')) {
-        throw "Invalid DEVBOX_MCP_IMPLEMENTATION=$ConfiguredValue. Expected rust or js."
+    $value = if ([string]::IsNullOrWhiteSpace($ConfiguredValue)) { 'cpp' } else { $ConfiguredValue.Trim().ToLowerInvariant() }
+    if ($value -notin @('cpp', 'rust', 'js')) {
+        throw "Invalid DEVBOX_MCP_IMPLEMENTATION=$ConfiguredValue. Expected cpp, rust or js."
     }
     return $value
 }
@@ -1039,6 +1039,28 @@ function Assert-McpReplacementReady {
         [Parameter(Mandatory = $true)][string]$RuntimeEnvFile
     )
 
+    if ($Implementation -eq 'cpp') {
+        $nodeExe = Resolve-NodeExecutable -ConfiguredPath (Get-EnvValue -FilePath (Join-Path $ProjectRoot '.env') -Name 'NODE_EXE')
+        $prepareScript = Join-Path $ProjectRoot 'scripts\prepare-cpp.mjs'
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $output = & $nodeExe $prepareScript '--root' $ProjectRoot 2>&1 | Out-String
+            if ($LASTEXITCODE -ne 0) { throw "C++ MCP preflight failed before the existing MCP was stopped. Output:`n$output" }
+            $candidate = $output | ConvertFrom-Json
+            $versionedBinDir = [IO.Path]::GetFullPath((Join-Path $ProjectRoot 'run\bin')).TrimEnd('\')
+            $candidatePath = [IO.Path]::GetFullPath([string]$candidate.FilePath)
+            if ($candidate.Implementation -ne 'cpp' -or $candidate.SourceDirty -isnot [bool] -or $candidate.SourceDirty -or
+                [IO.Path]::GetDirectoryName($candidatePath) -ne $versionedBinDir -or
+                [IO.Path]::GetFileName($candidatePath) -notmatch '^devbox-cpp-mcp-[a-f0-9]{12}-[a-f0-9]{16}\.exe$' -or
+                @($candidate.ArgumentList).Count -ne 0) {
+                throw 'C++ preflight returned an invalid immutable candidate. Existing MCP was not stopped.'
+            }
+            $actualHash = (Get-FileHash -LiteralPath $candidatePath -Algorithm SHA256).Hash
+            if ($actualHash -ne [string]$candidate.Sha256) { throw 'C++ staged candidate hash mismatch. Existing MCP was not stopped.' }
+            return $candidate
+        } finally { $ErrorActionPreference = $previousErrorActionPreference }
+    }
     if ($Implementation -eq 'rust') {
         $configuredCargo = if (-not [string]::IsNullOrWhiteSpace($env:CARGO_EXE)) {
             $env:CARGO_EXE
@@ -1715,7 +1737,7 @@ if ($launchArguments.Count -gt 0) {
     $startProcessParameters['ArgumentList'] = $launchArguments
 }
 $childEnvironment = Read-RuntimeEnvValues -FilePath $runtimeEnvFile
-if ($mcpImplementation -eq 'rust') {
+if ($mcpImplementation -in @('cpp', 'rust')) {
     $childEnvironment['DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE'] = '1'
     if ($launchSpec.Generation) {
         $childEnvironment['DEVBOX_DEPLOYMENT_GENERATION'] = [string]$launchSpec.Generation
@@ -1777,7 +1799,7 @@ if ($Public) {
     Wait-ForHealthyPublicEndpoint -ContainerName $cloudflaredContainerName -PublicBaseUrl $publicBaseUrl -HostCloudflaredPidFile $hostTunnelPidFile
 }
 
-if ($mcpImplementation -eq 'rust' -and $launchSpec.CandidateManifestPath) {
+if ($mcpImplementation -in @('cpp', 'rust') -and $launchSpec.CandidateManifestPath) {
     $startedAtUtc = [DateTime]::UtcNow.ToString('o')
     $promotedAtUtc = $startedAtUtc
     $firstPromotedAtUtc = $startedAtUtc

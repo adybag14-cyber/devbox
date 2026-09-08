@@ -4,13 +4,36 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+if ($env:GITHUB_ACTIONS -ne 'true' -and $env:DEVBOX_E2E_ISOLATED_CHECKOUT -ne '1') {
+    throw 'Run managed lifecycle certification only in an explicitly isolated checkout.'
+}
+if (-not $env:DEVBOX_MCP_TEST_BINARY -or -not (Test-Path -LiteralPath $env:DEVBOX_MCP_TEST_BINARY)) {
+    throw 'Supply DEVBOX_MCP_TEST_BINARY for the verified C++ candidate.'
+}
+$testStartedAt = Get-Date
+$ownedGuardianScript = Join-Path $root 'scripts\devbox-guardian.mjs'
+function Stop-OwnedCiGuardian {
+    param([int]$TargetProcessId)
+    if ($TargetProcessId -le 0) { return }
+    $owned = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $TargetProcessId) -ErrorAction SilentlyContinue
+    if (-not $owned) { return }
+    if ([string]$owned.CommandLine -match 'codex\.js|@openai/codex') { throw 'Protected host cannot be stopped.' }
+    if (([string]$owned.CommandLine).IndexOf($ownedGuardianScript, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+        $owned.CreationDate -lt $testStartedAt) { throw 'Guardian cleanup could not verify this test process.' }
+    Stop-Process -Id $TargetProcessId -Force -ErrorAction Stop
+    if (Get-Process -Id $TargetProcessId -ErrorAction SilentlyContinue) { throw 'Owned test Guardian did not exit.' }
+}
 $taskPrefix = 'ChatGptDevboxCi-{0}' -f ([Guid]::NewGuid().ToString('N').Substring(0, 12))
 $envPath = Join-Path $root '.env'
 $runtimeEnv = Join-Path $root '.env.runtime'
 $hadEnv = Test-Path $envPath
 $envBackup = if ($hadEnv) { Get-Content $envPath -Raw } else { $null }
-$port = 18184
+if ((Test-Path -LiteralPath $envPath) -or (Test-Path -LiteralPath $runtimeEnv)) {
+    throw 'Lifecycle fixture requires a fresh checkout without existing runtime configuration.'
+}
+$port = if ($env:DEVBOX_E2E_PORT) { [int]$env:DEVBOX_E2E_PORT } else { 18184 }
 $isolatedEnvNames = @(
+    'CPP_MCP_EXE', 'DEVBOX_MCP_IMPLEMENTATION', 'DEVBOX_RUNTIME_MODE', 'PORT', 'HOST', 'MCP_AUTH_MODE',
     'PUBLIC_BASE_URL',
     'CLOUDFLARED_PUBLIC_HOSTNAME',
     'CLOUDFLARED_TUNNEL_TOKEN',
@@ -33,9 +56,10 @@ function Remove-CiTasks {
 }
 
 try {
-    $config = @("PORT=$port", 'HOST=127.0.0.1', 'DEVBOX_RUNTIME_MODE=host', 'DEVBOX_MCP_IMPLEMENTATION=rust', 'MCP_AUTH_MODE=none', 'PUBLIC_BASE_URL=', 'ENABLE_HOST_EXEC=true', 'HOST_PROGRAM_ALLOWLIST=powershell,pwsh,cmd,git,gh,node,npm,npx,python,py,pip,rg,curl', 'DEVBOX_PROGRAM_ALLOWLIST=powershell,pwsh,cmd,git,gh,node,npm,npx,python,py,pip,rg,curl') -join "`n"
+    $env:CPP_MCP_EXE = $env:DEVBOX_MCP_TEST_BINARY
+    $config = @("PORT=$port", 'HOST=127.0.0.1', 'DEVBOX_RUNTIME_MODE=host', 'DEVBOX_MCP_IMPLEMENTATION=cpp', "CPP_MCP_EXE=$env:DEVBOX_MCP_TEST_BINARY", 'MCP_AUTH_MODE=none', 'PUBLIC_BASE_URL=', 'ENABLE_HOST_EXEC=true', 'HOST_PROGRAM_ALLOWLIST=powershell,pwsh,cmd,git,gh,node,npm,npx,python,py,pip,rg,curl', 'DEVBOX_PROGRAM_ALLOWLIST=powershell,pwsh,cmd,git,gh,node,npm,npx,python,py,pip,rg,curl') -join "`n"
     [IO.File]::WriteAllText($envPath, "$config`n", [Text.UTF8Encoding]::new($false))
-    $env:DEVBOX_MCP_IMPLEMENTATION = 'rust'
+    $env:DEVBOX_MCP_IMPLEMENTATION = 'cpp'
     $env:DEVBOX_RUNTIME_MODE = 'host'
     $env:PORT = [string]$port
     $env:HOST = '127.0.0.1'
@@ -44,26 +68,31 @@ try {
 
     & (Join-Path $root 'scripts\Start-ChatGptDevboxMcp.ps1') -Runtime host
     $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/readyz" -UseBasicParsing -TimeoutSec 5
-    if ($health.StatusCode -ne 200 -or $health.Content -notmatch 'ok') { throw 'Rust MCP health gate failed.' }
+    if ($health.StatusCode -ne 200 -or $health.Content -notmatch 'ok') { throw 'C++ MCP health gate failed.' }
+
+    $workspace = Join-Path $root 'run\ci-windows-workspace'
+    New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+    & node (Join-Path $root 'scripts\ci\platform-runtime-e2e.mjs') --url "http://127.0.0.1:$port/" --workspace $workspace --expect-platform windows
+    if ($LASTEXITCODE -ne 0) { throw 'Managed Windows MCP SDK gate failed.' }
 
     $trackedDirty = ((& git -C $root status --porcelain --untracked-files=no | Out-String).Trim()).Length -gt 0
     if (-not $trackedDirty) {
-        $currentRustManifestPath = Join-Path $root 'run\bin\current-rust.json'
-        $firstManifest = Get-Content $currentRustManifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $currentCppManifestPath = Join-Path $root 'run\bin\current-cpp.json'
+        $firstManifest = Get-Content $currentCppManifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
         Start-Sleep -Seconds 1
         & (Join-Path $root 'scripts\Start-ChatGptDevboxMcp.ps1') -Runtime host
-        $secondManifest = Get-Content $currentRustManifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
+        $secondManifest = Get-Content $currentCppManifestPath -Raw -ErrorAction Stop | ConvertFrom-Json
         if ([string]$secondManifest.PromotedAtUtc -ne [string]$firstManifest.PromotedAtUtc) {
-            throw 'Restarting the same immutable Rust candidate changed PromotedAtUtc.'
+            throw 'Restarting the same immutable C++ candidate changed PromotedAtUtc.'
         }
         if ([string]$secondManifest.FirstPromotedAtUtc -ne [string]$firstManifest.FirstPromotedAtUtc) {
-            throw 'Restarting the same immutable Rust candidate changed FirstPromotedAtUtc.'
+            throw 'Restarting the same immutable C++ candidate changed FirstPromotedAtUtc.'
         }
         if ([DateTime]$secondManifest.LastStartedAtUtc -le [DateTime]$firstManifest.LastStartedAtUtc) {
-            throw 'Restarting the same immutable Rust candidate did not advance LastStartedAtUtc.'
+            throw 'Restarting the same immutable C++ candidate did not advance LastStartedAtUtc.'
         }
         $health = Invoke-WebRequest -Uri "http://127.0.0.1:$port/readyz" -UseBasicParsing -TimeoutSec 5
-        if ($health.StatusCode -ne 200) { throw 'Rust MCP readiness failed after same-candidate restart.' }
+        if ($health.StatusCode -ne 200) { throw 'C++ MCP readiness failed after same-candidate restart.' }
 
     } else {
         Write-Host 'Skipping same-candidate restart provenance assertion because the local checkout has tracked modifications.'
@@ -134,7 +163,7 @@ try {
 
     & node (Join-Path $root 'scripts\devbox-guardian.mjs') --project-root $root --once --no-repair | Out-Host
     $state = Get-Content (Join-Path $root 'run\guardian\state.json') -Raw | ConvertFrom-Json
-    if (-not $state.IsHealthy) { throw "Guardian did not classify native Rust runtime healthy: $($state.Reasons -join '; ')" }
+    if (-not $state.IsHealthy) { throw "Guardian did not classify native C++ runtime healthy: $($state.Reasons -join '; ')" }
 
     $metadata = Invoke-RestMethod -Uri "http://127.0.0.1:$port/" -TimeoutSec 5
     if (-not $metadata.build.gitSha -or -not $metadata.build.binarySha256) { throw 'Build provenance was not exposed.' }
@@ -147,9 +176,7 @@ try {
             $guardianPid = [int](Get-Content $guardianPidPath -ErrorAction Stop | Select-Object -First 1)
             if ($guardianPid -gt 0) {
                 $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
-                if ($guardianProcess -and ([string]$guardianProcess.CommandLine) -match 'Watch-ChatGptDevboxGuardian\.ps1') {
-                    Stop-Process -Id $guardianPid -Force -ErrorAction Stop
-                }
+                if ($guardianProcess) { Stop-OwnedCiGuardian -TargetProcessId $guardianPid }
             }
         }
     } catch {
@@ -163,9 +190,7 @@ try {
             $supervisorPid = [int]$heartbeat.SupervisorPid
             if ($supervisorPid -gt 0) {
                 $supervisorProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $supervisorPid) -ErrorAction SilentlyContinue
-                if ($supervisorProcess -and ([string]$supervisorProcess.CommandLine) -match 'devbox-guardian\.mjs') {
-                    Stop-Process -Id $supervisorPid -Force -ErrorAction Stop
-                }
+                if ($supervisorProcess) { Stop-OwnedCiGuardian -TargetProcessId $supervisorPid }
             }
         }
     } catch {
