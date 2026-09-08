@@ -1,4 +1,10 @@
-# Complete C++ replacement
+# C++ replacement implementation history
+
+This document records the completion contract and successive development
+milestones. Statements about incomplete modules below describe those milestones,
+not the current implementation. The completed architecture, compatibility bounds,
+certification and promotion requirements are in
+[Native C++ runtime rewrite](CPP_RUNTIME_REWRITE.md).
 
 Baseline: `cd8803c81ad3a14ec3b3fa2afa0d08256975b1e9`, contract version 2, 45 tools. The Rust runtime and bootstrap installer are the reference implementations during this port. Production remains pinned to that existing Rust deployment until the C++ replacement is complete and validated.
 

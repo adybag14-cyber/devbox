@@ -5,12 +5,12 @@ C++ setup TUI and JavaScript/PowerShell launchers remain the integration surface
 The C++ executable runs its own HTTP server, tools, job runners, capture workers,
 and Windows elevation workers; it does not invoke the Rust executable.
 
-The implementation is complete and the candidate is undergoing final managed
-startup and platform certification. Its `--parity-report` checks all 45 native
+The implementation is complete. Its `--parity-report` checks all 45 native
 handlers. Managed launch verifies the clean source and binary hash; publishing
 requires the complete CI matrix and package gate for the exact commit.
-[port-status.json](../cpp-mcp/port-status.json) records validation progress.
-This branch does not change the existing production deployment.
+[port-status.json](../cpp-mcp/port-status.json) records implementation completeness.
+Production activation additionally requires the release and provenance checks
+described below.
 
 ## Compatibility authority
 
@@ -80,13 +80,12 @@ The `C++ native runtime` workflow validates Windows/MSVC, Linux/GCC, Linux/Clang
 with sanitizers, Linux ARM64, both macOS architectures, and four Android ABIs. Its
 integration jobs cover the supported Linux distributions, native musl, real Termux
 userspace, live Docker operations, and capture of owned X11/Cocoa test windows.
-These are certification targets; pending targets are listed in `port-status.json`.
-
-The 9b3f7b9 candidate passed the full Windows, Linux ARM64, Linux Clang sanitizer,
-and both macOS native jobs, plus all four Android builds. Both macOS jobs passed
-native window/display capture. Linux Docker functional checks passed; fixture
-ownership cleanup, Alpine build prerequisites, and Termux fixture environment
-transfer required corrections before the remaining integration jobs could pass.
+The first complete candidate, `39143286575283cdfca1deb1c3dd747625cc6c3f`, passed
+[all 18 certification jobs](https://github.com/adybag14-cyber/devbox/actions/runs/34253740904),
+including Windows Guardian lifecycle, the five Linux distributions, real Termux,
+native capture, and verification of all ten release packages. Later commits and
+version tags must pass the same required gates; this historical result does not
+certify a different commit or executable.
 
 The focused scripts are:
 
@@ -107,8 +106,8 @@ private state directories, owned process IDs, and uniquely named containers.
 
 ## Promotion requirements
 
-The feature branch selects C++ for isolated managed-start certification. Before
-changing a production deployment, finish the platform and managed-launcher gates,
+The default implementation is C++. Before changing a production deployment,
+finish the platform and managed-launcher gates,
 publish the complete three-binary installer artifacts,
 and verify the exact committed source, executable digest, readiness, and rollback
 path. The launcher stages immutable executables and promotes the manifest only
@@ -128,9 +127,9 @@ overwrite an existing versioned release.
 Packages cover Windows x86-64, Linux x86-64/ARM64, macOS Intel/Apple Silicon,
 Alpine musl x86-64, and the four Android ABIs. The POSIX downloader detects musl
 and selects its matching package. Android cross-builds are distinguished from
-the actual Termux x86-64 runtime gate. These packages are unreleased until the
-complete certification workflow passes for a version tag.
+the actual Termux x86-64 runtime gate. The release workflow publishes packages
+only after complete certification passes for their version tag.
 
-Repository protection currently names the older Rust/platform checks. Transition
-those required statuses to `C++ complete certification` when landing
-the rewrite; do not bypass protection or treat skipped integration jobs as passed.
+Keep repository protection tied to `C++ complete certification` and the native,
+platform and packaging checks. A failed or skipped integration dependency must
+prevent certification and publication.

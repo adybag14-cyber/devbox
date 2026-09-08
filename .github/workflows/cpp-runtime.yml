@@ -2,7 +2,7 @@ name: C++ native runtime
 
 on:
   push:
-    branches: [main, rewrite/cpp-devbox-20260907]
+    branches: [main]
   pull_request:
   workflow_dispatch:
   workflow_call:
