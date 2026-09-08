@@ -58,7 +58,7 @@ const reserveLoopbackPort = () =>
     });
   });
 
-const waitForHealth = async ({ baseUrl, exited }) => {
+const waitForReadiness = async ({ baseUrl, exited }) => {
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
     const earlyExit = await Promise.race([
@@ -69,13 +69,15 @@ const waitForHealth = async ({ baseUrl, exited }) => {
       throw new Error(`Rust MCP exited before readiness (code=${earlyExit.result.code}, signal=${earlyExit.result.signal}).`);
     }
     try {
-      const response = await fetch(new URL("healthz", baseUrl), { signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))) });
-      if (response.ok && (await response.text()) === "ok") return;
+      // Liveness can precede the asynchronous storage probes. The SDK client
+      // asserts readiness, so wait for that same condition before launching it.
+      const response = await fetch(new URL("readyz", baseUrl), { signal: AbortSignal.timeout(Math.max(1, Math.min(1000, deadline - Date.now()))) });
+      if (response.ok && (await response.json()).ok === true) return;
     } catch {
       // Startup races are expected; retry until the bounded deadline.
     }
   }
-  throw new Error("Rust MCP did not become healthy within 30 seconds.");
+  throw new Error("Native MCP did not become ready within 30 seconds.");
 };
 
 const runNode = (args, env) =>
@@ -134,7 +136,7 @@ const exited = new Promise((resolve, reject) => {
 });
 
 try {
-  await waitForHealth({ baseUrl, exited });
+  await waitForReadiness({ baseUrl, exited });
   await runNode([smokeClientPath], {
     ...process.env,
     RUST_MCP_URL: baseUrl.toString(),
