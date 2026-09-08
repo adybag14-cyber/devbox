@@ -26,7 +26,7 @@ settings and the C++ implementation selection.
 
 ## Source builds
 
-Use CMake 3.24+, a C++20 compiler, and the vcpkg revision in the repository's
+Use CMake 3.24+, a C++23 compiler, and the vcpkg revision in the repository's
 `vcpkg.json`. The root CMake project builds all three executables and their native
 tests. See the root README for the POSIX commands.
 

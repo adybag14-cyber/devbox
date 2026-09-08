@@ -1,6 +1,6 @@
 # Native C++ runtime rewrite
 
-The rewrite branch implements the MCP runtime and setup CLI in C++20. The existing
+The current development branch implements the MCP runtime and setup CLI in C++23. The existing
 C++ setup TUI and JavaScript/PowerShell launchers remain the integration surfaces.
 The C++ executable runs its own HTTP server, tools, job runners, capture workers,
 and Windows elevation workers; it does not invoke the Rust executable.
@@ -70,7 +70,7 @@ retrieval and rejects an invalid configured CA bundle.
 
 ## Build and verification
 
-Use CMake 3.24 or newer, a C++20 compiler, and the vcpkg revision pinned by
+Use CMake 3.24 or newer, a C++23 compiler, and the vcpkg revision pinned by
 `vcpkg.json`. The root CMake project builds `devbox-mcp`, `devbox-setup`, the TUI,
 and native regression suites. CMake installation stages all three executables in
 `bin`. Windows release builds use the static MSVC runtime. Android uses the pinned
