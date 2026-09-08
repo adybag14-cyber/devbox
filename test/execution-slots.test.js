@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import fsPromises, { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { pathToFileURL } from "node:url";
 import { currentProcessInstance } from "../src/process-identity.js";
 
@@ -23,6 +24,68 @@ const importIsolatedSlots = async () => {
   const module = await import(`${href}?slot=${Date.now()}-${Math.random()}`);
   return { ...module, testSlotRoot: slotRoot };
 };
+
+for (const target of ["slot-01.json", "execution-weighted-claim.json", ".execution-background-head.lock"]) {
+  test(`Windows admission recovers from transient exclusive-open sharing errors: ${target}`, {
+    skip: process.platform !== "win32",
+  }, async (t) => {
+    const { acquireExecutionSlot, getExecutionSlotSnapshot, testSlotRoot } = await importIsolatedSlots();
+    const nativeOpen = fsPromises.open;
+    let faults = 0;
+    const mocked = t.mock.method(fsPromises, "open", async (file, flags, ...args) => {
+      if (path.basename(String(file)) === target && flags === "wx" && faults < 3) {
+        faults += 1;
+        throw Object.assign(new Error("fixture: prior deletion is still pending"), { code: "EPERM" });
+      }
+      return nativeOpen(file, flags, ...args);
+    });
+    syncBuiltinESMExports();
+    let lease;
+    try {
+      lease = await acquireExecutionSlot({ kind: "background", resourceClass: "heavy", weight: 2,
+        maxConcurrent: 2, reservedInteractive: 0, queueTimeoutMs: 1500 });
+      assert.equal(faults, 3);
+      assert.equal(lease.slots.length, 2);
+      assert.equal((await getExecutionSlotSnapshot({ maxConcurrent: 2, reservedInteractive: 0 })).occupied, 2);
+      await lease.release();
+      lease = null;
+      assert.deepEqual((await readdir(testSlotRoot)).filter(name => /^slot-\d+\.json$/u.test(name)), []);
+    } finally {
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+      await lease?.release();
+      await rm(testSlotRoot, { recursive: true, force: true });
+    }
+  });
+}
+
+test("Windows admission preserves persistent permission errors and releases partial claims", {
+  skip: process.platform !== "win32",
+}, async (t) => {
+  const { acquireExecutionSlot, testSlotRoot } = await importIsolatedSlots();
+  const nativeOpen = fsPromises.open;
+  const denied = Object.assign(new Error("fixture: persistent access denial"), { code: "EPERM" });
+  let faults = 0;
+  const mocked = t.mock.method(fsPromises, "open", async (file, flags, ...args) => {
+    if (path.basename(String(file)) === "slot-01.json" && flags === "wx") {
+      faults += 1;
+      throw denied;
+    }
+    return nativeOpen(file, flags, ...args);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(acquireExecutionSlot({ kind: "background", resourceClass: "heavy", weight: 2,
+      maxConcurrent: 2, reservedInteractive: 0, queueTimeoutMs: 1500 }), error => error === denied);
+    assert(faults > 1 && faults <= 6, "permission retry must be bounded");
+    assert.deepEqual((await readdir(testSlotRoot)).filter(name => /^slot-\d+\.json$/u.test(name)), []);
+    assert(!((await readdir(testSlotRoot)).includes("execution-weighted-claim.json")));
+  } finally {
+    mocked.mock.restore();
+    syncBuiltinESMExports();
+    await rm(testSlotRoot, { recursive: true, force: true });
+  }
+});
 
 test("background execution leaves the reserved interactive slot available", async () => {
   const { acquireExecutionSlot, getExecutionSlotSnapshot } = await importIsolatedSlots();

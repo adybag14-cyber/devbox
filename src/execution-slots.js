@@ -104,6 +104,26 @@ const queueTicketPrefix = (queueClass) => `${queueClass}-`;
 const queueTimestampNs = () => BigInt(Date.now()) * 1_000_000n;
 
 const WINDOWS_RENAME_RETRY_CODES = new Set(["EACCES", "EBUSY", "EPERM"]);
+const openExclusiveFileWithRetry = async (filePath, { signal, deadlineMs }) => {
+  let lastError = null;
+  for (let attempt = 0; ; attempt += 1) {
+    if (signal?.aborted) throw abortError();
+    if (lastError && Date.now() >= deadlineMs) throw lastError;
+    try {
+      return await open(filePath, "wx");
+    } catch (error) {
+      // Windows can deny CREATE_NEW briefly while the prior owner closes a
+      // deleted file. Retry only the open, within the caller's queue deadline;
+      // persistent permission errors and ordinary EEXIST contention retain
+      // their existing error/ownership handling.
+      const remaining = deadlineMs - Date.now();
+      if (process.platform !== "win32" || !WINDOWS_RENAME_RETRY_CODES.has(error?.code) ||
+          attempt >= 5 || remaining <= 0) throw error;
+      lastError = error;
+      await sleep(Math.min(remaining, 5 * (attempt + 1)));
+    }
+  }
+};
 const removeFileWithRetry = async (filePath, attempts = 6) => {
   let lastError = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -148,7 +168,7 @@ const acquireQueueHeadLock = async (queueClass, { signal, deadlineMs }) => {
     const token = randomUUID();
     let handle = null;
     try {
-      handle = await open(filePath, "wx");
+      handle = await openExclusiveFileWithRetry(filePath, { signal, deadlineMs: boundedDeadline });
       await handle.writeFile(`${JSON.stringify({ token, pid: process.pid, processInstance: await currentProcessInstance(), class: queueClass, acquiredAtUtc: new Date().toISOString() })}\n`, "utf8");
       await handle.close();
       handle = null;
@@ -394,7 +414,7 @@ const acquirePoolClaimLock = async (pool, { signal, deadlineMs }) => {
     const token = randomUUID();
     let handle = null;
     try {
-      handle = await open(filePath, "wx");
+      handle = await openExclusiveFileWithRetry(filePath, { signal, deadlineMs });
       await handle.writeFile(`${JSON.stringify({
         token,
         pid: process.pid,
@@ -635,7 +655,7 @@ export const acquireExecutionSlot = async ({
           const token = randomUUID();
           let handle = null;
           try {
-            handle = await open(filePath, "wx");
+            handle = await openExclusiveFileWithRetry(filePath, { signal, deadlineMs });
             await handle.writeFile(`${JSON.stringify({
               token,
               pid: process.pid,
