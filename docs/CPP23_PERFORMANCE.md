@@ -123,7 +123,9 @@ frequency, retention, percentile calculation and persistence intervals are retai
 
 Worker pools start threads as demand requires while retaining their configured
 concurrency and queue limits. Logging coalesces up to 64 events for at most 2 ms,
-and drains up to 256 already queued events per batch when catching up. The queue
+and drains up to 256 already queued events per batch when catching up. Each batch
+keeps one output stream across its bounded writes and releases it before rotation
+or return, so later batches still observe external file replacement. The queue
 remains bounded to 1,024 events. Logs use the same validated JSON serializer as
 responses; every batch retains checked stream flushing, rotation and failure
 accounting. This does not add a power-loss durability guarantee to usage

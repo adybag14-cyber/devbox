@@ -68,6 +68,22 @@ int main() {
             mixed.append_batch(events);
             require(read_file(root / "mixed-batch.jsonl") == expected,
                     "large log batches preserve reference JSON bytes across multiple flushes");
+            fs::rename(root / "mixed-batch.jsonl", root / "external-rotation.jsonl");
+            mixed.append(Json{{"after", "external replacement"}});
+            require(read_file(root / "external-rotation.jsonl") == expected &&
+                        read_file(root / "mixed-batch.jsonl") ==
+                            "{\"after\":\"external replacement\"}\n",
+                    "a completed batch releases its file and observes external rotation");
+
+            JsonLogSink rotating_reference(root / "large-reference.jsonl", 96 * 1024, 3);
+            JsonLogSink rotating_batch(root / "large-batch.jsonl", 96 * 1024, 3);
+            for (const auto& event : events)
+                rotating_reference.append(event);
+            rotating_batch.append_batch(events);
+            for (const auto* suffix : {"", ".1"})
+                require(read_file(root / path_from_utf8(std::string("large-reference.jsonl") + suffix)) ==
+                            read_file(root / path_from_utf8(std::string("large-batch.jsonl") + suffix)),
+                        "multi-write batches close before rotation and resume exact ordered output");
         }
         BackgroundTasks background;
         {

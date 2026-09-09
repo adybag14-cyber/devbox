@@ -1,5 +1,6 @@
 #include "devbox/telemetry.hpp"
 #include <algorithm>
+#include <fstream>
 #include <set>
 namespace devbox {
 namespace {
@@ -74,7 +75,16 @@ void JsonLogSink::append_batch(std::span<const Json> events) {
     auto size = fs::file_size(path_, ec);
     if (ec)
         size = 0;
+    std::ofstream file;
+    auto close = [&] {
+        if (!file.is_open())
+            return;
+        file.close();
+        if (!file)
+            throw Error("Cannot close " + path_text(path_));
+    };
     auto rotate = [&] {
+        close();
         auto rotation = [this](std::size_t i) {
             auto p = path_;
             p += "." + std::to_string(i);
@@ -95,9 +105,18 @@ void JsonLogSink::append_batch(std::span<const Json> events) {
     auto flush = [&] {
         if (pending.empty())
             return;
-        // The same checked stream flush is retained; adjacent queued events
-        // share one open/write/flush rather than syncing each small record.
-        write_file(path_, pending, true);
+        // Keep one stream for the batch, including when its records need
+        // several bounded writes. Release it before rotation and on return,
+        // so a later batch observes external file replacement as before.
+        if (!file.is_open()) {
+            file.open(path_, std::ios::binary | std::ios::app);
+            if (!file)
+                throw Error("Cannot open " + path_text(path_));
+        }
+        file.write(pending.data(), static_cast<std::streamsize>(pending.size()));
+        file.flush();
+        if (!file)
+            throw Error("Cannot write " + path_text(path_));
         size += pending.size();
         pending.clear();
     };
@@ -114,6 +133,7 @@ void JsonLogSink::append_batch(std::span<const Json> events) {
             flush();
     }
     flush();
+    close();
 }
 UsageLogger::UsageLogger(fs::path path, std::uint64_t maximum, std::size_t rotations,
                          BackgroundTasks& background, std::string name)
