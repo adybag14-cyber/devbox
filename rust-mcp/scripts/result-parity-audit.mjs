@@ -13,7 +13,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, "..", "..");
 const serverPath = path.join(projectRoot, "src", "server.js");
-const binaryPath = path.join(projectRoot, "rust-mcp", "target", "debug", process.platform === "win32" ? "devbox-mcp.exe" : "devbox-mcp");
+const binaryPath = process.env.DEVBOX_MCP_TEST_BINARY || path.join(projectRoot, "rust-mcp", "target", "debug", process.platform === "win32" ? "devbox-mcp.exe" : "devbox-mcp");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const fetchHealthBefore = async (url, deadline) => {
   const remainingMs = Math.max(1, deadline - Date.now());
@@ -74,6 +74,14 @@ const commonEnv = {
   MCP_JOBS_ROOT: path.join(jsStateRoot, "jobs"),
   MCP_EXEC_SLOT_ROOT: path.join(jsStateRoot, "slots"),
   GH_CONFIG_DIR: ghConfigRoot,
+  GH_TOKEN: "",
+  GITHUB_TOKEN: "",
+  GH_ENTERPRISE_TOKEN: "",
+  GITHUB_ENTERPRISE_TOKEN: "",
+  GIT_CONFIG_GLOBAL: path.join(ghConfigRoot, "gitconfig"),
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_COUNT: "0",
+  DEVBOX_AUTO_START: "false",
 };
 Object.assign(process.env, commonEnv);
 

@@ -107,7 +107,9 @@ function Test-IsOwnedServerCommandLine {
         $executableName = [IO.Path]::GetFileName($executable)
         if (
             $executableDirectory -eq $expectedVersionedRustDir -and
-            $executableName -match '^devbox-mcp-[a-z0-9]+-[a-f0-9]{16}\.exe$'
+            ($executableName -match '^devbox-mcp-[a-z0-9]+-[a-f0-9]{16}\.exe$' -or
+             $executableName -match '^devbox-cpp-mcp-[a-f0-9]{12}-[a-f0-9]{16}\.exe$') -and
+            $arguments.Count -eq 1
         ) {
             return $true
         }

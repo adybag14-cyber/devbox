@@ -1,0 +1,6362 @@
+{
+  "source_revision": "cd8803c81ad3a14ec3b3fa2afa0d08256975b1e9",
+  "source_binary_sha256": "6b33147a1032368a293557705811047cd4be01b080000de0de7fc2f4dcad0114",
+  "profiles": {
+    "host": [
+      {
+        "name": "devbox_capabilities",
+        "description": "Read the current Rust contract version, schema hash, tools and scheduling/admission limits. Supply a tool_name for its authoritative schema to diagnose cached connector definitions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tool_name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_exec",
+        "title": "Run Mutating Shell Command In Windows Host Devbox",
+        "description": "Use this when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the Windows host devbox. Prefer devbox_run_program for a single executable and devbox_exec_readonly for shell-based inspection. Synchronous calls are capped at 90s; use devbox_exec_start for builds or other longer work.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "Shell command to execute in the selected Devbox runtime.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "user": {
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_exec_readonly",
+        "title": "Run Read-Only Shell Command In Windows Host Devbox",
+        "description": "Use this only when inspection requires shell syntax such as pipelines, redirection, variables, or compound commands. Prefer devbox_run_program for a single executable such as git, gh, node, python, or rg because it avoids shell startup overhead. In Windows host devbox mode this runs directly on the host shell, so read-only behavior is advisory rather than sandbox-enforced. Synchronous calls are capped at 90s; use devbox_exec_start for longer work.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "Shell command to execute in the selected Devbox runtime.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "user": {
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_exec_start",
+        "title": "Start Background Shell Job In Windows Host Devbox",
+        "description": "Use this for Windows host devbox commands expected to run longer than about 90 seconds. It starts a detached persisted job and returns immediately so connector request deadlines do not cancel the work.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "Shell command to run as a detached Devbox job.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 7200,
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "user": {
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "read_only": {
+              "type": "boolean",
+              "default": false
+            },
+            "resource_class": {
+              "type": "string",
+              "default": "auto",
+              "enum": [
+                "auto",
+                "watch",
+                "light",
+                "heavy",
+                "io-heavy"
+              ]
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_file_state",
+        "description": "Read a complete file digest and length before an atomic checkpoint write. Host runtime only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_github_auth_status",
+        "title": "Windows Host Devbox GitHub Auth Status",
+        "description": "Use this when you need to confirm whether the Windows host devbox is authenticated to GitHub and which git identity is configured.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_cancel",
+        "title": "Cancel Devbox Background Job",
+        "description": "Use this to stop a job started by devbox_exec_start. The detached runner and its process tree are terminated.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "minLength": 8
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_list",
+        "description": "Discover persisted jobs with task/status filters and bounded job-ID pagination. Recover job IDs after reconnecting.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            "statuses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_logs",
+        "title": "Read Devbox Background Job Logs",
+        "description": "Use this to retrieve bounded stdout/stderr tails for a job started by devbox_exec_start.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "minLength": 8
+            },
+            "max_chars": {
+              "type": "integer",
+              "default": 20000,
+              "minimum": 100,
+              "maximum": 100000
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_status",
+        "title": "Get Devbox Background Job Status",
+        "description": "Read background-job status. Prefer wait_seconds instead of Start-Sleep polling; waiting here uses only a Node timer and consumes no execution slot or shell process.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "minLength": 8
+            },
+            "wait_seconds": {
+              "description": "Optional no-slot long-poll duration in seconds (0-85).",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 85
+            },
+            "terminal_only": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_submit",
+        "description": "Submit a durable host job using a task_id and operation_id. Exactly one of program or command is required. Retry the identical operation after response loss: it returns the existing job, never launches a duplicate. Conflicting reuse is rejected; admission limits bound queued runners.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            "operation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            "label": {
+              "type": "string",
+              "default": ""
+            },
+            "program": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "input": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "working_dir": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 7200,
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "resource_class": {
+              "$ref": "#/$defs/AgentResource"
+            },
+            "read_only": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "task_id",
+            "operation_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$defs": {
+            "AgentResource": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "watch",
+                "light",
+                "heavy",
+                "io-heavy"
+              ]
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "devbox_list_files",
+        "title": "List Windows Host Devbox Files",
+        "description": "Use this when you need a directory listing inside the Windows host devbox workspace or another configured path.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "recursive": {
+              "type": "boolean",
+              "default": false
+            },
+            "max_depth": {
+              "type": "integer",
+              "default": 4,
+              "minimum": 1,
+              "maximum": 20
+            },
+            "max_entries": {
+              "type": "integer",
+              "default": 5000,
+              "minimum": 1,
+              "maximum": 50000
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 30,
+              "minimum": 1,
+              "maximum": 300
+            },
+            "exclude_directories": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "default": [
+                ".git",
+                "node_modules",
+                ".cache",
+                ".venv",
+                "venv",
+                "__pycache__"
+              ],
+              "maxItems": 32
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_read_file",
+        "title": "Read Windows Host Devbox File",
+        "description": "Use this when you need text content from a file inside the Windows host devbox.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "max_bytes": {
+              "type": "integer",
+              "default": 65536,
+              "minimum": 1,
+              "maximum": 4000000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_read_large_file",
+        "title": "Read Large Windows Host Devbox File Chunk",
+        "description": "Use this when you need an exact byte range from a larger file inside the Windows host devbox. It returns a base64 chunk plus metadata for safe paging without UTF-8 corruption.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "offset_bytes": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_bytes": {
+              "type": "integer",
+              "default": 262144,
+              "minimum": 1,
+              "maximum": 4000000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_recreate",
+        "title": "Recreate Windows Host Devbox",
+        "description": "Use this when the Windows host devbox should be rebuilt from the configured backend while preserving the workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_restart",
+        "title": "Restart Windows Host Devbox",
+        "description": "Use this when the Windows host devbox needs a clean restart.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_run_program",
+        "title": "Run Program Directly In Windows Host Devbox",
+        "description": "Preferred fast path for running one executable with structured arguments inside the Windows host devbox (for example git, gh, node, python, or rg). This avoids shell startup and quoting overhead. Use devbox_exec or devbox_exec_readonly only when shell syntax is actually required.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "description": "Executable name from DEVBOX_PROGRAM_ALLOWLIST; no shell syntax is interpreted.",
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "description": "Argument vector passed directly to the executable.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "working_dir": {
+              "description": "Working directory; defaults to the selected Devbox workspace.",
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "description": "Synchronous timeout in seconds (1-90).",
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "user": {
+              "description": "Execution user; primarily useful for Docker mode.",
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "output_mode": {
+              "description": "Output shaping mode: head, tail, or summary.",
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "description": "Maximum characters returned per output stream.",
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "description": "Optional maximum lines returned per stream; 0 disables line limiting.",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_run_program_start",
+        "title": "Start Background Program Directly In Windows Host Devbox",
+        "description": "Preferred detached path for one long-running executable. It avoids shell startup/quoting and participates in weighted scheduling. Use resource_class=watch for passive watchers and heavy for builds/browser workloads.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "description": "Executable name from DEVBOX_PROGRAM_ALLOWLIST; no shell syntax is interpreted.",
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "input": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "description": "Detached job timeout in seconds (1-86400).",
+              "type": "integer",
+              "default": 7200,
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "user": {
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "resource_class": {
+              "description": "Resource class: auto, watch, light, heavy, or io-heavy.",
+              "type": "string",
+              "default": "auto",
+              "enum": [
+                "auto",
+                "watch",
+                "light",
+                "heavy",
+                "io-heavy"
+              ]
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_search_files",
+        "title": "Search Windows Host Devbox Files",
+        "description": "Use this when you need text search inside the Windows host devbox workspace. ripgrep-style syntax is supported best-effort in host mode.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "minLength": 1
+            },
+            "path": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "glob": {
+              "type": "string",
+              "default": "*"
+            },
+            "case_sensitive": {
+              "type": "boolean",
+              "default": false
+            },
+            "max_matches": {
+              "type": "integer",
+              "default": 200,
+              "minimum": 1,
+              "maximum": 5000
+            },
+            "max_depth": {
+              "type": "integer",
+              "default": 12,
+              "minimum": 1,
+              "maximum": 50
+            },
+            "max_file_bytes": {
+              "type": "integer",
+              "default": 2097152,
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 30,
+              "minimum": 1,
+              "maximum": 300
+            },
+            "exclude_directories": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "default": [
+                ".git",
+                "node_modules",
+                ".cache",
+                ".venv",
+                "venv",
+                "__pycache__"
+              ],
+              "maxItems": 32
+            },
+            "include_ignored": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_start",
+        "title": "Start Windows Host Devbox",
+        "description": "Use this when the Windows host devbox is stopped or missing and needs to be brought online.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_status",
+        "title": "Windows Host Devbox Status",
+        "description": "Use this when you need the current state of the Windows host devbox and its installed toolchain.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_stop",
+        "title": "Stop Windows Host Devbox",
+        "description": "Use this when the Windows host devbox should be shut down without deleting the workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_sync_github_auth_from_host",
+        "title": "Sync Host GitHub Auth Into Windows Host Devbox",
+        "description": "Use this when the host already has a valid GitHub CLI login and the Windows host devbox should inherit GitHub authentication and git identity from the host.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_task_get",
+        "description": "Read a versioned task checkpoint, including plan, job IDs and artifact references saved by the agent.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_task_list",
+        "description": "Discover task IDs and revisions after reconnecting, without loading large task states.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_task_put",
+        "description": "Atomically save task state using expected_revision (zero creates a task). Stale updates are rejected; identical retries recover the committed revision. State is data and does not grant execution permissions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "state": {}
+          },
+          "required": [
+            "task_id",
+            "expected_revision",
+            "state"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_wait",
+        "title": "Wait Without Consuming An Execution Slot",
+        "description": "Use this instead of Start-Sleep/sleep when you simply need to wait before the next MCP action. It uses a Node timer only: no PowerShell process and no execution slot.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "seconds": {
+              "description": "How long to wait, in seconds.",
+              "type": "number",
+              "minimum": 0.05,
+              "maximum": 85
+            },
+            "reason": {
+              "description": "Optional human-readable reason for telemetry/context.",
+              "type": "string",
+              "default": "",
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "seconds"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_wait_for_file",
+        "title": "Wait For Host File Condition Without A Shell",
+        "description": "Host-mode filesystem condition wait using Node fs polling only. Prefer this over Start-Sleep followed by Test-Path/Get-Content. Docker mode should use devbox_wait because container paths are not directly visible to the MCP process.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Host filesystem path to watch.",
+              "type": "string",
+              "minLength": 1
+            },
+            "should_exist": {
+              "description": "Wait for the path to exist; false waits for removal.",
+              "type": "boolean",
+              "default": true
+            },
+            "min_bytes": {
+              "description": "When waiting for existence, require at least this file size.",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "stable_ms": {
+              "description": "Require the condition to remain true for this duration.",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 30000
+            },
+            "timeout_seconds": {
+              "description": "Maximum wait duration in seconds.",
+              "type": "number",
+              "minimum": 0.1,
+              "maximum": 85,
+              "default": 60
+            },
+            "poll_ms": {
+              "description": "Filesystem poll interval in milliseconds.",
+              "type": "integer",
+              "default": 250,
+              "minimum": 50,
+              "maximum": 5000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_write_file",
+        "title": "Write Windows Host Devbox File",
+        "description": "Use this when you need to create or overwrite a text file inside the Windows host devbox workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string"
+            },
+            "append": {
+              "type": "boolean",
+              "default": false
+            },
+            "create_dirs": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_write_file_atomic",
+        "description": "Atomically replace a host file after checking its previous SHA-256 (or missing). Append requires the previous offset; identical retries return replayed=true without duplicating bytes. Uses bounded-memory staging; atomic append copies the previous file.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content_base64": {
+              "type": "string",
+              "maxLength": 4000000
+            },
+            "expected_file_sha256": {
+              "description": "Previous complete file SHA-256, or \"missing\" for create-only.",
+              "type": "string",
+              "pattern": "^(missing|[a-fA-F0-9]{64})$"
+            },
+            "append": {
+              "type": "boolean",
+              "default": false
+            },
+            "expected_offset_bytes": {
+              "description": "Required for retry-safe append, measured before the first attempt.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "create_dirs": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "path",
+            "content_base64",
+            "expected_file_sha256"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_write_large_file",
+        "title": "Write Large Windows Host Devbox File",
+        "description": "Use this when you need to create or overwrite a large file inside the Windows host devbox workspace using base64-backed transfer with post-write verification.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string"
+            },
+            "content_base64": {
+              "type": "string"
+            },
+            "append": {
+              "type": "boolean",
+              "default": false
+            },
+            "create_dirs": {
+              "type": "boolean",
+              "default": true
+            },
+            "expected_sha256": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_capture_display",
+        "title": "Capture Windows Host Display",
+        "description": "Capture the complete windows host desktop using the native compositor/screenshot backend and return an MCP image content block. Windows returns JPEG; macOS/Linux use lossless PNG when their native tools do.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "quality": {
+              "description": "Requested image quality from 1 through 100. Native lossless PNG backends record but do not apply JPEG quality.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_capture_program",
+        "title": "Capture Windows Host Window by PID",
+        "description": "Compatibility alias for host_capture_window.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "description": "Host process ID whose visible application window should be captured.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "quality": {
+              "description": "Requested image quality from 1 through 100.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            },
+            "include_process_tree": {
+              "description": "Also consider visible windows owned by child processes, useful for launchers, browsers, emulators, and multi-process GUI applications.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "pid"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_capture_window",
+        "title": "Capture Windows Host Window by PID",
+        "description": "Capture the largest visible window owned by a host PID or one of its child processes. The Windows backend detects black PrintWindow frames from GPU/DirectComposition surfaces and falls back to compositor-visible pixels. macOS uses CoreGraphics window discovery plus screencapture; Linux supports X11 and compositor-specific Wayland paths.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "description": "Host process ID whose visible application window should be captured.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "quality": {
+              "description": "Requested image quality from 1 through 100.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            },
+            "include_process_tree": {
+              "description": "Also consider visible windows owned by child processes, useful for launchers, browsers, emulators, and multi-process GUI applications.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "pid"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_exec",
+        "title": "Run Windows PowerShell Command",
+        "description": "Use this when you explicitly need native windows host shell automation rather than the Windows host devbox. Prefer host_run_program for a single allowed executable such as git, gh, node, python, or rg because it avoids PowerShell startup overhead. On Windows this runs elevated inside the already-elevated MCP service (no per-command UAC).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_run_program",
+        "title": "Run Allowed Windows Host Program",
+        "description": "Preferred fast path when you need a specific allowed windows host program such as git, gh, node, python, or rg with structured arguments; this avoids shell startup and quoting overhead.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_status",
+        "title": "Windows Host Tool Status",
+        "description": "Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_capture_display",
+        "title": "Capture Windows Host Display",
+        "description": "Compatibility alias for host_capture_display. On Windows this retains the original PR tool name.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "quality": {
+              "description": "Requested image quality from 1 through 100. Native lossless PNG backends record but do not apply JPEG quality.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_capture_program",
+        "title": "Capture Windows Host Window by PID",
+        "description": "Compatibility alias for host_capture_window. On Windows this retains the original PR tool name.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "description": "Host process ID whose visible application window should be captured.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "quality": {
+              "description": "Requested image quality from 1 through 100.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            },
+            "include_process_tree": {
+              "description": "Also consider visible windows owned by child processes, useful for launchers, browsers, emulators, and multi-process GUI applications.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "pid"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_exec",
+        "title": "Run Windows PowerShell Command",
+        "description": "Compatibility alias for host_exec. Use this when you explicitly need native windows host tooling rather than the Windows host devbox.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_inspect_file",
+        "title": "Inspect Windows Host File Integrity",
+        "description": "Use this when a Windows host command references a file that may be corrupted, mojibake-encoded, syntactically broken, or otherwise suspect on disk. It inspects exact bytes and PowerShell parser status where relevant.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "max_bytes": {
+              "type": "integer",
+              "default": 262144,
+              "minimum": 1,
+              "maximum": 4000000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_read_large_file",
+        "title": "Read Large Windows Host File Chunk",
+        "description": "Use this when you need an exact byte range from a Windows host file so you can diagnose or repair corruption without lossy UTF-8 conversion.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "File path on the Windows host.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "description": "Working directory used to resolve relative Windows host paths. Defaults to the configured host working directory.",
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "offset_bytes": {
+              "description": "Starting byte offset within the file.",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_bytes": {
+              "description": "Maximum raw bytes to return from that offset.",
+              "type": "integer",
+              "default": 262144,
+              "minimum": 1,
+              "maximum": 4000000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_run_program",
+        "title": "Run Allowed Windows Host Program",
+        "description": "Compatibility alias for host_run_program. Use this when you need a specific allowed windows host program with structured arguments.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_status",
+        "title": "Windows Host Tool Status",
+        "description": "Compatibility alias for host_status. Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_write_large_file",
+        "title": "Write Large Windows Host File",
+        "description": "Use this when you need to create or overwrite a Windows host file using exact bytes, especially to repair corruption while preserving the intended payload end to end.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "File path on the Windows host.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "description": "Working directory used to resolve relative Windows host paths. Defaults to the configured host working directory.",
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "content": {
+              "description": "Optional UTF-8 text payload to write. Provide either content or content_base64.",
+              "type": "string"
+            },
+            "content_base64": {
+              "description": "Base64-encoded raw bytes to write exactly as provided. Provide either content or content_base64.",
+              "type": "string"
+            },
+            "append": {
+              "description": "Append to the file instead of overwriting it.",
+              "type": "boolean",
+              "default": false
+            },
+            "create_dirs": {
+              "description": "Create parent directories if they do not exist.",
+              "type": "boolean",
+              "default": true
+            },
+            "expected_sha256": {
+              "description": "Optional expected SHA-256 of the decoded payload for end-to-end verification.",
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      }
+    ],
+    "docker": [
+      {
+        "name": "devbox_capabilities",
+        "description": "Read the current Rust contract version, schema hash, tools and scheduling/admission limits. Supply a tool_name for its authoritative schema to diagnose cached connector definitions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tool_name": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_exec",
+        "title": "Run Mutating Shell Command In Docker Devbox",
+        "description": "Use this only when the shell command needs side effects such as writing files, building artifacts, installing packages, changing git state, or otherwise mutating the devbox or workspace. Prefer devbox_run_program for a single executable and devbox_exec_readonly for shell-based inspection. Synchronous calls are capped at 90s; use devbox_exec_start for builds or other longer work.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "Shell command to execute in the selected Devbox runtime.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "user": {
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_exec_readonly",
+        "title": "Run Read-Only Shell Command In Docker Devbox",
+        "description": "Use this only when inspection requires shell syntax such as pipelines, redirection, variables, or compound commands. Prefer devbox_run_program for a single executable such as git, gh, node, python, or rg because it avoids shell startup overhead. It runs in the long-lived devbox container; read-only behavior is advisory. Synchronous calls are capped at 90s; use devbox_exec_start for longer work.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "Shell command to execute in the selected Devbox runtime.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "user": {
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_exec_start",
+        "title": "Start Background Shell Job In Docker Devbox",
+        "description": "Use this for Docker devbox commands expected to run longer than about 90 seconds. It starts a detached persisted job and returns immediately so connector request deadlines do not cancel the work.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "description": "Shell command to run as a detached Devbox job.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 7200,
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "user": {
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "read_only": {
+              "type": "boolean",
+              "default": false
+            },
+            "resource_class": {
+              "type": "string",
+              "default": "auto",
+              "enum": [
+                "auto",
+                "watch",
+                "light",
+                "heavy",
+                "io-heavy"
+              ]
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_file_state",
+        "description": "Read a complete file digest and length before an atomic checkpoint write. Host runtime only.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_github_auth_status",
+        "title": "Docker Devbox GitHub Auth Status",
+        "description": "Use this when you need to confirm whether the Docker devbox is authenticated to GitHub and which git identity is configured.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_cancel",
+        "title": "Cancel Devbox Background Job",
+        "description": "Use this to stop a job started by devbox_exec_start. The detached runner and its process tree are terminated.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "minLength": 8
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_list",
+        "description": "Discover persisted jobs with task/status filters and bounded job-ID pagination. Recover job IDs after reconnecting.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            "statuses": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_logs",
+        "title": "Read Devbox Background Job Logs",
+        "description": "Use this to retrieve bounded stdout/stderr tails for a job started by devbox_exec_start.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "minLength": 8
+            },
+            "max_chars": {
+              "type": "integer",
+              "default": 20000,
+              "minimum": 100,
+              "maximum": 100000
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_status",
+        "title": "Get Devbox Background Job Status",
+        "description": "Read background-job status. Prefer wait_seconds instead of Start-Sleep polling; waiting here uses only a Node timer and consumes no execution slot or shell process.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "job_id": {
+              "type": "string",
+              "minLength": 8
+            },
+            "wait_seconds": {
+              "description": "Optional no-slot long-poll duration in seconds (0-85).",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 85
+            },
+            "terminal_only": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "job_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_job_submit",
+        "description": "Submit a durable host job using a task_id and operation_id. Exactly one of program or command is required. Retry the identical operation after response loss: it returns the existing job, never launches a duplicate. Conflicting reuse is rejected; admission limits bound queued runners.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            "operation_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            "label": {
+              "type": "string",
+              "default": ""
+            },
+            "program": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "input": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "working_dir": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 7200,
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "resource_class": {
+              "$ref": "#/$defs/AgentResource"
+            },
+            "read_only": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "task_id",
+            "operation_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "$defs": {
+            "AgentResource": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "watch",
+                "light",
+                "heavy",
+                "io-heavy"
+              ]
+            }
+          }
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": true
+        }
+      },
+      {
+        "name": "devbox_list_files",
+        "title": "List Docker Devbox Files",
+        "description": "Use this when you need a directory listing inside the Docker devbox workspace or another configured path.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "recursive": {
+              "type": "boolean",
+              "default": false
+            },
+            "max_depth": {
+              "type": "integer",
+              "default": 4,
+              "minimum": 1,
+              "maximum": 20
+            },
+            "max_entries": {
+              "type": "integer",
+              "default": 5000,
+              "minimum": 1,
+              "maximum": 50000
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 30,
+              "minimum": 1,
+              "maximum": 300
+            },
+            "exclude_directories": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "default": [
+                ".git",
+                "node_modules",
+                ".cache",
+                ".venv",
+                "venv",
+                "__pycache__"
+              ],
+              "maxItems": 32
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_read_file",
+        "title": "Read Docker Devbox File",
+        "description": "Use this when you need text content from a file inside the Docker devbox.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "max_bytes": {
+              "type": "integer",
+              "default": 65536,
+              "minimum": 1,
+              "maximum": 4000000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_read_large_file",
+        "title": "Read Large Docker Devbox File Chunk",
+        "description": "Use this when you need an exact byte range from a larger file inside the Docker devbox. It returns a base64 chunk plus metadata for safe paging without UTF-8 corruption.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "offset_bytes": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_bytes": {
+              "type": "integer",
+              "default": 262144,
+              "minimum": 1,
+              "maximum": 4000000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_recreate",
+        "title": "Recreate Docker Devbox",
+        "description": "Use this when the Docker devbox should be rebuilt from the configured backend while preserving the workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_restart",
+        "title": "Restart Docker Devbox",
+        "description": "Use this when the Docker devbox needs a clean restart.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_run_program",
+        "title": "Run Program Directly In Docker Devbox",
+        "description": "Preferred fast path for running one executable with structured arguments inside the Docker devbox (for example git, gh, node, python, or rg). This avoids shell startup and quoting overhead. Use devbox_exec or devbox_exec_readonly only when shell syntax is actually required.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "description": "Executable name from DEVBOX_PROGRAM_ALLOWLIST; no shell syntax is interpreted.",
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "description": "Argument vector passed directly to the executable.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "working_dir": {
+              "description": "Working directory; defaults to the selected Devbox workspace.",
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "description": "Synchronous timeout in seconds (1-90).",
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "user": {
+              "description": "Execution user; primarily useful for Docker mode.",
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "output_mode": {
+              "description": "Output shaping mode: head, tail, or summary.",
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "description": "Maximum characters returned per output stream.",
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "description": "Optional maximum lines returned per stream; 0 disables line limiting.",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_run_program_start",
+        "title": "Start Background Program Directly In Docker Devbox",
+        "description": "Preferred detached path for one long-running executable. It avoids shell startup/quoting and participates in weighted scheduling. Use resource_class=watch for passive watchers and heavy for builds/browser workloads.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "description": "Executable name from DEVBOX_PROGRAM_ALLOWLIST; no shell syntax is interpreted.",
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "input": {
+              "type": "string"
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "timeout_seconds": {
+              "description": "Detached job timeout in seconds (1-86400).",
+              "type": "integer",
+              "default": 7200,
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "user": {
+              "type": "string",
+              "default": "__DEVBOX_USER__"
+            },
+            "resource_class": {
+              "description": "Resource class: auto, watch, light, heavy, or io-heavy.",
+              "type": "string",
+              "default": "auto",
+              "enum": [
+                "auto",
+                "watch",
+                "light",
+                "heavy",
+                "io-heavy"
+              ]
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_search_files",
+        "title": "Search Docker Devbox Files",
+        "description": "Use this when you need ripgrep-style text search inside the Docker devbox workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pattern": {
+              "type": "string",
+              "minLength": 1
+            },
+            "path": {
+              "type": "string",
+              "default": "__DEVBOX_WORKSPACE__"
+            },
+            "glob": {
+              "type": "string",
+              "default": "*"
+            },
+            "case_sensitive": {
+              "type": "boolean",
+              "default": false
+            },
+            "max_matches": {
+              "type": "integer",
+              "default": 200,
+              "minimum": 1,
+              "maximum": 5000
+            },
+            "max_depth": {
+              "type": "integer",
+              "default": 12,
+              "minimum": 1,
+              "maximum": 50
+            },
+            "max_file_bytes": {
+              "type": "integer",
+              "default": 2097152,
+              "minimum": 1,
+              "maximum": 67108864
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 30,
+              "minimum": 1,
+              "maximum": 300
+            },
+            "exclude_directories": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              },
+              "default": [
+                ".git",
+                "node_modules",
+                ".cache",
+                ".venv",
+                "venv",
+                "__pycache__"
+              ],
+              "maxItems": 32
+            },
+            "include_ignored": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "pattern"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_start",
+        "title": "Start Docker Devbox",
+        "description": "Use this when the Docker devbox is stopped or missing and needs to be brought online.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_status",
+        "title": "Docker Devbox Status",
+        "description": "Use this when you need the current state of the Docker devbox and its installed toolchain.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_stop",
+        "title": "Stop Docker Devbox",
+        "description": "Use this when the Docker devbox should be shut down without deleting the workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_sync_github_auth_from_host",
+        "title": "Sync Host GitHub Auth Into Docker Devbox",
+        "description": "Use this when the host already has a valid GitHub CLI login and the Docker devbox should inherit GitHub authentication and git identity from the host.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_task_get",
+        "description": "Read a versioned task checkpoint, including plan, job IDs and artifact references saved by the agent.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_task_list",
+        "description": "Discover task IDs and revisions after reconnecting, without loading large task states.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "type": "integer",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_task_put",
+        "description": "Atomically save task state using expected_revision (zero creates a task). Stale updates are rejected; identical retries recover the committed revision. State is data and does not grant execution permissions.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "task_id": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 80,
+              "pattern": "^[a-z0-9_-]+$"
+            },
+            "expected_revision": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "state": {}
+          },
+          "required": [
+            "task_id",
+            "expected_revision",
+            "state"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_wait",
+        "title": "Wait Without Consuming An Execution Slot",
+        "description": "Use this instead of Start-Sleep/sleep when you simply need to wait before the next MCP action. It uses a Node timer only: no PowerShell process and no execution slot.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "seconds": {
+              "description": "How long to wait, in seconds.",
+              "type": "number",
+              "minimum": 0.05,
+              "maximum": 85
+            },
+            "reason": {
+              "description": "Optional human-readable reason for telemetry/context.",
+              "type": "string",
+              "default": "",
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "seconds"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_wait_for_file",
+        "title": "Wait For Host File Condition Without A Shell",
+        "description": "Host-mode filesystem condition wait using Node fs polling only. Prefer this over Start-Sleep followed by Test-Path/Get-Content. Docker mode should use devbox_wait because container paths are not directly visible to the MCP process.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "Host filesystem path to watch.",
+              "type": "string",
+              "minLength": 1
+            },
+            "should_exist": {
+              "description": "Wait for the path to exist; false waits for removal.",
+              "type": "boolean",
+              "default": true
+            },
+            "min_bytes": {
+              "description": "When waiting for existence, require at least this file size.",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "stable_ms": {
+              "description": "Require the condition to remain true for this duration.",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 30000
+            },
+            "timeout_seconds": {
+              "description": "Maximum wait duration in seconds.",
+              "type": "number",
+              "minimum": 0.1,
+              "maximum": 85,
+              "default": 60
+            },
+            "poll_ms": {
+              "description": "Filesystem poll interval in milliseconds.",
+              "type": "integer",
+              "default": 250,
+              "minimum": 50,
+              "maximum": 5000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_write_file",
+        "title": "Write Docker Devbox File",
+        "description": "Use this when you need to create or overwrite a text file inside the Docker devbox workspace.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string"
+            },
+            "append": {
+              "type": "boolean",
+              "default": false
+            },
+            "create_dirs": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "path",
+            "content"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_write_file_atomic",
+        "description": "Atomically replace a host file after checking its previous SHA-256 (or missing). Append requires the previous offset; identical retries return replayed=true without duplicating bytes. Uses bounded-memory staging; atomic append copies the previous file.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content_base64": {
+              "type": "string",
+              "maxLength": 4000000
+            },
+            "expected_file_sha256": {
+              "description": "Previous complete file SHA-256, or \"missing\" for create-only.",
+              "type": "string",
+              "pattern": "^(missing|[a-fA-F0-9]{64})$"
+            },
+            "append": {
+              "type": "boolean",
+              "default": false
+            },
+            "expected_offset_bytes": {
+              "description": "Required for retry-safe append, measured before the first attempt.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "create_dirs": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "path",
+            "content_base64",
+            "expected_file_sha256"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": true,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "devbox_write_large_file",
+        "title": "Write Large Docker Devbox File",
+        "description": "Use this when you need to create or overwrite a large file inside the Docker devbox workspace using base64-backed transfer with post-write verification.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "content": {
+              "type": "string"
+            },
+            "content_base64": {
+              "type": "string"
+            },
+            "append": {
+              "type": "boolean",
+              "default": false
+            },
+            "create_dirs": {
+              "type": "boolean",
+              "default": true
+            },
+            "expected_sha256": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_capture_display",
+        "title": "Capture Windows Host Display",
+        "description": "Capture the complete windows host desktop using the native compositor/screenshot backend and return an MCP image content block. Windows returns JPEG; macOS/Linux use lossless PNG when their native tools do.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "quality": {
+              "description": "Requested image quality from 1 through 100. Native lossless PNG backends record but do not apply JPEG quality.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_capture_program",
+        "title": "Capture Windows Host Window by PID",
+        "description": "Compatibility alias for host_capture_window.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "description": "Host process ID whose visible application window should be captured.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "quality": {
+              "description": "Requested image quality from 1 through 100.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            },
+            "include_process_tree": {
+              "description": "Also consider visible windows owned by child processes, useful for launchers, browsers, emulators, and multi-process GUI applications.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "pid"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_capture_window",
+        "title": "Capture Windows Host Window by PID",
+        "description": "Capture the largest visible window owned by a host PID or one of its child processes. The Windows backend detects black PrintWindow frames from GPU/DirectComposition surfaces and falls back to compositor-visible pixels. macOS uses CoreGraphics window discovery plus screencapture; Linux supports X11 and compositor-specific Wayland paths.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "description": "Host process ID whose visible application window should be captured.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "quality": {
+              "description": "Requested image quality from 1 through 100.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            },
+            "include_process_tree": {
+              "description": "Also consider visible windows owned by child processes, useful for launchers, browsers, emulators, and multi-process GUI applications.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "pid"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_exec",
+        "title": "Run Windows PowerShell Command",
+        "description": "Use this when you explicitly need native windows host shell automation rather than the Docker devbox. Prefer host_run_program for a single allowed executable such as git, gh, node, python, or rg because it avoids PowerShell startup overhead. On Windows this runs elevated inside the already-elevated MCP service (no per-command UAC).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_run_program",
+        "title": "Run Allowed Windows Host Program",
+        "description": "Preferred fast path when you need a specific allowed windows host program such as git, gh, node, python, or rg with structured arguments; this avoids shell startup and quoting overhead.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "host_status",
+        "title": "Windows Host Tool Status",
+        "description": "Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_capture_display",
+        "title": "Capture Windows Host Display",
+        "description": "Compatibility alias for host_capture_display. On Windows this retains the original PR tool name.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "quality": {
+              "description": "Requested image quality from 1 through 100. Native lossless PNG backends record but do not apply JPEG quality.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_capture_program",
+        "title": "Capture Windows Host Window by PID",
+        "description": "Compatibility alias for host_capture_window. On Windows this retains the original PR tool name.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "pid": {
+              "description": "Host process ID whose visible application window should be captured.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "quality": {
+              "description": "Requested image quality from 1 through 100.",
+              "type": "integer",
+              "default": 85,
+              "minimum": 1,
+              "maximum": 100
+            },
+            "include_process_tree": {
+              "description": "Also consider visible windows owned by child processes, useful for launchers, browsers, emulators, and multi-process GUI applications.",
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "pid"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_exec",
+        "title": "Run Windows PowerShell Command",
+        "description": "Compatibility alias for host_exec. Use this when you explicitly need native windows host tooling rather than the Docker devbox.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_inspect_file",
+        "title": "Inspect Windows Host File Integrity",
+        "description": "Use this when a Windows host command references a file that may be corrupted, mojibake-encoded, syntactically broken, or otherwise suspect on disk. It inspects exact bytes and PowerShell parser status where relevant.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "max_bytes": {
+              "type": "integer",
+              "default": 262144,
+              "minimum": 1,
+              "maximum": 4000000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_read_large_file",
+        "title": "Read Large Windows Host File Chunk",
+        "description": "Use this when you need an exact byte range from a Windows host file so you can diagnose or repair corruption without lossy UTF-8 conversion.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "File path on the Windows host.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "description": "Working directory used to resolve relative Windows host paths. Defaults to the configured host working directory.",
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "offset_bytes": {
+              "description": "Starting byte offset within the file.",
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "max_bytes": {
+              "description": "Maximum raw bytes to return from that offset.",
+              "type": "integer",
+              "default": 262144,
+              "minimum": 1,
+              "maximum": 4000000
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_run_program",
+        "title": "Run Allowed Windows Host Program",
+        "description": "Compatibility alias for host_run_program. Use this when you need a specific allowed windows host program with structured arguments.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "program": {
+              "type": "string",
+              "minLength": 1
+            },
+            "args": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "working_dir": {
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "timeout_seconds": {
+              "type": "integer",
+              "default": 90,
+              "minimum": 1,
+              "maximum": 90
+            },
+            "output_mode": {
+              "type": "string",
+              "default": "tail",
+              "enum": [
+                "head",
+                "tail",
+                "summary"
+              ]
+            },
+            "max_output_chars": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 65536,
+              "default": 65536
+            },
+            "max_output_lines": {
+              "type": "integer",
+              "default": 0,
+              "minimum": 0,
+              "maximum": 10000
+            }
+          },
+          "required": [
+            "program"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_status",
+        "title": "Windows Host Tool Status",
+        "description": "Compatibility alias for host_status. Use this when you need to inspect whether windows host execution is enabled and which native programs are allowed.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": true,
+          "destructiveHint": false,
+          "idempotentHint": true,
+          "openWorldHint": false
+        }
+      },
+      {
+        "name": "windows_host_write_large_file",
+        "title": "Write Large Windows Host File",
+        "description": "Use this when you need to create or overwrite a Windows host file using exact bytes, especially to repair corruption while preserving the intended payload end to end.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "description": "File path on the Windows host.",
+              "type": "string",
+              "minLength": 1
+            },
+            "working_dir": {
+              "description": "Working directory used to resolve relative Windows host paths. Defaults to the configured host working directory.",
+              "type": "string",
+              "default": "__HOST_WORKDIR__"
+            },
+            "content": {
+              "description": "Optional UTF-8 text payload to write. Provide either content or content_base64.",
+              "type": "string"
+            },
+            "content_base64": {
+              "description": "Base64-encoded raw bytes to write exactly as provided. Provide either content or content_base64.",
+              "type": "string"
+            },
+            "append": {
+              "description": "Append to the file instead of overwriting it.",
+              "type": "boolean",
+              "default": false
+            },
+            "create_dirs": {
+              "description": "Create parent directories if they do not exist.",
+              "type": "boolean",
+              "default": true
+            },
+            "expected_sha256": {
+              "description": "Optional expected SHA-256 of the decoded payload for end-to-end verification.",
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "$schema": "https://json-schema.org/draft/2020-12/schema"
+        },
+        "outputSchema": {
+          "type": "object",
+          "properties": {
+            "ok": {
+              "type": "boolean"
+            },
+            "summary": {
+              "type": "string"
+            },
+            "data": {},
+            "stdout": {
+              "type": "string"
+            },
+            "stderr": {
+              "type": "string"
+            },
+            "exitCode": {
+              "type": [
+                "number",
+                "null"
+              ]
+            },
+            "truncated": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "ok",
+            "summary"
+          ],
+          "additionalProperties": false
+        },
+        "annotations": {
+          "readOnlyHint": false,
+          "destructiveHint": false,
+          "openWorldHint": false
+        }
+      }
+    ]
+  }
+}

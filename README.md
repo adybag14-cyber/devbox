@@ -9,19 +9,21 @@ It supports two runtime modes:
 
 `auto` selects Docker on Windows and host mode on Termux/Linux/macOS.
 
-## Fastest setup: interactive TUI or Rust CLI
+## Fastest setup: native C++ bundle
 
-Devbox now ships two native setup programs from the same release:
+Devbox ships three native programs from the same source revision:
 
 - **`devbox-tui`** — the guided C++17 interactive setup experience for new users.
-- **`devbox-setup`** — the Rust CLI used by the TUI and intended for scripts, CI, and unattended installation.
+- **`devbox-setup`** — the C++ CLI used by the TUI and intended for scripts, CI, and unattended installation.
+- **`devbox-mcp`** — the C++23 MCP service, including native process control, durable jobs, files, authentication, and capture.
 
-The TUI performs a platform/tool preflight, lets you choose host or Docker runtime, authentication (`none`, `oauth`, or `cloudflare`), repository location, bind address, workspace, dependency installation, service startup, and Guardian supervision, then delegates the actual changes to the Rust bootstrap. The Rust CLI is the single setup backend, so interactive and automated installs follow the same rules.
+The TUI performs a platform/tool preflight, lets you choose host or Docker runtime, authentication (`none`, `oauth`, or `cloudflare`), repository location, bind address, workspace, dependency installation, service startup, and Guardian supervision, then invokes the C++ installer. Interactive and automated installs use the same backend. Packaged installation needs no Rust or C++ compiler. New clones select the release's exact source commit; existing checkouts retain their revision.
 
 Prebuilt release binaries are produced for:
 
 - Windows x86-64
 - Linux x86-64 and ARM64
+- Alpine/musl Linux x86-64
 - macOS x86-64 and Apple Silicon
 - Android/Termux arm64-v8a, armeabi-v7a, x86-64, and x86
 
@@ -33,26 +35,27 @@ curl --fail --location --output install-devbox.sh \
 sh install-devbox.sh
 ```
 
-The script detects the OS/architecture, downloads both native binaries from the latest release, verifies them against `SHA256SUMS`, and starts the TUI when a terminal is interactive. Pass Rust CLI options to the script for automation.
+The script detects the OS, architecture, and Linux libc, downloads all three native binaries, verifies them against `SHA256SUMS`, and starts the TUI when a terminal is interactive. Pass CLI options to the script for automation.
 
 ### Windows
 
-Download the matching Windows release assets and keep them in the same directory:
+Extract `devbox-windows-x86_64.zip` and keep these files together:
 
 ```text
-devbox-tui-windows-x86_64.exe
-devbox-setup-windows-x86_64.exe
+devbox-tui.exe
+devbox-setup.exe
+devbox-mcp.exe
 ```
 
-The TUI recognizes the platform-named Rust binary when both release assets are kept in the same directory. For direct CLI setup, launch:
+The TUI and installer also recognize matching platform-named standalone assets. For direct CLI setup, launch:
 
 ```powershell
-.\devbox-setup-windows-x86_64.exe --repo . --guardian
+.\devbox-setup.exe --guardian
 ```
 
-The release workflow smoke-tests both binaries. PowerShell 7 is preferred by the Windows runtime while Windows PowerShell 5.1 remains an automatic launch fallback.
+The release workflow tests the three binaries together and verifies each extracted archive. PowerShell 7 is preferred by the Windows runtime while Windows PowerShell 5.1 remains an automatic launch fallback.
 
-### Rust CLI usage
+### C++ CLI usage
 
 Configure an existing checkout:
 
@@ -86,7 +89,7 @@ Useful options:
 --dry-run
 ```
 
-Version 0.4 can install missing runtime prerequisites using `winget` on Windows, Homebrew on macOS, `pkg` on Termux, and common Linux package managers (`apt-get`, `dnf`, `yum`, `pacman`, `zypper`, or `apk`). Existing `.env` files are preserved; only selected keys are updated.
+Version 0.5 can install missing runtime prerequisites using `winget` on Windows, Homebrew on macOS, `pkg` on Termux, and common Linux package managers (`apt-get`, `dnf`, `yum`, `pacman`, `zypper`, or `apk`). Existing `.env` files are preserved; only selected keys are updated.
 
 ### Android and Termux
 
@@ -104,27 +107,32 @@ curl --fail --location --output install-devbox.sh \
 sh install-devbox.sh
 ```
 
-The Termux installer downloads and SHA-256 verifies both the Rust CLI and C++ TUI for the detected Android ABI. Interactive terminals enter the TUI; scripted invocations use the Rust CLI directly.
+The Termux installer downloads and SHA-256 verifies the C++ server, CLI, and TUI for the detected Android ABI. Interactive terminals enter the TUI; scripted invocations use the CLI directly.
 
 Full Android instructions: [docs/TERMUX.md](./docs/TERMUX.md)
 
 ### Build installers from source
 
 ```bash
-cargo test --manifest-path bootstrap/Cargo.toml
-cargo build --release --manifest-path bootstrap/Cargo.toml
-cmake -S setup-tui -B setup-tui/build -DCMAKE_BUILD_TYPE=Release
-cmake --build setup-tui/build --config Release
+git clone https://github.com/microsoft/vcpkg.git .cpp-build/vcpkg
+git -C .cpp-build/vcpkg checkout --detach 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+cmake -S . -B .cpp-build/native -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/.cpp-build/vcpkg/scripts/buildsystems/vcpkg.cmake"
+cmake --build .cpp-build/native --config Release --parallel 4
+ctest --test-dir .cpp-build/native -C Release --output-on-failure
+cmake --install .cpp-build/native --config Release --prefix .cpp-build/package
 ```
 
-See [bootstrap/README.md](./bootstrap/README.md) and [setup-tui/README.md](./setup-tui/README.md).
+See [cpp-bootstrap/README.md](./cpp-bootstrap/README.md) for Windows and musl build details, and [setup-tui/README.md](./setup-tui/README.md) for the frontend.
 
 ## What is included
 
-- `bootstrap/`: cross-platform Rust setup CLI and tests
+- `cpp-bootstrap/`: cross-platform C++ setup CLI and tests
 - `setup-tui/`: dependency-light C++17 interactive setup frontend
 - `bin/devbox.js`: installable `devbox` command
-- `rust-mcp/`: production Rust MCP service, durable jobs, atomic checkpoints and native process control
+- `cpp-mcp/`: C++ MCP service, durable jobs, atomic checkpoints and native process control
+- `bootstrap/` and `rust-mcp/`: retained Rust reference sources; SDK regression scripts also validate the C++ binary
 - `src/server.js`: retained legacy JavaScript compatibility implementation
 - `src/runtime.js`: runtime selector for Docker versus host mode
 - `src/docker-runtime.js`: Docker-backed runtime
@@ -142,14 +150,14 @@ The setup binaries can provision common prerequisites automatically where a supp
 ### All modes
 
 - Node.js 18 or newer for the launcher and Guardian; Node.js 24 is the certified/tested supervisor profile
-- Rust/Cargo: repository toolchain 1.91.1, server MSRV 1.88.0 (the bootstrap CLI itself declares 1.74)
+- A matching native C++ release bundle, or CMake 3.24+, a C++23 compiler and the pinned vcpkg checkout for source builds
 - npm
-- Git when the installer needs to clone the repository
+- Git for checkout and build provenance
 
 ### Host mode
 
 - Android API 21+ through the canonical Termux app
-- Termux, Linux, or macOS
+- Windows, Termux, Linux, or macOS
 - optional but useful: `gh`, `python3`, `ripgrep`, and `curl`
 
 ### Docker mode
@@ -192,12 +200,12 @@ Behavior:
 - file and shell operations run directly on the host
 - `devbox_run_program` is the preferred fast path for a single executable with structured arguments; it avoids shell startup and quoting overhead
 - `devbox_exec_readonly` is best-effort and is not container-sandboxed; use it when shell syntax such as pipelines, variables, or redirection is actually needed
-- host-mode `devbox_search_files` prefers native ripgrep when available and retains the portable JS walker as a fallback; normal searches respect ignore files for speed, while `include_ignored=true` opts into exhaustive hidden/ignored content
+- host-mode `devbox_search_files` prefers ripgrep when available and retains a native C++ walker with RE2 as a fallback; normal searches respect ignore files for speed, while `include_ignored=true` opts into exhaustive hidden/ignored content
 - synchronous process tools share a bounded execution pool; detached jobs cannot consume the reserved interactive slot, while `/healthz`, status, file I/O, and Guardian remain outside the process queue; recursive scans/copies/archives/package installs are classified separately as `io-heavy` so storage pressure cannot masquerade as light interactive work
 - generic host tools are exposed through `host_*`
 - legacy `windows_host_*` names remain compatibility aliases
 - `host_capture_display` captures the native desktop; `host_capture_window` captures the largest visible window for a PID or its child processes
-- Windows window capture detects black `PrintWindow` results from GPU/DirectComposition/video/emulator surfaces and falls back to compositor-visible pixels; macOS uses CoreGraphics + `screencapture`; Linux supports X11 plus Sway/Hyprland/wlroots Wayland paths
+- Windows window capture detects black `PrintWindow` results and falls back to compositor-visible pixels; macOS uses CoreGraphics + `screencapture`; Linux window capture uses X11, while full-display capture can use Wayland's `grim`
 
 Termux and Android instructions: [docs/TERMUX.md](./docs/TERMUX.md)
 
@@ -227,7 +235,7 @@ Windows users can also use:
 
 ## Configuration
 
-The Rust service exposes 45 tools: the 37 compatible legacy tools plus eight native agent APIs for durable submissions, job/task discovery, revisioned checkpoints, atomic files and capability inspection. See [the native agent runtime contract](docs/AGENT_RUNTIME.md). Production on Windows uses the Rust service under Guardian; ordinary Devbox shell commands honor `HOST_SHELL` and inherit the service token, while explicit `host_exec` retains the administrative PowerShell policy.
+The C++ service exposes 45 tools: the 37 compatible legacy tools plus eight native agent APIs for durable submissions, job/task discovery, revisioned checkpoints, atomic files and capability inspection. See [the native agent runtime contract](docs/AGENT_RUNTIME.md). Guardian supervises the selected native service. Ordinary Devbox shell commands honor `HOST_SHELL` and inherit the service token, while explicit `host_exec` retains the administrative PowerShell policy.
 
 Important `.env` values:
 
@@ -250,7 +258,7 @@ Important `.env` values:
 - `MCP_WAIT_MAX_SECONDS` bounds no-process waits; prefer `devbox_wait`, `devbox_wait_for_file`, or `devbox_job_status(wait_seconds=...)` over shell `sleep`/`Start-Sleep`
 - `SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS`, `SCREEN_CAPTURE_RETRIES`, and `SCREEN_CAPTURE_QUEUE_TIMEOUT_MS` control serialized fail-fast screenshot capture
 - `GUARDIAN_HOST_PRESSURE_SAMPLE_MS` controls diagnostic Windows CPU/memory/commit/pagefile sampling; it does not trigger repair by itself
-- `DEVBOX_VERSION_CACHE_MS` controls the toolchain-version cache; Rust refreshes it in a supervised background loop so `devbox_status` remains subprocess-free while normally returning fresh versions
+- `DEVBOX_VERSION_CACHE_MS` controls the toolchain-version cache; a supervised background loop refreshes it so `devbox_status` remains subprocess-free while normally returning fresh versions
 - `devbox_status` exposes cached scheduler/store health plus `executionStore.diskPressure`, a robust multi-sample free-space trend (`freeBytesTrendPerHour`, sample count, and window), and `operationalWarnings`; low disk percentage warns before the hard readiness floor. Warning/critical pressure serializes weighted work, and critical pressure rejects new mutating heavy/I/O-heavy work while leaving read-only inspection and cleanup available
 - `npm run repo:freshness` compares `HEAD`, cached `origin/main`, and the actual remote head so a stale remote-tracking ref cannot masquerade as a current checkout
 - `PUBLIC_BASE_URL` for public OAuth deployments
@@ -338,11 +346,10 @@ JavaScript service tests:
 npm test
 ```
 
-Rust bootstrap tests:
+C++ runtime and installer tests:
 
 ```bash
-cargo fmt --manifest-path bootstrap/Cargo.toml -- --check
-cargo test --manifest-path bootstrap/Cargo.toml
+ctest --test-dir .cpp-build/native -C Release --output-on-failure
 ```
 
 Service smoke test:

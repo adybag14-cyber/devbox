@@ -1,14 +1,14 @@
-# Native Rust agent runtime
+# Native C++ agent runtime
 
-Devbox's production MCP implementation is Rust. Guardian is the Node supervisor responsible for availability and managed Windows elevation. The Rust service retains 37 legacy-compatible tool names and adds eight native tools; the JavaScript implementation is a legacy compatibility oracle, not the production profile described here.
+Devbox's default MCP implementation is C++23. Guardian is the Node supervisor responsible for availability and managed Windows elevation. The C++ service retains 37 legacy-compatible tool names and eight native agent tools. The retained Rust and JavaScript sources support compatibility verification and explicit rollback. The production instance was explicitly restored to Rust while the [C++23 performance work](CPP23_PERFORMANCE.md) is validated in isolation.
 
 ## Supported production profile and source identity
 
-Windows production uses `DEVBOX_MCP_IMPLEMENTATION=rust`, `DEVBOX_RUNTIME_MODE=host`, and the Guardian scheduled tasks. Node 24 is the certified supervisor/tool-client version; the dependency-light launcher/Guardian minimum remains Node 18. The server declares Rust MSRV 1.88.0 and the repository/installer pin Rust 1.91.1. The standalone setup CLI declares its separate MSRV 1.74. These version contracts are checked by `scripts/check-runtime-contract.mjs`.
+Windows host deployment uses `DEVBOX_MCP_IMPLEMENTATION=cpp`, `DEVBOX_RUNTIME_MODE=host`, and the Guardian scheduled tasks. An explicit Rust rollback uses `DEVBOX_MCP_IMPLEMENTATION=rust`. Node 24 is the certified desktop supervisor/tool-client version; the launcher/Guardian minimum remains Node 18. Source builds require CMake 3.24+, C++23 and the pinned vcpkg dependencies. The MCP version is 0.3.0 and the installer/TUI version is 0.5.0. Packaged deployment requires no compiler. These contracts are checked by `scripts/check-runtime-contract.mjs`.
 
-Managed production startup rejects dirty tracked source, untracked Rust build inputs, and unknown Git provenance before stopping the current MCP. Versioned binaries and `run/bin/current-rust.json` record the actual commit, Git tree and binary SHA-256. `--build-info` reports embedded source identity and whether source was dirty. Legacy manifests lacking source provenance are rebuilt instead of reused. Build metadata cannot be overridden by a stale `DEVBOX_BUILD_GIT_SHA` environment value.
+Managed startup rejects dirty tracked source, untracked build inputs, unknown Git provenance, and sanitizer binaries before stopping the current MCP. Immutable binaries and `run/bin/current-cpp.json` record the actual commit, Git tree and binary SHA-256. `--build-info` reports embedded source identity and whether source was dirty. The manifest is promoted only after operational readiness; restarting the same candidate preserves its first promotion time. Build identity cannot be replaced by environment overrides.
 
-Ordinary `devbox_exec` and detached shell jobs honor `HOST_SHELL` and inherit the MCP token. Explicit Windows `host_exec` remains the administrative PowerShell interface. Guardian runs the production Rust service elevated, without per-command UAC prompts. Use a verified previous Rust candidate for operational rollback.
+Ordinary `devbox_exec` and detached shell jobs honor `HOST_SHELL` and inherit the MCP token. Explicit Windows `host_exec` remains the administrative PowerShell interface. Guardian can run the native service elevated without per-command UAC prompts. Operational rollback must restore a verified candidate with matching source; the persistent job/task/OAuth formats have bidirectional crossover tests against the frozen Rust reference.
 
 CMD inline commands are limited to 8,000 UTF-16 units and return a clear error before launch when oversized; save longer commands to a script file. Ordinary PowerShell retains the configured-shell output behavior, while the administrative PowerShell interface retains its quiet/normalized output contract.
 
@@ -89,7 +89,7 @@ Legacy Docker cancellation stays pending while the local runner or child remains
 
 Cloudflare JWKS work runs outside the shared OAuth token/state lock. Fetching has a total ten-second deadline and a 256 KiB limit, including streamed responses. Refreshes are single-flight and briefly rate-limited; existing-token verification and registration remain responsive during a stalled refresh. Client registration is revalidated before committing a code after network verification.
 
-Launcher health requests bound both headers and body reads by the remaining startup deadline and reject oversized/unexpected health bodies. Rust capture is tested through repeated new server instances. Legacy JavaScript capture assertions include the actual bounded tool diagnostic instead of only an opaque boolean.
+Launcher health requests bound both headers and body reads by the remaining startup deadline and reject oversized/unexpected health bodies. Native capture is tested through repeated new server instances and owned graphical fixtures. Legacy JavaScript capture assertions include the actual bounded tool diagnostic.
 
 Contract version 2 advertises tool-list change support. `devbox_status` includes the current native capability manifest so even a client with an older registered tool set can detect drift. Compare the actual client registration with `devbox_capabilities` and its schema hash. Client-side registries that persist imported schemas must refresh their connection/tool catalog; restarting the server alone cannot rewrite an external registry. Verify all 45 names and `io-heavy` after refresh.
 
@@ -98,11 +98,10 @@ Contract version 2 advertises tool-list change support. `devbox_status` includes
 `agent-reliability-smoke.mjs` validates tool discovery, file conflicts/retries, duplicate submission, retention-safe receipts, admission limits, pagination, task revisions, restart recovery, verified cancellation and repeated native Windows capture. It runs in isolated directories and ports. Legacy 37-tool schemas/results remain checked separately; the generated native-name manifest adds eight explicitly tested tools rather than hiding drift.
 
 ```sh
-cargo fmt --manifest-path rust-mcp/Cargo.toml -- --check
-cargo clippy --manifest-path rust-mcp/Cargo.toml --locked --all-targets -- -D warnings
-cargo test --manifest-path rust-mcp/Cargo.toml --locked
-cargo build --manifest-path rust-mcp/Cargo.toml --locked
+cmake --build .cpp-build/native --config Release --parallel 4
+ctest --test-dir .cpp-build/native -C Release --output-on-failure
+export DEVBOX_MCP_TEST_BINARY="$PWD/.cpp-build/native/cpp-mcp/devbox-mcp"
 node rust-mcp/scripts/agent-reliability-smoke.mjs
-node rust-mcp/scripts/check-contract-parity.mjs
+node rust-mcp/scripts/schema-parity-audit.mjs
 node scripts/check-runtime-contract.mjs
 ```

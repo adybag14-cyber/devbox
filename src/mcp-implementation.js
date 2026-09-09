@@ -2,15 +2,16 @@ import path from "node:path";
 import { access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { spawn } from "node:child_process";
+import { getCppMcpBinaryPath, prepareCppImplementation } from "./cpp-implementation.js";
 
-const VALID_IMPLEMENTATIONS = new Set(["rust", "js"]);
+const VALID_IMPLEMENTATIONS = new Set(["cpp", "rust", "js"]);
 const MAX_PREFLIGHT_OUTPUT_CHARS = 12000;
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 15 * 60 * 1000;
 
 export const resolveMcpImplementation = (env = process.env) => {
-  const value = String(env.DEVBOX_MCP_IMPLEMENTATION ?? "rust").trim().toLowerCase() || "rust";
+  const value = String(env.DEVBOX_MCP_IMPLEMENTATION ?? "cpp").trim().toLowerCase() || "cpp";
   if (!VALID_IMPLEMENTATIONS.has(value)) {
-    throw new Error(`Invalid DEVBOX_MCP_IMPLEMENTATION=${JSON.stringify(value)}; expected rust or js.`);
+    throw new Error(`Invalid DEVBOX_MCP_IMPLEMENTATION=${JSON.stringify(value)}; expected cpp, rust or js.`);
   }
   return value;
 };
@@ -87,6 +88,8 @@ export const runCheckedProcess = (file, args, {
     if (settled) return;
     settled = true;
     if (timer) clearTimeout(timer);
+    child?.stdout?.destroy();
+    child?.stderr?.destroy();
     callback(value);
   };
   try {
@@ -108,7 +111,9 @@ export const runCheckedProcess = (file, args, {
   child.once("error", (error) => {
     finish(reject, new Error(`${label} could not start: ${error.message}`));
   });
-  child.once("exit", (code, signal) => {
+  // Process exit can precede the final pipe data, especially on Windows.
+  // Keep the existing deadline active until both output streams have closed.
+  child.once("close", (code, signal) => {
     if (timedOut) return;
     if (code === 0) {
       finish(resolve, { stdout, stderr, exitCode: 0 });
@@ -146,7 +151,7 @@ export const getMcpLaunchSpec = (root, {
   }
   return {
     implementation,
-    file: getRustMcpBinaryPath(root, platform),
+    file: implementation === "cpp" ? getCppMcpBinaryPath(root, platform) : getRustMcpBinaryPath(root, platform),
     args: [],
     env: {
       ...env,
@@ -162,6 +167,7 @@ export const prepareMcpImplementation = async (root, {
   implementation = resolveMcpImplementation(env),
   runProcess = runCheckedProcess,
 } = {}) => {
+  if (implementation === "cpp") return prepareCppImplementation(root, { env, platform, runProcess });
   if (implementation === "js") {
     return getMcpLaunchSpec(root, { env, platform, implementation });
   }

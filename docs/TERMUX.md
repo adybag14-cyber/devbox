@@ -20,40 +20,41 @@ curl --fail --location --output install-devbox.sh \
 sh install-devbox.sh
 ```
 
-The script detects the Android ABI, downloads both `devbox-setup` and `devbox-tui`, verifies each against the release `SHA256SUMS`, and installs them into `$PREFIX/bin`.
+The script detects the Android ABI, downloads `devbox-setup`, `devbox-tui`, and `devbox-mcp`, verifies each against the release `SHA256SUMS`, and installs them into `$PREFIX/bin`.
 
 - Interactive terminal: starts the C++ TUI.
-- Arguments or non-interactive stdin: runs the Rust CLI directly.
+- Arguments or non-interactive stdin: runs the C++ CLI directly.
 
-The Rust bootstrap can install `nodejs`, `git`, `python`, `ripgrep`, `curl`, and CA certificates with `pkg`, clones/configures Devbox, installs npm dependencies, links the command, starts the service, and verifies `/healthz`.
+The C++ installer can install `nodejs`, `git`, `python`, `ripgrep`, `curl`, and CA certificates with `pkg`, clones/configures Devbox, installs npm dependencies, stages the bundled native server, links the command, and verifies startup. New clones select the binary's exact source commit. Existing checkouts are preserved and must match the selected binary's source identity.
 
 To add Guardian supervision during setup, select it in the TUI or pass `--guardian`. Guardian uses Termux:Boot and requests a wake lock when available.
 
 ## Release assets
 
-| Android ABI | Rust CLI | C++ TUI |
-|---|---|---|
-| arm64-v8a | `devbox-setup-android-arm64-v8a` | `devbox-tui-android-arm64-v8a` |
-| armeabi-v7a | `devbox-setup-android-armeabi-v7a` | `devbox-tui-android-armeabi-v7a` |
-| x86_64 | `devbox-setup-android-x86_64` | `devbox-tui-android-x86_64` |
-| x86 | `devbox-setup-android-x86` | `devbox-tui-android-x86` |
+| Android ABI | Complete C++ bundle |
+|---|---|
+| arm64-v8a | `devbox-android-arm64-v8a.tar.gz` |
+| armeabi-v7a | `devbox-android-armeabi-v7a.tar.gz` |
+| x86_64 | `devbox-android-x86_64.tar.gz` |
+| x86 | `devbox-android-x86.tar.gz` |
 
-## Manual source installation
+Each archive contains the server, installer, TUI, and build manifest. The three
+executables are also available as standalone assets with the same Android ABI
+suffix. Android builds use NDK 29.0.14206865, API 21, and static libc++.
+
+## Existing checkout installation
 
 ```bash
 pkg install -y nodejs git python ripgrep curl ca-certificates
-git clone https://github.com/adybag14-cyber/devbox.git "$HOME/devbox"
 cd "$HOME/devbox"
-cp .env.example .env
-npm install
-npm link
-DEVBOX_RUNTIME_MODE=host node bin/devbox.js start
+devbox-setup --repo "$HOME/devbox" --runtime host --guardian
 ```
 
 Recommended host values:
 
 ```bash
 DEVBOX_RUNTIME_MODE=host
+DEVBOX_MCP_IMPLEMENTATION=cpp
 HOST_WORKSPACE_PATH=$HOME/devbox/workspace
 HOST_DEFAULT_WORKDIR=$HOME/devbox/workspace
 HOST_SHELL=$PREFIX/bin/bash
@@ -71,6 +72,6 @@ ENABLE_HOST_EXEC=true
 
 ## Full Termux Docker CI validation
 
-The `Platform runtime E2E` workflow uses the official `termux/termux-docker:x86_64` userspace image. Inside that Termux environment CI installs the current Termux packages required by Devbox, builds and tests the Rust bootstrap natively, builds the C++ TUI natively, runs `devbox-setup` to perform the actual npm setup and launcher startup, connects through MCP, exercises the Devbox and host bridges, runs Guardian's read-only health check, checks launcher status, and shuts the service down cleanly.
+The `C++ native runtime` workflow uses a digest-pinned official Termux x86-64 userspace image. It executes the three Android binaries produced by the NDK build, completes Termux's one-time login bootstrap, and validates the installer, MCP files/processes/jobs, persistent state, OAuth, gateway, disconnect recovery, managed startup, Guardian health, and rollback. Test configuration and containers are isolated from production.
 
-This is materially stronger than Android cross-compilation. It still does not replace an Android emulator/device test because `termux-docker` cannot reproduce every Android framework or system-library behavior.
+This executes Android-native binaries in Termux userspace. It does not replace an Android emulator/device test because `termux-docker` cannot reproduce every Android framework or system-library behavior. The other three ABIs are cross-build gates, not claims of device runtime validation.

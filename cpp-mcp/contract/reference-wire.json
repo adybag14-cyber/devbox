@@ -1,0 +1,66 @@
+[
+  {
+    "mode": "host",
+    "headers": {
+      "accept": "application/json, text/event-stream",
+      "content-type": "application/json"
+    },
+    "request": {
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "cpp-contract-reference",
+          "version": "1"
+        }
+      },
+      "jsonrpc": "2.0",
+      "id": 0
+    }
+  },
+  {
+    "mode": "host",
+    "headers": {
+      "accept": "application/json, text/event-stream",
+      "content-type": "application/json",
+      "mcp-protocol-version": "2025-11-25"
+    },
+    "request": {
+      "method": "notifications/initialized",
+      "jsonrpc": "2.0"
+    }
+  },
+  {
+    "mode": "docker",
+    "headers": {
+      "accept": "application/json, text/event-stream",
+      "content-type": "application/json"
+    },
+    "request": {
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-11-25",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "cpp-contract-reference",
+          "version": "1"
+        }
+      },
+      "jsonrpc": "2.0",
+      "id": 0
+    }
+  },
+  {
+    "mode": "docker",
+    "headers": {
+      "accept": "application/json, text/event-stream",
+      "content-type": "application/json",
+      "mcp-protocol-version": "2025-11-25"
+    },
+    "request": {
+      "method": "notifications/initialized",
+      "jsonrpc": "2.0"
+    }
+  }
+]

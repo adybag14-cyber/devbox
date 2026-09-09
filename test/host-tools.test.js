@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 import { spawnProcess } from "../src/process-utils.js";
@@ -277,8 +277,11 @@ test("host large-file helpers preserve exact bytes for repair workflows", async 
       workingDir: tempDir,
       contentBase64: payload.toString("base64"),
     });
+    // Read the expected native path independently: the paired helpers could
+    // otherwise agree on the same incorrectly normalized Windows path on POSIX.
+    assert.deepEqual(await readFile(targetPath), payload);
     const readResult = await readLargeFileOnHost({
-      path: targetPath,
+      path: "exact-bytes.bin",
       workingDir: tempDir,
       offsetBytes: 0,
       maxBytes: payload.length,

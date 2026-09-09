@@ -1,6 +1,10 @@
 # Native Rust Devbox MCP
 
-The production service is the Rust Axum/Tokio/rmcp implementation. Guardian supervises it on Windows, Linux, macOS and Termux. Windows production uses the elevated Guardian profile. The JavaScript service remains a legacy compatibility implementation.
+This directory retains the Rust Axum/Tokio/rmcp reference. The default native
+service is now the [C++ implementation](../docs/CPP_RUNTIME_REWRITE.md), supervised
+by the existing Guardian. The SDK regression scripts in this directory accept
+`DEVBOX_MCP_TEST_BINARY` so the same compatibility assertions validate C++.
+The Rust implementation remains an explicit legacy selection.
 
 Version 0.2 exposes contract version 2: the 37 compatible legacy tools plus eight native APIs for durable job submission/discovery, versioned task state, atomic file writes and capability inspection.
 
