@@ -63,6 +63,18 @@ subscription teardown waits for a callback already in flight and prevents later
 callbacks from accessing a destroyed executor. Tests cover concurrent direct and
 ancestor cancellation, cancelled tokens, dropped executors and normal timer
 deadlines without polling. Synchronous parent-token waits use notifications too.
+The Windows main loop waits on its shutdown flag with `WaitOnAddress`; `SIGINT`,
+`SIGTERM` and console events wake it directly. Integration tests run the real
+runtime, wait for readiness, raise each signal within that same test process, and
+require successful shutdown with its workers joined.
+
+Windows thread-count telemetry queries the documented `SystemProcessInformation`
+records using dynamically resolved `NtQuerySystemInformation`, with bounded
+buffer growth and record validation. The existing Toolhelp enumeration remains
+the fallback. Counting the current process's threads no longer requires visiting
+every system thread in user space. A test compares the result with independent
+Toolhelp enumeration while three known workers remain alive. The existing
+60-second cache and reported metric remain intact.
 
 Worker pools start threads as demand requires while retaining their configured
 concurrency and queue limits. Logging batches at most 64 accepted events with a

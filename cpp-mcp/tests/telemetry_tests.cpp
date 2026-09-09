@@ -3,6 +3,9 @@
 #include "devbox/telemetry.hpp"
 #include <future>
 #include <iostream>
+#ifdef _WIN32
+#include <tlhelp32.h>
+#endif
 using namespace devbox;
 namespace {
 void require(bool value, const char* message) {
@@ -120,7 +123,39 @@ int main() {
         asio::io_context io(1);
         auto work = asio::make_work_guard(io);
         auto cancel = std::make_shared<Cancellation>();
+#ifdef _WIN32
+        std::promise<void> release_threads;
+        auto gate = release_threads.get_future().share();
+        std::vector<std::future<void>> live_threads;
+        ScopeExit release([&] { release_threads.set_value(); });
+        std::atomic_int entered{0};
+        for (int i = 0; i < 3; ++i)
+            live_threads.push_back(std::async(std::launch::async, [&, gate] {
+                ++entered;
+                gate.wait();
+            }));
+        until([&] { return entered == 3; });
+        std::uint32_t expected_threads = 0;
+        {
+            NativeHandle reference(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+            THREADENTRY32 entry{};
+            entry.dwSize = sizeof(entry);
+            require(reference && Thread32First(reference.get(), &entry), "reference thread snapshot");
+            do {
+                expected_threads += entry.th32OwnerProcessID == process_id();
+            } while (Thread32Next(reference.get(), &entry));
+        }
+#endif
         PerformanceMonitor monitor(config, background, [] { return Json{{"gitSha", "test"}}; });
+#ifdef _WIN32
+        require(expected_threads >= 4 &&
+                    monitor.snapshot()["process"]["platform"]["threads"] == expected_threads,
+                "process thread metric matches independent Toolhelp enumeration with live workers");
+        release_threads.set_value();
+        release.disarm();
+        for (auto& thread : live_threads)
+            thread.get();
+#endif
         monitor.attach(io.get_executor(), cancel);
         std::thread loop([&] { io.run(); });
         ScopeExit stop([&] {
