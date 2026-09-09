@@ -12,6 +12,35 @@ if (-not $env:DEVBOX_MCP_TEST_BINARY -or -not (Test-Path -LiteralPath $env:DEVBO
 }
 $testStartedAt = Get-Date
 $ownedGuardianScript = Join-Path $root 'scripts\devbox-guardian.mjs'
+function Wait-CiGuardianHeartbeat {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)]$GuardianProcess,
+        [ValidateRange(1, 60000)][int]$TimeoutMilliseconds = 30000
+    )
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    do {
+        $live = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $GuardianProcess.ProcessId) -ErrorAction SilentlyContinue
+        if (-not $live -or $live.CreationDate -ne $GuardianProcess.CreationDate -or
+            $live.ParentProcessId -ne $GuardianProcess.ParentProcessId -or
+            $live.ExecutablePath -ne $GuardianProcess.ExecutablePath -or
+            $live.CommandLine -cne $GuardianProcess.CommandLine) {
+            throw 'Verified Guardian process changed before its first heartbeat.'
+        }
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            $heartbeat = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+            if (-not $heartbeat.PSObject.Properties['GuardianPid'] -or
+                [int]$heartbeat.GuardianPid -ne $GuardianProcess.ProcessId) {
+                throw 'First heartbeat is not associated with the verified Guardian process.'
+            }
+            return $heartbeat
+        }
+        $remaining = $TimeoutMilliseconds - $timer.ElapsedMilliseconds
+        if ($remaining -le 0) { break }
+        Start-Sleep -Milliseconds ([Math]::Min(100, $remaining))
+    } while ($timer.ElapsedMilliseconds -lt $TimeoutMilliseconds)
+    throw "Verified Guardian did not publish its first heartbeat within $TimeoutMilliseconds ms."
+}
 function Stop-OwnedCiGuardian {
     param([int]$TargetProcessId)
     if ($TargetProcessId -le 0) { return }
@@ -147,7 +176,7 @@ try {
     if (-not $guardianProcess -or ([string]$guardianProcess.CommandLine) -notmatch 'devbox-guardian\.mjs') {
         throw 'Guardian installer did not leave the persistent direct Node Guardian running.'
     }
-    $firstHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
+    $firstHeartbeat = Wait-CiGuardianHeartbeat -Path $heartbeatPath -GuardianProcess $guardianProcess
     Start-Sleep -Seconds 12
     $secondHeartbeat = Get-Content $heartbeatPath -Raw -ErrorAction Stop | ConvertFrom-Json
     $guardianProcess = Get-CimInstance Win32_Process -Filter ("ProcessId={0}" -f $guardianPid) -ErrorAction SilentlyContinue
