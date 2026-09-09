@@ -28,12 +28,28 @@ struct Cancelled : Error {
     Cancelled() : Error("Command cancelled by the MCP client.") {}
 };
 class Cancellation {
+    struct Callback;
     std::atomic_bool cancelled_{false};
     std::shared_ptr<Cancellation> parent_;
     mutable std::mutex mutex_;
     std::condition_variable condition_;
+    std::vector<std::weak_ptr<Callback>> callbacks_;
 
   public:
+    class Subscription {
+        friend class Cancellation;
+        std::shared_ptr<Callback> callback_;
+        explicit Subscription(std::shared_ptr<Callback> callback) : callback_(std::move(callback)) {}
+
+      public:
+        Subscription() = default;
+        ~Subscription();
+        Subscription(Subscription&&) noexcept = default;
+        Subscription& operator=(Subscription&&) noexcept;
+        Subscription(const Subscription&) = delete;
+        Subscription& operator=(const Subscription&) = delete;
+        void reset() noexcept;
+    };
     explicit Cancellation(std::shared_ptr<Cancellation> parent = {}) : parent_(std::move(parent)) {}
     void cancel() noexcept;
     bool cancelled() const noexcept {
@@ -44,6 +60,10 @@ class Cancellation {
             throw Cancelled();
     }
     bool wait_for(Millis duration);
+    // The callback runs at most once, including parent cancellation. Reset waits
+    // for a running callback; callbacks must be brief and must not reset their
+    // own subscription. Already-cancelled tokens invoke it before returning.
+    Subscription subscribe(std::function<void()> callback);
 };
 using Cancel = std::shared_ptr<Cancellation>;
 std::string trim(std::string_view value);

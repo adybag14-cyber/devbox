@@ -124,15 +124,32 @@ Json instance_json() {
     return value ? Json(std::to_string(*value)) : Json(nullptr);
 }
 std::optional<Json> inspect(const fs::path& path) {
-    try {
-        const auto value = read_json_optional(path, 65536);
-        return value && value->is_object() ? value : std::nullopt;
-    } catch (const Json::exception&) {
-        return std::nullopt;
-    } catch (const std::system_error& error) {
-        if (error.code() == std::errc::no_such_file_or_directory)
+#ifdef _WIN32
+    const auto deadline = Clock::now() + Millis(100);
+#endif
+    for (;;) {
+        try {
+            auto value = read_json(path, 65536);
+            return value.is_object() ? std::optional<Json>(std::move(value)) : std::nullopt;
+        } catch (const Json::exception&) {
             return std::nullopt;
-        throw;
+        } catch (const std::system_error& error) {
+            if (error.code() == std::errc::no_such_file_or_directory)
+                return std::nullopt;
+#ifdef _WIN32
+            // A concurrently released claim can be delete-pending while a
+            // reader still owns its old handle. Windows reports access denied
+            // for that brief state. Retry within a bound, never interpret an
+            // unreadable live owner as a stale slot that may be reclaimed.
+            if ((error.code().value() == ERROR_ACCESS_DENIED ||
+                 error.code().value() == ERROR_SHARING_VIOLATION) &&
+                Clock::now() < deadline) {
+                std::this_thread::sleep_for(Millis(1));
+                continue;
+            }
+#endif
+            throw std::system_error(error.code(), "inspect scheduler owner " + path_text(path));
+        }
     }
 }
 bool fresh(const fs::path& path, Millis limit) {

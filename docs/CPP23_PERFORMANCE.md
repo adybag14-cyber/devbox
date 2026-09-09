@@ -42,15 +42,27 @@ changing the Rust build, disabling instrumentation/logging, or weakening checks.
 
 The runtime reuses HTTP connections with a separate bounded read-ahead operation
 that preserves pipelined input and detects disconnects. Request authentication,
-headers, cancellation and registry state are rebuilt for every request. Fast
-operations send one complete SSE response; longer operations retain periodic
-heartbeats and scoped cancellation.
+headers, cancellation and registry state are rebuilt for every request. Completed
+tool results select ordinary JSON when its accepted quality is at least the SSE
+quality; clients that prefer SSE receive one complete SSE response. Longer
+operations retain periodic heartbeats and scoped cancellation. Both response
+representations are part of the
+[Streamable HTTP contract](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
 
 Capability metadata is immutable per engine and its schema digest is computed
 once. Result construction moves large payloads, telemetry borrows the fields it
 summarizes, and compact JSON output validates printable ASCII before copying it.
 Other strings and numeric encodings retain the reference serializer. Differential
 tests compare bytes, invalid UTF-8 policies, escapes and nested values.
+Only the selected runtime profile is materialized from the frozen schema input
+during startup; both profiles continue to pass the contract checks.
+
+Cancellable timers subscribe to direct and ancestor cancellation rather than
+waking every 50 ms. Timer arming, cancellation and destruction share a strand;
+subscription teardown waits for a callback already in flight and prevents later
+callbacks from accessing a destroyed executor. Tests cover concurrent direct and
+ancestor cancellation, cancelled tokens, dropped executors and normal timer
+deadlines without polling. Synchronous parent-token waits use notifications too.
 
 Worker pools start threads as demand requires while retaining their configured
 concurrency and queue limits. Logging batches at most 64 accepted events with a
@@ -67,6 +79,10 @@ background work. Windows process completion rechecks its pipes immediately after
 exit, and absent input uses a noninteractive EOF handle. Job status polling starts
 with a shorter interval and backs off for longer waits without extending caller
 deadlines.
+Scheduler inspection retries transient Windows sharing/delete-pending failures
+for at most 100 ms. Persistent unreadability remains an error; it never licenses
+reclaiming a live slot. Tests preserve ownership across transient and persistent
+sharing conflicts and repeated contention between child processes.
 
 MSVC Release builds enable whole-program optimization unless explicitly disabled
 through `CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE`. C++23 uses the explicit

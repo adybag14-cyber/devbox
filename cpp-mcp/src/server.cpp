@@ -21,6 +21,45 @@ Json rpc_result(const Json& id, Json result) {
     response["result"] = std::move(result);
     return response;
 }
+int media_quality(std::string_view accept, std::string_view type) {
+    int best = 0;
+    for (const auto& range : split(accept, ',')) {
+        const auto parts = split(range, ';');
+        if (parts.empty() || lower(trim(parts.front())) != type)
+            continue;
+        int quality = 1000;
+        for (std::size_t index = 1; index < parts.size(); ++index) {
+            const auto parameter = lower(trim(parts[index]));
+            const auto equals = parameter.find('=');
+            if (equals == parameter.npos || trim(parameter.substr(0, equals)) != "q")
+                continue;
+            const auto value = trim(parameter.substr(equals + 1));
+            quality = 0;
+            if (value.empty() || (value[0] != '0' && value[0] != '1') || value.size() > 5 ||
+                (value.size() > 1 && value[1] != '.'))
+                continue;
+            int parsed = value[0] == '1' ? 1000 : 0;
+            int place = 100;
+            bool valid = true;
+            for (std::size_t digit = 2; digit < value.size(); ++digit) {
+                if (value[digit] < '0' || value[digit] > '9' || (value[0] == '1' && value[digit] != '0')) {
+                    valid = false;
+                    break;
+                }
+                parsed += (value[digit] - '0') * place;
+                place /= 10;
+            }
+            if (valid)
+                quality = parsed;
+        }
+        best = std::max(best, quality);
+    }
+    return best;
+}
+bool prefers_json(std::string_view accept) {
+    const auto json = media_quality(accept, "application/json");
+    return json > 0 && json >= media_quality(accept, "text/event-stream");
+}
 bool supported_protocol(std::string_view value) {
     return value == "2024-11-05" || value == "2025-03-26" || value == "2025-06-18" || value == "2025-11-25" ||
            value == "2026-07-28";
@@ -291,7 +330,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         sent_bytes += co_await asio::async_write(stream.socket(), http::make_chunk(asio::buffer(text)),
                                                  asio::use_awaitable);
     }
-    asio::awaitable<void> send_rpc(Json value) {
+    asio::awaitable<void> send_rpc(Json value, bool prefer_json = false) {
         auto reply = HttpReply::json(200, value);
         if (modern_protocol(request) && value.contains("error")) {
             const auto code = value["error"].value("code", 0);
@@ -300,7 +339,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             else if (code == -32602 || code == -32021 || code == -32022)
                 reply.status = 400;
         }
-        if (reply.status == 200 &&
+        if (reply.status == 200 && !prefer_json &&
             json_string(request.headers, "accept").find("text/event-stream") != std::string::npos) {
             reply.body = "event: message\ndata: " + std::move(reply.body) + "\n\n";
             reply.headers["content-type"] = "text/event-stream";
@@ -384,17 +423,21 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                                completion->finished = true;
                                completion->timer.cancel();
                            });
-            // Quick operations can send a complete SSE message and its headers
-            // in one write. Completion wakes this wait immediately; slower
-            // operations still start streaming within a bounded grace period.
+            // Completion wakes this wait immediately. A ready result can use
+            // ordinary JSON when the client accepts it, avoiding SSE framing
+            // and parsing for large values. Slower operations still stream
+            // within a bounded grace period and retain their heartbeats.
             if (!completion->finished) {
                 completion->timer.expires_after(Millis(100));
                 boost::system::error_code initial_ec;
                 co_await completion->timer.async_wait(asio::redirect_error(asio::use_awaitable, initial_ec));
             }
             if (completion->finished) {
-                if (!disconnected)
-                    co_await send_rpc(std::move(completion->response));
+                if (!disconnected) {
+                    const auto use_json = !completion->response.contains("error") &&
+                                          prefers_json(json_string(request.headers, "accept"));
+                    co_await send_rpc(std::move(completion->response), use_json);
+                }
                 co_return;
             }
             http::response<http::empty_body> headers{http::status::ok, 11};

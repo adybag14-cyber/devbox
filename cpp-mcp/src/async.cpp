@@ -57,16 +57,42 @@ std::size_t WorkPool::queued() const {
     std::lock_guard lock(self.mutex_);
     return self.queue_.size();
 }
+namespace {
+asio::awaitable<void> cancellable_delay(Clock::time_point deadline, Cancel cancel) {
+    const auto executor = co_await asio::this_coro::executor;
+    auto timer = std::make_shared<asio::steady_timer>(executor, deadline);
+    const std::weak_ptr<asio::steady_timer> observed = timer;
+    auto subscription = cancel->subscribe([executor, observed] {
+        // Always post: the strand must arm the wait before cancellation touches
+        // the timer, including cancellation that predates subscription.
+        asio::post(executor, [observed] {
+            if (const auto timer = observed.lock())
+                timer->cancel();
+        });
+    });
+    boost::system::error_code error;
+    co_await timer->async_wait(asio::redirect_error(asio::use_awaitable, error));
+    subscription.reset();
+    cancel->check();
+    if (error)
+        throw boost::system::system_error(error);
+}
+} // namespace
 asio::awaitable<void> async_delay(Millis delay, Cancel cancel) {
-    asio::steady_timer timer(co_await asio::this_coro::executor);
     const auto deadline = Clock::now() + std::max(Millis(0), delay);
-    while (Clock::now() < deadline) {
-        if (cancel)
-            cancel->check();
-        timer.expires_at(std::min(deadline, Clock::now() + Millis(50)));
-        co_await timer.async_wait(asio::use_awaitable);
-    }
     if (cancel)
         cancel->check();
+    if (delay <= Millis(0))
+        co_return;
+    const auto executor = co_await asio::this_coro::executor;
+    if (cancel) {
+        // Foreign threads can cancel tokens. A private strand serializes timer
+        // creation, arming, cancellation and destruction on multithreaded I/O.
+        co_await asio::co_spawn(asio::make_strand(executor), cancellable_delay(deadline, std::move(cancel)),
+                                asio::use_awaitable);
+    } else {
+        asio::steady_timer timer(executor, deadline);
+        co_await timer.async_wait(asio::use_awaitable);
+    }
 }
 } // namespace devbox

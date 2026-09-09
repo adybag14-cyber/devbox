@@ -171,11 +171,12 @@ int main(int argc, char** argv) {
         {
             asio::io_context client_io;
             auto socket = raw_request(client_io, port, call("devbox_wait", 0, "sse-first"),
-                                      headers("application/json, text/event-stream"));
+                                      headers("text/event-stream"));
             beast::flat_buffer incoming;
             http::response<http::string_body> first;
             http::read(*socket, incoming, first);
             require(first.keep_alive() && !first.chunked() &&
+                        first[http::field::content_type] == "text/event-stream" &&
                         first.body().find("sse-first") != std::string::npos,
                     "completed SSE response retains a reusable connection");
             const auto before = backend->cancelled.load();
@@ -192,6 +193,22 @@ int main(int argc, char** argv) {
             socket->close(ignored);
             until([&] { return backend->cancelled > before && server.active_requests() == 0; },
                   "disconnect on reused connection cancels the current request");
+        }
+        for (const auto& [accept, json] :
+             {std::pair{"application/json, text/event-stream", true},
+              std::pair{"text/event-stream; q=0.2, Application/JSON; q=0.8", true},
+              std::pair{"application/json;q=0, text/event-stream", false},
+              std::pair{"application/json;q=0.000, text/event-stream", false},
+              std::pair{"application/json;q=0.5, text/event-stream;q=0.9", false},
+              std::pair{"application/json;q=1.1, text/event-stream", false}}) {
+            const auto response =
+                http_request("POST", base + "/mcp", call("devbox_wait", 0).dump(), headers(accept));
+            require(response.status == 200 && json_string(response.headers, "content-type") ==
+                                                  (json ? "application/json" : "text/event-stream"),
+                    "completed tool selects an accepted response representation");
+            require(json ? Json::parse(response.body)["result"]["isError"] == false
+                         : response.body.find("event: message\ndata:") != std::string::npos,
+                    "selected representation retains the complete tool result");
         }
         const auto initialize =
             http_request("POST", base + "/mcp",

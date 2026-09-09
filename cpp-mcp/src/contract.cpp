@@ -181,9 +181,16 @@ void validate(const Json& value, const Json& schema, const Json& root, const std
 }
 } // namespace
 ToolContract::ToolContract(const Config& config) {
+    const auto profile = config.runtime_name();
     auto reference = Json::parse(
-        std::string_view(reinterpret_cast<const char*>(embedded_contract), sizeof(embedded_contract)));
-    tools_ = std::move(reference["profiles"][config.runtime_name()]);
+        std::string_view(reinterpret_cast<const char*>(embedded_contract), sizeof(embedded_contract)),
+        [&profile](int depth, Json::parse_event_t event, Json& value) {
+            // Both profiles remain in the frozen input. Discard the inactive
+            // profile while parsing instead of allocating its unused schema DOM.
+            return event != Json::parse_event_t::key || depth != 2 ||
+                   value.get_ref<const std::string&>() == profile;
+        });
+    tools_ = std::move(reference["profiles"][profile]);
     for (auto& tool : tools_) {
         const auto name = json_string(tool, "name");
         for (const auto* field : {"description", "title"})
