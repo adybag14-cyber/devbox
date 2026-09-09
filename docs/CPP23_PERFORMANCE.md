@@ -49,6 +49,27 @@ operations retain periodic heartbeats and scoped cancellation. Both response
 representations are part of the
 [Streamable HTTP contract](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
 
+Large JSON RPC responses negotiate gzip or zlib-wrapped deflate only when the
+client accepts that content coding. Explicit coding exclusions and higher identity
+preferences are retained, and gateway `Vary` fields are combined. Compression
+uses a fresh dictionary for each response. For responses through one MiB,
+libdeflate's fastest compressor writes directly into the C++23 string overwrite
+buffer. Larger responses use incremental zlib with a 64 KiB output buffer and
+reduced working memory. An 8 KiB prefix must compress by at least half before
+the remaining input is processed; low-compressibility responses keep their
+original bytes. Both paths check cancellation, and incremental input chunks
+yield when their time slice is used. Compression is limited to responses from
+128 KiB through 16 MiB;
+small responses, SSE streams and OAuth endpoints retain their existing paths.
+This is a transport optimization with decoded payload equality tests, including
+varied one MiB results that span multiple compressed blocks. It follows HTTP
+[content coding negotiation](https://www.rfc-editor.org/rfc/rfc9110.html#section-12.5.3)
+and the [zlib stream API](https://www.zlib.net/manual.html). The whole-buffer path
+uses the [libdeflate API](https://github.com/ebiggers/libdeflate), pinned by the
+same vcpkg baseline as the other native dependencies.
+Each HTTP write is bounded to 64 KiB. Printable JSON strings reserve space for
+their closing delimiters, avoiding a second large allocation and copy.
+
 Capability metadata is immutable per engine and its schema digest is computed
 once. Result construction moves large payloads, telemetry borrows the fields it
 summarizes, and compact JSON output validates printable ASCII before copying it.

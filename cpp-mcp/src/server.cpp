@@ -1,9 +1,12 @@
 #include "devbox/server.hpp"
 #include "devbox/result.hpp"
+#include <array>
 #include <boost/beast.hpp>
 #include <iostream>
+#include <libdeflate.h>
 #include <set>
 #include <unordered_map>
+#include <zlib.h>
 
 namespace devbox {
 namespace beast = boost::beast;
@@ -21,8 +24,8 @@ Json rpc_result(const Json& id, Json result) {
     response["result"] = std::move(result);
     return response;
 }
-int media_quality(std::string_view accept, std::string_view type) {
-    int best = 0;
+int media_quality(std::string_view accept, std::string_view type, int missing = 0) {
+    int best = missing;
     for (const auto& range : split(accept, ',')) {
         const auto parts = split(range, ';');
         if (parts.empty() || lower(trim(parts.front())) != type)
@@ -59,6 +62,97 @@ int media_quality(std::string_view accept, std::string_view type) {
 bool prefers_json(std::string_view accept) {
     const auto json = media_quality(accept, "application/json");
     return json > 0 && json >= media_quality(accept, "text/event-stream");
+}
+std::string_view preferred_encoding(std::string_view accept) {
+    const auto quality = [accept](std::string_view coding) {
+        const auto specified = media_quality(accept, coding, -1);
+        return specified < 0 ? media_quality(accept, "*") : specified;
+    };
+    const auto gzip = quality("gzip"), deflate = quality("deflate");
+    const auto identity = media_quality(accept, "identity");
+    if (deflate > 0 && deflate >= gzip && deflate >= identity)
+        return "deflate";
+    if (gzip > 0 && gzip >= identity)
+        return "gzip";
+    return {};
+}
+std::optional<std::string> compress_bounded(std::string_view body, std::string_view coding,
+                                            const Cancel& cancel) {
+    cancel->check();
+    const std::unique_ptr<libdeflate_compressor, decltype(&libdeflate_free_compressor)> compressor(
+        libdeflate_alloc_compressor(1), libdeflate_free_compressor);
+    if (!compressor)
+        return std::nullopt;
+    const auto encode = coding == "gzip" ? libdeflate_gzip_compress : libdeflate_zlib_compress;
+    std::array<char, 4 * 1024> probe;
+    if (!encode(compressor.get(), body.data(), 8 * 1024, probe.data(), probe.size()))
+        return std::nullopt;
+    cancel->check();
+    std::string output;
+    const auto limit = body.size() / 2;
+    output.resize_and_overwrite(limit, [&](char* buffer, std::size_t) {
+        return encode(compressor.get(), body.data(), body.size(), buffer, limit);
+    });
+    cancel->check();
+    if (output.empty())
+        return std::nullopt;
+    return output;
+}
+asio::awaitable<std::optional<std::string>> compress_json(std::string_view body, std::string_view coding,
+                                                          const Cancel& cancel) {
+    // Compression is optional and bounded. Larger responses retain their original
+    // representation, and the stream owns no cross-request dictionary or state.
+    if (body.size() < 128 * 1024 || body.size() > 16 * 1024 * 1024)
+        co_return std::nullopt;
+    // Whole-buffer compression is limited to one MiB. Larger responses use
+    // incremental compression so cancellation and other I/O can make progress.
+    if (body.size() <= 1024 * 1024)
+        co_return compress_bounded(body, coding, cancel);
+    z_stream state{};
+    const auto bits = MAX_WBITS + (coding == "gzip" ? 16 : 0);
+    if (deflateInit2(&state, Z_BEST_SPEED, Z_DEFLATED, bits, 5, Z_DEFAULT_STRATEGY) != Z_OK)
+        co_return std::nullopt;
+    struct End {
+        z_stream* state;
+        ~End() {
+            deflateEnd(state);
+        }
+    } end{&state};
+    std::array<char, 64 * 1024> block;
+    std::string output;
+    output.reserve(block.size());
+    const auto limit = body.size() / 2;
+    auto slice_started = Clock::now();
+    for (std::size_t offset = 0; offset < body.size();) {
+        cancel->check();
+        // Sample a small prefix before spending CPU on a low-compressibility
+        // payload. Sync flush exposes its actual encoded size without resetting
+        // the dictionary used by the rest of this response.
+        const auto size = std::min<std::size_t>(offset ? 64 * 1024 : 8 * 1024, body.size() - offset);
+        state.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(body.data() + offset));
+        state.avail_in = static_cast<uInt>(size);
+        offset += size;
+        int result;
+        do {
+            state.next_out = reinterpret_cast<Bytef*>(block.data());
+            state.avail_out = static_cast<uInt>(block.size());
+            result = deflate(&state, offset == body.size() ? Z_FINISH
+                                     : offset == 8 * 1024  ? Z_SYNC_FLUSH
+                                                           : Z_NO_FLUSH);
+            if ((result != Z_OK && result != Z_STREAM_END) || state.total_out >= limit)
+                co_return std::nullopt;
+            output.append(block.data(), block.size() - state.avail_out);
+        } while (state.avail_in || (offset == body.size() && result != Z_STREAM_END));
+        if (output.size() > offset / 2)
+            co_return std::nullopt;
+        // Bound uninterrupted CPU work so other requests and disconnects run.
+        if (offset < body.size() && Clock::now() - slice_started >= Millis(1)) {
+            co_await asio::post(asio::use_awaitable);
+            slice_started = Clock::now();
+        }
+    }
+    cancel->check();
+    co_return output;
 }
 bool supported_protocol(std::string_view value) {
     return value == "2024-11-05" || value == "2025-03-26" || value == "2025-06-18" || value == "2025-11-25" ||
@@ -313,17 +407,39 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         read_ahead.reset();
     }
     asio::awaitable<void> send(HttpReply reply) {
+        if (request.method == "POST" && (request.path == "/mcp" || request.path == "/") &&
+            reply.status == 200 && reply.body.size() >= 128 * 1024 &&
+            json_string(reply.headers, "content-type").starts_with("application/json")) {
+            reply.headers["vary"] = "accept-encoding";
+            const auto coding = preferred_encoding(json_string(request.headers, "accept-encoding"));
+            if (!coding.empty()) {
+                auto compressed = co_await compress_json(reply.body, coding, cancel);
+                if (compressed) {
+                    reply.body = std::move(*compressed);
+                    reply.headers["content-encoding"] = coding;
+                }
+            }
+        }
         http::response<http::string_body> response{static_cast<http::status>(reply.status), 11};
         for (auto it = reply.headers.begin(); it != reply.headers.end(); ++it)
             response.set(it.key(), it.value().get<std::string>());
-        for (auto it = bridge_headers.begin(); it != bridge_headers.end(); ++it)
-            response.set(it.key(), it.value().get<std::string>());
+        for (auto it = bridge_headers.begin(); it != bridge_headers.end(); ++it) {
+            if (it.key() == "vary" && response.count(http::field::vary))
+                response.set(http::field::vary,
+                             std::string(response[http::field::vary]) + ", " + it.value().get<std::string>());
+            else
+                response.set(it.key(), it.value().get<std::string>());
+        }
         response.keep_alive(keep_alive && !server->stopped);
         response.body() = request.method == "HEAD" ? "" : std::move(reply.body);
         response.prepare_payload();
         response_status = reply.status;
         response_started = true;
-        sent_bytes += co_await http::async_write(stream, response, asio::use_awaitable);
+        // Bound each write so large results make progress between I/O
+        // completions instead of submitting the entire body in one operation.
+        http::response_serializer<http::string_body> serializer(response);
+        serializer.limit(64 * 1024);
+        sent_bytes += co_await http::async_write(stream, serializer, asio::use_awaitable);
         completed = true;
     }
     asio::awaitable<void> send_chunk(std::string text) {
