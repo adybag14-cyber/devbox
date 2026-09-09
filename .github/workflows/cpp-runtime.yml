@@ -113,6 +113,7 @@ jobs:
           node rust-mcp/scripts/windows-contention-smoke-runner.mjs
           ./scripts/ci/test-windows-startup-contract.ps1
           ./scripts/ci/test-windows-managed-mcp-ownership.ps1
+          ./scripts/ci/test-windows-guardian-heartbeat.ps1
       - name: Windows managed C++ startup and Guardian lifecycle
         if: runner.os == 'Windows'
         shell: pwsh
