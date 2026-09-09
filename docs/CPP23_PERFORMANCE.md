@@ -104,6 +104,9 @@ the fallback. Counting the current process's threads no longer requires visiting
 every system thread in user space. A test compares the result with independent
 Toolhelp enumeration while three known workers remain alive. The existing
 60-second cache and reported metric remain intact.
+Performance snapshots copy sampled history into contiguous storage, avoiding
+one allocation per copied sample in the MSVC deque implementation. Sampling
+frequency, retention, percentile calculation and persistence intervals are retained.
 
 Worker pools start threads as demand requires while retaining their configured
 concurrency and queue limits. Logging batches at most 64 accepted events with a

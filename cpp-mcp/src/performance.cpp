@@ -194,11 +194,13 @@ asio::awaitable<void> PerformanceMonitor::sample(Cancel cancel) {
     }
 }
 Json PerformanceMonitor::capture() {
-    std::deque<Sample> delays, drifts;
+    // Copy into contiguous storage. On MSVC, deque copies allocate a separate
+    // block for each Sample, extending the sampler lock and idle CPU work.
+    std::vector<Sample> delays, drifts;
     {
         std::lock_guard lock(mutex_);
-        delays = delays_;
-        drifts = drifts_;
+        delays.assign(delays_.begin(), delays_.end());
+        drifts.assign(drifts_.begin(), drifts_.end());
     }
     const auto now = Clock::now();
     auto window = [&](std::uint64_t seconds) {
