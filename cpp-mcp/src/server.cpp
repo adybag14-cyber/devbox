@@ -13,6 +13,11 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 using Tcp = asio::ip::tcp;
 namespace {
+#ifdef _WIN32
+constexpr int http_io_threads = 1;
+#else
+constexpr int http_io_threads = 2;
+#endif
 Json rpc_error(const Json& id, int code, const std::string& message, const Json& data = nullptr) {
     Json error{{"code", code}, {"message", message}};
     if (!data.is_null())
@@ -306,7 +311,7 @@ struct HttpServer::Impl : std::enable_shared_from_this<HttpServer::Impl> {
     std::unique_ptr<OAuthService> oauth_service;
     RequestRegistry requests;
     std::unique_ptr<WorkPool> auth_pool;
-    asio::io_context io{2};
+    asio::io_context io{http_io_threads};
     Tcp::acceptor listener{io};
     std::optional<asio::executor_work_guard<asio::io_context::executor_type>> work;
     std::vector<std::thread> threads;
@@ -956,7 +961,7 @@ std::uint16_t HttpServer::Impl::start() {
             }
         }
     });
-    for (int i = 0; i < 2; ++i)
+    for (int i = 0; i < http_io_threads; ++i)
         threads.emplace_back([self = shared_from_this()] { self->io.run(); });
     return bound_port;
 }

@@ -55,6 +55,13 @@ operations retain periodic heartbeats and scoped cancellation. Both response
 representations are part of the
 [Streamable HTTP contract](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports).
 
+Windows network callbacks use one I/O loop, avoiding cross-thread handoffs for
+short request handlers. Blocking tool work continues in the existing bounded
+worker pools, and longer compression operations yield between time slices.
+Other platforms retain their two I/O loops. The final Windows idle comparison
+uses six alternating pairs of one-minute observations to reduce counter and host
+activity variation; the matched-load CPU comparison uses equal request rates.
+
 Large JSON RPC responses negotiate gzip or zlib-wrapped deflate only when the
 client accepts that content coding. Explicit coding exclusions and higher identity
 preferences are retained, and gateway `Vary` fields are combined. Compression
