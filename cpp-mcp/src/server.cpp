@@ -352,11 +352,11 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     };
     std::shared_ptr<ReadAhead> read_ahead;
     Clock::time_point started_at = Clock::now();
-    Session(std::shared_ptr<Impl> owner, Tcp::socket socket, std::uint64_t id)
-        : server(std::move(owner)), stream(std::move(socket)), sequence(id) {
+    Session(std::shared_ptr<Impl> owner, Tcp::socket socket, const Tcp::endpoint& endpoint,
+            std::uint64_t id)
+        : server(std::move(owner)), stream(std::move(socket)), peer(endpoint.address().to_string()),
+          sequence(id) {
         boost::system::error_code ec;
-        auto endpoint = stream.socket().remote_endpoint(ec);
-        peer = ec ? "" : endpoint.address().to_string();
         request.peer = peer;
         request.cancellation = cancel;
         stream.socket().set_option(Tcp::no_delay(true), ec);
@@ -808,14 +808,20 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             co_await send_rpc(rpc_error(id, -32601, method));
     }
     asio::awaitable<void> run() {
+        bool first_request = true;
         while (!server->stopped && stream.socket().is_open()) {
             // Authentication, CORS, cancellation and response state belong to a
-            // request, not to the persistent TCP connection.
-            request = HttpRequest{};
-            request.peer = peer;
-            cancel = std::make_shared<Cancellation>();
-            request.cancellation = cancel;
-            bridge_headers = Json::object();
+            // request, not to the persistent TCP connection. The constructor
+            // already initialized the first request; only a reused connection
+            // needs another identity, timestamp and cancellation token here.
+            if (!first_request) {
+                request = HttpRequest{};
+                request.peer = peer;
+                cancel = std::make_shared<Cancellation>();
+                request.cancellation = cancel;
+                bridge_headers = Json::object();
+            }
+            first_request = false;
             response_started = completed = disconnected = keep_alive = false;
             response_status = 0;
             sent_bytes = 0;
@@ -909,7 +915,10 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
 asio::awaitable<void> HttpServer::Impl::accept() {
     while (!stopped) {
         boost::system::error_code ec;
-        auto socket = co_await listener.async_accept(asio::make_strand(io),
+        Tcp::endpoint endpoint;
+        // Accept already supplies the peer address; retain it instead of
+        // querying the socket again after the connection has been accepted.
+        auto socket = co_await listener.async_accept(asio::make_strand(io), endpoint,
                                                      asio::redirect_error(asio::use_awaitable, ec));
         if (ec) {
             if (stopped || ec == asio::error::operation_aborted)
@@ -925,7 +934,7 @@ asio::awaitable<void> HttpServer::Impl::accept() {
                 socket.close(ec);
                 continue;
             }
-            session = std::make_shared<Session>(shared_from_this(), std::move(socket), id);
+            session = std::make_shared<Session>(shared_from_this(), std::move(socket), endpoint, id);
             sessions[id] = session;
         }
         asio::co_spawn(session->stream.get_executor(), session->run(), [session](std::exception_ptr) {});

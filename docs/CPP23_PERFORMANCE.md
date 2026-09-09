@@ -48,7 +48,10 @@ cancellation and registry state are rebuilt for every request. Health,
 liveness and readiness probes avoid starting a separate read-ahead
 operation; their write failures still record client aborts, and the following
 request retains pipelining and disconnect cancellation. Tests cover a reset
-after readiness parsing and commands reused after a probe. Completed
+after readiness parsing and commands reused after a probe. Connections retain
+the peer address supplied by accept and initialize their first request once;
+reused connections still receive fresh request identities, timestamps and
+cancellation tokens. Completed
 tool results select ordinary JSON when its accepted quality is at least the SSE
 quality; clients that prefer SSE receive one complete SSE response. Longer
 operations retain periodic heartbeats and scoped cancellation. Both response
@@ -88,8 +91,11 @@ their closing delimiters, avoiding a second large allocation and copy.
 Capability metadata is immutable per engine and its schema digest is computed
 once. Result construction moves large payloads, telemetry borrows the fields it
 summarizes, and compact JSON output validates printable ASCII before copying it.
+Targets with baseline SSE2 validate complete 16-byte blocks; other targets and
+partial blocks retain the scalar checks, without reading beyond the string.
 Other strings and numeric encodings retain the reference serializer. Differential
-tests compare bytes, invalid UTF-8 policies, escapes and nested values.
+tests compare every byte at block boundaries, invalid UTF-8 policies, escapes
+and nested values.
 Only the selected runtime profile is materialized from the frozen schema input
 during startup; both profiles continue to pass the contract checks.
 

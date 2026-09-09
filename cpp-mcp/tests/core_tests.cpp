@@ -26,6 +26,12 @@ int main() {
                     bytes += static_cast<char>(random() & 255);
                 fixtures.push_back(Json{{bytes, Json::array({bytes, i, Json{{"nested", bytes}}})}});
             }
+            for (std::size_t position : {0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128})
+                for (unsigned byte = 0; byte < 256; ++byte) {
+                    std::string text(position + 17, '!');
+                    text[position] = static_cast<char>(byte);
+                    fixtures.push_back(Json{{text, text}});
+                }
             for (const auto& value : fixtures) {
                 for (const auto errors : {Json::error_handler_t::replace, Json::error_handler_t::ignore})
                     require(json_dump(value, errors) == value.dump(-1, ' ', false, errors),

@@ -50,7 +50,10 @@ std::string decode_response(const HttpResult& response) {
 struct FixtureBackend : McpBackend {
     WorkPool workers{2, 2};
     std::shared_ptr<std::atomic_size_t> running_workers = std::make_shared<std::atomic_size_t>(0);
-    std::atomic_size_t entered{0}, cancelled{0}, observations{0}, disconnects{0};
+    std::atomic_size_t entered{0}, cancelled{0}, observations{0}, disconnects{0}, unexpected_peers{0},
+        invalid_identities{0};
+    std::mutex identity_mutex;
+    std::set<std::string> usage_ids;
     mutable std::atomic_bool pause_ready{false};
     mutable std::atomic_size_t ready_entered{0};
     Json server_info() const override {
@@ -112,8 +115,16 @@ struct FixtureBackend : McpBackend {
         }
         return true;
     }
-    void observe_http(const HttpRequest&, int, std::uint64_t, Millis, bool disconnected) override {
+    void observe_http(const HttpRequest& request, int, std::uint64_t, Millis, bool disconnected) override {
         ++observations;
+        if (request.peer != "127.0.0.1")
+            ++unexpected_peers;
+        {
+            std::lock_guard lock(identity_mutex);
+            if (request.usage_id.empty() || request.started_at.empty() ||
+                !usage_ids.insert(request.usage_id).second)
+                ++invalid_identities;
+        }
         if (disconnected)
             ++disconnects;
     }
@@ -634,6 +645,10 @@ int main(int argc, char** argv) {
         require(http_request("OPTIONS", reopened_base, {}, bridge).status == 405,
                 "OAuth disables unauthenticated local bridge");
         reopened.stop();
+        require(backend->observations > 0 && backend->unexpected_peers == 0,
+                "accepted peer identity survives normal, failed and reused requests");
+        require(backend->invalid_identities == 0,
+                "normal, failed and reused requests retain unique identities and timestamps");
         fs::remove_all(root);
         std::cout
             << "HTTP/SSE, MCP, Host/CORS, scoped cancellation, bounded workers and OAuth routes passed\n";
