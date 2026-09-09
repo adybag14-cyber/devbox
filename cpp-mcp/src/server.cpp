@@ -667,7 +667,10 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 co_await http::async_read(stream, buffer, parser,
                                           asio::redirect_error(asio::use_awaitable, ec));
                 if (ec == http::error::body_limit) {
-                    co_await send(HttpReply::json(413, Json{{"error", "request entity too large"}}));
+                    // GCC 12/13 cannot lower this initializer-list temporary
+                    // inside co_await in the request loop. Give it a local owner.
+                    auto oversized = HttpReply::json(413, Json{{"error", "request entity too large"}});
+                    co_await send(std::move(oversized));
                 } else if (ec) {
                     if (ec != http::error::end_of_stream && ec != asio::error::operation_aborted)
                         failure.emplace(HttpReply::text(400, "Invalid HTTP request"));
