@@ -16,8 +16,10 @@ Json rpc_error(const Json& id, int code, const std::string& message, const Json&
         error["data"] = data;
     return Json{{"jsonrpc", "2.0"}, {"id", id}, {"error", error}};
 }
-Json rpc_result(const Json& id, const Json& result) {
-    return Json{{"jsonrpc", "2.0"}, {"id", id}, {"result", result}};
+Json rpc_result(const Json& id, Json result) {
+    Json response{{"jsonrpc", "2.0"}, {"id", id}};
+    response["result"] = std::move(result);
+    return response;
 }
 bool supported_protocol(std::string_view value) {
     return value == "2024-11-05" || value == "2025-03-26" || value == "2025-06-18" || value == "2025-11-25" ||
@@ -168,7 +170,7 @@ struct HttpServer::Impl : std::enable_shared_from_this<HttpServer::Impl> {
     Gateway gateway;
     std::unique_ptr<OAuthService> oauth_service;
     RequestRegistry requests;
-    WorkPool auth_pool{4, 64};
+    std::unique_ptr<WorkPool> auth_pool;
     asio::io_context io{2};
     Tcp::acceptor listener{io};
     std::optional<asio::executor_work_guard<asio::io_context::executor_type>> work;
@@ -181,8 +183,10 @@ struct HttpServer::Impl : std::enable_shared_from_this<HttpServer::Impl> {
     std::uint16_t bound_port = 0;
     Impl(std::shared_ptr<const Config> cfg, std::shared_ptr<McpBackend> handler)
         : config(std::move(cfg)), backend(std::move(handler)), gateway(*config) {
-        if (OAuthService::enabled(*config))
+        if (OAuthService::enabled(*config)) {
             oauth_service = std::make_unique<OAuthService>(*config);
+            auth_pool = std::make_unique<WorkPool>(4, 64);
+        }
     }
     asio::awaitable<void> accept();
     std::uint16_t start();
@@ -193,18 +197,29 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     beast::tcp_stream stream;
     beast::flat_buffer buffer{64 * 1024};
     HttpRequest request;
+    std::string peer;
     Json bridge_headers = Json::object();
     Cancel cancel = std::make_shared<Cancellation>();
     std::uint64_t sequence, sent_bytes = 0;
     int response_status = 0;
     bool response_started = false, completed = false, disconnected = false;
+    bool keep_alive = false;
+    struct ReadAhead {
+        asio::cancellation_signal cancel;
+        asio::steady_timer finished;
+        bool stopping = false, done = false;
+        explicit ReadAhead(asio::any_io_executor executor) : finished(std::move(executor)) {}
+    };
+    std::shared_ptr<ReadAhead> read_ahead;
     Clock::time_point started_at = Clock::now();
     Session(std::shared_ptr<Impl> owner, Tcp::socket socket, std::uint64_t id)
         : server(std::move(owner)), stream(std::move(socket)), sequence(id) {
         boost::system::error_code ec;
         auto endpoint = stream.socket().remote_endpoint(ec);
-        request.peer = ec ? "" : endpoint.address().to_string();
+        peer = ec ? "" : endpoint.address().to_string();
+        request.peer = peer;
         request.cancellation = cancel;
+        stream.socket().set_option(Tcp::no_delay(true), ec);
     }
     ~Session() {
         std::lock_guard lock(server->sessions_mutex);
@@ -218,13 +233,45 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         stream.socket().shutdown(Tcp::socket::shutdown_both, ec);
         stream.socket().close(ec);
     }
-    asio::awaitable<void> monitor_disconnect() {
-        char byte{};
-        boost::system::error_code ec;
-        co_await stream.socket().async_read_some(asio::buffer(&byte, 1),
-                                                 asio::redirect_error(asio::use_awaitable, ec));
-        if (!completed)
+    asio::awaitable<void> monitor_disconnect(std::shared_ptr<ReadAhead> state) {
+        try {
+            while (!state->stopping && stream.socket().is_open()) {
+                const auto remaining = buffer.max_size() - buffer.size();
+                if (!remaining) {
+                    // Bound pipelined input while an earlier request is active.
+                    close(true);
+                    break;
+                }
+                boost::system::error_code ec;
+                const auto bytes = co_await stream.socket().async_read_some(
+                    buffer.prepare(std::min<std::size_t>(8192, remaining)),
+                    asio::bind_cancellation_slot(state->cancel.slot(),
+                                                 asio::redirect_error(asio::use_awaitable, ec)));
+                buffer.commit(bytes);
+                if (state->stopping)
+                    break;
+                if (ec) {
+                    close(true);
+                    break;
+                }
+            }
+        } catch (...) {
             close(true);
+        }
+        state->done = true;
+        state->finished.cancel();
+    }
+    asio::awaitable<void> stop_read_ahead() {
+        if (!read_ahead)
+            co_return;
+        read_ahead->stopping = true;
+        read_ahead->cancel.emit(asio::cancellation_type::all);
+        while (!read_ahead->done) {
+            read_ahead->finished.expires_at(Clock::time_point::max());
+            boost::system::error_code ec;
+            co_await read_ahead->finished.async_wait(asio::redirect_error(asio::use_awaitable, ec));
+        }
+        read_ahead.reset();
     }
     asio::awaitable<void> send(HttpReply reply) {
         http::response<http::string_body> response{static_cast<http::status>(reply.status), 11};
@@ -232,7 +279,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             response.set(it.key(), it.value().get<std::string>());
         for (auto it = bridge_headers.begin(); it != bridge_headers.end(); ++it)
             response.set(it.key(), it.value().get<std::string>());
-        response.keep_alive(false);
+        response.keep_alive(keep_alive && !server->stopped);
         response.body() = request.method == "HEAD" ? "" : std::move(reply.body);
         response.prepare_payload();
         response_status = reply.status;
@@ -255,9 +302,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         }
         if (reply.status == 200 &&
             json_string(request.headers, "accept").find("text/event-stream") != std::string::npos) {
-            reply.body =
-                "event: message\ndata: " + value.dump(-1, ' ', false, Json::error_handler_t::replace) +
-                "\n\n";
+            reply.body = "event: message\ndata: " + std::move(reply.body) + "\n\n";
             reply.headers["content-type"] = "text/event-stream";
             reply.headers["cache-control"] = "no-cache, no-transform";
             reply.headers["x-accel-buffering"] = "no";
@@ -315,19 +360,6 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         auto registration = server->requests.register_request(request, id, cancel);
         Json response;
         if (sse) {
-            http::response<http::empty_body> headers{http::status::ok, 11};
-            headers.set(http::field::content_type, "text/event-stream");
-            headers.set(http::field::cache_control, "no-cache, no-transform");
-            headers.set("x-accel-buffering", "no");
-            headers.chunked(true);
-            headers.keep_alive(false);
-            for (auto it = bridge_headers.begin(); it != bridge_headers.end(); ++it)
-                headers.set(it.key(), it.value().get<std::string>());
-            http::response_serializer<http::empty_body> serializer{headers};
-            response_started = true;
-            response_status = 200;
-            sent_bytes += co_await http::async_write_header(stream, serializer, asio::use_awaitable);
-            co_await send_chunk(": mcp-request-start\n\n");
             struct Completion {
                 asio::steady_timer timer;
                 bool finished = false;
@@ -336,6 +368,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             };
             auto completion = std::make_shared<Completion>(co_await asio::this_coro::executor);
             const auto self = shared_from_this();
+            auto next_heartbeat = Clock::now() + Millis(1000);
             asio::co_spawn(stream.get_executor(), call_tool(params, id),
                            [completion, self, id](std::exception_ptr error, Json result) {
                                if (error) {
@@ -347,22 +380,49 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                                        completion->response = rpc_error(id, -32603, e.what());
                                    }
                                } else
-                                   completion->response = rpc_result(id, result);
+                                   completion->response = rpc_result(id, std::move(result));
                                completion->finished = true;
                                completion->timer.cancel();
                            });
+            // Quick operations can send a complete SSE message and its headers
+            // in one write. Completion wakes this wait immediately; slower
+            // operations still start streaming within a bounded grace period.
+            if (!completion->finished) {
+                completion->timer.expires_after(Millis(100));
+                boost::system::error_code initial_ec;
+                co_await completion->timer.async_wait(asio::redirect_error(asio::use_awaitable, initial_ec));
+            }
+            if (completion->finished) {
+                if (!disconnected)
+                    co_await send_rpc(std::move(completion->response));
+                co_return;
+            }
+            http::response<http::empty_body> headers{http::status::ok, 11};
+            headers.set(http::field::content_type, "text/event-stream");
+            headers.set(http::field::cache_control, "no-cache, no-transform");
+            headers.set("x-accel-buffering", "no");
+            headers.chunked(true);
+            headers.keep_alive(keep_alive && !server->stopped);
+            for (auto it = bridge_headers.begin(); it != bridge_headers.end(); ++it)
+                headers.set(it.key(), it.value().get<std::string>());
+            http::response_serializer<http::empty_body> serializer{headers};
+            response_started = true;
+            response_status = 200;
+            sent_bytes += co_await http::async_write_header(stream, serializer, asio::use_awaitable);
+            co_await send_chunk(": mcp-request-start\n\n");
             while (!completion->finished) {
-                completion->timer.expires_after(Millis(1000));
+                completion->timer.expires_at(next_heartbeat);
                 boost::system::error_code ec;
                 co_await completion->timer.async_wait(asio::redirect_error(asio::use_awaitable, ec));
                 if (!completion->finished && !cancel->cancelled())
                     co_await send_chunk(": heartbeat\n\n");
+                next_heartbeat = Clock::now() + Millis(1000);
             }
             response = std::move(completion->response);
             if (disconnected)
                 co_return;
-            co_await send_chunk("event: message\ndata: " +
-                                response.dump(-1, ' ', false, Json::error_handler_t::replace) + "\n\n");
+            co_await send_chunk(
+                "event: message\ndata: " + json_dump(response, Json::error_handler_t::replace) + "\n\n");
             sent_bytes +=
                 co_await asio::async_write(stream.socket(), http::make_chunk_last(), asio::use_awaitable);
             completed = true;
@@ -423,7 +483,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 }
             }
             auto self = shared_from_this();
-            auto pending = server->auth_pool.run(
+            auto pending = server->auth_pool->run(
                 [self, oauth] { return oauth_route(*oauth, self->request, self->cancel); }, cancel);
             auto reply = co_await std::move(pending);
             co_await send(std::move(reply));
@@ -446,7 +506,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                     throw OAuthFailure("invalid_token",
                                        "Invalid Authorization header format, expected 'Bearer TOKEN'", 401);
                 const auto token = authorization.substr(space + 1);
-                auto pending = server->auth_pool.run(
+                auto pending = server->auth_pool->run(
                     [oauth, token] { return oauth->verify_access_token(token); }, cancel);
                 auto info = co_await std::move(pending);
                 request.oauth.emplace(std::move(info));
@@ -576,52 +636,82 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             co_await send_rpc(rpc_error(id, -32601, method));
     }
     asio::awaitable<void> run() {
-        std::optional<HttpReply> failure;
-        try {
-            http::request_parser<http::string_body> parser;
-            parser.header_limit(32768);
-            parser.body_limit(server->config->mcp_json_body_limit_bytes);
-            stream.expires_after(Millis(15000));
-            boost::system::error_code ec;
-            co_await http::async_read(stream, buffer, parser, asio::redirect_error(asio::use_awaitable, ec));
-            if (ec == http::error::body_limit) {
-                const Json body{{"error", "request entity too large"}};
-                co_await send(HttpReply::json(413, body));
-            } else if (ec) {
-                if (ec != http::error::end_of_stream && ec != asio::error::operation_aborted)
-                    failure.emplace(HttpReply::text(400, "Invalid HTTP request"));
-            } else {
-                const auto parsed = parser.release();
-                request.method = std::string(parsed.method_string());
-                request.target = std::string(parsed.target());
-                const auto q = request.target.find('?');
-                request.path = request.target.substr(0, q);
-                if (q != request.target.npos)
-                    request.query = request.target.substr(q + 1);
-                request.body = parsed.body();
-                for (const auto& header : parsed.base())
-                    request.headers[lower(std::string(header.name_string()))] = std::string(header.value());
-                stream.expires_never();
-                const auto self = shared_from_this();
-                asio::co_spawn(stream.get_executor(), monitor_disconnect(), [self](std::exception_ptr) {});
-                co_await dispatch();
-            }
-        } catch (const Cancelled&) {
-            disconnected = true;
-        } catch (const std::exception& e) {
-            if (!response_started && !disconnected)
-                failure.emplace(HttpReply::json(500, Json{{"error", e.what()}}));
-        }
-        if (failure && !response_started && stream.socket().is_open()) {
+        while (!server->stopped && stream.socket().is_open()) {
+            // Authentication, CORS, cancellation and response state belong to a
+            // request, not to the persistent TCP connection.
+            request = HttpRequest{};
+            request.peer = peer;
+            cancel = std::make_shared<Cancellation>();
+            request.cancellation = cancel;
+            bridge_headers = Json::object();
+            response_started = completed = disconnected = keep_alive = false;
+            response_status = 0;
+            sent_bytes = 0;
+            std::optional<HttpReply> failure;
             try {
-                co_await send(std::move(*failure));
+                stream.expires_after(Millis(15000));
+                boost::system::error_code ec;
+                if (!buffer.size()) {
+                    const auto bytes = co_await stream.async_read_some(
+                        buffer.prepare(8192), asio::redirect_error(asio::use_awaitable, ec));
+                    buffer.commit(bytes);
+                    if (ec)
+                        break;
+                }
+                // Exclude an idle keep-alive interval from the next request's
+                // handling duration. Buffered pipeline bytes are never discarded.
+                started_at = Clock::now();
+                http::request_parser<http::string_body> parser;
+                parser.header_limit(32768);
+                parser.body_limit(server->config->mcp_json_body_limit_bytes);
+                co_await http::async_read(stream, buffer, parser,
+                                          asio::redirect_error(asio::use_awaitable, ec));
+                if (ec == http::error::body_limit) {
+                    co_await send(HttpReply::json(413, Json{{"error", "request entity too large"}}));
+                } else if (ec) {
+                    if (ec != http::error::end_of_stream && ec != asio::error::operation_aborted)
+                        failure.emplace(HttpReply::text(400, "Invalid HTTP request"));
+                } else {
+                    auto parsed = parser.release();
+                    keep_alive = parsed.keep_alive();
+                    request.method = std::string(parsed.method_string());
+                    request.target = std::string(parsed.target());
+                    const auto q = request.target.find('?');
+                    request.path = request.target.substr(0, q);
+                    if (q != request.target.npos)
+                        request.query = request.target.substr(q + 1);
+                    request.body = std::move(parsed.body());
+                    for (const auto& header : parsed.base())
+                        request.headers[lower(std::string(header.name_string()))] =
+                            std::string(header.value());
+                    stream.expires_never();
+                    const auto self = shared_from_this();
+                    read_ahead = std::make_shared<ReadAhead>(stream.get_executor());
+                    asio::co_spawn(stream.get_executor(), monitor_disconnect(read_ahead),
+                                   [self](std::exception_ptr) {});
+                    co_await dispatch();
+                }
+            } catch (const Cancelled&) {
+                disconnected = true;
+            } catch (const std::exception& e) {
+                if (!response_started && !disconnected)
+                    failure.emplace(HttpReply::json(500, Json{{"error", e.what()}}));
+            }
+            co_await stop_read_ahead();
+            if (failure && !response_started && stream.socket().is_open()) {
+                try {
+                    co_await send(std::move(*failure));
+                } catch (...) {
+                }
+            }
+            const auto duration = std::chrono::duration_cast<Millis>(Clock::now() - started_at);
+            try {
+                server->backend->observe_http(request, response_status, sent_bytes, duration, disconnected);
             } catch (...) {
             }
-        }
-        const auto duration = std::chrono::duration_cast<Millis>(Clock::now() - started_at);
-        try {
-            server->backend->observe_http(request, response_status, sent_bytes, duration, disconnected);
-        } catch (...) {
+            cancel->cancel();
+            if (!completed || !keep_alive || disconnected || server->stopped)
+                break;
         }
         close();
     }

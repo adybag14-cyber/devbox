@@ -3,6 +3,8 @@
 #include "devbox/result.hpp"
 #include "devbox/scoped_thread.hpp"
 #include <iostream>
+#include <limits>
+#include <random>
 #include <thread>
 
 using namespace devbox;
@@ -12,6 +14,37 @@ void require(bool condition, const char* message) {
 }
 int main() {
     try {
+        {
+            Json fixtures = Json::array(
+                {nullptr, true, false, -123, UINT64_MAX, 1.25, -0.0, std::numeric_limits<double>::infinity(),
+                 std::numeric_limits<double>::quiet_NaN(), "", "quoted\"\\\n\t", "é😀",
+                 std::string(700000, 'x'), Json::array(), Json::object(), Json::binary({0, 1, 255})});
+            std::mt19937 random(23);
+            for (std::size_t i = 0; i < 256; ++i) {
+                std::string bytes;
+                for (std::size_t j = 0; j < i; ++j)
+                    bytes += static_cast<char>(random() & 255);
+                fixtures.push_back(Json{{bytes, Json::array({bytes, i, Json{{"nested", bytes}}})}});
+            }
+            for (const auto& value : fixtures) {
+                for (const auto errors : {Json::error_handler_t::replace, Json::error_handler_t::ignore})
+                    require(json_dump(value, errors) == value.dump(-1, ' ', false, errors),
+                            "compact JSON output preserves reference bytes and UTF-8 policy");
+                bool strict_rejected = false;
+                std::string expected;
+                try {
+                    expected = value.dump();
+                } catch (const Json::type_error&) {
+                    strict_rejected = true;
+                }
+                try {
+                    const auto actual = json_dump(value);
+                    require(!strict_rejected && actual == expected, "strict JSON output parity");
+                } catch (const Json::type_error&) {
+                    require(strict_rejected, "strict JSON output rejected valid input");
+                }
+            }
+        }
         {
             const auto saved_curl = environment("CURL_CA_BUNDLE"), saved_ssl = environment("SSL_CERT_FILE");
             ScopeExit restore([&] {
@@ -57,6 +90,19 @@ int main() {
         const auto root = fs::temp_directory_path() / path_from_utf8("devbox-cpp-core-" + uuid());
         fs::create_directory(root);
         try {
+            const auto nested = root / "existing" / "nested";
+            ensure_directory(nested);
+            write_file(nested / "preserved.txt", "preserve");
+            ensure_directory(nested);
+            require(read_file(nested / "preserved.txt") == "preserve",
+                    "existing directory fast path preserves contents");
+            bool rejected_directory = false;
+            try {
+                ensure_directory(nested / "preserved.txt");
+            } catch (const fs::filesystem_error&) {
+                rejected_directory = true;
+            }
+            require(rejected_directory, "directory creation rejects an existing ordinary file");
             write_json_atomic(root / "state.json", Json{{"state", "old"}});
             write_json_atomic(root / "state.json", Json{{"state", "new"}});
             require(read_json(root / "state.json")["state"] == "new", "atomic JSON replacement");

@@ -37,3 +37,45 @@ disconnect cancellation, bounded queues, durability, and complete output.
 
 Progress is measured against the original suite, not by reducing payloads,
 changing the Rust build, disabling instrumentation/logging, or weakening checks.
+
+## Implementation and reproducible diagnosis
+
+The runtime reuses HTTP connections with a separate bounded read-ahead operation
+that preserves pipelined input and detects disconnects. Request authentication,
+headers, cancellation and registry state are rebuilt for every request. Fast
+operations send one complete SSE response; longer operations retain periodic
+heartbeats and scoped cancellation.
+
+Capability metadata is immutable per engine and its schema digest is computed
+once. Result construction moves large payloads, telemetry borrows the fields it
+summarizes, and compact JSON output validates printable ASCII before copying it.
+Other strings and numeric encodings retain the reference serializer. Differential
+tests compare bytes, invalid UTF-8 policies, escapes and nested values.
+
+Worker pools start threads as demand requires while retaining their configured
+concurrency and queue limits. Logging batches at most 64 accepted events with a
+2 ms coalescing window; every batch retains checked stream flushing, rotation and
+failure accounting. This does not add a power-loss durability guarantee to usage
+logs. Atomic files and durable state retain their explicit operating-system
+flushes and verification.
+
+Existing directories use a status check before recursive creation. Atomic writes
+retain private lock validation, target version checks, staging verification,
+permission handling and atomic replacement. Immediate scheduler admission uses
+the same cross-process claim and cannot bypass a real queued ticket or aged
+background work. Windows process completion rechecks its pipes immediately after
+exit, and absent input uses a noninteractive EOF handle. Job status polling starts
+with a shorter interval and backs off for longer waits without extending caller
+deadlines.
+
+MSVC Release builds enable whole-program optimization unless explicitly disabled
+through `CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE`. C++23 uses the explicit
+`/std:c++23preview` language mode on supported MSVC versions, rather than enabling
+later experimental language revisions.
+
+For component diagnosis, configure `DEVBOX_BUILD_BENCHMARKS=ON` and build
+`devbox-component-bench`. Run it with a new absolute fixture directory whose
+parent already exists. It reports JSON timing records for file, serialization,
+logging, scheduler, process and engine operations, validates results and retains
+its fixtures for inspection. These component timings do not replace the paired
+end-to-end comparison or its correctness gates.

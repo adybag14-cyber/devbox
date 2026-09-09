@@ -198,6 +198,8 @@ std::string sanitize_utf8(std::string_view value) {
     return from_utf16(to_utf16(value));
 }
 std::size_t js_length(std::string_view value) {
+    if (std::all_of(value.begin(), value.end(), [](unsigned char c) { return c < 0x80; }))
+        return value.size();
     return to_utf16(value).size();
 }
 std::string js_slice(std::string_view value, std::size_t start, std::size_t end) {
@@ -396,10 +398,16 @@ std::string sha256_file(const fs::path& path, std::optional<std::uint64_t> limit
 std::string base64_encode(std::span<const std::uint8_t> bytes, bool url) {
     if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw Error("Base64 input too large");
-    std::string out(4 * ((bytes.size() + 2) / 3), '\0');
-    if (!bytes.empty())
-        EVP_EncodeBlock(reinterpret_cast<unsigned char*>(out.data()), bytes.data(),
-                        static_cast<int>(bytes.size()));
+    const auto encoded_size = 4 * ((bytes.size() + 2) / 3);
+    std::string out;
+    // EVP writes a terminating NUL as well as the encoded bytes. Give the
+    // C++23 overwrite callback that extra byte, then publish only the payload.
+    out.resize_and_overwrite(encoded_size + 1, [&](char* buffer, std::size_t) {
+        if (!bytes.empty())
+            EVP_EncodeBlock(reinterpret_cast<unsigned char*>(buffer), bytes.data(),
+                            static_cast<int>(bytes.size()));
+        return encoded_size;
+    });
     if (url) {
         for (auto& c : out) {
             if (c == '+')
@@ -564,9 +572,17 @@ void write_file(const fs::path& path, std::string_view bytes, bool append) {
     if (!file)
         throw Error("Cannot write " + path_text(path));
 }
+void ensure_directory(const fs::path& path) {
+    // In particular on Windows, recursive creation can walk every ancestor
+    // even when the requested directory already exists. Retain the original
+    // creation and error path whenever the inexpensive status check fails.
+    std::error_code ec;
+    if (!fs::is_directory(path, ec))
+        fs::create_directories(path);
+}
 void write_json_atomic(const fs::path& path, const Json& value) {
     if (!path.parent_path().empty())
-        fs::create_directories(path.parent_path());
+        ensure_directory(path.parent_path());
     const auto temporary = path_from_utf8(path_text(path) + "." + uuid() + ".tmp");
     try {
         write_file(temporary, value.dump(2));

@@ -85,6 +85,7 @@ std::string read_file_range(const fs::path& path, std::uint64_t offset, std::siz
 Json read_json(const fs::path& path, std::size_t limit = 16 * 1024 * 1024);
 std::optional<Json> read_json_optional(const fs::path& path, std::size_t limit = 16 * 1024 * 1024);
 void write_file(const fs::path& path, std::string_view bytes, bool append = false);
+void ensure_directory(const fs::path& path);
 void write_json_atomic(const fs::path& path, const Json& value);
 void replace_state_file(const fs::path& source, const fs::path& target);
 std::string json_string(const Json& object, std::string_view key, std::string fallback = {});
@@ -93,6 +94,7 @@ std::uint64_t json_uint(const Json& object, std::string_view key, std::uint64_t 
 double json_number(const Json& object, std::string_view key, double fallback = 0);
 std::vector<std::string> json_strings(const Json& object, std::string_view key);
 Json canonical_json(const Json& value);
+std::string json_dump(const Json& value, Json::error_handler_t errors = Json::error_handler_t::strict);
 std::string url_encode(std::string_view value);
 std::string url_decode(std::string_view value, bool plus_space = true);
 Json query_parameters(std::string_view query);

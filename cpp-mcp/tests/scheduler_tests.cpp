@@ -104,6 +104,10 @@ int run(int argc, char** argv) {
         auto second = fifo.begin(background("second"));
         require(!second.poll(), "second queued");
         blocker.release();
+        {
+            auto newcomer = fifo.begin(background("newcomer"));
+            require(!newcomer.poll(), "immediate admission cannot bypass a real queued ticket");
+        }
         require(!second.poll(), "later queue ticket cannot overtake");
         auto first_lease = first.poll();
         require(first_lease.has_value(), "queue head acquisition");

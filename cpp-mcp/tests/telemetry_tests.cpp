@@ -43,7 +43,28 @@ int main() {
         require(fs::exists(root / "rotation.jsonl.2") && !fs::exists(root / "rotation.jsonl.3") &&
                     fs::file_size(root / "rotation.jsonl") < 30,
                 "usage rotation bounded");
+        JsonLogSink batched(root / "batch.jsonl", 30, 2);
+        std::vector<Json> records;
+        for (int i = 0; i < 12; ++i)
+            records.push_back(Json{{"value", i}});
+        batched.append_batch(records);
+        for (const auto* suffix : {"", ".1", ".2"})
+            require(read_file(root / path_from_utf8(std::string("rotation.jsonl") + suffix)) ==
+                        read_file(root / path_from_utf8(std::string("batch.jsonl") + suffix)),
+                    "batched logs preserve exact event ordering, flush and rotation boundaries");
         BackgroundTasks background;
+        {
+            UsageLogger burst(root / "burst.jsonl", 1024 * 1024, 1, background, "burst-writer");
+            for (int i = 0; i < 512; ++i)
+                burst.enqueue(Json{{"sequence", i}});
+            burst.stop();
+            const auto lines = split(read_file(root / "burst.jsonl"), '\n');
+            for (std::size_t i = 0; i < 512; ++i)
+                require(Json::parse(lines.at(i))["sequence"] == i, "queued log event order and completeness");
+            require(burst.snapshot()["enqueued"] == 512 && burst.snapshot()["dropped"] == 0 &&
+                        burst.snapshot()["writeFailures"] == 0,
+                    "bounded burst drains without telemetry loss");
+        }
         // A failed file open must increment failure state; a later event must recover.
         const auto path = root / "blocked.jsonl";
         fs::create_directory(path);

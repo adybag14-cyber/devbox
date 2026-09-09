@@ -11,7 +11,9 @@ const [cmake, setup, tui, versionText, vcpkgText, android, workflow, packageText
 const version = versionText.trim();
 assert.match(version, /^\d+\.\d+\.\d+$/);
 assert.match(cmake, /cmake_minimum_required\(VERSION 3\.24\)/);
-assert.match(cmake, /set\(CMAKE_CXX_STANDARD 20\)/);
+assert.match(cmake, /set\(CMAKE_CXX_STANDARD 23\)/);
+assert.match(cmake, /set\(CMAKE_CXX_STANDARD_REQUIRED ON\)/);
+assert.match(cmake, /set\(CMAKE_CXX_EXTENSIONS OFF\)/);
 assert.match(cmake, /project\(devbox_cpp VERSION 0\.3\.0 /);
 const baseline = JSON.parse(vcpkgText)['builtin-baseline'];
 assert.match(baseline, /^[a-f0-9]{40}$/);
@@ -23,6 +25,6 @@ assert(workflow.includes('ndk;29.0.14206865'));
 assert(android.includes('29\\.0\\.14206865'));
 assert(android.includes('-DANDROID_PLATFORM=android-21'));
 assert.equal(JSON.parse(packageText).engines.node, '>=18');
-console.log(JSON.stringify({ ok: true, implementation: 'cpp', cxx: 20, cmake: '3.24',
+console.log(JSON.stringify({ ok: true, implementation: 'cpp', cxx: 23, cmake: '3.24',
   runtimeVersion: '0.3.0', setupVersion: version, nodeMinimum: 18, nodeCertified: 24,
   dependencyBaseline: baseline, ndk: '29.0.14206865', androidApi: 21 }));

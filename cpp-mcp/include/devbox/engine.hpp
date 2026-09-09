@@ -13,6 +13,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     std::shared_ptr<const Config> config_;
     ToolContract contract_;
     std::set<std::string> implemented_;
+    Json capabilities_;
     WorkPool commands_, files_{4, 128}, controls_{2, 128}, atomic_{2, 64};
     RuntimeExecutor runtime_;
     ExecutionScheduler scheduler_;

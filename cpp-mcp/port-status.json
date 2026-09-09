@@ -4,7 +4,7 @@
   "production_cutover_allowed": true,
   "target_tool_count": 45,
   "areas": {
-    "shared_core": "native C++20 implementation; Windows, GCC release, GCC/Clang sanitizers and Apple ARM64 native suites pass",
+    "shared_core": "native C++23 implementation; platform suites are enforced by the C++ native runtime workflow",
     "configuration": "ported; all four frozen schema profiles and the legacy configuration SDK gate pass on Windows",
     "wire_contract": "all 45 embedded schemas and metadata match frozen Rust across host, Docker, constrained and unlimited-transfer profiles except the declared implementation name",
     "transport": "all 45 handlers implemented; 41-call Windows result audit and 35-case legacy/2026 wire differential pass; full Windows and Linux SDK, explicit SSE cancellation, bounded 128 MiB output and Windows watcher-contention gates pass",

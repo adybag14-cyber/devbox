@@ -79,14 +79,14 @@ Json JobManager::program_request(const ProgramRequest& options, std::string_view
 }
 Json JobManager::start_shell(const ShellRequest& options, std::string_view resource, bool read_only) {
     auto request = shell_request(options, resource, read_only);
-    fs::create_directories(config_->jobs_root);
+    ensure_directory(config_->jobs_root);
     FileLock gate(config_->jobs_root / ".submission.lock");
     store_.admit();
     return persist_and_spawn(std::move(request), {});
 }
 Json JobManager::start_program(const ProgramRequest& options, std::string_view resource) {
     auto request = program_request(options, resource);
-    fs::create_directories(config_->jobs_root);
+    ensure_directory(config_->jobs_root);
     FileLock gate(config_->jobs_root / ".submission.lock");
     store_.admit();
     return persist_and_spawn(std::move(request), {});
@@ -144,7 +144,7 @@ Json JobManager::submit(Json request, const Submission& agent) {
     identity.erase("createdAtUtc");
     identity["agent"] = agent.json();
     const auto fingerprint = sha256(canonical_json(identity).dump());
-    fs::create_directories(config_->jobs_root);
+    ensure_directory(config_->jobs_root);
     FileLock gate(config_->jobs_root / ".submission.lock");
     const auto receipt_path = config_->jobs_root / ".operations" / path_from_utf8(id + ".json");
     if (const auto receipt = read_json_optional(receipt_path, 65536)) {

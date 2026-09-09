@@ -5,6 +5,62 @@
 #include <iostream>
 using namespace devbox;
 namespace {
+asio::awaitable<int> blocked_work(WorkPool& pool, std::atomic_int& active, std::shared_future<void> gate) {
+    auto pending = pool.run([&active, gate] {
+        ++active;
+        gate.wait();
+        --active;
+        return 1;
+    });
+    co_return co_await std::move(pending);
+}
+void bounded_worker_growth() {
+    WorkPool pool(2, 3);
+    asio::io_context io;
+    auto keep_running = asio::make_work_guard(io);
+    std::promise<void> release;
+    auto gate = release.get_future().share();
+    std::atomic_int active{0};
+    std::vector<std::future<int>> results;
+    ScopedThread executor([&] { io.run(); });
+    bool released = false;
+    ScopeExit stop([&] {
+        if (!released)
+            release.set_value();
+        keep_running.reset();
+    });
+    for (int i = 0; i < 2; ++i)
+        results.push_back(asio::co_spawn(io, blocked_work(pool, active, gate), asio::use_future));
+    const auto started = Clock::now();
+    while (active != 2 && Clock::now() - started < Millis(2000))
+        std::this_thread::sleep_for(Millis(1));
+    if (active != 2)
+        throw Error("Worker pool did not grow to serve concurrent operations");
+    for (int i = 0; i < 3; ++i)
+        results.push_back(asio::co_spawn(io, blocked_work(pool, active, gate), asio::use_future));
+    const auto queued_at = Clock::now();
+    while (pool.queued() != 3 && Clock::now() - queued_at < Millis(2000))
+        std::this_thread::sleep_for(Millis(1));
+    if (pool.queued() != 3 || active != 2)
+        throw Error("Worker pool exceeded configured concurrency or lost queued work");
+    auto overflow = asio::co_spawn(io, blocked_work(pool, active, gate), asio::use_future);
+    if (overflow.wait_for(Millis(2000)) != std::future_status::ready)
+        throw Error("A full worker queue did not reject promptly");
+    bool rejected = false;
+    try {
+        (void)overflow.get();
+    } catch (const Error& error) {
+        rejected =
+            std::string_view(error.what()).find("Bounded worker queue is full") != std::string_view::npos;
+    }
+    if (!rejected)
+        throw Error("Worker pool accepted work beyond its queue capacity");
+    release.set_value();
+    released = true;
+    for (auto& result : results)
+        if (result.get() != 1)
+            throw Error("Worker pool failed to drain accepted work");
+}
 void scoped_thread_lifetime() {
     std::atomic_int stopped{0};
     auto cooperative = [&stopped](ThreadStopToken token) {
@@ -100,6 +156,7 @@ asio::awaitable<void> exercise(WorkPool& pool, const std::shared_ptr<std::string
 int main() {
     try {
         scoped_thread_lifetime();
+        bounded_worker_growth();
         WorkPool pool(2, 8);
         asio::io_context io;
         auto payload = std::make_shared<std::string>(16384, 'x');

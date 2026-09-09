@@ -13,11 +13,11 @@ class ToolContract {
 
   public:
     explicit ToolContract(const Config& config);
-    Json all() const {
+    const Json& all() const {
         return tools_;
     }
     Json selected(const std::set<std::string>& implemented) const;
-    Json tool(std::string_view name) const;
+    const Json& tool(std::string_view name) const;
     Json arguments(std::string_view name, const Json& supplied) const;
     Json capabilities(const Config& config, const std::set<std::string>& implemented) const;
 };

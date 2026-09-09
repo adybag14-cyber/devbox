@@ -20,6 +20,7 @@ add_custom_target(devbox-build-identity
   VERBATIM)
 add_library(devbox_core
   src/common.cpp
+  src/json_output.cpp
   src/state_file.cpp
   src/config.cpp
   src/result.cpp
@@ -70,6 +71,10 @@ if(DEVBOX_FORCE_FORK_EXEC)
 endif()
 add_executable(devbox-mcp src/main.cpp)
 target_link_libraries(devbox-mcp PRIVATE devbox_core)
+if(DEVBOX_BUILD_BENCHMARKS)
+  add_executable(devbox-component-bench benchmarks/components.cpp)
+  target_link_libraries(devbox-component-bench PRIVATE devbox_core)
+endif()
 if(MSVC)
   target_compile_options(devbox-mcp PRIVATE /utf-8)
 endif()

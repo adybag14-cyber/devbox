@@ -15,7 +15,7 @@ std::uint64_t elapsed_ms(Clock::time_point started) {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<Millis>(Clock::now() - started).count());
 }
 void writable_probe(const fs::path& root, const char* label) {
-    fs::create_directories(root);
+    ensure_directory(root);
     const auto path = root / path_from_utf8(std::string(".mcp-ready-") + label + "-" +
                                             std::to_string(process_id()) + "-" + uuid() + ".tmp");
     ScopeExit remove([&] {

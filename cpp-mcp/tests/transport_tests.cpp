@@ -5,6 +5,7 @@
 #include <iostream>
 #include <thread>
 using namespace devbox;
+namespace beast = boost::beast;
 namespace http = boost::beast::http;
 using Tcp = asio::ip::tcp;
 void require(bool value, const char* message) {
@@ -123,6 +124,75 @@ int main(int argc, char** argv) {
         }
         require(http_request("GET", base + "/healthz").body == "ok", "health probe");
         require(http_request("GET", base + "/readyz").status == 200, "readiness probe");
+        {
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            beast::flat_buffer incoming;
+            for (int index = 0; index < 3; ++index) {
+                http::request<http::string_body> request{http::verb::get, "/healthz", 11};
+                request.set(http::field::host, "127.0.0.1");
+                if (!index)
+                    request.set(http::field::origin, "https://chatgpt.com");
+                request.keep_alive(index != 2);
+                http::write(socket, request);
+                http::response<http::string_body> response;
+                http::read(socket, incoming, response);
+                require(response.result() == http::status::ok && response.body() == "ok",
+                        "sequential requests reuse one HTTP connection");
+                require(response.keep_alive() == (index != 2), "requested connection persistence");
+                if (index)
+                    require(response.find("access-control-allow-origin") == response.end(),
+                            "CORS state does not leak to the next request");
+            }
+        }
+        {
+            asio::io_context client_io;
+            auto socket = raw_request(client_io, port, call("devbox_wait", 80, "pipeline-first"), headers());
+            until([&] { return server.active_requests() == 1; }, "pipeline first request active");
+            http::request<http::string_body> second{http::verb::post, "/mcp", 11};
+            second.set(http::field::host, "127.0.0.1");
+            second.set(http::field::content_type, "application/json");
+            second.set(http::field::accept, "application/json");
+            second.body() = call("devbox_wait", 5, "pipeline-second").dump();
+            second.keep_alive(false);
+            second.prepare_payload();
+            http::write(*socket, second);
+            beast::flat_buffer incoming;
+            for (const auto* id : {"pipeline-first", "pipeline-second"}) {
+                http::response<http::string_body> response;
+                http::read(*socket, incoming, response);
+                const auto result = Json::parse(response.body());
+                require(result["id"] == id && result["result"]["structuredContent"]["ok"] == true,
+                        "read-ahead preserves pipelined bytes and per-request cancellation");
+            }
+            until([&] { return server.active_requests() == 0; }, "pipeline registrations released");
+        }
+        {
+            asio::io_context client_io;
+            auto socket = raw_request(client_io, port, call("devbox_wait", 0, "sse-first"),
+                                      headers("application/json, text/event-stream"));
+            beast::flat_buffer incoming;
+            http::response<http::string_body> first;
+            http::read(*socket, incoming, first);
+            require(first.keep_alive() && !first.chunked() &&
+                        first.body().find("sse-first") != std::string::npos,
+                    "completed SSE response retains a reusable connection");
+            const auto before = backend->cancelled.load();
+            http::request<http::string_body> pending{http::verb::post, "/mcp", 11};
+            pending.set(http::field::host, "127.0.0.1");
+            pending.set(http::field::content_type, "application/json");
+            pending.set(http::field::accept, "application/json");
+            pending.body() = call("host_exec", 10000, "reused-disconnect").dump();
+            pending.prepare_payload();
+            http::write(*socket, pending);
+            until([&] { return server.active_requests() == 1; }, "reused connection command active");
+            boost::system::error_code ignored;
+            socket->shutdown(Tcp::socket::shutdown_both, ignored);
+            socket->close(ignored);
+            until([&] { return backend->cancelled > before && server.active_requests() == 0; },
+                  "disconnect on reused connection cancels the current request");
+        }
         const auto initialize =
             http_request("POST", base + "/mcp",
                          rpc("initialize", 0, Json{{"protocolVersion", "2025-11-25"}}).dump(), headers());

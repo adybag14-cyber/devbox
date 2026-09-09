@@ -1,10 +1,10 @@
 # Native C++ agent runtime
 
-Devbox's default MCP implementation is C++20. Guardian is the Node supervisor responsible for availability and managed Windows elevation. The C++ service retains 37 legacy-compatible tool names and eight native agent tools. The retained Rust and JavaScript sources support compatibility verification and explicit rollback.
+Devbox's default MCP implementation is C++23. Guardian is the Node supervisor responsible for availability and managed Windows elevation. The C++ service retains 37 legacy-compatible tool names and eight native agent tools. The retained Rust and JavaScript sources support compatibility verification and explicit rollback. The production instance was explicitly restored to Rust while the [C++23 performance work](CPP23_PERFORMANCE.md) is validated in isolation.
 
 ## Supported production profile and source identity
 
-Windows host deployment uses `DEVBOX_MCP_IMPLEMENTATION=cpp`, `DEVBOX_RUNTIME_MODE=host`, and the Guardian scheduled tasks. Node 24 is the certified desktop supervisor/tool-client version; the launcher/Guardian minimum remains Node 18. Source builds require CMake 3.24+, C++20 and the pinned vcpkg dependencies. The MCP version is 0.3.0 and the installer/TUI version is 0.5.0. Packaged deployment requires no compiler. These contracts are checked by `scripts/check-runtime-contract.mjs`.
+Windows host deployment uses `DEVBOX_MCP_IMPLEMENTATION=cpp`, `DEVBOX_RUNTIME_MODE=host`, and the Guardian scheduled tasks. An explicit Rust rollback uses `DEVBOX_MCP_IMPLEMENTATION=rust`. Node 24 is the certified desktop supervisor/tool-client version; the launcher/Guardian minimum remains Node 18. Source builds require CMake 3.24+, C++23 and the pinned vcpkg dependencies. The MCP version is 0.3.0 and the installer/TUI version is 0.5.0. Packaged deployment requires no compiler. These contracts are checked by `scripts/check-runtime-contract.mjs`.
 
 Managed startup rejects dirty tracked source, untracked build inputs, unknown Git provenance, and sanitizer binaries before stopping the current MCP. Immutable binaries and `run/bin/current-cpp.json` record the actual commit, Git tree and binary SHA-256. `--build-info` reports embedded source identity and whether source was dirty. The manifest is promoted only after operational readiness; restarting the same candidate preserves its first promotion time. Build identity cannot be replaced by environment overrides.
 
