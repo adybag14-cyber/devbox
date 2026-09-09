@@ -475,6 +475,14 @@ Pipe input_pipe() {
     }
     return {std::move(server), std::move(child)};
 }
+Pipe empty_input() {
+    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
+    NativeHandle child(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &security,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!child)
+        throw Error(windows_error());
+    return {NativeHandle(), std::move(child)};
+}
 void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
                     const ProcessOptions& options) {
     std::array<char, 16384> buffer{};
@@ -508,7 +516,8 @@ void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStrea
 RawProcessResult run_native(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
                             CaptureAccumulator& err) {
-    auto stdout_pipe = output_pipe(), stderr_pipe = output_pipe(), stdin_pipe = input_pipe();
+    auto stdout_pipe = output_pipe(), stderr_pipe = output_pipe();
+    auto stdin_pipe = options.input && !options.input->empty() ? input_pipe() : empty_input();
     const auto resolved = find_program(file, options.env ? &*options.env : nullptr);
     std::string program = resolved ? path_text(*resolved) : std::string(file);
     std::string command = quote_windows_argument(program);
@@ -601,9 +610,12 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     stdout_pipe.child.reset();
     stderr_pipe.child.reset();
     stdin_pipe.child.reset();
-    NativeHandle write_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
-    if (!write_event)
-        throw Error(windows_error());
+    NativeHandle write_event;
+    if (stdin_pipe.parent) {
+        write_event.reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+        if (!write_event)
+            throw Error(windows_error());
+    }
     OVERLAPPED writer{};
     writer.hEvent = write_event.get();
     bool write_pending = false;
@@ -654,6 +666,11 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
             if (GetExitCodeProcess(process.get(), &code))
                 result.code = static_cast<int>(code);
             exited = now;
+            // The child can close its final pipe handles between the earlier
+            // reads and this exit observation. Recheck now instead of adding
+            // a timer tick to an already completed process.
+            read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options);
+            read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options);
         }
         if (!exited && !forced &&
             ((cancel && cancel->cancelled()) || (options.timeout && now - started >= *options.timeout))) {
@@ -666,7 +683,14 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
             break;
         if (forced && !exited && now - *forced >= options.termination_grace)
             break;
-        if (cancel && !cancel->cancelled())
+        if (!exited) {
+            // A process handle signals as soon as the owned child exits. Avoid
+            // delaying a completed child until the next coarse Windows timer
+            // tick; retain the bounded interval for pipe and cancellation work.
+            const auto waited = WaitForSingleObject(process.get(), 5);
+            if (waited == WAIT_FAILED)
+                throw Error(windows_error());
+        } else if (cancel && !cancel->cancelled())
             cancel->wait_for(Millis(5));
         else
             std::this_thread::sleep_for(Millis(5));

@@ -124,15 +124,32 @@ Json instance_json() {
     return value ? Json(std::to_string(*value)) : Json(nullptr);
 }
 std::optional<Json> inspect(const fs::path& path) {
-    try {
-        const auto value = read_json_optional(path, 65536);
-        return value && value->is_object() ? value : std::nullopt;
-    } catch (const Json::exception&) {
-        return std::nullopt;
-    } catch (const std::system_error& error) {
-        if (error.code() == std::errc::no_such_file_or_directory)
+#ifdef _WIN32
+    const auto deadline = Clock::now() + Millis(100);
+#endif
+    for (;;) {
+        try {
+            auto value = read_json(path, 65536);
+            return value.is_object() ? std::optional<Json>(std::move(value)) : std::nullopt;
+        } catch (const Json::exception&) {
             return std::nullopt;
-        throw;
+        } catch (const std::system_error& error) {
+            if (error.code() == std::errc::no_such_file_or_directory)
+                return std::nullopt;
+#ifdef _WIN32
+            // A concurrently released claim can be delete-pending while a
+            // reader still owns its old handle. Windows reports access denied
+            // for that brief state. Retry within a bound, never interpret an
+            // unreadable live owner as a stale slot that may be reclaimed.
+            if ((error.code().value() == ERROR_ACCESS_DENIED ||
+                 error.code().value() == ERROR_SHARING_VIOLATION) &&
+                Clock::now() < deadline) {
+                std::this_thread::sleep_for(Millis(1));
+                continue;
+            }
+#endif
+            throw std::system_error(error.code(), "inspect scheduler owner " + path_text(path));
+        }
     }
 }
 bool fresh(const fs::path& path, Millis limit) {
@@ -535,7 +552,7 @@ struct ExecutionWaiter::State {
     }
     bool create_ticket() {
         const auto root = config.root / "queue";
-        fs::create_directories(root);
+        ensure_directory(root);
         auto claim = head_claim(root, plan.queue_class);
         if (!claim)
             return false;
@@ -643,6 +660,35 @@ struct ExecutionWaiter::State {
         cleanup.disarm();
         return owned;
     }
+    std::optional<std::vector<OwnedFile>> claim_available() {
+        const auto root = config.root / "queue";
+        ensure_directory(root);
+        auto head = head_claim(root, plan.queue_class);
+        if (!head)
+            return std::nullopt;
+        // Admission and ticket creation use the same cross-process claim. An
+        // empty queue can claim its slots directly without creating and then
+        // deleting a durable wait ticket. Inspect real tickets, including a
+        // partially written one, rather than trusting a cached head pointer.
+        for (const auto& entry : fs::directory_iterator(root))
+            if (valid_ticket_name(path_text(entry.path().filename()), plan.queue_class))
+                return std::nullopt;
+        if (request.kind == ExecutionKind::interactive && aged_background_competes(config, plan))
+            return std::nullopt;
+        auto owned = claim_slots();
+        ScopeExit cleanup([&] {
+            if (owned)
+                for (const auto& value : *owned) {
+                    try {
+                        release_owned(value);
+                    } catch (...) {
+                    }
+                }
+        });
+        head->release();
+        cleanup.disarm();
+        return owned;
+    }
 };
 ExecutionWaiter::ExecutionWaiter(std::unique_ptr<State> state) : state_(std::move(state)) {}
 ExecutionWaiter::~ExecutionWaiter() = default;
@@ -666,14 +712,17 @@ std::optional<ExecutionLease> ExecutionWaiter::poll(const Cancel& cancel) {
             throw QueueCancelled();
         if (Clock::now() - state.started >= state.timeout)
             throw state.timeout_error();
-        if (!state.ticket && !state.create_ticket())
-            return std::nullopt;
-        if (!state.is_head())
-            return std::nullopt;
-        if (state.request.kind == ExecutionKind::interactive &&
-            aged_background_competes(state.config, state.plan))
-            return std::nullopt;
-        auto owned = state.claim_slots();
+        auto owned = state.ticket ? std::nullopt : state.claim_available();
+        if (!owned) {
+            if (!state.ticket && !state.create_ticket())
+                return std::nullopt;
+            if (!state.is_head())
+                return std::nullopt;
+            if (state.request.kind == ExecutionKind::interactive &&
+                aged_background_competes(state.config, state.plan))
+                return std::nullopt;
+            owned = state.claim_slots();
+        }
         if (!owned)
             return std::nullopt;
         ScopeExit cleanup([&] {
@@ -731,7 +780,7 @@ std::optional<ExecutionLease> ExecutionWaiter::poll(const Cancel& cancel) {
 ExecutionScheduler::ExecutionScheduler(SchedulerConfig config)
     : config_(config.normalized()), metrics_(std::make_shared<SchedulerMetrics>()) {}
 ExecutionWaiter ExecutionScheduler::begin(AcquireRequest request) const {
-    fs::create_directories(config_.root);
+    ensure_directory(config_.root);
     return ExecutionWaiter(std::make_unique<ExecutionWaiter::State>(config_, metrics_, std::move(request)));
 }
 ExecutionLease ExecutionScheduler::acquire(AcquireRequest request, const Cancel& cancel) const {
@@ -746,7 +795,7 @@ ExecutionLease ExecutionScheduler::acquire(AcquireRequest request, const Cancel&
     }
 }
 Json ExecutionScheduler::snapshot() const {
-    fs::create_directories(config_.root);
+    ensure_directory(config_.root);
     const auto pool_entries = [&](std::string_view pool) {
         const std::string prefix = pool == "watch" ? "watch-slot-" : "slot-";
         std::vector<std::pair<std::size_t, Json>> entries;

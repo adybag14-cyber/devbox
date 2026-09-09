@@ -181,9 +181,16 @@ void validate(const Json& value, const Json& schema, const Json& root, const std
 }
 } // namespace
 ToolContract::ToolContract(const Config& config) {
-    static const auto reference = Json::parse(
-        std::string_view(reinterpret_cast<const char*>(embedded_contract), sizeof(embedded_contract)));
-    tools_ = reference["profiles"][config.runtime_name()];
+    const auto profile = config.runtime_name();
+    auto reference = Json::parse(
+        std::string_view(reinterpret_cast<const char*>(embedded_contract), sizeof(embedded_contract)),
+        [&profile](int depth, Json::parse_event_t event, Json& value) {
+            // Both profiles remain in the frozen input. Discard the inactive
+            // profile while parsing instead of allocating its unused schema DOM.
+            return event != Json::parse_event_t::key || depth != 2 ||
+                   value.get_ref<const std::string&>() == profile;
+        });
+    tools_ = std::move(reference["profiles"][profile]);
     for (auto& tool : tools_) {
         const auto name = json_string(tool, "name");
         for (const auto* field : {"description", "title"})
@@ -229,17 +236,17 @@ Json ToolContract::selected(const std::set<std::string>& implemented) const {
             result.push_back(tool);
     return result;
 }
-Json ToolContract::tool(std::string_view name) const {
+const Json& ToolContract::tool(std::string_view name) const {
     for (const auto& tool : tools_)
         if (json_string(tool, "name") == name)
             return tool;
     throw Error("Unknown tool");
 }
 Json ToolContract::arguments(std::string_view name, const Json& supplied) const {
-    const auto schema = tool(name)["inputSchema"];
+    const auto& schema = tool(name)["inputSchema"];
     validate(supplied, schema, schema, "arguments");
     auto result = supplied;
-    const auto properties = schema.value("properties", Json::object());
+    const auto& properties = schema.at("properties");
     for (auto it = properties.begin(); it != properties.end(); ++it)
         if (!result.contains(it.key()) && it.value().is_object() && it.value().contains("default"))
             result[it.key()] = it.value()["default"];

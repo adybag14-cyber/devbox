@@ -44,6 +44,9 @@ function assertArchitecture(bytes, target) {
 }
 await mkdir(output, { recursive: true });
 assert.deepEqual(await readdir(output), [], 'Refuse to mix release assets with an earlier packaging attempt');
+const licenseName = 'libdeflate.LICENSE.txt';
+const license = await readFile(path.join(repo, 'cpp-mcp', licenseName));
+await writeFile(path.join(output, licenseName), license, {flag: 'wx'});
 const manifests = [];
 const scratch = await mkdtemp(path.join(os.tmpdir(), 'devbox-cpp-release-'));
 try {
@@ -72,8 +75,9 @@ try {
       await chmod(path.join(bundle, binary.name + extension), 0o755);
     }
     await writeFile(path.join(bundle, 'build-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+    await writeFile(path.join(bundle, licenseName), license);
     const archive = path.join(output, `devbox-${target}.${extension ? 'zip' : 'tar.gz'}`);
-    const names = [...manifest.binaries.map(binary => binary.name + extension), 'build-manifest.json'];
+    const names = [...manifest.binaries.map(binary => binary.name + extension), 'build-manifest.json', licenseName];
     if (extension) await run('zip', ['-j', archive, ...names.map(name => path.join(bundle, name))]);
     else await run('tar', ['-czf', archive, '-C', bundle, ...names]);
     const extracted = path.join(scratch, `${target}-extracted`); await mkdir(extracted);
@@ -87,7 +91,7 @@ try {
   const names = (await readdir(output)).sort();
   await writeFile(path.join(output, 'SHA256SUMS'), (await Promise.all(names.map(async name =>
     `${digest(await readFile(path.join(output, name)))}  ${name}\n`))).join(''));
-  assert.equal(names.length, 41, 'Ten targets require 30 binaries, ten archives and provenance');
+  assert.equal(names.length, 42, 'Ten targets require 30 binaries, ten archives, provenance and dependency notice');
   console.log(JSON.stringify({ ok: true, source: expectedSha, version, targets: Object.keys(targets), verifiedFiles: names.length, output }));
 } finally {
   await rm(scratch, { recursive: true, force: true });

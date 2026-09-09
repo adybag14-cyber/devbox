@@ -1,10 +1,20 @@
 #include "devbox/telemetry.hpp"
 #include <algorithm>
+#include <fstream>
 #include <set>
 namespace devbox {
 namespace {
 std::uint64_t elapsed(Clock::time_point start) {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<Millis>(Clock::now() - start).count());
+}
+const Json& member(const Json& value, std::string_view key) {
+    static const Json absent;
+    const auto found = value.find(key);
+    return found == value.end() ? absent : *found;
+}
+std::string_view text_member(const Json& value, std::string_view key) {
+    const auto& field = member(value, key);
+    return field.is_string() ? std::string_view(field.get_ref<const std::string&>()) : std::string_view();
 }
 std::string preview(std::string_view value, std::size_t units, bool ellipsis = true) {
     if (js_length(value) <= units)
@@ -55,13 +65,26 @@ Json summarize(const std::string& key, const Json& value, unsigned depth, std::s
 JsonLogSink::JsonLogSink(fs::path path, std::uint64_t maximum, std::size_t rotations)
     : path_(std::move(path)), maximum_(maximum), rotations_(rotations) {}
 void JsonLogSink::append(const Json& event) {
-    auto bytes = event.dump(-1, ' ', false, Json::error_handler_t::replace) + '\n';
-    fs::create_directories(path_.parent_path());
+    append_batch({&event, 1});
+}
+void JsonLogSink::append_batch(std::span<const Json> events) {
+    if (events.empty())
+        return;
+    ensure_directory(path_.parent_path());
     std::error_code ec;
     auto size = fs::file_size(path_, ec);
     if (ec)
         size = 0;
-    if (maximum_ && rotations_ && (size >= maximum_ || bytes.size() >= maximum_ - size)) {
+    std::ofstream file;
+    auto close = [&] {
+        if (!file.is_open())
+            return;
+        file.close();
+        if (!file)
+            throw Error("Cannot close " + path_text(path_));
+    };
+    auto rotate = [&] {
+        close();
         auto rotation = [this](std::size_t i) {
             auto p = path_;
             p += "." + std::to_string(i);
@@ -75,9 +98,42 @@ void JsonLogSink::append(const Json& event) {
                 replace_state_file(rotation(i - 1), rotation(i));
         if (fs::exists(path_))
             replace_state_file(path_, rotation(1));
+        size = 0;
+    };
+    std::string pending;
+    pending.reserve(std::min<std::size_t>(events.size() * 512, 65536));
+    auto flush = [&] {
+        if (pending.empty())
+            return;
+        // Keep one stream for the batch, including when its records need
+        // several bounded writes. Release it before rotation and on return,
+        // so a later batch observes external file replacement as before.
+        if (!file.is_open()) {
+            file.open(path_, std::ios::binary | std::ios::app);
+            if (!file)
+                throw Error("Cannot open " + path_text(path_));
+        }
+        file.write(pending.data(), static_cast<std::streamsize>(pending.size()));
+        file.flush();
+        if (!file)
+            throw Error("Cannot write " + path_text(path_));
+        size += pending.size();
+        pending.clear();
+    };
+    for (const auto& event : events) {
+        auto bytes = json_dump(event, Json::error_handler_t::replace) + '\n';
+        const auto buffered_size = size + pending.size();
+        if (maximum_ && rotations_ &&
+            (buffered_size >= maximum_ || bytes.size() >= maximum_ - buffered_size)) {
+            flush();
+            rotate();
+        }
+        pending += bytes;
+        if (pending.size() >= 65536)
+            flush();
     }
-    // write_file verifies the flush; a failure never advances a cached byte count.
-    write_file(path_, bytes, true);
+    flush();
+    close();
 }
 UsageLogger::UsageLogger(fs::path path, std::uint64_t maximum, std::size_t rotations,
                          BackgroundTasks& background, std::string name)
@@ -111,18 +167,27 @@ void UsageLogger::enqueue(Json event) {
 }
 void UsageLogger::run() {
     for (;;) {
-        Json event;
+        std::vector<Json> events;
         {
             std::unique_lock lock(mutex_);
             wake_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
             if (queue_.empty())
                 break;
-            event = std::move(queue_.front());
-            queue_.pop_front();
+            if (queue_.size() < 64 && !stopping_)
+                wake_.wait_for(lock, Millis(2), [this] { return stopping_ || queue_.size() >= 64; });
+            // Drain more of an existing backlog per filesystem metadata lookup.
+            // The queue bound, coalescing deadline and checked write flushes
+            // remain unchanged; producers regain space before the batch is sent.
+            const auto count = std::min<std::size_t>(256, queue_.size());
+            events.reserve(count);
+            for (std::size_t i = 0; i < count; ++i) {
+                events.push_back(std::move(queue_.front()));
+                queue_.pop_front();
+            }
         }
         background_.attempt(name_);
         try {
-            sink_.append(event);
+            sink_.append_batch(events);
             background_.success(name_);
         } catch (const std::exception& e) {
             ++failures_;
@@ -192,16 +257,16 @@ void UsageTelemetry::finished(const std::string& id, const Json& response) {
     if (!inv)
         return;
     auto event = inv->event("tool_finish");
-    const auto structured = response.value("structuredContent", Json::object());
+    const auto& structured = member(response, "structuredContent");
     auto summary = json_string(structured, "summary", "Tool completed.");
     if (summary.empty())
         summary = "Tool completed.";
-    const auto data = structured.value("data", Json::object());
-    const auto execution = data.is_object() ? data.value("execution", Json::object()) : Json::object();
+    const auto& data = member(structured, "data");
+    const auto& execution = member(data, "execution");
     std::size_t result_chars = 0;
-    for (const auto& part : response.value("content", Json::array()))
+    for (const auto& part : member(response, "content"))
         if (json_string(part, "type") == "text")
-            result_chars += js_length(json_string(part, "text"));
+            result_chars += js_length(text_member(part, "text"));
     event.update(Json{{"finished_at", utc_now()},
                       {"duration_ms", elapsed(inv->start)},
                       {"ok", json_bool(structured, "ok", !json_bool(response, "isError"))},
@@ -209,12 +274,12 @@ void UsageTelemetry::finished(const std::string& id, const Json& response) {
                       {"summary", preview(summary, 4096, false)},
                       {"summary_truncated", js_length(summary) > 4096},
                       {"result_text_chars", result_chars},
-                      {"stdout_chars", js_length(json_string(structured, "stdout"))},
-                      {"stderr_chars", js_length(json_string(structured, "stderr"))},
-                      {"exit_code", structured.value("exitCode", Json())},
+                      {"stdout_chars", js_length(text_member(structured, "stdout"))},
+                      {"stderr_chars", js_length(text_member(structured, "stderr"))},
+                      {"exit_code", member(structured, "exitCode")},
                       {"truncated", json_bool(structured, "truncated")},
-                      {"queue_wait_ms", execution.value("queue_wait_ms", Json())},
-                      {"execution_slot", execution.value("slot", Json())}});
+                      {"queue_wait_ms", member(execution, "queue_wait_ms")},
+                      {"execution_slot", member(execution, "slot")}});
     tools_.enqueue(std::move(event));
 }
 void UsageTelemetry::failed(const std::string& id, const std::string& error) {

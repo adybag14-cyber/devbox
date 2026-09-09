@@ -124,7 +124,7 @@ JobPaths JobStore::paths(std::string_view id) const {
 }
 JobPaths JobStore::create_job(std::string_view id, const Json& request, const Json& status) {
     const auto value = paths(id);
-    fs::create_directories(config_->jobs_root);
+    ensure_directory(config_->jobs_root);
     if (!fs::create_directory(value.dir))
         throw Error("JOB_EXISTS: persisted job directory will not be overwritten");
     ScopeExit cleanup([&] {

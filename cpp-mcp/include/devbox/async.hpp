@@ -16,8 +16,10 @@ class WorkPool {
     std::deque<std::function<void()>> queue_;
     std::vector<std::thread> workers_;
     std::size_t capacity_;
+    std::size_t worker_limit_, idle_workers_ = 0;
     bool stopping_ = false;
     bool enqueue(std::function<void()> task);
+    void worker();
     template <class T> struct Result {
         std::exception_ptr error;
         std::optional<T> value;

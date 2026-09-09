@@ -15,7 +15,7 @@ Devbox ships three native programs from the same source revision:
 
 - **`devbox-tui`** — the guided C++17 interactive setup experience for new users.
 - **`devbox-setup`** — the C++ CLI used by the TUI and intended for scripts, CI, and unattended installation.
-- **`devbox-mcp`** — the C++20 MCP service, including native process control, durable jobs, files, authentication, and capture.
+- **`devbox-mcp`** — the C++23 MCP service, including native process control, durable jobs, files, authentication, and capture.
 
 The TUI performs a platform/tool preflight, lets you choose host or Docker runtime, authentication (`none`, `oauth`, or `cloudflare`), repository location, bind address, workspace, dependency installation, service startup, and Guardian supervision, then invokes the C++ installer. Interactive and automated installs use the same backend. Packaged installation needs no Rust or C++ compiler. New clones select the release's exact source commit; existing checkouts retain their revision.
 
@@ -150,7 +150,7 @@ The setup binaries can provision common prerequisites automatically where a supp
 ### All modes
 
 - Node.js 18 or newer for the launcher and Guardian; Node.js 24 is the certified/tested supervisor profile
-- A matching native C++ release bundle, or CMake 3.24+, a C++20 compiler and the pinned vcpkg checkout for source builds
+- A matching native C++ release bundle, or CMake 3.24+, a C++23 compiler and the pinned vcpkg checkout for source builds
 - npm
 - Git for checkout and build provenance
 

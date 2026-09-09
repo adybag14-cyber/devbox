@@ -168,7 +168,7 @@ std::string hash_stream(DiskFile& file, std::uint64_t limit, std::uint64_t& coun
     ScopeExit release([&] { EVP_MD_CTX_free(digest); });
     if (EVP_DigestInit_ex(digest, EVP_sha256(), nullptr) != 1)
         throw Error("Cannot initialize SHA-256");
-    std::vector<char> buffer(65536);
+    std::vector<char> buffer(static_cast<std::size_t>(std::min<std::uint64_t>(limit, 65536)));
     count = 0;
     while (count < limit) {
         const auto n = file.read(std::span(buffer).first(
@@ -198,11 +198,14 @@ std::string read_exact(DiskFile& file, std::size_t size) {
 }
 void private_directory(const fs::path& path) {
 #ifdef _WIN32
-    std::error_code ec;
-    fs::create_directory(path, ec);
-    if (ec && ec != std::errc::file_exists)
-        throw std::system_error(ec);
-    const auto attributes = GetFileAttributesW(path.c_str());
+    auto attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        std::error_code ec;
+        fs::create_directory(path, ec);
+        if (ec && ec != std::errc::file_exists)
+            throw std::system_error(ec);
+        attributes = GetFileAttributesW(path.c_str());
+    }
     if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
         attributes & FILE_ATTRIBUTE_REPARSE_POINT)
         throw Error("Atomic lock directory must be a private ordinary directory");
@@ -413,8 +416,8 @@ std::size_t atomic_lock_stripe(const fs::path& resolved) {
 #endif
     return std::stoul(sha256(key).substr(0, 2), nullptr, 16);
 }
-FileState file_state(const fs::path& path) {
-    DiskFile file(path);
+namespace {
+FileState state_from_file(DiskFile& file) {
     if (file.missing)
         return {};
     const auto length = file.size();
@@ -424,6 +427,11 @@ FileState file_state(const fs::path& path) {
         throw Error("File changed while computing its version");
     return {true, count, std::move(digest)};
 }
+} // namespace
+FileState file_state(const fs::path& path) {
+    DiskFile file(path);
+    return state_from_file(file);
+}
 WriteReceipt atomic_write(const fs::path& path, std::string_view payload, bool append, bool create_dirs,
                           const Preconditions& expected) {
     static std::counting_semaphore<2> capacity(2);
@@ -431,11 +439,12 @@ WriteReceipt atomic_write(const fs::path& path, std::string_view payload, bool a
         throw Error("Atomic I/O capacity wait timed out");
     ScopeExit release([&] { capacity.release(); });
     if (create_dirs && !path.parent_path().empty())
-        fs::create_directories(path.parent_path());
+        ensure_directory(path.parent_path());
     const auto target = canonical_target(path);
     FileLock lock(atomic_lock_root() / (std::to_string(atomic_lock_stripe(target)) + ".lock"), Millis(5000),
                   {}, true);
-    const auto previous = file_state(target);
+    DiskFile prior(target);
+    const auto previous = state_from_file(prior);
     const auto replay = [&] { return WriteReceipt{path_text(path), previous, previous, true}; };
     if (expected.sha256) {
         if (*expected.sha256 != "missing" &&
@@ -462,7 +471,6 @@ WriteReceipt atomic_write(const fs::path& path, std::string_view payload, bool a
             throw Error("File offset conflict: append was not applied");
         }
     }
-    DiskFile prior(target);
     if (!prior.missing)
         prior.reject_readonly_or_alias();
     const auto staged = target.parent_path() / path_from_utf8(".devbox-write-" + uuid());
@@ -472,6 +480,7 @@ WriteReceipt atomic_write(const fs::path& path, std::string_view payload, bool a
     });
     DiskFile output(staged, true);
     if (append && previous.exists) {
+        prior.seek(0);
         // Hash validation below can be nested in this function. Keep I/O
         // buffers off musl's small default worker-thread stacks.
         std::vector<char> buffer(65536);
@@ -515,7 +524,7 @@ Json read_large(const fs::path& path, std::uint64_t offset, std::size_t max_byte
     file.seek(actual);
     const auto bytes =
         read_exact(file, static_cast<std::size_t>(std::min<std::uint64_t>(size - actual, requested)));
-    return Json{{"path", path_text(path)},
+    Json result{{"path", path_text(path)},
                 {"file_size", size},
                 {"offset_bytes_requested", offset},
                 {"offset_bytes", actual},
@@ -523,8 +532,9 @@ Json read_large(const fs::path& path, std::uint64_t offset, std::size_t max_byte
                 {"bytes_returned", bytes.size()},
                 {"next_offset_bytes", actual + bytes.size()},
                 {"eof", actual + bytes.size() >= size},
-                {"content_sha256", sha256(bytes)},
-                {"content_base64", base64_encode(bytes)}};
+                {"content_sha256", sha256(bytes)}};
+    result["content_base64"] = base64_encode(bytes);
+    return result;
 }
 Json write_large(const fs::path& path, std::string_view content_base64, bool append, bool create_dirs,
                  const std::optional<std::string>& expected_sha256) {
@@ -689,7 +699,7 @@ Json task_put(const fs::path& root, std::string_view id, std::uint64_t revision,
         throw Error("Task revision exceeds the interoperable integer range");
     if (state.dump().size() > 65536)
         throw Error("Task state exceeds 65536 bytes; store large artifacts separately");
-    fs::create_directories(root);
+    ensure_directory(root);
     FileLock gate(root / ".submission.lock");
     const auto current = task_get(root, id);
     const auto actual_revision = current["exists"] == true ? json_uint(current["record"], "revision") : 0;

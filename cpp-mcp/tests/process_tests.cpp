@@ -1,6 +1,6 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/native.hpp"
 #include "devbox/process.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <iostream>
 #include <thread>
 #ifdef _WIN32
@@ -61,6 +61,9 @@ int child(int argc, char** argv) {
         while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
         }
 #endif
+    } else if (mode == "stdin") {
+        const std::string input((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
+        std::cout << input.size();
     } else if (mode == "exit") {
         std::cout << "out";
         std::cerr << "err";
@@ -69,8 +72,8 @@ int child(int argc, char** argv) {
     } else if (mode == "fd-identity" && argc >= 6) {
         struct stat descriptor{};
         const bool inherited = ::fstat(std::stoi(argv[3]), &descriptor) == 0 &&
-            static_cast<std::uint64_t>(descriptor.st_dev) == std::stoull(argv[4]) &&
-            static_cast<std::uint64_t>(descriptor.st_ino) == std::stoull(argv[5]);
+                               static_cast<std::uint64_t>(descriptor.st_dev) == std::stoull(argv[4]) &&
+                               static_cast<std::uint64_t>(descriptor.st_ino) == std::stoull(argv[5]);
         const auto report = Json{{"inherited", inherited}}.dump();
         if (argc == 7)
             write_file(path_from_utf8(argv[6]), report);
@@ -96,6 +99,14 @@ int test_main(int argc, char** argv) {
         fs::remove_all(root, ec);
     });
     try {
+        for (const auto input : {std::optional<std::string>(), std::optional<std::string>("")}) {
+            ProcessOptions options;
+            options.input = input;
+            options.timeout = Millis(2000);
+            require(spawn_process(path_text(executable_path()), {"--child", "stdin"}, options).stdout_text ==
+                        "0",
+                    "absent and empty stdin reach EOF without hanging the child");
+        }
         CaptureAccumulator capture(6);
         capture.push("a\xf0\x9f");
         capture.push("\x98\x80"
@@ -146,8 +157,8 @@ int test_main(int argc, char** argv) {
         struct stat private_info{};
         require(private_fd && ::fstat(private_fd.get(), &private_info) == 0, "private descriptor fixture");
         const std::vector<std::string> descriptor_args{
-            "--child", "fd-identity", std::to_string(private_fd.get()),
-            std::to_string(private_info.st_dev), std::to_string(private_info.st_ino)};
+            "--child", "fd-identity", std::to_string(private_fd.get()), std::to_string(private_info.st_dev),
+            std::to_string(private_info.st_ino)};
         const auto descriptor = spawn_process(self, descriptor_args, options);
         require(!json_bool(Json::parse(descriptor.stdout_text), "inherited"),
                 "foreground child inherited an unrelated parent descriptor");

@@ -12,9 +12,14 @@ Json render(Json envelope, std::optional<std::string> text = std::nullopt) {
                 parts.push_back(std::string(stream) + ":\n" + envelope[stream].get<std::string>());
         text = join(parts, "\n\n");
     }
-    return Json{{"content", Json::array({Json{{"type", "text"}, {"text", *text}}})},
-                {"structuredContent", envelope},
-                {"isError", !envelope["ok"].get<bool>()}};
+    const auto failed = !envelope["ok"].get<bool>();
+    Json part{{"type", "text"}};
+    part["text"] = std::move(*text);
+    Json result{{"content", Json::array()}};
+    result["content"].push_back(std::move(part));
+    result["structuredContent"] = std::move(envelope);
+    result["isError"] = failed;
+    return result;
 }
 Json envelope(std::string summary, bool success, std::optional<Json> data) {
     Json out = {{"ok", success}, {"summary", std::move(summary)}};
