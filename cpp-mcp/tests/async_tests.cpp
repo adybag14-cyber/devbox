@@ -5,6 +5,156 @@
 #include <iostream>
 using namespace devbox;
 namespace {
+void cancellation_subscriptions() {
+    auto parent = std::make_shared<Cancellation>();
+    auto child = std::make_shared<Cancellation>(parent);
+    std::atomic_int called{0};
+    auto active = child->subscribe([&] { ++called; });
+    auto removed = child->subscribe([&] { called += 100; });
+    removed.reset();
+    parent->cancel();
+    child->cancel();
+    if (called != 1)
+        throw Error("Parent and child cancellation must notify a retained subscription exactly once");
+    auto late = child->subscribe([&] { ++called; });
+    if (called != 2)
+        throw Error("An already-cancelled token must notify during subscription");
+
+    auto token = std::make_shared<Cancellation>();
+    std::promise<void> entered, release;
+    auto gate = release.get_future().share();
+    auto subscriber = token->subscribe([&] {
+        entered.set_value();
+        gate.wait();
+    });
+    auto cancelling = std::async(std::launch::async, [token] { token->cancel(); });
+    entered.get_future().wait();
+    auto resetting = std::async(std::launch::async, [&] { subscriber.reset(); });
+    const auto reset_early = resetting.wait_for(Millis(20)) == std::future_status::ready;
+    release.set_value();
+    cancelling.get();
+    resetting.get();
+    if (reset_early)
+        throw Error("Subscription reset returned while its callback could still access caller state");
+
+    auto root = std::make_shared<Cancellation>();
+    auto descendant = std::make_shared<Cancellation>(std::make_shared<Cancellation>(root));
+    auto waiting =
+        std::async(std::launch::async, [descendant] { return descendant->wait_for(Millis(5000)); });
+    root->cancel();
+    if (waiting.wait_for(Millis(1000)) != std::future_status::ready || !waiting.get())
+        throw Error("Synchronous waits failed to observe ancestor cancellation");
+}
+asio::awaitable<bool> cancelled_delay(Cancel token) {
+    try {
+        co_await async_delay(Millis(60000), std::move(token));
+    } catch (const Cancelled&) {
+        co_return true;
+    }
+    co_return false;
+}
+void event_driven_delays() {
+    {
+        asio::io_context io;
+        const auto started = Clock::now();
+        auto result =
+            asio::co_spawn(io, async_delay(Millis(600), std::make_shared<Cancellation>()), asio::use_future);
+        const auto completions = io.run();
+        result.get();
+        if (Clock::now() - started < Millis(600) || completions > 8)
+            throw Error("Uncancelled delay completed early or kept polling for cancellation");
+    }
+    asio::io_context io;
+    auto keep_running = asio::make_work_guard(io);
+    ScopedThread first([&] { io.run(); }), second([&] { io.run(); }), third([&] { io.run(); });
+    ScopeExit stop([&] {
+        keep_running.reset();
+        io.stop();
+    });
+    for (int round = 0; round < 16; ++round) {
+        auto parent = std::make_shared<Cancellation>();
+        auto middle = std::make_shared<Cancellation>(parent);
+        std::vector<Cancel> children;
+        std::vector<std::future<bool>> waits;
+        for (int i = 0; i < 32; ++i) {
+            children.push_back(std::make_shared<Cancellation>(middle));
+            waits.push_back(asio::co_spawn(io, cancelled_delay(children.back()), asio::use_future));
+        }
+        ScopedThread direct([&] {
+            for (const auto& child : children)
+                child->cancel();
+        });
+        ScopedThread inherited([&] { parent->cancel(); });
+        for (auto& wait : waits)
+            if (wait.wait_for(Millis(2000)) != std::future_status::ready || !wait.get())
+                throw Error("Concurrent direct/ancestor cancellation lost or raced an armed timer");
+    }
+    // Destroy pending coroutine state before cancelling its long-lived token.
+    // A subscription must not post back into an executor that has been destroyed.
+    auto survivor = std::make_shared<Cancellation>();
+    {
+        asio::io_context abandoned;
+        asio::co_spawn(abandoned, async_delay(Millis(60000), survivor), asio::detached);
+        abandoned.poll();
+    }
+    survivor->cancel();
+}
+asio::awaitable<int> blocked_work(WorkPool& pool, std::atomic_int& active, std::shared_future<void> gate) {
+    auto pending = pool.run([&active, gate] {
+        ++active;
+        gate.wait();
+        --active;
+        return 1;
+    });
+    co_return co_await std::move(pending);
+}
+void bounded_worker_growth() {
+    WorkPool pool(2, 3);
+    asio::io_context io;
+    auto keep_running = asio::make_work_guard(io);
+    std::promise<void> release;
+    auto gate = release.get_future().share();
+    std::atomic_int active{0};
+    std::vector<std::future<int>> results;
+    ScopedThread executor([&] { io.run(); });
+    bool released = false;
+    ScopeExit stop([&] {
+        if (!released)
+            release.set_value();
+        keep_running.reset();
+    });
+    for (int i = 0; i < 2; ++i)
+        results.push_back(asio::co_spawn(io, blocked_work(pool, active, gate), asio::use_future));
+    const auto started = Clock::now();
+    while (active != 2 && Clock::now() - started < Millis(2000))
+        std::this_thread::sleep_for(Millis(1));
+    if (active != 2)
+        throw Error("Worker pool did not grow to serve concurrent operations");
+    for (int i = 0; i < 3; ++i)
+        results.push_back(asio::co_spawn(io, blocked_work(pool, active, gate), asio::use_future));
+    const auto queued_at = Clock::now();
+    while (pool.queued() != 3 && Clock::now() - queued_at < Millis(2000))
+        std::this_thread::sleep_for(Millis(1));
+    if (pool.queued() != 3 || active != 2)
+        throw Error("Worker pool exceeded configured concurrency or lost queued work");
+    auto overflow = asio::co_spawn(io, blocked_work(pool, active, gate), asio::use_future);
+    if (overflow.wait_for(Millis(2000)) != std::future_status::ready)
+        throw Error("A full worker queue did not reject promptly");
+    bool rejected = false;
+    try {
+        (void)overflow.get();
+    } catch (const Error& error) {
+        rejected =
+            std::string_view(error.what()).find("Bounded worker queue is full") != std::string_view::npos;
+    }
+    if (!rejected)
+        throw Error("Worker pool accepted work beyond its queue capacity");
+    release.set_value();
+    released = true;
+    for (auto& result : results)
+        if (result.get() != 1)
+            throw Error("Worker pool failed to drain accepted work");
+}
 void scoped_thread_lifetime() {
     std::atomic_int stopped{0};
     auto cooperative = [&stopped](ThreadStopToken token) {
@@ -99,7 +249,10 @@ asio::awaitable<void> exercise(WorkPool& pool, const std::shared_ptr<std::string
 } // namespace
 int main() {
     try {
+        cancellation_subscriptions();
+        event_driven_delays();
         scoped_thread_lifetime();
+        bounded_worker_growth();
         WorkPool pool(2, 8);
         asio::io_context io;
         auto payload = std::make_shared<std::string>(16384, 'x');

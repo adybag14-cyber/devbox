@@ -29,11 +29,16 @@ int run(int argc, char** argv) {
         config.reserved_interactive = 1;
         config.heavy_capacity = 2;
         config.queue_timeout = Millis(10000);
-        ExecutionScheduler scheduler(config);
-        for (int i = 0; i < 5; ++i) {
-            auto lease = scheduler.acquire(background("process-contender", ResourceClass::heavy, 2));
-            require(scheduler.snapshot()["occupied"].get<std::size_t>() <= 3, "process oversubscription");
-            std::this_thread::sleep_for(Millis(15));
+        try {
+            ExecutionScheduler scheduler(config);
+            for (int i = 0; i < 5; ++i) {
+                auto lease = scheduler.acquire(background("process-contender", ResourceClass::heavy, 2));
+                require(scheduler.snapshot()["occupied"].get<std::size_t>() <= 3, "process oversubscription");
+                std::this_thread::sleep_for(Millis(15));
+            }
+        } catch (const std::exception& error) {
+            std::cerr << "Contender " << process_id() << ": " << error.what() << '\n';
+            return 1;
         }
         return 0;
     }
@@ -89,6 +94,29 @@ int run(int argc, char** argv) {
                     read_json(config.root / "slot-00.json")["token"] == "preserve-live",
                 "live identity preserved");
         other.release();
+#ifdef _WIN32
+        // Model a transient Windows reader/rename sharing conflict. Inspection
+        // must retain live ownership once the conflict clears, and persistent
+        // denial must remain an error rather than making the slot reclaimable.
+        const auto lock_live_slot = [&] {
+            NativeHandle handle(CreateFileW((config.root / "slot-00.json").c_str(), GENERIC_READ, 0, nullptr,
+                                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+            require(static_cast<bool>(handle), "lock live slot fixture");
+            return handle;
+        };
+        auto reader = std::async(std::launch::async, [handle = lock_live_slot()]() mutable {
+            std::this_thread::sleep_for(Millis(30));
+            handle.reset();
+        });
+        require(scheduler.snapshot()["occupied"] == 1, "transient sharing retains live ownership");
+        reader.get();
+        {
+            auto denied = lock_live_slot();
+            rejects([&] { scheduler.snapshot(); }, "inspect scheduler owner");
+        }
+        require(read_json(config.root / "slot-00.json")["token"] == "preserve-live",
+                "persistent sharing denial cannot reclaim a live slot");
+#endif
         fs::remove(config.root / "slot-00.json");
         std::cout << "PASS weighted admission, reserved capacity, watch pool, cancellation and identities\n"
                   << std::flush;
@@ -104,6 +132,10 @@ int run(int argc, char** argv) {
         auto second = fifo.begin(background("second"));
         require(!second.poll(), "second queued");
         blocker.release();
+        {
+            auto newcomer = fifo.begin(background("newcomer"));
+            require(!newcomer.poll(), "immediate admission cannot bypass a real queued ticket");
+        }
         require(!second.poll(), "later queue ticket cannot overtake");
         auto first_lease = first.poll();
         require(first_lease.has_value(), "queue head acquisition");

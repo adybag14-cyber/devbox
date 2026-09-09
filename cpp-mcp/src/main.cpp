@@ -1,22 +1,32 @@
 #include "devbox/engine.hpp"
+#include "server_main.hpp"
 #include <csignal>
 #include <iostream>
 namespace {
+#ifdef _WIN32
+volatile LONG shutdown_requested = 0;
+void signal_handler(int) {
+    InterlockedExchange(&shutdown_requested, 1);
+    WakeByAddressAll(const_cast<LONG*>(&shutdown_requested));
+}
+#else
 volatile std::sig_atomic_t shutdown_requested = 0;
 void signal_handler(int) {
     shutdown_requested = 1;
 }
+#endif
 #ifdef _WIN32
 BOOL WINAPI console_handler(DWORD event) {
     if (event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT || event == CTRL_CLOSE_EVENT ||
         event == CTRL_SHUTDOWN_EVENT) {
-        shutdown_requested = 1;
+        signal_handler(0);
         return TRUE;
     }
     return FALSE;
 }
 #endif
-int run(const std::vector<std::string>& args) {
+} // namespace
+int devbox::run_mcp(const std::vector<std::string>& args) {
     using namespace devbox;
     try {
         const auto mode = args.empty() ? "" : args.front();
@@ -64,8 +74,15 @@ int run(const std::vector<std::string>& args) {
         const auto port = server.start();
         engine->attach(server);
         std::cout << "C++ Devbox MCP listening on " << config->host << ':' << port << '\n' << std::flush;
+#ifdef _WIN32
+        LONG running = 0;
+        while (InterlockedCompareExchange(&shutdown_requested, 0, 0) == 0)
+            if (!WaitOnAddress(&shutdown_requested, &running, sizeof(running), INFINITE))
+                throw Error("wait for shutdown: " + windows_error());
+#else
         while (!shutdown_requested)
             std::this_thread::sleep_for(Millis(50));
+#endif
         server.stop();
         engine->stop();
         return 0;
@@ -74,19 +91,20 @@ int run(const std::vector<std::string>& args) {
         return 1;
     }
 }
-} // namespace
+#ifndef DEVBOX_NO_MAIN
 #ifdef _WIN32
 int wmain(int argc, wchar_t* argv[]) {
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i)
         args.push_back(devbox::narrow(argv[i]));
-    return run(args);
+    return devbox::run_mcp(args);
 }
 #else
 int main(int argc, char* argv[]) {
     std::vector<std::string> args;
     for (int i = 1; i < argc; ++i)
         args.emplace_back(argv[i]);
-    return run(args);
+    return devbox::run_mcp(args);
 }
+#endif
 #endif

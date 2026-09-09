@@ -34,7 +34,7 @@ HttpReply host_failure(const std::string& message) {
 }
 } // namespace
 HttpReply HttpReply::json(int status, const Json& value) {
-    return HttpReply{status, value.dump(-1, ' ', false, Json::error_handler_t::replace),
+    return HttpReply{status, json_dump(value, Json::error_handler_t::replace),
                      Json{{"content-type", "application/json"}}};
 }
 HttpReply HttpReply::text(int status, std::string value) {

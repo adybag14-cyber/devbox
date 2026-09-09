@@ -3,6 +3,9 @@
 #include "devbox/telemetry.hpp"
 #include <future>
 #include <iostream>
+#ifdef _WIN32
+#include <tlhelp32.h>
+#endif
 using namespace devbox;
 namespace {
 void require(bool value, const char* message) {
@@ -43,7 +46,58 @@ int main() {
         require(fs::exists(root / "rotation.jsonl.2") && !fs::exists(root / "rotation.jsonl.3") &&
                     fs::file_size(root / "rotation.jsonl") < 30,
                 "usage rotation bounded");
+        JsonLogSink batched(root / "batch.jsonl", 30, 2);
+        std::vector<Json> records;
+        for (int i = 0; i < 12; ++i)
+            records.push_back(Json{{"value", i}});
+        batched.append_batch(records);
+        for (const auto* suffix : {"", ".1", ".2"})
+            require(read_file(root / path_from_utf8(std::string("rotation.jsonl") + suffix)) ==
+                        read_file(root / path_from_utf8(std::string("batch.jsonl") + suffix)),
+                    "batched logs preserve exact event ordering, flush and rotation boundaries");
+        {
+            JsonLogSink mixed(root / "mixed-batch.jsonl", 0, 0);
+            std::vector<Json> events;
+            std::string expected;
+            for (int i = 0; i < 256; ++i) {
+                events.push_back(Json{{"sequence", i}, {"payload", std::string(600, 'x')},
+                                      {"escaped", "\"\\\n\t"}, {"unicode", "é😀"},
+                                      {"invalid", std::string("a\xffz", 3)}, {"fraction", i / 3.0}});
+                expected += events.back().dump(-1, ' ', false, Json::error_handler_t::replace) + '\n';
+            }
+            mixed.append_batch(events);
+            require(read_file(root / "mixed-batch.jsonl") == expected,
+                    "large log batches preserve reference JSON bytes across multiple flushes");
+            fs::rename(root / "mixed-batch.jsonl", root / "external-rotation.jsonl");
+            mixed.append(Json{{"after", "external replacement"}});
+            require(read_file(root / "external-rotation.jsonl") == expected &&
+                        read_file(root / "mixed-batch.jsonl") ==
+                            "{\"after\":\"external replacement\"}\n",
+                    "a completed batch releases its file and observes external rotation");
+
+            JsonLogSink rotating_reference(root / "large-reference.jsonl", 96 * 1024, 3);
+            JsonLogSink rotating_batch(root / "large-batch.jsonl", 96 * 1024, 3);
+            for (const auto& event : events)
+                rotating_reference.append(event);
+            rotating_batch.append_batch(events);
+            for (const auto* suffix : {"", ".1"})
+                require(read_file(root / path_from_utf8(std::string("large-reference.jsonl") + suffix)) ==
+                            read_file(root / path_from_utf8(std::string("large-batch.jsonl") + suffix)),
+                        "multi-write batches close before rotation and resume exact ordered output");
+        }
         BackgroundTasks background;
+        {
+            UsageLogger burst(root / "burst.jsonl", 1024 * 1024, 1, background, "burst-writer");
+            for (int i = 0; i < 512; ++i)
+                burst.enqueue(Json{{"sequence", i}});
+            burst.stop();
+            const auto lines = split(read_file(root / "burst.jsonl"), '\n');
+            for (std::size_t i = 0; i < 512; ++i)
+                require(Json::parse(lines.at(i))["sequence"] == i, "queued log event order and completeness");
+            require(burst.snapshot()["enqueued"] == 512 && burst.snapshot()["dropped"] == 0 &&
+                        burst.snapshot()["writeFailures"] == 0,
+                    "bounded burst drains without telemetry loss");
+        }
         // A failed file open must increment failure state; a later event must recover.
         const auto path = root / "blocked.jsonl";
         fs::create_directory(path);
@@ -99,7 +153,39 @@ int main() {
         asio::io_context io(1);
         auto work = asio::make_work_guard(io);
         auto cancel = std::make_shared<Cancellation>();
+#ifdef _WIN32
+        std::promise<void> release_threads;
+        auto gate = release_threads.get_future().share();
+        std::vector<std::future<void>> live_threads;
+        ScopeExit release([&] { release_threads.set_value(); });
+        std::atomic_int entered{0};
+        for (int i = 0; i < 3; ++i)
+            live_threads.push_back(std::async(std::launch::async, [&, gate] {
+                ++entered;
+                gate.wait();
+            }));
+        until([&] { return entered == 3; });
+        std::uint32_t expected_threads = 0;
+        {
+            NativeHandle reference(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+            THREADENTRY32 entry{};
+            entry.dwSize = sizeof(entry);
+            require(reference && Thread32First(reference.get(), &entry), "reference thread snapshot");
+            do {
+                expected_threads += entry.th32OwnerProcessID == process_id();
+            } while (Thread32Next(reference.get(), &entry));
+        }
+#endif
         PerformanceMonitor monitor(config, background, [] { return Json{{"gitSha", "test"}}; });
+#ifdef _WIN32
+        require(expected_threads >= 4 &&
+                    monitor.snapshot()["process"]["platform"]["threads"] == expected_threads,
+                "process thread metric matches independent Toolhelp enumeration with live workers");
+        release_threads.set_value();
+        release.disarm();
+        for (auto& thread : live_threads)
+            thread.get();
+#endif
         monitor.attach(io.get_executor(), cancel);
         std::thread loop([&] { io.run(); });
         ScopeExit stop([&] {

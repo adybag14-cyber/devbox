@@ -5,6 +5,7 @@
 #ifdef _WIN32
 #include <psapi.h>
 #include <tlhelp32.h>
+#include <winternl.h>
 #else
 #include <sys/resource.h>
 #ifdef __APPLE__
@@ -13,6 +14,49 @@
 #endif
 namespace devbox {
 namespace {
+#ifdef _WIN32
+std::optional<std::uint32_t> current_process_thread_count() {
+    // Query the documented process records directly. Walking every thread in a
+    // Toolhelp snapshot was the dominant engine startup cost on busy hosts.
+    // Resolve dynamically and retain Toolhelp as the compatibility fallback.
+    using Query = NTSTATUS(NTAPI*)(SYSTEM_INFORMATION_CLASS, PVOID, ULONG, PULONG);
+    static const auto query =
+        reinterpret_cast<Query>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation"));
+    if (!query)
+        return std::nullopt;
+    constexpr auto length_mismatch = static_cast<NTSTATUS>(0xc0000004UL);
+    constexpr std::size_t maximum = 64 * 1024 * 1024;
+    std::vector<unsigned char> data(256 * 1024);
+    for (int attempt = 0; attempt < 4; ++attempt) {
+        ULONG length = 0;
+        const auto status =
+            query(SystemProcessInformation, data.data(), static_cast<ULONG>(data.size()), &length);
+        if (status == length_mismatch) {
+            const auto next = std::max(data.size() * 2, static_cast<std::size_t>(length) + 65536);
+            if (next > maximum)
+                return std::nullopt;
+            data.resize(next);
+            continue;
+        }
+        if (status < 0 || length > data.size())
+            return std::nullopt;
+        std::size_t offset = 0;
+        while (offset <= length && length - offset >= sizeof(SYSTEM_PROCESS_INFORMATION)) {
+            const auto* record = reinterpret_cast<const SYSTEM_PROCESS_INFORMATION*>(data.data() + offset);
+            if (reinterpret_cast<std::uintptr_t>(record->UniqueProcessId) == process_id())
+                return record->NumberOfThreads ? std::optional<std::uint32_t>(record->NumberOfThreads)
+                                               : std::nullopt;
+            const auto next = record->NextEntryOffset;
+            if (next < sizeof(SYSTEM_PROCESS_INFORMATION) || next > length - offset ||
+                next % alignof(SYSTEM_PROCESS_INFORMATION) != 0)
+                break;
+            offset += next;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+#endif
 struct ProcessMetrics {
     std::uint64_t rss = 0, private_bytes = 0;
     Json cpu = nullptr, platform = nullptr;
@@ -38,15 +82,19 @@ ProcessMetrics process_metrics() {
     static std::uint32_t threads = 0;
     std::lock_guard lock(cache_mutex);
     if (Clock::now() - sampled >= std::chrono::seconds(60)) {
-        NativeHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
-        THREADENTRY32 entry{};
-        entry.dwSize = sizeof(entry);
-        threads = 0;
-        if (snapshot && Thread32First(snapshot.get(), &entry)) {
-            do {
-                if (entry.th32OwnerProcessID == process_id())
-                    ++threads;
-            } while (Thread32Next(snapshot.get(), &entry));
+        if (const auto count = current_process_thread_count())
+            threads = *count;
+        else {
+            NativeHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
+            THREADENTRY32 entry{};
+            entry.dwSize = sizeof(entry);
+            threads = 0;
+            if (snapshot && Thread32First(snapshot.get(), &entry)) {
+                do {
+                    if (entry.th32OwnerProcessID == process_id())
+                        ++threads;
+                } while (Thread32Next(snapshot.get(), &entry));
+            }
         }
         sampled = Clock::now();
     }
@@ -146,11 +194,13 @@ asio::awaitable<void> PerformanceMonitor::sample(Cancel cancel) {
     }
 }
 Json PerformanceMonitor::capture() {
-    std::deque<Sample> delays, drifts;
+    // Copy into contiguous storage. On MSVC, deque copies allocate a separate
+    // block for each Sample, extending the sampler lock and idle CPU work.
+    std::vector<Sample> delays, drifts;
     {
         std::lock_guard lock(mutex_);
-        delays = delays_;
-        drifts = drifts_;
+        delays.assign(delays_.begin(), delays_.end());
+        drifts.assign(drifts_.begin(), drifts_.end());
     }
     const auto now = Clock::now();
     auto window = [&](std::uint64_t seconds) {

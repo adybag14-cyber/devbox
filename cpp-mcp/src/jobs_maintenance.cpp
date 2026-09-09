@@ -154,7 +154,7 @@ Json JobStore::quota_snapshot() const {
     return value;
 }
 Json JobStore::reconcile_maintenance(std::size_t maximum) {
-    fs::create_directories(config_->jobs_root);
+    ensure_directory(config_->jobs_root);
     ensure_index(*maintenance_, config_->jobs_root);
     auto summary = empty_summary();
     std::vector<std::string> ids;
@@ -229,7 +229,7 @@ Json JobStore::reconcile_maintenance(std::size_t maximum) {
     return summary;
 }
 Json JobStore::enforce_store_quota() {
-    fs::create_directories(config_->jobs_root);
+    ensure_directory(config_->jobs_root);
     ensure_index(*maintenance_, config_->jobs_root);
     auto summary = empty_summary();
     std::vector<std::string> ids;

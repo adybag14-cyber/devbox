@@ -1,19 +1,61 @@
+#include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/server.hpp"
 #include <boost/beast.hpp>
 #include <future>
 #include <iostream>
 #include <thread>
+#include <zlib.h>
 using namespace devbox;
+namespace beast = boost::beast;
 namespace http = boost::beast::http;
 using Tcp = asio::ip::tcp;
 void require(bool value, const char* message) {
     if (!value)
         throw Error(message);
 }
+std::string fixture_payload(std::size_t bytes, std::string_view mode = {}) {
+    std::string payload(bytes, ' ');
+    std::uint32_t state = 0x12345678;
+    for (std::size_t i = 0; i < bytes; ++i) {
+        state ^= state << 13;
+        state ^= state >> 17;
+        state ^= state << 5;
+        const bool varied = mode == "random" || (mode == "mixed" && i % 1024 < 160);
+        payload[i] = static_cast<char>('!' + (varied ? state % 90 : i % 90));
+    }
+    return payload;
+}
+std::string decode_response(const HttpResult& response) {
+    auto body = response.body;
+    const auto coding = json_string(response.headers, "content-encoding");
+    if (coding.empty())
+        return body;
+    require(coding == "gzip" || coding == "deflate", "known response content coding");
+    z_stream decoder{};
+    require(inflateInit2(&decoder, MAX_WBITS + (coding == "gzip" ? 16 : 0)) == Z_OK,
+            "content coding decoder initialized");
+    std::string decoded(2 * 1024 * 1024, '\0');
+    decoder.next_in = reinterpret_cast<Bytef*>(body.data());
+    decoder.avail_in = static_cast<uInt>(body.size());
+    decoder.next_out = reinterpret_cast<Bytef*>(decoded.data());
+    decoder.avail_out = static_cast<uInt>(decoded.size());
+    const auto result = inflate(&decoder, Z_FINISH);
+    const auto remaining = decoder.avail_in;
+    decoded.resize(decoder.total_out);
+    inflateEnd(&decoder);
+    require(result == Z_STREAM_END && remaining == 0, "complete encoded stream and checksum");
+    return decoded;
+}
 struct FixtureBackend : McpBackend {
     WorkPool workers{2, 2};
-    std::atomic_size_t entered{0}, cancelled{0}, observations{0}, disconnects{0};
+    std::shared_ptr<std::atomic_size_t> running_workers = std::make_shared<std::atomic_size_t>(0);
+    std::atomic_size_t entered{0}, cancelled{0}, observations{0}, disconnects{0}, unexpected_peers{0},
+        invalid_identities{0};
+    std::mutex identity_mutex;
+    std::set<std::string> usage_ids;
+    mutable std::atomic_bool pause_ready{false};
+    mutable std::atomic_size_t ready_entered{0};
     Json server_info() const override {
         return Json{{"name", "C++ transport test fixture"}, {"version", "1"}};
     }
@@ -37,7 +79,9 @@ struct FixtureBackend : McpBackend {
                 co_await async_delay(delay, cancel);
             else if (name == "host_exec") {
                 auto pending = workers.run(
-                    [delay, cancel] {
+                    [delay, cancel, running = running_workers] {
+                        ++*running;
+                        ScopeExit finished([&] { --*running; });
                         const auto deadline = Clock::now() + delay;
                         while (Clock::now() < deadline) {
                             if (cancel->wait_for(Millis(10)))
@@ -53,16 +97,34 @@ struct FixtureBackend : McpBackend {
             ++cancelled;
             throw;
         }
-        co_return result_success("fixture complete", Json{{"name", name}});
+        auto result = result_success("fixture complete", Json{{"name", name}});
+        const auto bytes = json_uint(arguments, "reply_bytes");
+        if (bytes && bytes <= 1024 * 1024) {
+            result["structuredContent"]["data"]["payload"] =
+                fixture_payload(bytes, json_string(arguments, "reply_mode"));
+        }
+        co_return result;
     }
     asio::awaitable<Json> metadata(const HttpRequest&) override {
         co_return Json{{"name", "fixture"}};
     }
     bool ready() const override {
+        if (pause_ready) {
+            ++ready_entered;
+            pause_ready.wait(true);
+        }
         return true;
     }
-    void observe_http(const HttpRequest&, int, std::uint64_t, Millis, bool disconnected) override {
+    void observe_http(const HttpRequest& request, int, std::uint64_t, Millis, bool disconnected) override {
         ++observations;
+        if (request.peer != "127.0.0.1")
+            ++unexpected_peers;
+        {
+            std::lock_guard lock(identity_mutex);
+            if (request.usage_id.empty() || request.started_at.empty() ||
+                !usage_ids.insert(request.usage_id).second)
+                ++invalid_identities;
+        }
         if (disconnected)
             ++disconnects;
     }
@@ -123,6 +185,253 @@ int main(int argc, char** argv) {
         }
         require(http_request("GET", base + "/healthz").body == "ok", "health probe");
         require(http_request("GET", base + "/readyz").status == 200, "readiness probe");
+        {
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            auto message = call("devbox_wait", 0, "fragmented");
+            message["params"]["arguments"]["padding"] = std::string(2500, 'p');
+            const auto body = message.dump();
+            const std::string start = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Len";
+            const auto middle = "gth: " + std::to_string(body.size()) +
+                                "\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n" +
+                                body.substr(0, 7);
+            const auto tail =
+                body.substr(7) + "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+            asio::write(socket, asio::buffer(start));
+            std::this_thread::sleep_for(Millis(5));
+            asio::write(socket, asio::buffer(middle));
+            std::this_thread::sleep_for(Millis(5));
+            asio::write(socket, asio::buffer(tail));
+            beast::flat_buffer incoming;
+            http::response<http::string_body> first, second;
+            http::read(socket, incoming, first);
+            http::read(socket, incoming, second);
+            require(Json::parse(first.body())["id"] == "fragmented" && second.body() == "ok",
+                    "partial headers and bodies preserve the following pipelined request");
+        }
+        {
+            // Hold the readiness callback after the HTTP request is parsed so
+            // the reset deterministically precedes the response write.
+            ScopeExit release([&] {
+                backend->pause_ready = false;
+                backend->pause_ready.notify_all();
+            });
+            const auto observed = backend->disconnects.load(), ready = backend->ready_entered.load();
+            backend->pause_ready = true;
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            http::request<http::empty_body> request{http::verb::get, "/readyz", 11};
+            request.set(http::field::host, "127.0.0.1");
+            http::write(socket, request);
+            until([&] { return backend->ready_entered > ready; }, "readiness request parsed before reset");
+            socket.set_option(asio::socket_base::linger(true, 0));
+            socket.close();
+            std::this_thread::sleep_for(Millis(20));
+            backend->pause_ready = false;
+            backend->pause_ready.notify_all();
+            until([&] { return backend->disconnects > observed; },
+                  "probe write failure records client abort");
+        }
+        {
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            beast::flat_buffer incoming;
+            for (int index = 0; index < 3; ++index) {
+                http::request<http::string_body> request{http::verb::get, "/healthz", 11};
+                request.set(http::field::host, "127.0.0.1");
+                if (!index)
+                    request.set(http::field::origin, "https://chatgpt.com");
+                request.keep_alive(index != 2);
+                http::write(socket, request);
+                http::response<http::string_body> response;
+                http::read(socket, incoming, response);
+                require(response.result() == http::status::ok && response.body() == "ok",
+                        "sequential requests reuse one HTTP connection");
+                require(response.keep_alive() == (index != 2), "requested connection persistence");
+                if (index)
+                    require(response.find("access-control-allow-origin") == response.end(),
+                            "CORS state does not leak to the next request");
+            }
+        }
+        {
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            http::request<http::empty_body> probe{http::verb::get, "/healthz", 11};
+            probe.set(http::field::host, "127.0.0.1");
+            http::write(socket, probe);
+            http::request<http::string_body> second{http::verb::post, "/mcp", 11};
+            second.set(http::field::host, "127.0.0.1");
+            second.set(http::field::content_type, "application/json");
+            second.set(http::field::accept, "application/json");
+            second.body() = call("devbox_wait", 0, "after-probe").dump();
+            second.prepare_payload();
+            http::write(socket, second);
+            beast::flat_buffer incoming;
+            http::response<http::string_body> first, following;
+            http::read(socket, incoming, first);
+            http::read(socket, incoming, following);
+            require(first.body() == "ok" && Json::parse(following.body())["id"] == "after-probe",
+                    "health probe preserves the next pipelined request");
+            const auto before = backend->cancelled.load();
+            second.body() = call("host_exec", 10000, "probe-then-disconnect").dump();
+            second.prepare_payload();
+            http::write(socket, second);
+            until([&] { return server.active_requests() == 1; }, "command after probe registered");
+            socket.close();
+            until([&] { return backend->cancelled > before && server.active_requests() == 0; },
+                  "command after probe retains disconnect cancellation");
+        }
+        {
+            asio::io_context client_io;
+            auto socket = raw_request(client_io, port, call("devbox_wait", 80, "pipeline-first"), headers());
+            until([&] { return server.active_requests() == 1; }, "pipeline first request active");
+            http::request<http::string_body> second{http::verb::post, "/mcp", 11};
+            second.set(http::field::host, "127.0.0.1");
+            second.set(http::field::content_type, "application/json");
+            second.set(http::field::accept, "application/json");
+            second.body() = call("devbox_wait", 5, "pipeline-second").dump();
+            second.keep_alive(false);
+            second.prepare_payload();
+            http::write(*socket, second);
+            beast::flat_buffer incoming;
+            for (const auto* id : {"pipeline-first", "pipeline-second"}) {
+                http::response<http::string_body> response;
+                http::read(*socket, incoming, response);
+                const auto result = Json::parse(response.body());
+                require(result["id"] == id && result["result"]["structuredContent"]["ok"] == true,
+                        "read-ahead preserves pipelined bytes and per-request cancellation");
+            }
+            until([&] { return server.active_requests() == 0; }, "pipeline registrations released");
+        }
+        {
+            asio::io_context client_io;
+            auto socket = raw_request(client_io, port, call("devbox_wait", 0, "sse-first"),
+                                      headers("text/event-stream"));
+            beast::flat_buffer incoming;
+            http::response<http::string_body> first;
+            http::read(*socket, incoming, first);
+            require(first.keep_alive() && !first.chunked() &&
+                        first[http::field::content_type] == "text/event-stream" &&
+                        first.body().find("sse-first") != std::string::npos,
+                    "completed SSE response retains a reusable connection");
+            const auto before = backend->cancelled.load();
+            http::request<http::string_body> pending{http::verb::post, "/mcp", 11};
+            pending.set(http::field::host, "127.0.0.1");
+            pending.set(http::field::content_type, "application/json");
+            pending.set(http::field::accept, "application/json");
+            pending.body() = call("host_exec", 10000, "reused-disconnect").dump();
+            pending.prepare_payload();
+            http::write(*socket, pending);
+            until([&] { return server.active_requests() == 1; }, "reused connection command active");
+            boost::system::error_code ignored;
+            socket->shutdown(Tcp::socket::shutdown_both, ignored);
+            socket->close(ignored);
+            until([&] { return backend->cancelled > before && server.active_requests() == 0; },
+                  "disconnect on reused connection cancels the current request");
+        }
+        for (const auto& [accept, json] :
+             {std::pair{"application/json, text/event-stream", true},
+              std::pair{"text/event-stream; q=0.2, Application/JSON; q=0.8", true},
+              std::pair{"application/json;q=0, text/event-stream", false},
+              std::pair{"application/json;q=0.000, text/event-stream", false},
+              std::pair{"application/json;q=0.5, text/event-stream;q=0.9", false},
+              std::pair{"application/json;q=1.1, text/event-stream", false}}) {
+            const auto response =
+                http_request("POST", base + "/mcp", call("devbox_wait", 0).dump(), headers(accept));
+            require(response.status == 200 && json_string(response.headers, "content-type") ==
+                                                  (json ? "application/json" : "text/event-stream"),
+                    "completed tool selects an accepted response representation");
+            require(json ? Json::parse(response.body)["result"]["isError"] == false
+                         : response.body.find("event: message\ndata:") != std::string::npos,
+                    "selected representation retains the complete tool result");
+        }
+        for (const auto* accept : {"application/json, text/event-stream", "text/event-stream"}) {
+            auto request = call("devbox_wait", 0);
+            request["params"]["arguments"]["reply_bytes"] = 131137;
+            const auto response = http_request("POST", base + "/mcp", request.dump(), headers(accept));
+            auto body = response.body;
+            if (json_string(response.headers, "content-type") == "text/event-stream") {
+                const auto start = body.find("data: ");
+                require(start != std::string::npos, "large SSE data frame");
+                body = body.substr(start + 6, body.find("\n\n", start) - start - 6);
+            }
+            const auto payload =
+                Json::parse(body)["result"]["structuredContent"]["data"]["payload"].get<std::string>();
+            require(response.status == 200 && payload.size() == 131137, "complete bounded-write payload");
+            for (std::size_t i = 0; i < payload.size(); ++i)
+                require(payload[i] == static_cast<char>('!' + i % 90),
+                        "JSON and SSE retain every byte across response write boundaries");
+        }
+        for (const auto& [encoding, coding] :
+             std::vector<std::pair<std::string, std::string>>{{"gzip, deflate", "deflate"},
+                                                              {"deflate", "deflate"},
+                                                              {"GZIP; Q=1.000", "gzip"},
+                                                              {"*;q=0.8", "deflate"},
+                                                              {"gzip;q=1, deflate;q=0.5", "gzip"},
+                                                              {"gzip;q=0.5, identity;q=0.1", "gzip"},
+                                                              {"gzip;q=0, *;q=1", "deflate"},
+                                                              {"gzip;q=0, deflate;q=0, *;q=1", ""},
+                                                              {"gzip;q=0.000", ""},
+                                                              {"gzip;q=bad", ""},
+                                                              {"gzip;q=0.5, identity;q=1", ""},
+                                                              {"deflate;q=0.5, identity;q=1", ""},
+                                                              {"br", ""},
+                                                              {"", ""}}) {
+            auto request = call("devbox_wait", 0);
+            request["params"]["arguments"]["reply_bytes"] = 131137;
+            auto supplied = headers();
+            supplied["accept-encoding"] = encoding;
+            const auto response = http_request("POST", base + "/mcp", request.dump(), supplied);
+            require(json_string(response.headers, "content-encoding") == coding,
+                    "content coding respects exclusions, preferences and wildcard fallback");
+            require(json_string(response.headers, "vary") == "accept-encoding",
+                    "large JSON representation varies by content coding");
+            auto body = response.body;
+            if (!coding.empty()) {
+                auto decoded = decode_response(response);
+                require(body.size() < decoded.size() / 10, "compressible fixture reduces transfer bytes");
+                body = std::move(decoded);
+            }
+            const auto payload =
+                Json::parse(body)["result"]["structuredContent"]["data"]["payload"].get<std::string>();
+            require(response.status == 200 && payload.size() == 131137, "complete negotiated payload");
+            for (std::size_t i = 0; i < payload.size(); ++i)
+                require(payload[i] == static_cast<char>('!' + i % 90),
+                        "gzip, deflate and identity preserve every decoded byte");
+        }
+        auto small_headers = headers();
+        small_headers["accept-encoding"] = "gzip";
+        require(!http_request("POST", base + "/mcp", call("devbox_wait").dump(), small_headers)
+                     .headers.contains("content-encoding"),
+                "small JSON response avoids compression overhead");
+        for (const auto bytes : {600 * 1024, 1024 * 1024}) {
+            for (const auto* mode : {"random", "mixed"}) {
+                auto request = call("devbox_wait");
+                request["params"]["arguments"]["reply_bytes"] = bytes;
+                request["params"]["arguments"]["reply_mode"] = mode;
+                auto supplied = headers();
+                supplied["accept-encoding"] = "deflate";
+                supplied["origin"] = "https://chatgpt.com";
+                const auto response = http_request("POST", base + "/mcp", request.dump(), supplied,
+                                                   Millis(5000), 2 * 1024 * 1024);
+                const auto coding = json_string(response.headers, "content-encoding");
+                require(coding == (std::string_view(mode) == "random" ? "" : "deflate"),
+                        "low-compressibility prefix retains identity while useful compression proceeds");
+                const auto vary = lower(json_string(response.headers, "vary"));
+                require(vary.find("accept-encoding") != vary.npos && vary.find("origin") != vary.npos,
+                        "compression and gateway Vary dimensions are preserved together");
+                if (!coding.empty())
+                    require(response.body.size() > 64 * 1024, "fixture crosses multiple compressed blocks");
+                const auto data = Json::parse(decode_response(response));
+                require(response.status == 200 && data["result"]["structuredContent"]["data"]["payload"] ==
+                                                      fixture_payload(bytes, mode),
+                        "both compression paths preserve the complete varied result");
+            }
+        }
         const auto initialize =
             http_request("POST", base + "/mcp",
                          rpc("initialize", 0, Json{{"protocolVersion", "2025-11-25"}}).dump(), headers());
@@ -255,15 +564,33 @@ int main(int argc, char** argv) {
             socket->close();
         pending.clear();
         until([&] { return server.active_requests() == 0; }, "fanout cancellation clears registry");
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 2; ++i)
             pending.push_back(raw_request(io, port, call("host_exec", 10000, 200 + i), headers()));
-        until([&] { return server.active_requests() >= 4; }, "bounded work pool active and queued calls");
+        until([&] { return *backend->running_workers == 2; }, "both command workers running");
+        for (int i = 2; i < 4; ++i)
+            pending.push_back(raw_request(io, port, call("host_exec", 10000, 200 + i), headers()));
+        until([&] { return server.active_requests() == 4 && backend->workers.queued() == 2; },
+              "bounded work pool has two running and two queued calls");
+        pending.push_back(raw_request(io, port, call("host_exec", 10000, 204), headers()));
+        beast::flat_buffer rejected_buffer;
+        http::response<http::string_body> rejected;
+        http::read(*pending.back(), rejected_buffer, rejected);
+        const auto rejected_rpc = Json::parse(rejected.body());
+        require(rejected_rpc["id"] == 204 && rejected_rpc["error"]["code"] == -32603 &&
+                    rejected_rpc["error"]["message"].get<std::string>().find("queue is full") !=
+                        std::string::npos,
+                "a full command queue rejects the excess request");
         require(http_request("GET", base + "/healthz", {}, Json::object(), Millis(500)).status == 200,
                 "blocking pool saturation preserves health");
         for (auto& socket : pending)
             socket->close();
         pending.clear();
-        until([&] { return server.active_requests() == 0; }, "queued and active work cancellation");
+        until(
+            [&] {
+                return server.active_requests() == 0 && *backend->running_workers == 0 &&
+                       backend->workers.queued() == 0;
+            },
+            "queued and active work cancellation");
         bool exclusive = false;
         auto collision_config = std::make_shared<Config>(*config);
         collision_config->port = port;
@@ -318,6 +645,10 @@ int main(int argc, char** argv) {
         require(http_request("OPTIONS", reopened_base, {}, bridge).status == 405,
                 "OAuth disables unauthenticated local bridge");
         reopened.stop();
+        require(backend->observations > 0 && backend->unexpected_peers == 0,
+                "accepted peer identity survives normal, failed and reused requests");
+        require(backend->invalid_identities == 0,
+                "normal, failed and reused requests retain unique identities and timestamps");
         fs::remove_all(root);
         std::cout
             << "HTTP/SSE, MCP, Host/CORS, scoped cancellation, bounded workers and OAuth routes passed\n";

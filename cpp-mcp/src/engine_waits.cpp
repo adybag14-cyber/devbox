@@ -147,8 +147,12 @@ asio::awaitable<Json> Engine::wait_job(Json args, Cancel cancel) {
                     state["waitedMs"] = wait.count();
                     break;
                 }
-                co_await async_delay(
-                    std::min(Millis(500), std::chrono::duration_cast<Millis>(deadline - now)), cancel);
+                const auto elapsed = now - (deadline - wait);
+                const auto interval = elapsed < Millis(1000)   ? Millis(50)
+                                      : elapsed < Millis(5000) ? Millis(100)
+                                                               : Millis(500);
+                co_await async_delay(std::min(interval, std::chrono::duration_cast<Millis>(deadline - now)),
+                                     cancel);
                 auto next = files_.run_until([store, id] { return store.get_status(id); }, deadline, cancel);
                 if (auto current = co_await std::move(next))
                     state = std::move(*current);

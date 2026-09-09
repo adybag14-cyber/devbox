@@ -9,6 +9,8 @@
     "boost-beast",
     "nlohmann-json",
     "openssl",
+    "zlib",
+    { "name": "libdeflate", "default-features": false, "features": ["compression", "gzip", "zlib"] },
     { "name": "curl", "default-features": false, "features": ["ssl"] }
   ]
 }

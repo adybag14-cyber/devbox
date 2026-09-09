@@ -23,6 +23,9 @@ Engine::Engine(std::shared_ptr<const Config> config)
         const auto name = json_string(tool, "name");
         implemented_.insert(name);
     }
+    // The rendered contract, dispatch set, configuration and build identity are
+    // immutable for this engine. Hash their full schema once, before requests.
+    capabilities_ = contract_.capabilities(*config_, implemented_);
 }
 Engine::~Engine() {
     stop();
@@ -213,7 +216,7 @@ Json Engine::durable(std::string name, const Json& args) {
     std::string summary;
     if (name == "devbox_capabilities") {
         value = optional_string(args, "tool_name") ? contract_.tool(json_string(args, "tool_name"))
-                                                   : contract_.capabilities(*config_, implemented_);
+                                                   : capabilities_;
         summary = "Read native C++ capabilities.";
     } else if (name == "devbox_job_list") {
         value = jobs_.store().list(optional_string(args, "task_id"), json_strings(args, "statuses"),
@@ -348,7 +351,7 @@ Json Engine::status(const Cancel& cancel) {
     data["jobMaintenance"] = read_status_snapshot(config_->project_root / "run" / "job-maintenance.json");
     data["jobQuota"] = read_status_snapshot(config_->project_root / "run" / "job-quota.json");
     data["execution"] = *execution;
-    data["capabilities"] = contract_.capabilities(*config_, implemented_);
+    data["capabilities"] = capabilities_;
     data["performance"] = performance_.snapshot();
     const auto bg = background_.snapshot();
     data["backgroundTasks"] = bg;

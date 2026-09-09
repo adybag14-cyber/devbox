@@ -27,19 +27,86 @@
 #endif
 
 namespace devbox {
+struct Cancellation::Callback {
+    std::mutex mutex;
+    std::function<void()> function;
+    explicit Callback(std::function<void()> value) : function(std::move(value)) {}
+    void notify() noexcept {
+        std::lock_guard lock(mutex);
+        auto call = std::move(function);
+        function = {};
+        if (call) {
+            try {
+                call();
+            } catch (...) {
+                // Cancellation itself remains noexcept even during shutdown.
+            }
+        }
+    }
+};
+Cancellation::Subscription::~Subscription() {
+    reset();
+}
+Cancellation::Subscription& Cancellation::Subscription::operator=(Subscription&& other) noexcept {
+    if (this != &other) {
+        reset();
+        callback_ = std::move(other.callback_);
+    }
+    return *this;
+}
+void Cancellation::Subscription::reset() noexcept {
+    if (auto callback = std::move(callback_)) {
+        std::lock_guard lock(callback->mutex);
+        callback->function = {};
+    }
+}
+Cancellation::Subscription Cancellation::subscribe(std::function<void()> function) {
+    auto callback = std::make_shared<Callback>(std::move(function));
+    bool notify = false;
+    for (auto* token = this; token; token = token->parent_.get()) {
+        std::lock_guard lock(token->mutex_);
+        if (token->cancelled_.load(std::memory_order_acquire)) {
+            notify = true;
+            continue;
+        }
+        // Completed waits leave weak entries. Reuse them so long-lived tokens
+        // retain storage proportional to concurrent waits, not lifetime traffic.
+        const auto empty = std::find_if(token->callbacks_.begin(), token->callbacks_.end(),
+                                        [](const auto& entry) { return entry.expired(); });
+        if (empty == token->callbacks_.end())
+            token->callbacks_.push_back(callback);
+        else
+            *empty = callback;
+    }
+    if (notify)
+        callback->notify();
+    return Subscription(std::move(callback));
+}
 void Cancellation::cancel() noexcept {
-    cancelled_.store(true, std::memory_order_release);
+    std::vector<std::weak_ptr<Callback>> callbacks;
+    {
+        std::lock_guard lock(mutex_);
+        if (cancelled_.exchange(true, std::memory_order_acq_rel))
+            return;
+        callbacks.swap(callbacks_);
+    }
     condition_.notify_all();
+    for (const auto& entry : callbacks)
+        if (const auto callback = entry.lock())
+            callback->notify();
 }
 bool Cancellation::wait_for(Millis duration) {
+    Subscription parent_wake;
+    if (parent_)
+        parent_wake = parent_->subscribe([this] {
+            // Serialize the notification with the predicate-to-wait transition.
+            {
+                std::lock_guard lock(mutex_);
+            }
+            condition_.notify_all();
+        });
     std::unique_lock lock(mutex_);
-    if (!parent_)
-        return condition_.wait_for(lock, duration, [this] { return cancelled(); });
-    const auto deadline = Clock::now() + duration;
-    while (!cancelled() && Clock::now() < deadline)
-        condition_.wait_until(lock, std::min(deadline, Clock::now() + Millis(25)),
-                              [this] { return cancelled(); });
-    return cancelled();
+    return condition_.wait_for(lock, duration, [this] { return cancelled(); });
 }
 std::string trim(std::string_view value) {
     const auto a = value.find_first_not_of(" \t\r\n");
@@ -198,6 +265,8 @@ std::string sanitize_utf8(std::string_view value) {
     return from_utf16(to_utf16(value));
 }
 std::size_t js_length(std::string_view value) {
+    if (std::all_of(value.begin(), value.end(), [](unsigned char c) { return c < 0x80; }))
+        return value.size();
     return to_utf16(value).size();
 }
 std::string js_slice(std::string_view value, std::size_t start, std::size_t end) {
@@ -396,10 +465,16 @@ std::string sha256_file(const fs::path& path, std::optional<std::uint64_t> limit
 std::string base64_encode(std::span<const std::uint8_t> bytes, bool url) {
     if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw Error("Base64 input too large");
-    std::string out(4 * ((bytes.size() + 2) / 3), '\0');
-    if (!bytes.empty())
-        EVP_EncodeBlock(reinterpret_cast<unsigned char*>(out.data()), bytes.data(),
-                        static_cast<int>(bytes.size()));
+    const auto encoded_size = 4 * ((bytes.size() + 2) / 3);
+    std::string out;
+    // EVP writes a terminating NUL as well as the encoded bytes. Give the
+    // C++23 overwrite callback that extra byte, then publish only the payload.
+    out.resize_and_overwrite(encoded_size + 1, [&](char* buffer, std::size_t) {
+        if (!bytes.empty())
+            EVP_EncodeBlock(reinterpret_cast<unsigned char*>(buffer), bytes.data(),
+                            static_cast<int>(bytes.size()));
+        return encoded_size;
+    });
     if (url) {
         for (auto& c : out) {
             if (c == '+')
@@ -564,9 +639,17 @@ void write_file(const fs::path& path, std::string_view bytes, bool append) {
     if (!file)
         throw Error("Cannot write " + path_text(path));
 }
+void ensure_directory(const fs::path& path) {
+    // In particular on Windows, recursive creation can walk every ancestor
+    // even when the requested directory already exists. Retain the original
+    // creation and error path whenever the inexpensive status check fails.
+    std::error_code ec;
+    if (!fs::is_directory(path, ec))
+        fs::create_directories(path);
+}
 void write_json_atomic(const fs::path& path, const Json& value) {
     if (!path.parent_path().empty())
-        fs::create_directories(path.parent_path());
+        ensure_directory(path.parent_path());
     const auto temporary = path_from_utf8(path_text(path) + "." + uuid() + ".tmp");
     try {
         write_file(temporary, value.dump(2));

@@ -13,6 +13,7 @@ class JsonLogSink {
   public:
     JsonLogSink(fs::path path, std::uint64_t maximum, std::size_t rotations);
     void append(const Json& event);
+    void append_batch(std::span<const Json> events);
 };
 class UsageLogger {
     JsonLogSink sink_;

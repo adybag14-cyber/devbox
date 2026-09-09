@@ -1,5 +1,5 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/jobs.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <algorithm>
 #include <deque>
 #include <fstream>
@@ -45,7 +45,7 @@ class RotatingSink {
   public:
     RotatingSink(fs::path path, std::uint64_t maximum, std::size_t rotations)
         : path_(std::move(path)), maximum_(std::max<std::uint64_t>(4096, maximum)), rotations_(rotations) {
-        fs::create_directories(path_.parent_path());
+        ensure_directory(path_.parent_path());
         open();
     }
     void fail(std::string message) {

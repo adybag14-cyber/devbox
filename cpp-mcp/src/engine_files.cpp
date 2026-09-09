@@ -14,19 +14,20 @@ std::string payload(const Json& args) {
         throw Error("Either content or content_base64 is required.");
     return content ? base64_encode(*content) : *encoded;
 }
-Json large_result(const std::string& summary, const Json& data, bool read) {
-    Json metadata = data;
+Json large_result(const std::string& summary, Json data, bool read) {
+    Json metadata = Json::object();
     if (read) {
-        metadata.erase("content_base64");
-        metadata["content_base64_chars"] = json_string(data, "content_base64").size();
+        for (auto it = data.begin(); it != data.end(); ++it)
+            if (it.key() != "content_base64")
+                metadata[it.key()] = it.value();
+        metadata["content_base64_chars"] = data["content_base64"].get_ref<const std::string&>().size();
     } else {
-        metadata = Json::object();
         for (const auto* key :
              {"path", "append", "previous_file_size", "final_file_size", "bytes_written", "content_sha256",
               "verification_mode", "verified", "expected_sha256_verified", "target_existed"})
             metadata[key] = data.value(key, Json());
     }
-    return result_explicit(summary, Json(data), summary + "\n\n" + canonical_json(metadata).dump(2));
+    return result_explicit(summary, std::move(data), summary + "\n\n" + canonical_json(metadata).dump(2));
 }
 } // namespace
 Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
@@ -51,12 +52,12 @@ Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
         try {
             const auto offset = json_uint(args, "offset_bytes"),
                        maximum = json_uint(args, "max_bytes", 262144);
-            const auto data = docker ? docker_files_.read_large(requested, offset, maximum, cancel)
-                                     : read_large(path, offset, maximum);
+            auto data = docker ? docker_files_.read_large(requested, offset, maximum, cancel)
+                               : read_large(path, offset, maximum);
             const auto summary =
                 "Read " + requested + " from byte " + std::to_string(offset) +
                 (host ? " on the Windows host." : " in the " + config_->runtime_label() + ".");
-            return large_result(summary, data, true);
+            return large_result(summary, std::move(data), true);
         } catch (const std::exception& e) {
             return result_error(host ? e.what() : "Failed to read " + requested + ": " + e.what());
         }
@@ -65,17 +66,16 @@ Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
         const auto encoded = payload(args);
         const bool append = json_bool(args, "append");
         try {
-            const auto data = docker
-                                  ? docker_files_.write_large(requested, encoded, append,
-                                                              json_bool(args, "create_dirs", true),
-                                                              optional_text(args, "expected_sha256"), cancel)
-                                  : write_large(path, encoded, append, json_bool(args, "create_dirs", true),
-                                                optional_text(args, "expected_sha256"));
+            auto data = docker ? docker_files_.write_large(requested, encoded, append,
+                                                           json_bool(args, "create_dirs", true),
+                                                           optional_text(args, "expected_sha256"), cancel)
+                               : write_large(path, encoded, append, json_bool(args, "create_dirs", true),
+                                             optional_text(args, "expected_sha256"));
             const auto summary =
                 std::string(append ? "Appended large payload to " : "Wrote large payload to ") + requested +
                 (host ? " on the Windows host" : " in the " + config_->runtime_label()) +
                 " and verified the exact bytes.";
-            return large_result(summary, data, false);
+            return large_result(summary, std::move(data), false);
         } catch (const std::exception& e) {
             return result_error(host ? e.what()
                                      : "Failed to write large payload to " + requested + ": " + e.what());
