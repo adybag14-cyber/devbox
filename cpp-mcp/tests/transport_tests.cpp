@@ -49,6 +49,7 @@ std::string decode_response(const HttpResult& response) {
 }
 struct FixtureBackend : McpBackend {
     WorkPool workers{2, 2};
+    std::shared_ptr<std::atomic_size_t> running_workers = std::make_shared<std::atomic_size_t>(0);
     std::atomic_size_t entered{0}, cancelled{0}, observations{0}, disconnects{0};
     mutable std::atomic_bool pause_ready{false};
     mutable std::atomic_size_t ready_entered{0};
@@ -75,7 +76,9 @@ struct FixtureBackend : McpBackend {
                 co_await async_delay(delay, cancel);
             else if (name == "host_exec") {
                 auto pending = workers.run(
-                    [delay, cancel] {
+                    [delay, cancel, running = running_workers] {
+                        ++*running;
+                        ScopeExit finished([&] { --*running; });
                         const auto deadline = Clock::now() + delay;
                         while (Clock::now() < deadline) {
                             if (cancel->wait_for(Millis(10)))
@@ -171,6 +174,31 @@ int main(int argc, char** argv) {
         }
         require(http_request("GET", base + "/healthz").body == "ok", "health probe");
         require(http_request("GET", base + "/readyz").status == 200, "readiness probe");
+        {
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            auto message = call("devbox_wait", 0, "fragmented");
+            message["params"]["arguments"]["padding"] = std::string(2500, 'p');
+            const auto body = message.dump();
+            const std::string start = "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Len";
+            const auto middle = "gth: " + std::to_string(body.size()) +
+                                "\r\nContent-Type: application/json\r\nAccept: application/json\r\n\r\n" +
+                                body.substr(0, 7);
+            const auto tail =
+                body.substr(7) + "GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+            asio::write(socket, asio::buffer(start));
+            std::this_thread::sleep_for(Millis(5));
+            asio::write(socket, asio::buffer(middle));
+            std::this_thread::sleep_for(Millis(5));
+            asio::write(socket, asio::buffer(tail));
+            beast::flat_buffer incoming;
+            http::response<http::string_body> first, second;
+            http::read(socket, incoming, first);
+            http::read(socket, incoming, second);
+            require(Json::parse(first.body())["id"] == "fragmented" && second.body() == "ok",
+                    "partial headers and bodies preserve the following pipelined request");
+        }
         {
             // Hold the readiness callback after the HTTP request is parsed so
             // the reset deterministically precedes the response write.
@@ -525,15 +553,33 @@ int main(int argc, char** argv) {
             socket->close();
         pending.clear();
         until([&] { return server.active_requests() == 0; }, "fanout cancellation clears registry");
-        for (int i = 0; i < 5; ++i)
+        for (int i = 0; i < 2; ++i)
             pending.push_back(raw_request(io, port, call("host_exec", 10000, 200 + i), headers()));
-        until([&] { return server.active_requests() >= 4; }, "bounded work pool active and queued calls");
+        until([&] { return *backend->running_workers == 2; }, "both command workers running");
+        for (int i = 2; i < 4; ++i)
+            pending.push_back(raw_request(io, port, call("host_exec", 10000, 200 + i), headers()));
+        until([&] { return server.active_requests() == 4 && backend->workers.queued() == 2; },
+              "bounded work pool has two running and two queued calls");
+        pending.push_back(raw_request(io, port, call("host_exec", 10000, 204), headers()));
+        beast::flat_buffer rejected_buffer;
+        http::response<http::string_body> rejected;
+        http::read(*pending.back(), rejected_buffer, rejected);
+        const auto rejected_rpc = Json::parse(rejected.body());
+        require(rejected_rpc["id"] == 204 && rejected_rpc["error"]["code"] == -32603 &&
+                    rejected_rpc["error"]["message"].get<std::string>().find("queue is full") !=
+                        std::string::npos,
+                "a full command queue rejects the excess request");
         require(http_request("GET", base + "/healthz", {}, Json::object(), Millis(500)).status == 200,
                 "blocking pool saturation preserves health");
         for (auto& socket : pending)
             socket->close();
         pending.clear();
-        until([&] { return server.active_requests() == 0; }, "queued and active work cancellation");
+        until(
+            [&] {
+                return server.active_requests() == 0 && *backend->running_workers == 0 &&
+                       backend->workers.queued() == 0;
+            },
+            "queued and active work cancellation");
         bool exclusive = false;
         auto collision_config = std::make_shared<Config>(*config);
         collision_config->port = port;

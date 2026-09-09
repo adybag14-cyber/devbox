@@ -41,8 +41,10 @@ changing the Rust build, disabling instrumentation/logging, or weakening checks.
 ## Implementation and reproducible diagnosis
 
 The runtime reuses HTTP connections with a separate bounded read-ahead operation
-that preserves pipelined input and detects disconnects. Request authentication,
-headers, cancellation and registry state are rebuilt for every request. Health,
+that preserves pipelined input and detects disconnects. Requests already in the
+receive buffer are parsed directly; incomplete messages continue through the
+asynchronous reader with the same header/body limits. Authentication, headers,
+cancellation and registry state are rebuilt for every request. Health,
 liveness and readiness probes avoid starting a separate read-ahead
 operation; their write failures still record client aborts, and the following
 request retains pipelining and disconnect cancellation. Tests cover a reset

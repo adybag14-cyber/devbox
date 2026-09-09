@@ -829,8 +829,17 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 http::request_parser<http::string_body> parser;
                 parser.header_limit(32768);
                 parser.body_limit(server->config->mcp_json_body_limit_bytes);
-                co_await http::async_read(stream, buffer, parser,
-                                          asio::redirect_error(asio::use_awaitable, ec));
+                parser.eager(true);
+                // Parse bytes already read before creating another asynchronous
+                // read operation. Consume exactly this message's bytes so any
+                // following pipelined request remains in the bounded buffer.
+                const auto used = parser.put(buffer.data(), ec);
+                buffer.consume(used);
+                if (ec == http::error::need_more)
+                    ec.clear();
+                if (!ec && !parser.is_done())
+                    co_await http::async_read(stream, buffer, parser,
+                                              asio::redirect_error(asio::use_awaitable, ec));
                 if (ec == http::error::body_limit) {
                     // GCC 12/13 cannot lower this initializer-list temporary
                     // inside co_await in the request loop. Give it a local owner.
