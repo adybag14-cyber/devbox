@@ -55,6 +55,20 @@ int main() {
             require(read_file(root / path_from_utf8(std::string("rotation.jsonl") + suffix)) ==
                         read_file(root / path_from_utf8(std::string("batch.jsonl") + suffix)),
                     "batched logs preserve exact event ordering, flush and rotation boundaries");
+        {
+            JsonLogSink mixed(root / "mixed-batch.jsonl", 0, 0);
+            std::vector<Json> events;
+            std::string expected;
+            for (int i = 0; i < 256; ++i) {
+                events.push_back(Json{{"sequence", i}, {"payload", std::string(600, 'x')},
+                                      {"escaped", "\"\\\n\t"}, {"unicode", "é😀"},
+                                      {"invalid", std::string("a\xffz", 3)}, {"fraction", i / 3.0}});
+                expected += events.back().dump(-1, ' ', false, Json::error_handler_t::replace) + '\n';
+            }
+            mixed.append_batch(events);
+            require(read_file(root / "mixed-batch.jsonl") == expected,
+                    "large log batches preserve reference JSON bytes across multiple flushes");
+        }
         BackgroundTasks background;
         {
             UsageLogger burst(root / "burst.jsonl", 1024 * 1024, 1, background, "burst-writer");

@@ -122,9 +122,11 @@ one allocation per copied sample in the MSVC deque implementation. Sampling
 frequency, retention, percentile calculation and persistence intervals are retained.
 
 Worker pools start threads as demand requires while retaining their configured
-concurrency and queue limits. Logging batches at most 64 accepted events with a
-2 ms coalescing window; every batch retains checked stream flushing, rotation and
-failure accounting. This does not add a power-loss durability guarantee to usage
+concurrency and queue limits. Logging coalesces up to 64 events for at most 2 ms,
+and drains up to 256 already queued events per batch when catching up. The queue
+remains bounded to 1,024 events. Logs use the same validated JSON serializer as
+responses; every batch retains checked stream flushing, rotation and failure
+accounting. This does not add a power-loss durability guarantee to usage
 logs. Atomic files and durable state retain their explicit operating-system
 flushes and verification.
 

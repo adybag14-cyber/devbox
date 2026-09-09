@@ -102,7 +102,7 @@ void JsonLogSink::append_batch(std::span<const Json> events) {
         pending.clear();
     };
     for (const auto& event : events) {
-        auto bytes = event.dump(-1, ' ', false, Json::error_handler_t::replace) + '\n';
+        auto bytes = json_dump(event, Json::error_handler_t::replace) + '\n';
         const auto buffered_size = size + pending.size();
         if (maximum_ && rotations_ &&
             (buffered_size >= maximum_ || bytes.size() >= maximum_ - buffered_size)) {
@@ -155,7 +155,10 @@ void UsageLogger::run() {
                 break;
             if (queue_.size() < 64 && !stopping_)
                 wake_.wait_for(lock, Millis(2), [this] { return stopping_ || queue_.size() >= 64; });
-            const auto count = std::min<std::size_t>(64, queue_.size());
+            // Drain more of an existing backlog per filesystem metadata lookup.
+            // The queue bound, coalescing deadline and checked write flushes
+            // remain unchanged; producers regain space before the batch is sent.
+            const auto count = std::min<std::size_t>(256, queue_.size());
             events.reserve(count);
             for (std::size_t i = 0; i < count; ++i) {
                 events.push_back(std::move(queue_.front()));
