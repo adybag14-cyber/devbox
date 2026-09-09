@@ -118,9 +118,11 @@ asio::awaitable<std::optional<std::string>> compress_json(std::string_view body,
             deflateEnd(state);
         }
     } end{&state};
-    std::array<char, 64 * 1024> block;
+    // Keep large scratch storage out of the coroutine frame: the frame is
+    // allocated even when the bounded path above returns before reaching here.
+    auto block = std::make_unique_for_overwrite<std::array<char, 64 * 1024>>();
     std::string output;
-    output.reserve(block.size());
+    output.reserve(block->size());
     const auto limit = body.size() / 2;
     auto slice_started = Clock::now();
     for (std::size_t offset = 0; offset < body.size();) {
@@ -134,14 +136,14 @@ asio::awaitable<std::optional<std::string>> compress_json(std::string_view body,
         offset += size;
         int result;
         do {
-            state.next_out = reinterpret_cast<Bytef*>(block.data());
-            state.avail_out = static_cast<uInt>(block.size());
+            state.next_out = reinterpret_cast<Bytef*>(block->data());
+            state.avail_out = static_cast<uInt>(block->size());
             result = deflate(&state, offset == body.size() ? Z_FINISH
                                      : offset == 8 * 1024  ? Z_SYNC_FLUSH
                                                            : Z_NO_FLUSH);
             if ((result != Z_OK && result != Z_STREAM_END) || state.total_out >= limit)
                 co_return std::nullopt;
-            output.append(block.data(), block.size() - state.avail_out);
+            output.append(block->data(), block->size() - state.avail_out);
         } while (state.avail_in || (offset == body.size() && result != Z_STREAM_END));
         if (output.size() > offset / 2)
             co_return std::nullopt;

@@ -61,7 +61,9 @@ preferences are retained, and gateway `Vary` fields are combined. Compression
 uses a fresh dictionary for each response. For responses through one MiB,
 libdeflate's fastest compressor writes directly into the C++23 string overwrite
 buffer. Larger responses use incremental zlib with a 64 KiB output buffer and
-reduced working memory. An 8 KiB prefix must compress by at least half before
+reduced working memory. That scratch buffer is allocated only on the incremental
+path, keeping small-response coroutine frames compact and avoiding retained
+Windows heap segments after file transfers. An 8 KiB prefix must compress by at least half before
 the remaining input is processed; low-compressibility responses keep their
 original bytes. Both paths check cancellation, and incremental input chunks
 yield when their time slice is used. Compression is limited to responses from
