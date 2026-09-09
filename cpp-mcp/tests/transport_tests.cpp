@@ -1,3 +1,4 @@
+#include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/server.hpp"
 #include <boost/beast.hpp>
@@ -49,6 +50,8 @@ std::string decode_response(const HttpResult& response) {
 struct FixtureBackend : McpBackend {
     WorkPool workers{2, 2};
     std::atomic_size_t entered{0}, cancelled{0}, observations{0}, disconnects{0};
+    mutable std::atomic_bool pause_ready{false};
+    mutable std::atomic_size_t ready_entered{0};
     Json server_info() const override {
         return Json{{"name", "C++ transport test fixture"}, {"version", "1"}};
     }
@@ -100,6 +103,10 @@ struct FixtureBackend : McpBackend {
         co_return Json{{"name", "fixture"}};
     }
     bool ready() const override {
+        if (pause_ready) {
+            ++ready_entered;
+            pause_ready.wait(true);
+        }
         return true;
     }
     void observe_http(const HttpRequest&, int, std::uint64_t, Millis, bool disconnected) override {
@@ -165,6 +172,30 @@ int main(int argc, char** argv) {
         require(http_request("GET", base + "/healthz").body == "ok", "health probe");
         require(http_request("GET", base + "/readyz").status == 200, "readiness probe");
         {
+            // Hold the readiness callback after the HTTP request is parsed so
+            // the reset deterministically precedes the response write.
+            ScopeExit release([&] {
+                backend->pause_ready = false;
+                backend->pause_ready.notify_all();
+            });
+            const auto observed = backend->disconnects.load(), ready = backend->ready_entered.load();
+            backend->pause_ready = true;
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            http::request<http::empty_body> request{http::verb::get, "/readyz", 11};
+            request.set(http::field::host, "127.0.0.1");
+            http::write(socket, request);
+            until([&] { return backend->ready_entered > ready; }, "readiness request parsed before reset");
+            socket.set_option(asio::socket_base::linger(true, 0));
+            socket.close();
+            std::this_thread::sleep_for(Millis(20));
+            backend->pause_ready = false;
+            backend->pause_ready.notify_all();
+            until([&] { return backend->disconnects > observed; },
+                  "probe write failure records client abort");
+        }
+        {
             asio::io_context client_io;
             Tcp::socket socket(client_io);
             socket.connect({asio::ip::make_address("127.0.0.1"), port});
@@ -185,6 +216,35 @@ int main(int argc, char** argv) {
                     require(response.find("access-control-allow-origin") == response.end(),
                             "CORS state does not leak to the next request");
             }
+        }
+        {
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            http::request<http::empty_body> probe{http::verb::get, "/healthz", 11};
+            probe.set(http::field::host, "127.0.0.1");
+            http::write(socket, probe);
+            http::request<http::string_body> second{http::verb::post, "/mcp", 11};
+            second.set(http::field::host, "127.0.0.1");
+            second.set(http::field::content_type, "application/json");
+            second.set(http::field::accept, "application/json");
+            second.body() = call("devbox_wait", 0, "after-probe").dump();
+            second.prepare_payload();
+            http::write(socket, second);
+            beast::flat_buffer incoming;
+            http::response<http::string_body> first, following;
+            http::read(socket, incoming, first);
+            http::read(socket, incoming, following);
+            require(first.body() == "ok" && Json::parse(following.body())["id"] == "after-probe",
+                    "health probe preserves the next pipelined request");
+            const auto before = backend->cancelled.load();
+            second.body() = call("host_exec", 10000, "probe-then-disconnect").dump();
+            second.prepare_payload();
+            http::write(socket, second);
+            until([&] { return server.active_requests() == 1; }, "command after probe registered");
+            socket.close();
+            until([&] { return backend->cancelled > before && server.active_requests() == 0; },
+                  "command after probe retains disconnect cancellation");
         }
         {
             asio::io_context client_io;

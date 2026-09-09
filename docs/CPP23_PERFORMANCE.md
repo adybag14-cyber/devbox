@@ -42,7 +42,11 @@ changing the Rust build, disabling instrumentation/logging, or weakening checks.
 
 The runtime reuses HTTP connections with a separate bounded read-ahead operation
 that preserves pipelined input and detects disconnects. Request authentication,
-headers, cancellation and registry state are rebuilt for every request. Completed
+headers, cancellation and registry state are rebuilt for every request. Health,
+liveness and readiness probes avoid starting a separate read-ahead
+operation; their write failures still record client aborts, and the following
+request retains pipelining and disconnect cancellation. Tests cover a reset
+after readiness parsing and commands reused after a probe. Completed
 tool results select ordinary JSON when its accepted quality is at least the SSE
 quality; clients that prefer SSE receive one complete SSE response. Longer
 operations retain periodic heartbeats and scoped cancellation. Both response

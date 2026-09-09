@@ -439,7 +439,13 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         // completions instead of submitting the entire body in one operation.
         http::response_serializer<http::string_body> serializer(response);
         serializer.limit(64 * 1024);
-        sent_bytes += co_await http::async_write(stream, serializer, asio::use_awaitable);
+        boost::system::error_code ec;
+        sent_bytes +=
+            co_await http::async_write(stream, serializer, asio::redirect_error(asio::use_awaitable, ec));
+        if (ec) {
+            disconnected = true;
+            throw boost::system::system_error(ec);
+        }
         completed = true;
     }
     asio::awaitable<void> send_chunk(std::string text) {
@@ -847,10 +853,15 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                         request.headers[lower(std::string(header.name_string()))] =
                             std::string(header.value());
                     stream.expires_never();
-                    const auto self = shared_from_this();
-                    read_ahead = std::make_shared<ReadAhead>(stream.get_executor());
-                    asio::co_spawn(stream.get_executor(), monitor_disconnect(read_ahead),
-                                   [self](std::exception_ptr) {});
+                    const bool probe =
+                        (request.method == "GET" || request.method == "HEAD") &&
+                        (request.path == "/healthz" || request.path == "/livez" || request.path == "/readyz");
+                    if (!probe) {
+                        const auto self = shared_from_this();
+                        read_ahead = std::make_shared<ReadAhead>(stream.get_executor());
+                        asio::co_spawn(stream.get_executor(), monitor_disconnect(read_ahead),
+                                       [self](std::exception_ptr) {});
+                    }
                     co_await dispatch();
                 }
             } catch (const Cancelled&) {
@@ -859,7 +870,8 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 if (!response_started && !disconnected)
                     failure.emplace(HttpReply::json(500, Json{{"error", e.what()}}));
             }
-            co_await stop_read_ahead();
+            if (read_ahead)
+                co_await stop_read_ahead();
             if (failure && !response_started && stream.socket().is_open()) {
                 try {
                     co_await send(std::move(*failure));
