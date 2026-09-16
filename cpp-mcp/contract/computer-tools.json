@@ -1,0 +1,44 @@
+[
+  {
+    "name": "host_computer_windows",
+    "title": "List native computer-use windows",
+    "description": "Use this to discover visible native Windows desktop windows before computer use. Returns window_id values bound to the window handle, process ID and process creation time. Optional title_contains filters titles. Then call host_computer_use action observe with a returned window_id. This is native desktop control, not browser DOM access. Supported only in the Windows host runtime with host execution enabled.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "title_contains": {"type": "string", "maxLength": 256, "description": "Optional case-insensitive window-title substring."}
+      },
+      "additionalProperties": false
+    },
+    "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false}
+  },
+  {
+    "name": "host_computer_use",
+    "title": "Native computer use: observe and act",
+    "description": "Use this for native Windows computer-use/CUA actions: observe, click, double_click, move, drag, scroll, type, key, wait. Start with observe and a window_id from host_computer_windows. Every successful call returns an image plus a new observation_id, dimensions and window identity. For input, supply that latest observation_id; x/y and drag points are pixels in its returned image. IDs expire after 180 seconds and are single-use for input. Observe again after an error or user/window change. Input is serialized and targets only the verified foreground window. key accepts a chord such as [CTRL,L], [ENTER], [LEFT], [CTRL,SHIFT,Z]; hold_ms optionally holds a key/chord. type sends literal Unicode without using the clipboard. drag takes a path of image points; scroll uses wheel notches (positive down/right). No DOM, shell or script evaluation. Wait/drag/key durations are bounded. Keys/buttons are released on cancellation. Do not blindly retry an unknown input outcome. Windows host runtime only; a locked/secure desktop is rejected.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["observe", "click", "double_click", "move", "drag", "scroll", "type", "key", "wait"]},
+        "window_id": {"type": "string", "minLength": 5, "maxLength": 100, "description": "Required for observe. Use an exact value returned by host_computer_windows."},
+        "observation_id": {"type": "string", "minLength": 1, "maxLength": 80, "description": "Required for all actions except observe; use the latest returned ID."},
+        "x": {"type": "integer", "minimum": 0, "maximum": 32767, "description": "Required with y for click, double_click, move and scroll; image pixels."},
+        "y": {"type": "integer", "minimum": 0, "maximum": 32767, "description": "Required with x for click, double_click, move and scroll; image pixels."},
+        "button": {"type": "string", "enum": ["left", "right", "middle"], "description": "For click, double_click and drag only. Defaults to left."},
+        "text": {"type": "string", "maxLength": 4096, "description": "For type only. Literal Unicode; use key for Enter, Tab and shortcuts."},
+        "keys": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"type": "string", "minLength": 1, "maxLength": 24}, "description": "A chord of CTRL/ALT/SHIFT plus a letter, digit, F1-F12 or named navigation key. No Windows/system-security shortcuts."},
+        "hold_ms": {"type": "integer", "minimum": 0, "maximum": 5000, "description": "For key only. Defaults to 0; maximum 5000 ms."},
+        "path": {"type": "array", "minItems": 2, "maxItems": 256, "items": {"type": "object", "properties": {"x": {"type": "integer", "minimum": 0, "maximum": 32767}, "y": {"type": "integer", "minimum": 0, "maximum": 32767}}, "required": ["x", "y"], "additionalProperties": false}},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 5000, "description": "For drag or wait only. Defaults to 300 ms; maximum 5 seconds."},
+        "scroll_y": {"type": "integer", "minimum": -20, "maximum": 20, "description": "For scroll only. Vertical wheel notches; positive down. Defaults to 0."},
+        "scroll_x": {"type": "integer", "minimum": -20, "maximum": 20, "description": "For scroll only. Horizontal wheel notches; positive right. Defaults to 0."},
+        "max_width": {"type": "integer", "minimum": 640, "maximum": 1920, "description": "For observe only. Maximum image width, default 1600. Later actions retain this image scale."},
+        "quality": {"type": "integer", "minimum": 30, "maximum": 90, "description": "For observe only. JPEG quality, default 70."},
+        "settle_ms": {"type": "integer", "minimum": 0, "maximum": 1000, "default": 100, "description": "Bounded time before the post-action screenshot."}
+      },
+      "required": ["action"],
+      "additionalProperties": false
+    },
+    "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true}
+  }
+]

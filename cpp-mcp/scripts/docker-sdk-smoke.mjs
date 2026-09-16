@@ -1,5 +1,6 @@
 // Runs only against uniquely named containers and volumes created by this test.
 import assert from 'node:assert/strict';
+import { assertClientNativeContract } from './native-contract.mjs';
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -107,14 +108,14 @@ try {
   }, 'Owned C++ Docker-mode server did not become ready', 20000);
   client = new Client({ name: 'cpp-live-docker-certification', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
-  assert.equal((await client.listTools()).tools.length, 45);
+  await assertClientNativeContract(client);
   assert.equal((await invoke('devbox_start')).data.running, true);
   const program = await invoke('devbox_run_program', { program: 'node', args: ['-e',
     'process.stdout.write(JSON.stringify({platform:process.platform,cwd:process.cwd(),args:process.argv.slice(1)}))',
     'spaces and "quotes"', '$(literal)'] });
   assert.deepEqual(JSON.parse(program.stdout), { platform: 'linux', cwd: '/workspace', args: ['spaces and "quotes"', '$(literal)'] });
   assert.equal((await invoke('devbox_exec', { command: "printf 'shell fixture'" })).stdout, 'shell fixture');
-  outputs.push('Docker argv, shell, cwd and 45-tool registration');
+  outputs.push('Docker argv, shell, cwd and complete native tool registration');
 
   await invoke('devbox_write_file', { path: 'nested/utf8.txt', content: 'native αβγ\nneedle 123\n' });
   await invoke('devbox_write_file', { path: '/workspace/nested/utf8.txt', content: 'appended\n', append: true });

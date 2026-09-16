@@ -14,6 +14,11 @@ string(REGEX REPLACE "(..)" "0x\\1," reference_bytes "${reference_hex}")
 file(WRITE "${DEVBOX_GENERATED_DIR}/reference_contract.hpp.tmp" "inline constexpr unsigned char embedded_contract[] = {${reference_bytes}};\n")
 file(COPY_FILE "${DEVBOX_GENERATED_DIR}/reference_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/reference_contract.hpp" ONLY_IF_DIFFERENT)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/computer-tools.json" computer_hex HEX)
+string(REGEX REPLACE "(..)" "0x\\1," computer_bytes "${computer_hex}")
+file(WRITE "${DEVBOX_GENERATED_DIR}/computer_contract.hpp.tmp" "inline constexpr unsigned char embedded_computer_contract[] = {${computer_bytes}};\n")
+file(COPY_FILE "${DEVBOX_GENERATED_DIR}/computer_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/computer_contract.hpp" ONLY_IF_DIFFERENT)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/computer-tools.json")
 add_custom_target(devbox-build-identity
   COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${PROJECT_SOURCE_DIR}" "-DOUTPUT_DIR=${DEVBOX_GENERATED_DIR}"
     "-DCOMPILER=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}" "-DVERSION=${PROJECT_VERSION}"
@@ -61,6 +66,7 @@ add_library(devbox_core
   src/capture.cpp
   src/capture_windows.cpp
   src/capture_posix.cpp
+  src/computer_use.cpp
   src/engine_capture.cpp
 )
 add_dependencies(devbox_core devbox-build-identity)
@@ -93,6 +99,14 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-computer-tests tests/computer_use_tests.cpp)
+  target_link_libraries(devbox-computer-tests PRIVATE devbox_core)
+  add_test(NAME computer-contract COMMAND devbox-computer-tests)
+  set_tests_properties(computer-contract PROPERTIES TIMEOUT 30)
+  if(WIN32)
+    add_test(NAME computer-native COMMAND devbox-computer-tests native)
+    set_tests_properties(computer-native PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
+  endif()
   add_executable(devbox-async-tests tests/async_tests.cpp)
   target_link_libraries(devbox-async-tests PRIVATE devbox_core)
   add_test(NAME async COMMAND devbox-async-tests)

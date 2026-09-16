@@ -64,12 +64,12 @@ Json Engine::parity_report() const {
         if (!implemented_.contains(json_string(tool, "name")))
             remaining.push_back(tool["name"]);
     return Json{{"implementation", "cpp"},
-                {"contract_version", 2},
+                {"contract_version", cpp_contract_version},
                 {"implemented_tools", implemented_.size()},
                 {"target_tools", contract_.all().size()},
                 {"remaining_tools", remaining},
-                {"complete", remaining.empty() && implemented_.size() == 45},
-                {"cutover_allowed", remaining.empty() && implemented_.size() == 45},
+                {"complete", remaining.empty() && implemented_.size() == cpp_tool_count},
+                {"cutover_allowed", remaining.empty() && implemented_.size() == cpp_tool_count},
                 {"remaining_gates", Json::array()},
                 {"build", build_snapshot()}};
 }
@@ -108,6 +108,26 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         if (!implemented_.contains(name))
             throw Error("Unknown tool: " + name);
         auto args = contract_.arguments(name, arguments);
+        if (name == "host_computer_windows" || name == "host_computer_use") {
+            if (config_->runtime_mode != RuntimeMode::host || !config_->host_exec_enabled)
+                co_return result_error(
+                    "COMPUTER_UNSUPPORTED: computer use requires host runtime with host execution enabled.");
+            // Validation above still applies. Preserve omitted fields so action-specific
+            // input cannot silently inherit unrelated schema defaults.
+            auto pending = computer_workers_.run(
+                [this, name, args = std::move(arguments), cancel] {
+                    if (name == "host_computer_windows")
+                        return result_success("Native computer-use window discovery completed.",
+                                              computer_.windows(args, cancel));
+                    auto capture = computer_.perform(args, cancel);
+                    return result_image(
+                        "Native computer-use action completed; inspect the returned screenshot.",
+                        std::move(capture.metadata), base64_encode(capture.image),
+                        std::move(capture.mime_type));
+                },
+                cancel);
+            co_return co_await std::move(pending);
+        }
         if (name.find("capture") != name.npos)
             co_return co_await capture(name, std::move(args), cancel);
         if (name == "devbox_wait") {
@@ -443,6 +463,9 @@ asio::awaitable<Json> Engine::metadata(const HttpRequest& request) {
                                " is the main execution environment; host tools are separate and explicit.";
     if (config_->auth_mode != AuthMode::none && !request.is_local)
         co_return value;
+    const auto active_requests = server_ ? server_->active_requests() : 0;
+    value["activity"] = usage_.active_counts();
+    value["activity"]["activeRequests"] = active_requests ? active_requests - 1 : 0;
     value["runtime"] = Json{{"runtimeMode", config_->runtime_name()},
                             {"platform", config_->platform.id},
                             {"hostShell", config_->host_shell},

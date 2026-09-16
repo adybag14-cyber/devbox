@@ -1,5 +1,6 @@
 #pragma once
 #include "capture.hpp"
+#include "computer_use.hpp"
 #include "contract.hpp"
 #include "docker_files.hpp"
 #include "lifecycle.hpp"
@@ -23,6 +24,8 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     LifecycleService lifecycle_;
     GithubAuthService github_;
     CaptureService capture_;
+    ComputerUse computer_;
+    WorkPool computer_workers_{1, 8};
     UsageTelemetry usage_;
     PerformanceMonitor performance_;
     HttpServer* server_ = nullptr;

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { assertComputerExtension } from './native-contract.mjs';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import net from 'node:net';
@@ -57,16 +58,16 @@ const cases = [
   ['legacy GET stream', { method: 'GET', headers: { Accept: 'text/event-stream' } }],
   ['modern DELETE', { method: 'DELETE', headers: { 'MCP-Protocol-Version': revision } }],
 ];
-function normalized(value) {
-  if (Array.isArray(value)) return value.map(normalized);
+function normalized(value, implementation) {
+  if (Array.isArray(value)) return value.map(item => normalized(item, implementation));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => {
     if (key === 'serverInfo' || key === 'io.modelcontextprotocol/serverInfo') return [key, '<implementation>'];
-    if (key === 'tools') return [key, Array.isArray(child) ? child.length : child];
-    return [key, normalized(child)];
+    if (key === 'tools') return [key, Array.isArray(child) ? (implementation === 'cpp' ? assertComputerExtension(child) : child).length : child];
+    return [key, normalized(child, implementation)];
   }));
   return value;
 }
-async function probe(binary) {
+async function probe(binary, implementation) {
   assert(binary && path.isAbsolute(binary));
   const root = await mkdtemp(path.join(os.tmpdir(), 'devbox-wire-parity-'));
   const port = await new Promise((resolve, reject) => { const s = net.createServer(); s.once('error', reject);
@@ -100,7 +101,7 @@ async function probe(binary) {
         if (event) body = JSON.parse(event.slice(5));
         else if (response.headers.get('content-type')?.startsWith('text/event-stream')) body = '<SSE probe>';
       }
-      output[name] = { status: response.status, body: normalized(body) };
+      output[name] = { status: response.status, body: normalized(body, implementation) };
     }
     return output;
   } finally {
@@ -109,8 +110,8 @@ async function probe(binary) {
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
-const rust = await probe(process.env.DEVBOX_RUST_REFERENCE_BINARY);
-const cpp = await probe(process.env.DEVBOX_MCP_TEST_BINARY);
+const rust = await probe(process.env.DEVBOX_RUST_REFERENCE_BINARY, 'rust');
+const cpp = await probe(process.env.DEVBOX_MCP_TEST_BINARY, 'cpp');
 const differences = Object.keys(rust).filter(name => { try { assert.deepEqual(cpp[name], rust[name]); return false; } catch { return true; } });
 console.log(JSON.stringify({ ok: differences.length === 0, total: cases.length, differences, rust, cpp }, null, 2));
 if (differences.length) process.exitCode = 1;

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { assertClientNativeContract } from './native-contract.mjs';
 import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -88,7 +89,7 @@ async function scenario(from, to, auth) {
     await client.connect(new StreamableHTTPClientTransport(url, {
       requestInit: { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {} },
     }));
-    assert.equal((await client.listTools()).tools.length, 45);
+    await assertClientNativeContract(client);
   }
   async function call(name, args = {}, failure = false) {
     const result = await client.callTool({ name, arguments: args }, undefined, { timeout: 15000 });

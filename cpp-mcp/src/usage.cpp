@@ -232,11 +232,21 @@ UsageTelemetry::UsageTelemetry(const Config& config, BackgroundTasks& background
       http_(config.project_root / "run" / "http-usage.jsonl", config.usage_log_max_bytes,
             config.usage_log_rotations, background, "usage-http-writer") {}
 Json UsageTelemetry::Invocation::event(std::string type) const {
-    return Json{{"type", type},           {"invocation_id", id}, {"tool", tool}, {"started_at", started_at},
+    Json result{{"type", type},           {"invocation_id", id}, {"tool", tool}, {"started_at", started_at},
                 {"arguments", arguments}, {"context", context}};
+    if (tool == "host_computer_use" || tool == "host_computer_windows")
+        result["usage_type"] = "computer_use";
+    return result;
 }
 std::string UsageTelemetry::started(const std::string& tool, const Json& args, const Json& context) {
-    Invocation invocation{uuid(), tool, utc_now(), Clock::now(), summarize_arguments(args), context};
+    auto summarized = summarize_arguments(args);
+    if (tool == "host_computer_use" && args.contains("text") && args["text"].is_string())
+        summarized["text"] = Json{{"type", "string"},
+                                  {"length", js_length(args["text"].get_ref<const std::string&>())},
+                                  {"redacted", true}};
+    if (tool == "host_computer_use" && args.contains("keys") && args["keys"].is_array())
+        summarized["keys"] = Json{{"type", "array"}, {"length", args["keys"].size()}, {"redacted", true}};
+    Invocation invocation{uuid(), tool, utc_now(), Clock::now(), std::move(summarized), context};
     const auto id = invocation.id;
     tools_.enqueue(invocation.event("tool_start"));
     std::lock_guard lock(mutex_);
@@ -329,6 +339,13 @@ Json UsageTelemetry::active_tools() const {
                               {"context", inv.context}});
     }
     return result;
+}
+Json UsageTelemetry::active_counts() const {
+    std::lock_guard lock(mutex_);
+    const auto computer = std::count_if(active_.begin(), active_.end(), [](const auto& entry) {
+        return entry.second.tool == "host_computer_use" || entry.second.tool == "host_computer_windows";
+    });
+    return Json{{"activeTools", active_.size()}, {"activeComputerUse", computer}};
 }
 Json UsageTelemetry::snapshot() const {
     return Json{{"tool", tools_.snapshot()}, {"http", http_.snapshot()}};

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {assertNativeContract} from '../../cpp-mcp/scripts/native-contract.mjs';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import net from 'node:net';
@@ -49,9 +50,9 @@ async function running(id){const deadline=Date.now()+10000;while(Date.now()<dead
 let duplicated,duplicateRequest;
 try{
   await start();
-  await check('45 discoverable tools, capability hash and heavy capacity five',async()=>{
-    const tools=(await client.listTools()).tools;assert.equal(tools.length,45);
-    const caps=await call('devbox_capabilities');assert.equal(caps.contract_version,2);assert.equal(caps.limits.heavy_capacity,5);assert.equal(caps.limits.active_runners,2);assert.match(caps.schema_sha256,/^[a-f0-9]{64}$/);
+  await check('complete native tool contract, capability hash and heavy capacity five',async()=>{
+    const tools=(await client.listTools()).tools;
+    const caps=await call('devbox_capabilities');assertNativeContract(tools,caps);assert.equal(caps.limits.heavy_capacity,5);assert.equal(caps.limits.active_runners,2);assert.match(caps.schema_sha256,/^[a-f0-9]{64}$/);
     assert.deepEqual([...caps.tools].sort(),tools.map(t=>t.name).sort());
     const schema=await call('devbox_capabilities',{tool_name:'devbox_job_submit'});assert.match(JSON.stringify(schema.inputSchema),/io-heavy/);
   });

@@ -1,5 +1,6 @@
 // Development-only differential check. The shipped C++ binary never starts Rust.
 import assert from 'node:assert/strict';
+import {assertComputerExtension} from './native-contract.mjs';
 import {spawn} from 'node:child_process';
 import {mkdtemp,mkdir,readFile,rm} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -40,7 +41,7 @@ try {
       const agentNames=new Set(['devbox_capabilities','devbox_file_state','devbox_write_file_atomic','devbox_job_submit','devbox_job_list','devbox_task_get','devbox_task_put','devbox_task_list']);
       for(const tool of expected)if(agentNames.has(tool.name))for(const field of ['title','description'])if(tool[field])tool[field]=tool[field].replaceAll('Rust','C++');
       const sort=tools=>tools.sort((a,b)=>a.name.localeCompare(b.name));
-      assert.deepEqual(sort(actual),sort(expected),`full contract variant ${index} (${mode})`);
+      assert.deepEqual(sort(assertComputerExtension(actual)),sort(expected),`all frozen schemas and metadata variant ${index} (${mode})`);
       results.push({mode,variant:index,tools:actual.length,match:true});
     } finally {
       await client?.close().catch(()=>{});

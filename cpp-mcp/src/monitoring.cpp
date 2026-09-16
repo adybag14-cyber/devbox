@@ -336,7 +336,7 @@ Json OperationalMonitor::store_health() const {
     return store_;
 }
 bool OperationalMonitor::ready(std::size_t tools) const {
-    if (tools != 45 || !execution())
+    if (tools != cpp_tool_count || !execution())
         return false;
     const auto bg = background_.snapshot();
     if (!bg.contains("execution-store-probe"))
