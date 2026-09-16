@@ -441,9 +441,9 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
                 throw Error("COMPUTER_DUPLICATE_KEY");
             chord.push_back(code);
         }
-        if (std::find(chord.begin(), chord.end(), VK_CONTROL) != chord.end() &&
-            std::find(chord.begin(), chord.end(), VK_MENU) != chord.end() &&
-            std::find(chord.begin(), chord.end(), VK_DELETE) != chord.end())
+        const auto has = [&](WORD key) { return std::find(chord.begin(), chord.end(), key) != chord.end(); };
+        if ((has(VK_CONTROL) && ((has(VK_MENU) && has(VK_DELETE)) || has(VK_ESCAPE))) ||
+            (has(VK_MENU) && (has(VK_TAB) || has(VK_ESCAPE))))
             throw Error("COMPUTER_SYSTEM_SHORTCUT_DENIED");
     }
     auto typed = to_utf16(json_string(arguments, "text"));

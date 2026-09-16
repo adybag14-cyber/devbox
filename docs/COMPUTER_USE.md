@@ -42,6 +42,8 @@ Use a new returned ID for every example; they are not interchangeable. Literal t
 
 `duration_ms` defaults to 300. All actions accept `settle_ms` from 0–1000, default 100, before the final screenshot. Later actions retain the image scale/quality of their observation; call `observe` to change those settings. Supported keys include CTRL/CONTROL, ALT, SHIFT, ENTER/RETURN, TAB, ESC/ESCAPE, SPACE, BACKSPACE, DELETE, INSERT, LEFT/RIGHT/UP/DOWN, HOME/END, PAGEUP/PAGEDOWN, PLUS/MINUS, letters, digits, and F1–F12. Windows/system-global keys and Ctrl+Alt+Delete are unavailable.
 
+The guard also rejects Ctrl+Esc (including Ctrl+Shift+Esc), Alt+Tab, and Alt+Esc before key-down, including variants with additional modifiers. Use the explicit window discovery/observation flow to select a different window.
+
 ## Bounds, ownership, and outcomes
 
 - Window IDs bind the handle to its PID and process creation time. Input validates the current window identity, physical bounds, title, and foreground ownership against the observation. Pointer operations additionally check the window owning the target point.

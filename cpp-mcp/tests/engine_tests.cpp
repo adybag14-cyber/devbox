@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
             } catch (const Error&) {
                 failed = true;
             }
-            require(failed && monitor.store_health()["ok"] == false && !monitor.ready(45),
+            require(failed && monitor.store_health()["ok"] == false && !monitor.ready(cpp_tool_count),
                     "failed storage probe rejects readiness");
             require(monitor.store_health()["jobsWritable"] == false &&
                         disk_pressure(128ULL * 1024 * 1024, 1024ULL * 1024 * 1024, true) == "critical" &&

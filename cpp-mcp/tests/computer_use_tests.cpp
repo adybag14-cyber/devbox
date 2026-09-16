@@ -216,6 +216,19 @@ void native_checks() {
     remove_occluder.disarm();
     observe();
     const auto ready_id = frame.metadata["observation_id"];
+    const auto foreground_before = GetForegroundWindow();
+    const auto keys_before = fixture.keys.load();
+    for (const auto& chord :
+         {Json::array({"CTRL", "ESC"}), Json::array({"CTRL", "SHIFT", "ESC"}), Json::array({"ALT", "TAB"}),
+          Json::array({"ALT", "ESC"}), Json::array({"CTRL", "ALT", "DELETE"})}) {
+        rejects(
+            [&] {
+                computer.perform(Json{{"action", "key"}, {"observation_id", ready_id}, {"keys", chord}}, {});
+            },
+            "SYSTEM_SHORTCUT_DENIED");
+    }
+    require(GetForegroundWindow() == foreground_before && fixture.keys == keys_before,
+            "system-global chords are rejected before input or foreground changes");
     rejects(
         [&] {
             computer.perform(Json{{"action", "click"},

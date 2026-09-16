@@ -121,6 +121,7 @@ int run(int argc, char** argv) {
         std::cout << "PASS weighted admission, reserved capacity, watch pool, cancellation and identities\n"
                   << std::flush;
         SchedulerConfig fifo_config = config;
+        std::cout << "CHECK FIFO ordering\n" << std::flush;
         fifo_config.root = root / "fifo";
         fifo_config.max_concurrent = 1;
         fifo_config.reserved_interactive = 0;
@@ -144,6 +145,7 @@ int run(int argc, char** argv) {
         require(second_lease.has_value(), "queue promotion");
         second_lease->release();
         SchedulerConfig pressure_config = config;
+        std::cout << "CHECK pressure protection\n" << std::flush;
         pressure_config.root = root / "pressure";
         pressure_config.max_concurrent = 6;
         pressure_config.heavy_capacity = 5;
@@ -159,6 +161,7 @@ int run(int argc, char** argv) {
         weighted.release();
         light.release();
         SchedulerConfig age_config = fifo_config;
+        std::cout << "CHECK background aging\n" << std::flush;
         age_config.root = root / "aging";
         age_config.background_priority_age = Millis(40);
         ExecutionScheduler aging(age_config);
