@@ -5,7 +5,7 @@ C++ setup TUI and JavaScript/PowerShell launchers remain the integration surface
 The C++ executable runs its own HTTP server, tools, job runners, capture workers,
 and Windows elevation workers; it does not invoke the Rust executable.
 
-The implementation is complete. Its `--parity-report` checks all 45 native
+The implementation is complete. Its `--parity-report` checks all 47 native
 handlers. Managed launch verifies the clean source and binary hash; publishing
 requires the complete CI matrix and package gate for the exact commit.
 [port-status.json](../cpp-mcp/port-status.json) records implementation completeness.
@@ -23,7 +23,7 @@ directory for these comparisons.
 
 The compatibility contract includes:
 
-- All 45 tools, schemas, annotations, result envelopes, output limits, and legacy
+- All 45 frozen tools, schemas, annotations, result envelopes, output limits, and legacy
   aliases, with host and Docker configuration profiles.
 - The deployed legacy MCP wire behavior and the reference server's negotiated
   `2026-07-28` behavior, including metadata, method/name headers, discovery, cache
@@ -36,6 +36,10 @@ The compatibility contract includes:
 Some legacy names have deliberately specific behavior. `windows_host_*` file
 tools apply Windows lexical path rules even on POSIX, as the deployed Rust server
 does. The ordinary Devbox file tools use the selected runtime's paths.
+
+The two additional C++ [computer-use tools](COMPUTER_USE.md) are validated against
+their separate source schemas and native Windows input fixture. They are not
+inserted into the frozen Rust reference contract.
 
 ## Runtime architecture
 

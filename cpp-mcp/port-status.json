@@ -2,7 +2,8 @@
   "baseline_revision": "cd8803c81ad3a14ec3b3fa2afa0d08256975b1e9",
   "complete": true,
   "production_cutover_allowed": true,
-  "target_tool_count": 45,
+  "target_tool_count": 47,
+  "frozen_reference_tool_count": 45,
   "areas": {
     "shared_core": "native C++23 implementation; platform suites are enforced by the C++ native runtime workflow",
     "configuration": "ported; all four frozen schema profiles and the legacy configuration SDK gate pass on Windows",
@@ -14,6 +15,7 @@
     "files_tasks_search": "Native files/search pass across Windows/Linux/macOS and real Docker; musl stack-overflow reproduced locally and fixed with heap I/O buffers plus a 128 KiB worker regression",
     "lifecycle_github_docker_files": "Full real Docker argv/files/jobs, isolated GitHub auth-sync, restart/recreate, legacy /tmp migration and owned cleanup pass at 79f390d",
     "capture": "Windows GDI/WIC tests, both macOS native Cocoa-window/display captures, and real owned-X11 capture pass; no generic Android/pure-Wayland PID-window support is claimed",
+    "computer_use": "Two separately specified C++ tools provide Windows-host window discovery and bounded native input with screenshots, single-use observations, process identity, coordinate/foreground/occlusion guards and cancellation cleanup. Other platforms explicitly report unsupported input. Existing 45-tool reference comparisons remain intact.",
     "monitoring": "bounded usage queues, actual HTTP executor sampling, allocation/process metrics, incidents, readiness/storage probes, adaptive retries, maintenance/quota and version refresh integrated; Windows fault/recovery tests pass",
     "bootstrap_installer": "C++ setup and TUI version 0.5.0; fresh packaged installs, source-pinned clones, verified downloads, architecture/hash manifests and archive round-trip certification",
     "guardian_integration": "Immutable launcher preflight, stable same-binary deployment identity and post-health promotion; required gates exercise managed C++ startup, Guardian and JavaScript rollback",

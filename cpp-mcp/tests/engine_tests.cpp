@@ -80,7 +80,15 @@ int main(int argc, char** argv) {
         config->devbox_program_allowlist = {normalize_program(program)};
         config->host_program_allowlist = config->devbox_program_allowlist;
         ToolContract contract(*config);
-        require(contract.all().size() == 45, "embedded authoritative tool count");
+        require(contract.all().size() == cpp_tool_count,
+                "embedded authoritative tool count plus native computer use");
+        require(contract.tool("host_computer_windows")["annotations"]["readOnlyHint"] == true &&
+                    contract.tool("host_computer_use")["annotations"]["readOnlyHint"] == false &&
+                    contract.tool("host_computer_use")["annotations"]["idempotentHint"] == false,
+                "computer input is a non-idempotent write action");
+        require(required_tool_scope("host_computer_windows") == "mcp:host:read" &&
+                    required_tool_scope("host_computer_use") == "mcp:host:exec",
+                "computer-use calls cannot bypass OAuth tool scopes");
         const auto schema = contract.tool("devbox_wait_for_file")["inputSchema"]["properties"];
         require(schema["timeout_seconds"]["maximum"] == 85 && schema["poll_ms"]["minimum"] == 50,
                 "runtime-configured schema bounds");
@@ -138,12 +146,13 @@ int main(int argc, char** argv) {
             server.stop();
             engine->stop();
         });
-        require(engine->list_tools("2025-11-25").size() == 45 &&
+        require(engine->list_tools("2025-11-25").size() == cpp_tool_count &&
                     json_bool(engine->parity_report(), "complete") &&
                     json_bool(engine->parity_report(), "cutover_allowed"),
-                "complete native implementation advertises all 45 tools");
+                "complete native implementation advertises all legacy and computer-use tools");
         const auto capabilities = data(invoke(base, "devbox_capabilities"));
-        require(capabilities["implementation"] == "cpp" && capabilities["tools"].size() == 45 &&
+        require(capabilities["implementation"] == "cpp" && capabilities["tools"].size() == cpp_tool_count &&
+                    capabilities["contract_version"] == cpp_contract_version &&
                     capabilities["schema_sha256"].get<std::string>().size() == 64,
                 "native capabilities match actual dispatch");
         require(build_snapshot()["binarySha256"] == sha256_file(executable_path()),

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { assertClientNativeContract } from "../../cpp-mcp/scripts/native-contract.mjs";
 import { createHash } from "node:crypto";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import net from "node:net";
@@ -220,7 +221,7 @@ try {
   });
   await client.connect(transport);
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 45);
+  await assertClientNativeContract(client, tools.tools);
   const oauthWait = await client.callTool({
     name: "devbox_wait",
     arguments: { seconds: 0.05, reason: "oauth-context-smoke" },

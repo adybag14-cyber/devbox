@@ -235,7 +235,7 @@ Windows users can also use:
 
 ## Configuration
 
-The C++ service exposes 45 tools: the 37 compatible legacy tools plus eight native agent APIs for durable submissions, job/task discovery, revisioned checkpoints, atomic files and capability inspection. See [the native agent runtime contract](docs/AGENT_RUNTIME.md). Guardian supervises the selected native service. Ordinary Devbox shell commands honor `HOST_SHELL` and inherit the service token, while explicit `host_exec` retains the administrative PowerShell policy.
+The C++ service exposes 47 tools: the 37 compatible legacy tools, eight native agent APIs for durable submissions, job/task discovery, revisioned checkpoints, atomic files and capability inspection, and two [native Windows computer-use tools](docs/COMPUTER_USE.md). See [the native agent runtime contract](docs/AGENT_RUNTIME.md). Guardian supervises the selected native service. Ordinary Devbox shell commands honor `HOST_SHELL` and inherit the service token, while explicit `host_exec` retains the administrative PowerShell policy.
 
 Important `.env` values:
 

@@ -60,9 +60,12 @@ int main() {
             std::vector<Json> events;
             std::string expected;
             for (int i = 0; i < 256; ++i) {
-                events.push_back(Json{{"sequence", i}, {"payload", std::string(600, 'x')},
-                                      {"escaped", "\"\\\n\t"}, {"unicode", "é😀"},
-                                      {"invalid", std::string("a\xffz", 3)}, {"fraction", i / 3.0}});
+                events.push_back(Json{{"sequence", i},
+                                      {"payload", std::string(600, 'x')},
+                                      {"escaped", "\"\\\n\t"},
+                                      {"unicode", "é😀"},
+                                      {"invalid", std::string("a\xffz", 3)},
+                                      {"fraction", i / 3.0}});
                 expected += events.back().dump(-1, ' ', false, Json::error_handler_t::replace) + '\n';
             }
             mixed.append_batch(events);
@@ -71,8 +74,7 @@ int main() {
             fs::rename(root / "mixed-batch.jsonl", root / "external-rotation.jsonl");
             mixed.append(Json{{"after", "external replacement"}});
             require(read_file(root / "external-rotation.jsonl") == expected &&
-                        read_file(root / "mixed-batch.jsonl") ==
-                            "{\"after\":\"external replacement\"}\n",
+                        read_file(root / "mixed-batch.jsonl") == "{\"after\":\"external replacement\"}\n",
                     "a completed batch releases its file and observes external rotation");
 
             JsonLogSink rotating_reference(root / "large-reference.jsonl", 96 * 1024, 3);
@@ -121,6 +123,14 @@ int main() {
                                           "stdout", "stderr", 2, false));
         const auto failure = usage.started("devbox_wait", Json::object(), Json::object());
         usage.failed(failure, "cancelled");
+        const auto cua =
+            usage.started("host_computer_use", Json{{"action", "type"}, {"text", "PRIVATE-CUA-TYPED-TEXT"}},
+                          Json::object());
+        usage.finished(cua,
+                       result_success("Computer action completed.", Json{{"usage_type", "computer_use"}}));
+        const auto cua_key = usage.started(
+            "host_computer_use", Json{{"action", "key"}, {"keys", {"PRIVATE-CUA-KEY"}}}, Json::object());
+        usage.failed(cua_key, "Unsupported key name");
         HttpRequest request;
         request.method = "POST";
         request.path = "/mcp";
@@ -133,6 +143,10 @@ int main() {
         require(log.find("PASSWORD") == std::string::npos && log.find("tool_throw") != std::string::npos &&
                     log.find("\"queue_wait_ms\":12") != std::string::npos,
                 "tool lifecycle metadata logged and redacted");
+        require(log.find("PRIVATE-CUA-TYPED-TEXT") == std::string::npos &&
+                    log.find("PRIVATE-CUA-KEY") == std::string::npos &&
+                    log.find("\"usage_type\":\"computer_use\"") != std::string::npos,
+                "CUA telemetry classifies native input without recording typed text");
         const auto http = read_json(root / "run" / "http-usage.jsonl");
         require(http["status_code"].is_null() && http["client_aborted"] == true &&
                     http["forwarded_for"] == "1.2.3.4" && http.dump().find("SECRET") == std::string::npos &&

@@ -629,12 +629,12 @@ std::optional<std::string> required_tool_scope(std::string_view tool) {
          {"devbox_recreate", "devbox_restart", "devbox_start", "devbox_stop",
           "devbox_sync_github_auth_from_host"}},
         {"mcp:host:read",
-         {"host_capture_display", "host_capture_program", "host_capture_window", "host_status",
-          "windows_host_capture_display", "windows_host_capture_program", "windows_host_inspect_file",
-          "windows_host_read_large_file", "windows_host_status"}},
+         {"host_computer_windows", "host_capture_display", "host_capture_program", "host_capture_window",
+          "host_status", "windows_host_capture_display", "windows_host_capture_program",
+          "windows_host_inspect_file", "windows_host_read_large_file", "windows_host_status"}},
         {"mcp:host:exec",
-         {"host_exec", "host_run_program", "windows_host_exec", "windows_host_run_program",
-          "windows_host_write_large_file"}}};
+         {"host_computer_use", "host_exec", "host_run_program", "windows_host_exec",
+          "windows_host_run_program", "windows_host_write_large_file"}}};
     for (const auto& [scope, names] : groups)
         if (std::find(names.begin(), names.end(), tool) != names.end())
             return scope;

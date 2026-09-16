@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { assertClientNativeContract, computerNames } from "../../cpp-mcp/scripts/native-contract.mjs";
 import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -118,7 +119,9 @@ const listRustTools = async () => {
     if (!ready) throw new Error(`Rust schema server failed readiness\n${stderr}`);
     client = new Client({ name: "rust-schema-audit", version: "1.0.0" });
     await client.connect(new StreamableHTTPClientTransport(baseUrl));
-    return (await client.listTools()).tools;
+    const tools = (await client.listTools()).tools;
+    const capabilities = await assertClientNativeContract(client, tools);
+    return capabilities.implementation === "cpp" ? tools.filter(tool => !computerNames.includes(tool.name)) : tools;
   } finally {
     if (client) await client.close().catch(() => {});
     if (server.exitCode === null && server.signalCode === null) {

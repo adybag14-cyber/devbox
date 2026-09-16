@@ -1,6 +1,6 @@
 # Native C++ agent runtime
 
-Devbox's default MCP implementation is C++23. Guardian is the Node supervisor responsible for availability and managed Windows elevation. The C++ service retains 37 legacy-compatible tool names and eight native agent tools. The retained Rust and JavaScript sources support compatibility verification and explicit rollback. The production instance was explicitly restored to Rust while the [C++23 performance work](CPP23_PERFORMANCE.md) is validated in isolation.
+Devbox's default MCP implementation is C++23. Guardian is the Node supervisor responsible for availability and managed Windows elevation. The C++ service retains 37 legacy-compatible tool names and eight native agent tools, and adds two [native Windows computer-use tools](COMPUTER_USE.md). The retained Rust and JavaScript sources support compatibility verification and explicit rollback. The [C++23 performance work](CPP23_PERFORMANCE.md) records its original isolated comparison; verify live capabilities and provenance for the currently deployed build.
 
 ## Supported production profile and source identity
 
@@ -91,7 +91,7 @@ Cloudflare JWKS work runs outside the shared OAuth token/state lock. Fetching ha
 
 Launcher health requests bound both headers and body reads by the remaining startup deadline and reject oversized/unexpected health bodies. Native capture is tested through repeated new server instances and owned graphical fixtures. Legacy JavaScript capture assertions include the actual bounded tool diagnostic.
 
-Contract version 2 advertises tool-list change support. `devbox_status` includes the current native capability manifest so even a client with an older registered tool set can detect drift. Compare the actual client registration with `devbox_capabilities` and its schema hash. Client-side registries that persist imported schemas must refresh their connection/tool catalog; restarting the server alone cannot rewrite an external registry. Verify all 45 names and `io-heavy` after refresh.
+C++ contract version 3 advertises 47 tools and computer-use support metadata. The frozen Rust reference retains contract version 2 and its 45 tools. `devbox_status` includes the current native capability manifest so even a client with an older registered tool set can detect drift. Compare the actual client registration with `devbox_capabilities` and its schema hash. Client-side registries that persist imported schemas must refresh their connection/tool catalog; restarting the server alone cannot rewrite an external registry. Verify the actual implementation's names, version, `io-heavy`, and computer-use support after refresh.
 
 ## Validation
 

@@ -1,4 +1,5 @@
 #include "devbox/contract.hpp"
+#include "computer_contract.hpp"
 #include "reference_contract.hpp"
 #include <algorithm>
 #include <cmath>
@@ -191,6 +192,10 @@ ToolContract::ToolContract(const Config& config) {
                    value.get_ref<const std::string&>() == profile;
         });
     tools_ = std::move(reference["profiles"][profile]);
+    const auto computer = Json::parse(std::string_view(
+        reinterpret_cast<const char*>(embedded_computer_contract), sizeof(embedded_computer_contract)));
+    for (const auto& tool : computer)
+        tools_.push_back(tool);
     for (auto& tool : tools_) {
         const auto name = json_string(tool, "name");
         for (const auto* field : {"description", "title"})
@@ -259,11 +264,20 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
     Json names = Json::array();
     for (const auto& tool : tools)
         names.push_back(tool["name"]);
-    return Json{{"contract_version", 2},
+    return Json{{"contract_version", cpp_contract_version},
                 {"implementation", "cpp"},
                 {"schema_sha256", sha256(tools.dump())},
                 {"tools", names},
                 {"resource_classes", {"auto", "watch", "light", "heavy", "io-heavy"}},
+                {"computer_use",
+                 {{"supported", config.platform.is_windows && config.runtime_mode == RuntimeMode::host &&
+                                    config.host_exec_enabled},
+                  {"platform", "windows-host"},
+                  {"input_capacity", 1},
+                  {"observation_ttl_seconds", 180},
+                  {"max_observations", 32},
+                  {"max_action_duration_ms", 5000},
+                  {"coordinate_space", "returned_image_pixels"}}},
                 {"limits",
                  {{"execution", config.exec_max_concurrent},
                   {"reserved_interactive", config.exec_reserved_interactive},

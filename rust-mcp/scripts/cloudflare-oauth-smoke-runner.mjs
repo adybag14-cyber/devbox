@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { assertClientNativeContract } from "../../cpp-mcp/scripts/native-contract.mjs";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import http from "node:http";
@@ -179,7 +180,7 @@ try {
   const transport = new StreamableHTTPClientTransport(baseUrl, { requestInit: { headers: { Authorization: `Bearer ${tokens.access_token}` } } });
   await client.connect(transport);
   const tools = await client.listTools();
-  assert.equal(tools.tools.length, 45);
+  await assertClientNativeContract(client, tools.tools);
   await client.close();
   client = undefined;
 

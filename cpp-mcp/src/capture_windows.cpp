@@ -1,4 +1,5 @@
 #include "devbox/capture.hpp"
+#include "devbox/computer_use.hpp"
 #ifdef _WIN32
 #include "devbox/native.hpp"
 #include <algorithm>
@@ -291,6 +292,38 @@ double rounded(double value, double scale) {
     return std::round(value * scale) / scale;
 }
 } // namespace
+ImageCapture native_capture_region(int left, int top, int width, int height, unsigned max_width,
+                                   unsigned quality, const Cancel& cancel) {
+    if (cancel)
+        cancel->check();
+    auto frame = *copy_frame(Rect{left, top, width, height});
+    if (frame.width > max_width) {
+        const auto new_height = std::max(
+            1u, static_cast<unsigned>(static_cast<std::uint64_t>(frame.height) * max_width / frame.width));
+        Frame scaled{max_width, new_height,
+                     std::vector<std::uint8_t>(static_cast<std::size_t>(max_width) * new_height * 3)};
+        for (unsigned y = 0; y < new_height; ++y) {
+            if (cancel)
+                cancel->check();
+            const auto source_y = static_cast<std::uint64_t>(y) * frame.height / new_height;
+            for (unsigned x = 0; x < max_width; ++x) {
+                const auto source_x = static_cast<std::uint64_t>(x) * frame.width / max_width;
+                const auto source = static_cast<std::size_t>(source_y * frame.width + source_x) * 3;
+                const auto target = (static_cast<std::size_t>(y) * max_width + x) * 3;
+                std::copy_n(frame.rgb.data() + source, 3, scaled.rgb.data() + target);
+            }
+        }
+        frame = std::move(scaled);
+    }
+    return {encode_jpeg(frame, quality), "image/jpeg",
+            Json{{"image_width", frame.width},
+                 {"image_height", frame.height},
+                 {"source_left", left},
+                 {"source_top", top},
+                 {"source_width", width},
+                 {"source_height", height},
+                 {"capture_method", "DesktopCompositorCopy(target-window)"}}};
+}
 ImageCapture native_capture(std::optional<std::uint32_t> pid, unsigned quality, bool include_tree,
                             const Cancel& cancel) {
     if (cancel)
