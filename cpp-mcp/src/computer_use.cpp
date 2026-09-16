@@ -285,6 +285,9 @@ ComputerUse::~ComputerUse() = default;
 
 Json ComputerUse::windows(const Json& arguments, const Cancel& cancel) {
 #ifdef _WIN32
+    std::unique_lock operation(impl_->operation, std::try_to_lock);
+    if (!operation.owns_lock())
+        throw Error("COMPUTER_BUSY: another computer-use call is running");
     if (!impl_->broker.empty())
         return computer_broker_call(impl_->broker, "windows", arguments, cancel).at("result");
     DpiScope dpi;
@@ -364,6 +367,9 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
             throw Error("COMPUTER_ARGUMENTS_INVALID: field is not applicable to this action: " + it.key());
     }
 #ifdef _WIN32
+    std::unique_lock operation(impl_->operation, std::try_to_lock);
+    if (!operation.owns_lock())
+        throw Error("COMPUTER_BUSY: another computer-use call is running");
     if (!impl_->broker.empty()) {
         const auto reply = computer_broker_call(impl_->broker, "perform", arguments, cancel);
         const auto& bytes = reply.at("image").get_binary();
@@ -372,9 +378,6 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
         validate_capture_image(capture.image, capture.mime_type);
         return capture;
     }
-    std::unique_lock operation(impl_->operation, std::try_to_lock);
-    if (!operation.owns_lock())
-        throw Error("COMPUTER_BUSY: another computer-use call is running");
     DpiScope dpi;
     InputLease lease;
     require_unheld_input();

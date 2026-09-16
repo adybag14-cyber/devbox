@@ -340,8 +340,16 @@ void native_checks() {
     act(twice);
     require(fixture.double_clicks > 0, "double click delivered");
     auto cancellation = std::make_shared<Cancellation>();
+    std::exception_ptr concurrent_failure;
     std::jthread cancel([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        try {
+            rejects([&] { computer.windows(Json::object(), {}); }, "COMPUTER_BUSY");
+            rejects([&] { computer.perform(Json{{"action", "observe"}, {"window_id", id}}, {}); },
+                    "COMPUTER_BUSY");
+        } catch (...) {
+            concurrent_failure = std::current_exception();
+        }
         cancellation->cancel();
     });
     rejects(
@@ -354,6 +362,8 @@ void native_checks() {
         },
         "OUTCOME_UNKNOWN");
     cancel.join();
+    if (concurrent_failure)
+        std::rethrow_exception(concurrent_failure);
     require(!(GetAsyncKeyState(VK_RIGHT) & 0x8000), "cancelled key hold releases its key");
     observe();
     SetWindowTextW(fixture.window, L"Devbox CUA changed title");
