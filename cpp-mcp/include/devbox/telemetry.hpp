@@ -55,6 +55,7 @@ class UsageTelemetry {
     void failed(const std::string& id, const std::string& error);
     void http(const HttpRequest& request, int status, Millis duration, bool disconnected);
     Json active_tools() const;
+    Json active_counts() const;
     Json snapshot() const;
     void stop();
 };

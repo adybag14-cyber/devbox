@@ -340,6 +340,13 @@ Json UsageTelemetry::active_tools() const {
     }
     return result;
 }
+Json UsageTelemetry::active_counts() const {
+    std::lock_guard lock(mutex_);
+    const auto computer = std::count_if(active_.begin(), active_.end(), [](const auto& entry) {
+        return entry.second.tool == "host_computer_use" || entry.second.tool == "host_computer_windows";
+    });
+    return Json{{"activeTools", active_.size()}, {"activeComputerUse", computer}};
+}
 Json UsageTelemetry::snapshot() const {
     return Json{{"tool", tools_.snapshot()}, {"http", http_.snapshot()}};
 }

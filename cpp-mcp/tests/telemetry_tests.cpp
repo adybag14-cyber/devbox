@@ -131,6 +131,16 @@ int main() {
         const auto cua_key = usage.started(
             "host_computer_use", Json{{"action", "key"}, {"keys", {"PRIVATE-CUA-KEY"}}}, Json::object());
         usage.failed(cua_key, "Unsupported key name");
+        std::vector<std::string> pending;
+        for (int i = 0; i < 36; ++i)
+            pending.push_back(usage.started("devbox_wait", Json::object(), Json::object()));
+        const auto input_pending = usage.started("host_computer_use", Json::object(), Json::object());
+        require(usage.active_tools().size() == 32 && usage.active_counts()["activeTools"] == 37 &&
+                    usage.active_counts()["activeComputerUse"] == 1,
+                "deployment activity counts cannot truncate a CUA call behind the diagnostic list limit");
+        for (const auto& invocation : pending)
+            usage.finished(invocation, result_success("done"));
+        usage.finished(input_pending, result_success("done"));
         HttpRequest request;
         request.method = "POST";
         request.path = "/mcp";
