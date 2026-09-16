@@ -262,6 +262,24 @@ WORD key_code(std::string name) {
     }
     throw Error("COMPUTER_KEY_UNSUPPORTED: use a documented key name; system-global keys are unavailable");
 }
+std::vector<WORD> key_chord(const Json& keys, bool allow_empty = false) {
+    if (!keys.is_array() || (!allow_empty && keys.empty()) || keys.size() > 5)
+        throw Error("COMPUTER_KEYS_INVALID");
+    std::vector<WORD> chord;
+    for (const auto& key : keys) {
+        if (!key.is_string())
+            throw Error("COMPUTER_KEYS_INVALID");
+        const auto code = key_code(key.get<std::string>());
+        if (std::find(chord.begin(), chord.end(), code) != chord.end())
+            throw Error("COMPUTER_DUPLICATE_KEY");
+        chord.push_back(code);
+    }
+    const auto has = [&](WORD key) { return std::find(chord.begin(), chord.end(), key) != chord.end(); };
+    if ((has(VK_CONTROL) && ((has(VK_MENU) && has(VK_DELETE)) || has(VK_ESCAPE))) ||
+        (has(VK_MENU) && (has(VK_TAB) || has(VK_ESCAPE))))
+        throw Error("COMPUTER_SYSTEM_SHORTCUT_DENIED");
+    return chord;
+}
 } // namespace
 #endif
 
@@ -355,6 +373,7 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
         {"scroll", {"x", "y", "scroll_x", "scroll_y"}},
         {"type", {"text"}},
         {"key", {"keys", "hold_ms"}},
+        {"key_sequence", {"sequence"}},
         {"wait", {"duration_ms"}}};
     const auto definition = fields.find(action);
     if (definition == fields.end())
@@ -446,22 +465,30 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
     if (button != "left" && button != "right" && button != "middle")
         throw Error("COMPUTER_BUTTON_INVALID");
     std::vector<WORD> chord;
-    if (action == "key") {
-        const auto keys = arguments.value("keys", Json::array());
-        if (!keys.is_array() || keys.empty() || keys.size() > 5)
-            throw Error("COMPUTER_KEYS_INVALID");
-        for (const auto& key : keys) {
-            if (!key.is_string())
-                throw Error("COMPUTER_KEYS_INVALID");
-            const auto code = key_code(key.get<std::string>());
-            if (std::find(chord.begin(), chord.end(), code) != chord.end())
-                throw Error("COMPUTER_DUPLICATE_KEY");
-            chord.push_back(code);
+    if (action == "key")
+        chord = key_chord(arguments.value("keys", Json::array()));
+    struct KeySegment {
+        std::vector<WORD> keys;
+        unsigned duration_ms;
+    };
+    std::vector<KeySegment> sequence;
+    std::uint64_t sequence_duration = 0;
+    if (action == "key_sequence") {
+        const auto entries = arguments.value("sequence", Json::array());
+        if (!entries.is_array() || entries.empty() || entries.size() > 32)
+            throw Error("COMPUTER_SEQUENCE_INVALID: provide 1 to 32 timed key segments");
+        for (const auto& entry : entries) {
+            if (!entry.is_object() || entry.size() != 2 || !entry.contains("keys") ||
+                !entry.contains("duration_ms") || !entry["duration_ms"].is_number_integer())
+                throw Error("COMPUTER_SEQUENCE_INVALID: each segment needs keys and duration_ms only");
+            const auto milliseconds = entry["duration_ms"].get<std::int64_t>();
+            if (milliseconds < 1 || milliseconds > 5000)
+                throw Error("COMPUTER_SEQUENCE_DURATION: each segment must last 1 to 5000 ms");
+            sequence_duration += static_cast<std::uint64_t>(milliseconds);
+            if (sequence_duration > 5000)
+                throw Error("COMPUTER_SEQUENCE_DURATION: total scheduled duration exceeds 5000 ms");
+            sequence.push_back({key_chord(entry["keys"], true), static_cast<unsigned>(milliseconds)});
         }
-        const auto has = [&](WORD key) { return std::find(chord.begin(), chord.end(), key) != chord.end(); };
-        if ((has(VK_CONTROL) && ((has(VK_MENU) && has(VK_DELETE)) || has(VK_ESCAPE))) ||
-            (has(VK_MENU) && (has(VK_TAB) || has(VK_ESCAPE))))
-            throw Error("COMPUTER_SYSTEM_SHORTCUT_DENIED");
     }
     auto typed = to_utf16(json_string(arguments, "text"));
     if (action == "type" &&
@@ -485,11 +512,11 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
     }
     bool attempted = false;
     const auto deadline = Clock::now() + std::chrono::seconds(10);
-    auto current = [&] {
+    auto current = [&](bool compare_title = false) {
         check_cancel(cancel);
         if (Clock::now() > deadline)
             throw Error("COMPUTER_ACTION_TIMEOUT");
-        ensure_current(observation.window, false);
+        ensure_current(observation.window, compare_title);
     };
     auto point_owner = [&](POINT target) {
         current();
@@ -583,6 +610,43 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
                 send_input(keyboard_event(*it, true), attempted);
             held.clear();
         }
+        if (action == "key_sequence") {
+            std::vector<WORD> held;
+            ScopeExit release([&] {
+                for (auto it = held.rbegin(); it != held.rend(); ++it)
+                    release_input(keyboard_event(*it, true));
+            });
+            // Validate all chords before input. Release removed keys before pressing new keys,
+            // so transitions never create an unvalidated union of adjacent chords.
+            for (const auto& segment : sequence) {
+                current(true);
+                for (std::size_t i = held.size(); i > 0; --i) {
+                    const auto key = held[i - 1];
+                    if (std::find(segment.keys.begin(), segment.keys.end(), key) == segment.keys.end()) {
+                        send_input(keyboard_event(key, true), attempted);
+                        held.erase(held.begin() + static_cast<std::ptrdiff_t>(i - 1));
+                    }
+                }
+                for (const auto key : segment.keys) {
+                    if (std::find(held.begin(), held.end(), key) == held.end()) {
+                        current(true);
+                        held.push_back(key);
+                        send_input(keyboard_event(key, false), attempted);
+                    }
+                }
+                const auto until = Clock::now() + Millis(segment.duration_ms);
+                do {
+                    current(true);
+                    delay(static_cast<unsigned>(std::max<Millis::rep>(
+                              1, std::min<Millis::rep>(
+                                     10, std::chrono::duration_cast<Millis>(until - Clock::now()).count()))),
+                          cancel);
+                } while (Clock::now() < until);
+            }
+            for (auto it = held.rbegin(); it != held.rend(); ++it)
+                send_input(keyboard_event(*it, true), attempted);
+            held.clear();
+        }
         if (action == "type") {
             for (const auto code : typed) {
                 current();
@@ -629,6 +693,10 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
         capture.metadata["usage_type"] = "computer_use";
         capture.metadata["action"] = action;
         capture.metadata["input_events_sent"] = attempted;
+        if (action == "key_sequence") {
+            capture.metadata["sequence_segments"] = sequence.size();
+            capture.metadata["scheduled_duration_ms"] = sequence_duration;
+        }
         capture.metadata["window"] = window_json(latest);
         capture.metadata["observation_id"] = id;
         capture.metadata["expires_after_seconds"] = 180;

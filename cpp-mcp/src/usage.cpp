@@ -246,6 +246,9 @@ std::string UsageTelemetry::started(const std::string& tool, const Json& args, c
                                   {"redacted", true}};
     if (tool == "host_computer_use" && args.contains("keys") && args["keys"].is_array())
         summarized["keys"] = Json{{"type", "array"}, {"length", args["keys"].size()}, {"redacted", true}};
+    if (tool == "host_computer_use" && args.contains("sequence") && args["sequence"].is_array())
+        summarized["sequence"] =
+            Json{{"type", "array"}, {"length", args["sequence"].size()}, {"redacted", true}};
     Invocation invocation{uuid(), tool, utc_now(), Clock::now(), std::move(summarized), context};
     const auto id = invocation.id;
     tools_.enqueue(invocation.event("tool_start"));

@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[a-fA-F0-9]{64}$')][string]$Sha256,
     [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9-]{1,100}$')][string]$PipeName,
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
+    [ValidatePattern('^ChatGptDevbox-ComputerUse(?:-[A-Za-z0-9-]{1,80})?$')]
+    [string]$TaskName = 'ChatGptDevbox-ComputerUse',
     [switch]$Install,
     [switch]$Start
 )
@@ -24,7 +26,6 @@ if ($LASTEXITCODE -ne 0 -or $build.implementation -ne 'cpp' -or $build.sourceDir
     $build.binarySha256 -ne $Sha256) {
     throw 'Desktop worker requires a clean, provenance-verified C++ build.'
 }
-$taskName = 'ChatGptDevbox-ComputerUse'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 if ($Install) {
     if (-not ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole(
@@ -34,7 +35,7 @@ if ($Install) {
     $shellPath = (Get-Process -Id $PID).Path
     $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $PSCommandPath +
         '" -Executable "' + $binaryPath + '" -Sha256 ' + $Sha256 + ' -PipeName ' + $PipeName +
-        ' -ProjectRoot "' + $projectRoot + '"'
+        ' -ProjectRoot "' + $projectRoot + '" -TaskName ' + $TaskName
     $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($existing) {
         if ($existing.Description -ne ('Devbox native CUA desktop worker: ' + $projectRoot)) {

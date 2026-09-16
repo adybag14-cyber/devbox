@@ -54,11 +54,20 @@ Use a new returned ID for every example; they are not interchangeable. Literal t
 | `scroll` | `observation_id`, `x`, `y`, nonzero `scroll_y` or `scroll_x`; positive means down/right; each axis ±20 wheel notches |
 | `type` | `observation_id`, `text`, at most 4096 Unicode characters |
 | `key` | `observation_id`, `keys` chord; optional `hold_ms` 0–5000 |
+| `key_sequence` | `observation_id`, `sequence` of 1–32 `{keys, duration_ms}` segments; 1–5000 ms each, total at most 5000 ms |
 | `wait` | `observation_id`; optional `duration_ms` 0–5000 |
 
 `duration_ms` defaults to 300. All actions accept `settle_ms` from 0–1000, default 100, before the final screenshot. Later actions retain the image scale/quality of their observation; call `observe` to change those settings. Supported keys include CTRL/CONTROL, ALT, SHIFT, ENTER/RETURN, TAB, ESC/ESCAPE, SPACE, BACKSPACE, DELETE, INSERT, LEFT/RIGHT/UP/DOWN, HOME/END, PAGEUP/PAGEDOWN, PLUS/MINUS, letters, digits, and F1–F12. Windows/system-global keys and Ctrl+Alt+Delete are unavailable.
 
 The guard also rejects Ctrl+Esc (including Ctrl+Shift+Esc), Alt+Tab, and Alt+Esc before key-down, including variants with additional modifiers. Use the explicit window discovery/observation flow to select a different window.
+
+`key_sequence` changes key combinations within one native call, without a model/network round trip between segments. Keys shared by adjacent chords remain pressed; keys removed from the next chord are released before new keys are pressed. An empty `keys` array releases all owned keys for a bounded pause. Every chord and the total duration are checked before any input. The final screenshot is returned after the sequence, and all keys are released on completion, cancellation or a window/focus/title change. No key remains held between calls.
+
+```json
+{"action":"key_sequence","observation_id":"<latest ID>","sequence":[{"keys":["UP"],"duration_ms":500},{"keys":["UP","RIGHT"],"duration_ms":300},{"keys":["UP"],"duration_ms":500},{"keys":[],"duration_ms":100}]}
+```
+
+This is a bounded, preplanned gesture. Use it where intermediate input is predictable; it does not inspect changing application content between segments. Window identity, bounds, foreground and desktop checks continue during execution. Re-observe after the returned image or an uncertain outcome. This additive action retains contract version 3 and 47 tools, but changes the schema hash; refresh the client before using it. Capabilities report the segment and duration limits.
 
 ## Bounds, ownership, and outcomes
 
@@ -78,6 +87,8 @@ Window targeting does not make arbitrary application content trustworthy or gran
 `host_computer_windows` requires `mcp:host:read`. `host_computer_use`, including foreground observation, requires `mcp:host:exec`. Existing broad `mcp:tools` authorization remains compatible. Input is annotated as a non-idempotent write with open-world/destructive potential, so clients can preserve their approval behavior.
 
 CUA start/finish/failure events include `usage_type: "computer_use"`. Typed text and key-array values are redacted from usage logs; their lengths remain available. Screenshot bytes are returned as MCP image content rather than included in usage-log argument previews.
+
+Nested `key_sequence` contents are also redacted; telemetry retains only the segment count. For side-by-side candidate staging, the desktop-worker installer accepts a `-TaskName ChatGptDevbox-ComputerUse-<candidate>` name. Each worker still has an immutable executable and distinct pipe, with the per-session input mutex preventing simultaneous injection. Retire only the verified old worker after the new service is healthy; preserve its binary/launcher for rollback.
 
 ## Verification and client refresh
 
