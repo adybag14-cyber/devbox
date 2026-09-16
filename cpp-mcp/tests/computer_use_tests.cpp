@@ -49,6 +49,51 @@ void contract_checks() {
     std::cout << "computer schema, bounds, scope and platform contract passed\n";
 }
 #ifdef _WIN32
+struct BrokerFixture {
+    std::string pipe = "Devbox-Cua-Test-" + uuid();
+    std::wstring event_name = L"Local\\Devbox-Cua-Stop-" + wide(uuid());
+    NativeHandle event, process;
+    std::optional<std::string> previous = environment("DEVBOX_COMPUTER_USE_PIPE");
+    explicit BrokerFixture(const fs::path& image = executable_path()) {
+        event.reset(CreateEventW(nullptr, TRUE, FALSE, event_name.c_str()));
+        require(static_cast<bool>(event), "owned broker stop event");
+        auto command = L"\"" + image.wstring() + L"\" broker-child " + wide(pipe) + L" " + event_name;
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        PROCESS_INFORMATION info{};
+        require(CreateProcessW(image.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                               nullptr, nullptr, &startup, &info) != FALSE,
+                "spawn exact owned broker fixture");
+        process.reset(info.hProcess);
+        CloseHandle(info.hThread);
+        set_environment("DEVBOX_COMPUTER_USE_PIPE", pipe);
+        const auto deadline = Clock::now() + std::chrono::seconds(5);
+        while (!WaitNamedPipeW((L"\\\\.\\pipe\\" + wide(pipe)).c_str(), 50)) {
+            if (Clock::now() >= deadline || WaitForSingleObject(process.get(), 0) != WAIT_TIMEOUT) {
+                SetEvent(event.get());
+                WaitForSingleObject(process.get(), 5000);
+                set_environment("DEVBOX_COMPUTER_USE_PIPE", previous);
+                throw Error("owned broker did not become ready");
+            }
+            std::this_thread::sleep_for(Millis(10));
+        }
+    }
+    ~BrokerFixture() {
+        set_environment("DEVBOX_COMPUTER_USE_PIPE", previous);
+        SetEvent(event.get());
+        if (WaitForSingleObject(process.get(), 5000) != WAIT_OBJECT_0) {
+            // This handle is the exact child returned by our CreateProcess, never a name/PID search.
+            TerminateProcess(process.get(), 99);
+            WaitForSingleObject(process.get(), 5000);
+        }
+    }
+    void finish() {
+        SetEvent(event.get());
+        require(WaitForSingleObject(process.get(), 5000) == WAIT_OBJECT_0, "broker graceful shutdown");
+        DWORD status = 99;
+        require(GetExitCodeProcess(process.get(), &status) && status == 0, "broker exit status");
+    }
+};
 struct Fixture {
     HWND window = nullptr, edit = nullptr;
     std::atomic_uint down{0}, up{0}, double_clicks{0}, drag_moves{0}, keys{0};
@@ -295,8 +340,16 @@ void native_checks() {
     act(twice);
     require(fixture.double_clicks > 0, "double click delivered");
     auto cancellation = std::make_shared<Cancellation>();
+    std::exception_ptr concurrent_failure;
     std::jthread cancel([&] {
         std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        try {
+            rejects([&] { computer.windows(Json::object(), {}); }, "COMPUTER_BUSY");
+            rejects([&] { computer.perform(Json{{"action", "observe"}, {"window_id", id}}, {}); },
+                    "COMPUTER_BUSY");
+        } catch (...) {
+            concurrent_failure = std::current_exception();
+        }
         cancellation->cancel();
     });
     rejects(
@@ -309,6 +362,8 @@ void native_checks() {
         },
         "OUTCOME_UNKNOWN");
     cancel.join();
+    if (concurrent_failure)
+        std::rethrow_exception(concurrent_failure);
     require(!(GetAsyncKeyState(VK_RIGHT) & 0x8000), "cancelled key hold releases its key");
     observe();
     SetWindowTextW(fixture.window, L"Devbox CUA changed title");
@@ -351,6 +406,35 @@ void native_checks() {
 } // namespace
 int main(int argc, char** argv) {
     try {
+#ifdef _WIN32
+        if (argc == 4 && std::string_view(argv[1]) == "broker-child") {
+            NativeHandle stop(OpenEventW(SYNCHRONIZE, FALSE, wide(argv[3]).c_str()));
+            require(static_cast<bool>(stop), "broker child owns stop event");
+            return run_computer_broker(argv[2],
+                                       [&] { return WaitForSingleObject(stop.get(), 0) != WAIT_TIMEOUT; });
+        }
+        if (argc == 2 && std::string_view(argv[1]) == "broker-native") {
+            BrokerFixture broker;
+            native_checks();
+            rejects([&] { computer_broker_call("../invalid", "windows", Json::object(), {}); },
+                    "COMPUTER_BROKER_CONFIG");
+            rejects([&] { computer_broker_call(broker.pipe, "execute", Json::object(), {}); },
+                    "COMPUTER_BROKER_PROTOCOL");
+            broker.finish();
+            rejects([&] { ComputerUse().windows(Json::object(), {}); }, "COMPUTER_BROKER_UNAVAILABLE");
+            const auto other_image =
+                fs::temp_directory_path() / path_from_utf8("devbox-peer-test-" + uuid() + ".exe");
+            fs::copy_file(executable_path(), other_image);
+            ScopeExit cleanup_image([&] { fs::remove(other_image); });
+            {
+                BrokerFixture other(other_image);
+                rejects([&] { ComputerUse().windows(Json::object(), {}); }, "COMPUTER_BROKER_IDENTITY");
+                other.finish();
+            }
+            std::cout << "native broker cross-process input, protocol rejection and disconnect passed\n";
+            return 0;
+        }
+#endif
         if (argc > 1 && std::string_view(argv[1]) == "native") {
 #ifdef _WIN32
             native_checks();

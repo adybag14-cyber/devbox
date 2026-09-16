@@ -4,6 +4,22 @@ The C++23 MCP contract version 3 exposes 47 tools: the frozen 45-tool compatibil
 
 These tools use native Windows window/process APIs, SendInput, and GDI/WIC screenshots. They do not evaluate browser JavaScript or run a shell. Existing capture tools remain available for read-only capture.
 
+## Services in Windows session 0
+
+A startup/S4U task runs in session 0 and cannot use the logged-in desktop directly. Keep the MCP service and Guardian in their existing service session. Run the **same immutable C++ executable** in the user's interactive session as a desktop worker, and set `DEVBOX_COMPUTER_USE_PIPE` in the MCP runtime environment to its local pipe name. Without that setting, a directly launched interactive MCP continues to execute CUA in its own process.
+
+```powershell
+./scripts/Start-ChatGptDevboxComputerUse.ps1 -Install -Start `
+  -Executable '<project>\run\bin\<verified-cpp-candidate>.exe' `
+  -Sha256 '<verified-sha256>' -PipeName 'DevboxComputerUse-<deployment-id>'
+```
+
+Register using the existing elevated Devbox operator account. The task uses an Interactive token, starts at that user's logon, and restarts on failure. Its hidden launcher verifies the executable hash on every launch and records the exact worker PID, creation time, session, source and binary identity under `run/computer-use/`. The MCP does not need desktop credentials. Guardian and the tunnel retain their existing lifecycle. Updating the worker task requires quiescing CUA and gracefully stopping only the verified old worker first; updating a running task to a different candidate is rejected.
+
+The worker's named pipe rejects remote clients and grants access only to its Windows user and SYSTEM. Both peers verify the other process's executable path and Windows user, retaining the process handle for each request. The deployment must preserve the immutable executable at that path. Only the two CUA operations are accepted; the worker revalidates their tool schemas. Requests are limited to 64 KiB, replies to 16 MiB, and each exchange to 30 seconds. There is one worker connection at a time. A missing worker fails explicitly; input is never silently retried or redirected to another session.
+
+Cancellation sends a control message and waits for the action to unwind; an MCP disconnect also cancels the native action and releases keys/buttons it pressed. A lost acknowledgement produces an unknown-outcome error and requires a fresh observation. Worker restart invalidates its observations. In broker mode, observations live in the worker and can survive an MCP-only restart; treat all observations as stale after any operational transition. Results include the actual desktop session and worker PID. Use the same executable's `--computer-use-probe PIPE` command from the service session for a read-only inventory/identity check. Logging off removes desktop availability while the MCP's other tools remain available; locked and secure desktops remain inaccessible.
+
 ## Observe and act
 
 1. Call `host_computer_windows`, optionally with `title_contains`, and choose a returned `window_id` by its title and PID.
@@ -48,7 +64,7 @@ The guard also rejects Ctrl+Esc (including Ctrl+Shift+Esc), Alt+Tab, and Alt+Esc
 
 - Window IDs bind the handle to its PID and process creation time. Input validates the current window identity, physical bounds, title, and foreground ownership against the observation. Pointer operations additionally check the window owning the target point.
 - DPI-aware physical capture bounds are mapped to the returned image dimensions. Moved/resized windows invalidate the old observation. Unrelated windows covering the target prevent capture, and an occluded pointer target prevents input.
-- Observation IDs expire after 180 seconds, are kept in a bounded 32-entry store, and are consumed before input. Restarting the service invalidates all observations. A rejected parameter validation does not perform an input action.
+- Observation IDs expire after 180 seconds, are kept in a bounded 32-entry store, and are consumed before input. Restarting the process that owns computer use (the MCP or its desktop worker) invalidates all observations. A rejected parameter validation does not perform an input action.
 - One worker executes computer-use operations, with a queue bound of eight; a per-session Windows mutex also prevents simultaneous input from another Devbox instance. Passive/network requests continue on their normal executors.
 - Input runs only on the accessible default interactive desktop. Locked/secure desktops and different sessions are rejected. Release physical mouse buttons/modifier keys before starting a computer-use operation.
 - Drag, hold, and wait durations are bounded to five seconds. Input loops check cancellation and release keys/buttons they pressed when unwinding. A process crash, desktop transition, or lost acknowledgement can still leave an uncertain outcome; a fresh observation is required, and ambiguous held input may require the user to release it.
@@ -65,6 +81,6 @@ CUA start/finish/failure events include `usage_type: "computer_use"`. Typed text
 
 ## Verification and client refresh
 
-`computer-contract` checks schemas, limits, authorization mapping and unsupported-platform behavior. Windows `computer-native` uses a dedicated owned window to exercise screenshots, click/double-click, Unicode, chords, key release on cancellation, wheel direction, drag, stale identities, moved/resized windows, occlusion, and image-to-screen scaling. Existing CTest, SDK, OAuth, persistence, and cross-platform gates remain required. Frozen Rust comparisons continue validating all 45 old tools; the two C++ extension schemas are checked independently against `cpp-mcp/contract/computer-tools.json`.
+`computer-contract` checks schemas, limits, authorization mapping and unsupported-platform behavior. Windows `computer-native` uses a dedicated owned window to exercise screenshots, click/double-click, Unicode, chords, key release on cancellation, wheel direction, drag, stale identities, moved/resized windows, occlusion, and image-to-screen scaling. `computer-broker-native` repeats those actions through a separate, exact-owned worker process and checks protocol rejection, disconnect handling and graceful shutdown. Existing CTest, SDK, OAuth, persistence, and cross-platform gates remain required. Frozen Rust comparisons continue validating all 45 old tools; the two C++ extension schemas are checked independently against `cpp-mcp/contract/computer-tools.json`.
 
 After deploying a committed, verified C++ candidate, refresh the existing Devbox connection in ChatGPT's plugin settings. Confirm both new tool names and the contract version/schema hash, then start a fresh conversation with the plugin enabled. For an integration test, explicitly request these native tools so browser-DOM or shell automation cannot be mistaken for proof of native input. Keep the test in a dedicated window and record the model's actual tool calls and visible result.
