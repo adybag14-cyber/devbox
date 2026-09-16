@@ -56,10 +56,12 @@ struct BrokerFixture {
     std::wstring event_name = L"Local\\Devbox-Cua-Stop-" + wide(uuid());
     NativeHandle event, process;
     std::optional<std::string> previous = environment("DEVBOX_COMPUTER_USE_PIPE");
-    explicit BrokerFixture(const fs::path& image = executable_path()) {
+    explicit BrokerFixture(const fs::path& image = executable_path(), bool overlay = false) {
         event.reset(CreateEventW(nullptr, TRUE, FALSE, event_name.c_str()));
         require(static_cast<bool>(event), "owned broker stop event");
-        auto command = L"\"" + image.wstring() + L"\" broker-child " + wide(pipe) + L" " + event_name;
+        auto command = L"\"" + image.wstring() +
+                       (overlay ? L"\" broker-overlay-child " : L"\" broker-child ") + wide(pipe) + L" " +
+                       event_name;
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION info{};
@@ -277,6 +279,69 @@ void native_checks() {
     DestroyWindow(occluder);
     remove_occluder.disarm();
     observe();
+    std::atomic_uint popup_clicks{0};
+    WNDCLASSW popup_class{};
+    popup_class.hInstance = GetModuleHandleW(nullptr);
+    popup_class.lpszClassName = L"DevboxNativePopupFixture";
+    popup_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_INFOBK + 1);
+    popup_class.lpfnWndProc = [](HWND window, UINT message, WPARAM wp, LPARAM lp) -> LRESULT {
+        if (message == WM_NCCREATE)
+            SetWindowLongPtrW(
+                window, GWLP_USERDATA,
+                reinterpret_cast<LONG_PTR>(reinterpret_cast<CREATESTRUCTW*>(lp)->lpCreateParams));
+        if (message == WM_NCHITTEST)
+            return HTCLIENT;
+        if (message == WM_MOUSEACTIVATE)
+            return MA_NOACTIVATE;
+        if (message == WM_LBUTTONDOWN) {
+            ++*reinterpret_cast<std::atomic_uint*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+            return 0;
+        }
+        return DefWindowProcW(window, message, wp, lp);
+    };
+    require(RegisterClassW(&popup_class) || GetLastError() == ERROR_CLASS_ALREADY_EXISTS, "popup class");
+    HWND tooltip =
+        CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, popup_class.lpszClassName,
+                        L"Owned passive tooltip", WS_POPUP | WS_VISIBLE, 180, 180, 120, 25, nullptr, nullptr,
+                        GetModuleHandleW(nullptr), &popup_clicks);
+    require(tooltip != nullptr, "passive unowned tooltip fixture");
+    ScopeExit remove_tooltip([&] { DestroyWindow(tooltip); });
+    require(GetAncestor(tooltip, GA_ROOTOWNER) == tooltip, "tooltip has no target owner HWND");
+    observe();
+    require(!frame.image.empty(), "same-process passive tooltip remains observable through native capture");
+    SetWindowLongPtrW(tooltip, GWL_EXSTYLE, WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW);
+    observe();
+    require(GetAncestor(WindowFromPoint(POINT{220, 190}), GA_ROOT) == tooltip,
+            "unowned popup really owns the input point");
+    auto popup_point = Json{
+        {"x", (220 - frame.metadata["source_left"].get<int>()) * frame.metadata["image_width"].get<int>() /
+                  frame.metadata["source_width"].get<int>()},
+        {"y", (190 - frame.metadata["source_top"].get<int>()) * frame.metadata["image_height"].get<int>() /
+                  frame.metadata["source_height"].get<int>()},
+        {"action", "click"}};
+    act(popup_point);
+    MSG popup_message{};
+    while (PeekMessageW(&popup_message, nullptr, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&popup_message);
+        DispatchMessageW(&popup_message);
+    }
+    require(frame.metadata["input_events_sent"] == true, "same-process non-activating popup can be targeted");
+    require(popup_clicks == 1, "native click reaches the non-activating popup");
+    SetWindowLongPtrW(tooltip, GWL_EXSTYLE, WS_EX_TOPMOST | WS_EX_NOACTIVATE);
+    rejects([&] { computer.perform(Json{{"action", "observe"}, {"window_id", id}}, {}); }, "WINDOW_OCCLUDED");
+    DestroyWindow(tooltip);
+    remove_tooltip.disarm();
+    observe();
+    {
+        BrokerFixture foreign_overlay(executable_path(), true);
+        auto foreign_click = popup_point;
+        foreign_click["observation_id"] = frame.metadata["observation_id"];
+        rejects([&] { computer.perform(foreign_click, {}); }, "POINT_OCCLUDED");
+        rejects([&] { computer.perform(Json{{"action", "observe"}, {"window_id", id}}, {}); },
+                "WINDOW_OCCLUDED");
+        foreign_overlay.finish();
+    }
+    observe();
     const auto ready_id = frame.metadata["observation_id"];
     const auto foreground_before = GetForegroundWindow();
     const auto keys_before = fixture.keys.load();
@@ -486,9 +551,34 @@ void native_checks() {
 int main(int argc, char** argv) {
     try {
 #ifdef _WIN32
-        if (argc == 4 && std::string_view(argv[1]) == "broker-child") {
+        if (argc == 4 && (std::string_view(argv[1]) == "broker-child" ||
+                          std::string_view(argv[1]) == "broker-overlay-child")) {
             NativeHandle stop(OpenEventW(SYNCHRONIZE, FALSE, wide(argv[3]).c_str()));
             require(static_cast<bool>(stop), "broker child owns stop event");
+            HWND overlay = nullptr;
+            ScopeExit close_overlay([&] {
+                if (overlay)
+                    DestroyWindow(overlay);
+            });
+            if (std::string_view(argv[1]) == "broker-overlay-child") {
+                SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+                WNDCLASSW cls{};
+                cls.hInstance = GetModuleHandleW(nullptr);
+                cls.lpszClassName = L"DevboxForeignPopupFixture";
+                cls.lpfnWndProc = [](HWND window, UINT message, WPARAM wp, LPARAM lp) -> LRESULT {
+                    if (message == WM_NCHITTEST)
+                        return HTCLIENT;
+                    if (message == WM_MOUSEACTIVATE)
+                        return MA_NOACTIVATE;
+                    return DefWindowProcW(window, message, wp, lp);
+                };
+                require(RegisterClassW(&cls) != 0, "foreign popup class");
+                overlay =
+                    CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, cls.lpszClassName,
+                                    L"Foreign non-activating popup", WS_POPUP | WS_VISIBLE, 180, 180, 120, 25,
+                                    nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                require(overlay != nullptr, "foreign passive overlay fixture");
+            }
             return run_computer_broker(argv[2],
                                        [&] { return WaitForSingleObject(stop.get(), 0) != WAIT_TIMEOUT; });
         }

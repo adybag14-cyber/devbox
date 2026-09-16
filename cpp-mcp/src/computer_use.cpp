@@ -196,6 +196,13 @@ void ensure_current(const Window& expected, bool compare_title = true) {
         (compare_title && live.title != expected.title) || !foreground(live.handle))
         throw Error("COMPUTER_STALE_OBSERVATION: window focus, title or bounds changed; observe again");
 }
+bool target_popup(HWND window, const Window& target) {
+    DWORD pid = 0;
+    GetWindowThreadProcessId(window, &pid);
+    const auto extended = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    return pid == target.pid && (GetWindowLongPtrW(window, GWL_STYLE) & WS_POPUP) &&
+           (extended & WS_EX_NOACTIVATE) && (extended & (WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT));
+}
 void require_unoccluded(const Window& target) {
     RECT area{target.bounds.left, target.bounds.top, target.bounds.left + target.bounds.width,
               target.bounds.top + target.bounds.height};
@@ -209,6 +216,11 @@ void require_unoccluded(const Window& target) {
             continue;
         DWORD cloaked = 0;
         if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+            continue;
+        // Chromium's tooltips and colour chooser have no owner HWND. Non-activating
+        // popups in the target process are part of the foreground app's visible UI.
+        // Independent windows and other processes remain occluders.
+        if (target_popup(window, target))
             continue;
         RECT bounds{}, overlap{};
         if (GetWindowRect(window, &bounds) && IntersectRect(&overlap, &area, &bounds))
@@ -522,7 +534,8 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
         current();
         const auto hit = WindowFromPoint(target);
         if (!hit || (GetAncestor(hit, GA_ROOT) != observation.window.handle &&
-                     GetAncestor(hit, GA_ROOTOWNER) != observation.window.handle))
+                     GetAncestor(hit, GA_ROOTOWNER) != observation.window.handle &&
+                     !target_popup(GetAncestor(hit, GA_ROOT), observation.window)))
             throw Error("COMPUTER_POINT_OCCLUDED: point belongs to another window; observe again");
     };
     auto move = [&](POINT target) {
