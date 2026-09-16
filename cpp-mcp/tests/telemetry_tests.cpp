@@ -131,6 +131,12 @@ int main() {
         const auto cua_key = usage.started(
             "host_computer_use", Json{{"action", "key"}, {"keys", {"PRIVATE-CUA-KEY"}}}, Json::object());
         usage.failed(cua_key, "Unsupported key name");
+        const auto cua_sequence = usage.started(
+            "host_computer_use",
+            Json{{"action", "key_sequence"},
+                 {"sequence", {{{"keys", {"PRIVATE-CUA-SEQUENCE-KEY"}}, {"duration_ms", 100}}}}},
+            Json::object());
+        usage.finished(cua_sequence, result_success("Sequence complete"));
         std::vector<std::string> pending;
         for (int i = 0; i < 36; ++i)
             pending.push_back(usage.started("devbox_wait", Json::object(), Json::object()));
@@ -155,6 +161,7 @@ int main() {
                 "tool lifecycle metadata logged and redacted");
         require(log.find("PRIVATE-CUA-TYPED-TEXT") == std::string::npos &&
                     log.find("PRIVATE-CUA-KEY") == std::string::npos &&
+                    log.find("PRIVATE-CUA-SEQUENCE-KEY") == std::string::npos &&
                     log.find("\"usage_type\":\"computer_use\"") != std::string::npos,
                 "CUA telemetry classifies native input without recording typed text");
         const auto http = read_json(root / "run" / "http-usage.jsonl");

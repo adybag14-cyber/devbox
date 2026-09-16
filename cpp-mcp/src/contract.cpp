@@ -277,6 +277,8 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                   {"observation_ttl_seconds", 180},
                   {"max_observations", 32},
                   {"max_action_duration_ms", 5000},
+                  {"max_key_sequence_segments", 32},
+                  {"max_key_sequence_duration_ms", 5000},
                   {"coordinate_space", "returned_image_pixels"}}},
                 {"limits",
                  {{"execution", config.exec_max_concurrent},

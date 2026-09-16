@@ -39,6 +39,8 @@ void contract_checks() {
     for (const auto bad :
          {Json{{"action", "type"}, {"text", std::string(4097, 'x')}},
           Json{{"action", "click"}, {"x", -1}, {"y", 0}}, Json{{"action", "key"}, {"hold_ms", 5001}},
+          Json{{"action", "key_sequence"}, {"sequence", Json::array()}},
+          Json{{"action", "key_sequence"}, {"sequence", {{{"keys", {"UP"}}, {"duration_ms", 0}}}}},
           Json{{"action", "execute_script"}}, Json{{"action", "observe"}, {"command", "anything"}}})
         rejects([&] { contract.arguments("host_computer_use", bad); }, "arguments");
 #ifndef _WIN32
@@ -99,6 +101,8 @@ struct Fixture {
     std::atomic_uint down{0}, up{0}, double_clicks{0}, drag_moves{0}, keys{0};
     std::atomic_int wheel{0};
     std::atomic_bool control_a{false};
+    std::atomic_uint arrow_up_down{0}, arrow_up_up{0}, arrow_right_down{0}, arrow_right_up{0};
+    std::atomic_bool up_held_on_right_down{false};
     WNDPROC original_edit = nullptr;
     std::thread thread;
     std::string title = "Devbox Native CUA Test " + std::to_string(GetCurrentProcessId());
@@ -147,6 +151,19 @@ struct Fixture {
             return 0;
         case WM_KEYDOWN:
             ++self->keys;
+            if (wparam == VK_UP)
+                ++self->arrow_up_down;
+            if (wparam == VK_RIGHT) {
+                ++self->arrow_right_down;
+                if (GetKeyState(VK_UP) & 0x8000)
+                    self->up_held_on_right_down = true;
+            }
+            return 0;
+        case WM_KEYUP:
+            if (wparam == VK_UP)
+                ++self->arrow_up_up;
+            if (wparam == VK_RIGHT)
+                ++self->arrow_right_up;
             return 0;
         case WM_TIMER:
             DestroyWindow(window);
@@ -339,6 +356,68 @@ void native_checks() {
     twice["action"] = "double_click";
     act(twice);
     require(fixture.double_clicks > 0, "double click delivered");
+    const auto before_sequence = fixture.keys.load();
+    for (const auto entries : {Json::array({Json{{"keys", {"UP"}}, {"duration_ms", 2500}},
+                                            Json{{"keys", {"RIGHT"}}, {"duration_ms", 2501}}}),
+                               Json::array({Json{{"keys", {"UP"}}, {"duration_ms", 50}},
+                                            Json{{"keys", {"CTRL", "ESC"}}, {"duration_ms", 50}}})}) {
+        rejects(
+            [&] {
+                computer.perform(Json{{"action", "key_sequence"},
+                                      {"sequence", entries},
+                                      {"observation_id", frame.metadata["observation_id"]}},
+                                 {});
+            },
+            entries[0]["duration_ms"] == 2500 ? "SEQUENCE_DURATION" : "SYSTEM_SHORTCUT_DENIED");
+        require(fixture.keys == before_sequence, "entire sequence is validated before any key-down");
+    }
+    act(Json{{"action", "key_sequence"},
+             {"sequence",
+              {{{"keys", {"UP"}}, {"duration_ms", 80}},
+               {{"keys", {"UP", "RIGHT"}}, {"duration_ms", 100}},
+               {{"keys", {"UP"}}, {"duration_ms", 80}},
+               {{"keys", Json::array()}, {"duration_ms", 30}}}}});
+    require(fixture.arrow_up_down == 1 && fixture.arrow_up_up == 1 && fixture.arrow_right_down == 1 &&
+                fixture.arrow_right_up == 1 && fixture.up_held_on_right_down,
+            "sequence retains acceleration across steering changes and releases each owned key once");
+    require(frame.metadata["sequence_segments"] == 4 && frame.metadata["scheduled_duration_ms"] == 290,
+            "sequence result records the bounded plan");
+    auto sequence_cancel = std::make_shared<Cancellation>();
+    std::jthread cancel_sequence([&] {
+        std::this_thread::sleep_for(Millis(150));
+        sequence_cancel->cancel();
+    });
+    const auto right_before_cancel = fixture.arrow_right_down.load();
+    rejects(
+        [&] {
+            computer.perform(Json{{"action", "key_sequence"},
+                                  {"sequence",
+                                   {{{"keys", {"UP"}}, {"duration_ms", 4000}},
+                                    {{"keys", {"UP", "RIGHT"}}, {"duration_ms", 500}}}},
+                                  {"observation_id", frame.metadata["observation_id"]}},
+                             sequence_cancel);
+        },
+        "OUTCOME_UNKNOWN");
+    cancel_sequence.join();
+    require(!(GetAsyncKeyState(VK_UP) & 0x8000) && fixture.arrow_right_down == right_before_cancel,
+            "sequence cancellation releases retained keys and never executes later segments");
+    observe();
+    std::jthread change_title([&] {
+        std::this_thread::sleep_for(Millis(150));
+        SetWindowTextW(fixture.window, L"Devbox sequence target changed");
+    });
+    rejects(
+        [&] {
+            computer.perform(Json{{"action", "key_sequence"},
+                                  {"sequence", {{{"keys", {"UP"}}, {"duration_ms", 3000}}}},
+                                  {"observation_id", frame.metadata["observation_id"]}},
+                             {});
+        },
+        "OUTCOME_UNKNOWN");
+    change_title.join();
+    require(!(GetAsyncKeyState(VK_UP) & 0x8000), "sequence stops and releases keys on a title change");
+    SetWindowTextW(fixture.window, wide(fixture.title).c_str());
+    observe();
     auto cancellation = std::make_shared<Cancellation>();
     std::exception_ptr concurrent_failure;
     std::jthread cancel([&] {
