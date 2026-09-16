@@ -56,10 +56,12 @@ struct BrokerFixture {
     std::wstring event_name = L"Local\\Devbox-Cua-Stop-" + wide(uuid());
     NativeHandle event, process;
     std::optional<std::string> previous = environment("DEVBOX_COMPUTER_USE_PIPE");
-    explicit BrokerFixture(const fs::path& image = executable_path()) {
+    explicit BrokerFixture(const fs::path& image = executable_path(), bool overlay = false) {
         event.reset(CreateEventW(nullptr, TRUE, FALSE, event_name.c_str()));
         require(static_cast<bool>(event), "owned broker stop event");
-        auto command = L"\"" + image.wstring() + L"\" broker-child " + wide(pipe) + L" " + event_name;
+        auto command = L"\"" + image.wstring() +
+                       (overlay ? L"\" broker-overlay-child " : L"\" broker-child ") + wide(pipe) + L" " +
+                       event_name;
         STARTUPINFOW startup{};
         startup.cb = sizeof(startup);
         PROCESS_INFORMATION info{};
@@ -277,6 +279,26 @@ void native_checks() {
     DestroyWindow(occluder);
     remove_occluder.disarm();
     observe();
+    HWND tooltip = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, L"STATIC",
+                                   L"Owned passive tooltip", WS_POPUP | WS_VISIBLE, 180, 180, 120, 25,
+                                   nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    require(tooltip != nullptr, "passive unowned tooltip fixture");
+    ScopeExit remove_tooltip([&] { DestroyWindow(tooltip); });
+    require(GetAncestor(tooltip, GA_ROOTOWNER) == tooltip, "tooltip has no target owner HWND");
+    observe();
+    require(!frame.image.empty(), "same-process passive tooltip remains observable through native capture");
+    SetWindowLongPtrW(tooltip, GWL_EXSTYLE, WS_EX_TOPMOST | WS_EX_NOACTIVATE);
+    rejects([&] { computer.perform(Json{{"action", "observe"}, {"window_id", id}}, {}); }, "WINDOW_OCCLUDED");
+    DestroyWindow(tooltip);
+    remove_tooltip.disarm();
+    observe();
+    {
+        BrokerFixture foreign_overlay(executable_path(), true);
+        rejects([&] { computer.perform(Json{{"action", "observe"}, {"window_id", id}}, {}); },
+                "WINDOW_OCCLUDED");
+        foreign_overlay.finish();
+    }
+    observe();
     const auto ready_id = frame.metadata["observation_id"];
     const auto foreground_before = GetForegroundWindow();
     const auto keys_before = fixture.keys.load();
@@ -486,9 +508,22 @@ void native_checks() {
 int main(int argc, char** argv) {
     try {
 #ifdef _WIN32
-        if (argc == 4 && std::string_view(argv[1]) == "broker-child") {
+        if (argc == 4 && (std::string_view(argv[1]) == "broker-child" ||
+                          std::string_view(argv[1]) == "broker-overlay-child")) {
             NativeHandle stop(OpenEventW(SYNCHRONIZE, FALSE, wide(argv[3]).c_str()));
             require(static_cast<bool>(stop), "broker child owns stop event");
+            HWND overlay = nullptr;
+            ScopeExit close_overlay([&] {
+                if (overlay)
+                    DestroyWindow(overlay);
+            });
+            if (std::string_view(argv[1]) == "broker-overlay-child") {
+                SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+                overlay = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT, L"STATIC",
+                                          L"Foreign passive overlay", WS_POPUP | WS_VISIBLE, 180, 180, 120,
+                                          25, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+                require(overlay != nullptr, "foreign passive overlay fixture");
+            }
             return run_computer_broker(argv[2],
                                        [&] { return WaitForSingleObject(stop.get(), 0) != WAIT_TIMEOUT; });
         }

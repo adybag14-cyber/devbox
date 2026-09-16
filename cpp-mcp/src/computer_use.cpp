@@ -210,6 +210,15 @@ void require_unoccluded(const Window& target) {
         DWORD cloaked = 0;
         if (SUCCEEDED(DwmGetWindowAttribute(window, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
             continue;
+        // Chromium can display an unowned tooltip HWND. Keep passive overlays from
+        // the target process in its visible image; unrelated or interactive windows
+        // remain occluders. Pointer hit-testing below still governs every mouse action.
+        DWORD overlay_pid = 0;
+        GetWindowThreadProcessId(window, &overlay_pid);
+        const auto style = GetWindowLongPtrW(window, GWL_EXSTYLE);
+        constexpr LONG_PTR passive = WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
+        if (overlay_pid == target.pid && (style & passive) == passive)
+            continue;
         RECT bounds{}, overlap{};
         if (GetWindowRect(window, &bounds) && IntersectRect(&overlap, &area, &bounds))
             throw Error(
