@@ -37,6 +37,8 @@ try {
   assert.deepEqual(windows.data.windows,[]);
   const invalidInput=await client.callTool({name:'host_computer_use',arguments:{action:'click',observation_id:'not-an-observation',x:0,y:0}});
   assert.equal(invalidInput.isError,true,'invalid native input cannot reach the desktop');
+  const idle=await (await fetch(base)).json();
+  assert.equal(idle.activity.activeComputerUse,0,'completed computer calls leave no active input');
   assert.equal(capabilities.data.implementation,'cpp');assert.equal(capabilities.data.build.binarySha256,binaryHash);
   assert.deepEqual(capabilities.data.tools,listed.map(tool=>tool.name).sort());
   const pathName=path.join(workspace,'roundtrip.bin');

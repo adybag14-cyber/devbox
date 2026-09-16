@@ -51,6 +51,7 @@ Use a new returned ID for every example; they are not interchangeable. Literal t
 - Input runs only on the accessible default interactive desktop. Locked/secure desktops and different sessions are rejected. Release physical mouse buttons/modifier keys before starting a computer-use operation.
 - Drag, hold, and wait durations are bounded to five seconds. Input loops check cancellation and release keys/buttons they pressed when unwinding. A process crash, desktop transition, or lost acknowledgement can still leave an uncertain outcome; a fresh observation is required, and ambiguous held input may require the user to release it.
 - `COMPUTER_INPUT_OUTCOME_UNKNOWN` means some input may already have occurred. The consumed ID cannot repeat it. Inspect the current UI instead of treating this result as proof of no side effect.
+- Local root metadata includes activity counts for managed quiescence checks. A deployment or fallback must wait for active computer-use and other tool calls to finish before stopping the server; an in-process key hold has no child process to discover through PID inspection alone.
 
 Window targeting does not make arbitrary application content trustworthy or grant permission for what is displayed. The caller must follow the user's task and authorization, and inspect each new image before choosing another action.
 

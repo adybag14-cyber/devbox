@@ -463,6 +463,15 @@ asio::awaitable<Json> Engine::metadata(const HttpRequest& request) {
                                " is the main execution environment; host tools are separate and explicit.";
     if (config_->auth_mode != AuthMode::none && !request.is_local)
         co_return value;
+    const auto active_tools = usage_.active_tools();
+    const auto active_requests = server_ ? server_->active_requests() : 0;
+    const auto computer_calls = std::count_if(active_tools.begin(), active_tools.end(), [](const Json& tool) {
+        const auto name = json_string(tool, "tool");
+        return name == "host_computer_use" || name == "host_computer_windows";
+    });
+    value["activity"] = Json{{"activeTools", active_tools.size()},
+                             {"activeComputerUse", computer_calls},
+                             {"activeRequests", active_requests ? active_requests - 1 : 0}};
     value["runtime"] = Json{{"runtimeMode", config_->runtime_name()},
                             {"platform", config_->platform.id},
                             {"hostShell", config_->host_shell},
