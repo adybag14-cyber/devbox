@@ -1,3 +1,4 @@
+#include "devbox/computer_use.hpp"
 #include "devbox/engine.hpp"
 #include "server_main.hpp"
 #include <csignal>
@@ -32,11 +33,31 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
         const auto mode = args.empty() ? "" : args.front();
         if (mode == "--capture-worker")
             return run_capture_worker(std::vector<std::string>(args.begin() + 1, args.end()));
+        if (mode == "--computer-use-probe") {
+            if (args.size() != 2)
+                throw Error("--computer-use-probe requires one local pipe name");
+            std::cout << computer_broker_call(args[1], "windows", Json::object(), {}).at("result").dump(2)
+                      << '\n';
+            return 0;
+        }
+        if (mode == "--computer-use-broker") {
+            if (args.size() != 2)
+                throw Error("--computer-use-broker requires one local pipe name");
+            std::signal(SIGINT, signal_handler);
+            std::signal(SIGTERM, signal_handler);
+#ifdef _WIN32
+            SetConsoleCtrlHandler(console_handler, TRUE);
+            return run_computer_broker(
+                args[1], [] { return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0; });
+#else
+            return run_computer_broker(args[1], [] { return shutdown_requested != 0; });
+#endif
+        }
         if (mode == "--help" || mode == "-h") {
-            std::cout
-                << "Devbox C++ MCP " << build_version()
-                << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
-                   "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]]\n";
+            std::cout << "Devbox C++ MCP " << build_version()
+                      << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
+                         "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
+                         "--computer-use-broker PIPE|--computer-use-probe PIPE]\n";
             return 0;
         }
         if (mode == "--build-info") {

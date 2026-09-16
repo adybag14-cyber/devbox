@@ -67,6 +67,7 @@ add_library(devbox_core
   src/capture_windows.cpp
   src/capture_posix.cpp
   src/computer_use.cpp
+  src/computer_broker.cpp
   src/engine_capture.cpp
 )
 add_dependencies(devbox_core devbox-build-identity)
@@ -105,7 +106,8 @@ if(DEVBOX_BUILD_TESTS)
   set_tests_properties(computer-contract PROPERTIES TIMEOUT 30)
   if(WIN32)
     add_test(NAME computer-native COMMAND devbox-computer-tests native)
-    set_tests_properties(computer-native PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
+    add_test(NAME computer-broker-native COMMAND devbox-computer-tests broker-native)
+    set_tests_properties(computer-native computer-broker-native PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
   endif()
   add_executable(devbox-async-tests tests/async_tests.cpp)
   target_link_libraries(devbox-async-tests PRIVATE devbox_core)

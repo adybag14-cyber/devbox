@@ -267,6 +267,7 @@ WORD key_code(std::string name) {
 
 struct ComputerUse::Impl {
     std::mutex operation;
+    std::string broker;
 #ifdef _WIN32
     struct Observation {
         Window window;
@@ -276,11 +277,16 @@ struct ComputerUse::Impl {
     std::map<std::string, Observation> observations;
 #endif
 };
-ComputerUse::ComputerUse() : impl_(std::make_unique<Impl>()) {}
+ComputerUse::ComputerUse(bool allow_broker) : impl_(std::make_unique<Impl>()) {
+    if (allow_broker)
+        impl_->broker = env_or("DEVBOX_COMPUTER_USE_PIPE", "");
+}
 ComputerUse::~ComputerUse() = default;
 
 Json ComputerUse::windows(const Json& arguments, const Cancel& cancel) {
 #ifdef _WIN32
+    if (!impl_->broker.empty())
+        return computer_broker_call(impl_->broker, "windows", arguments, cancel).at("result");
     DpiScope dpi;
     require_desktop();
     struct Enumeration {
@@ -358,6 +364,14 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
             throw Error("COMPUTER_ARGUMENTS_INVALID: field is not applicable to this action: " + it.key());
     }
 #ifdef _WIN32
+    if (!impl_->broker.empty()) {
+        const auto reply = computer_broker_call(impl_->broker, "perform", arguments, cancel);
+        const auto& bytes = reply.at("image").get_binary();
+        ImageCapture capture{
+            {bytes.begin(), bytes.end()}, reply.at("mime_type").get<std::string>(), reply.at("metadata")};
+        validate_capture_image(capture.image, capture.mime_type);
+        return capture;
+    }
     std::unique_lock operation(impl_->operation, std::try_to_lock);
     if (!operation.owns_lock())
         throw Error("COMPUTER_BUSY: another computer-use call is running");

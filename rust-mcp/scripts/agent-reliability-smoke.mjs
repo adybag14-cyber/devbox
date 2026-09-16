@@ -47,6 +47,7 @@ async function call(name,args={},failure=false){const r=await client.callTool({n
 async function check(name,body){const start=Date.now();await body();outcomes.push({name,ok:true,durationMs:Date.now()-start});}
 async function done(id){let value;const deadline=Date.now()+15000;do{value=await call('devbox_job_status',{job_id:id,wait_seconds:2,terminal_only:true});if(['succeeded','failed','cancelled','timed_out','interrupted'].includes(value.status))return value;}while(Date.now()<deadline);throw new Error(`Job did not reach terminal state: ${JSON.stringify(value)}`);}
 async function running(id){const deadline=Date.now()+10000;while(Date.now()<deadline){const r=await call('devbox_job_status',{job_id:id});if(r.status==='running'&&r.childPid)return r;await sleep(100);}throw new Error('job did not start');}
+async function runnerReleased(id){const deadline=Date.now()+5000;while(Date.now()<deadline){const r=await call('devbox_job_status',{job_id:id});if(r.runnerAlive===false)return;await sleep(25);}throw new Error('terminal job runner did not release its owned files');}
 let duplicated,duplicateRequest;
 try{
   await start();
@@ -75,7 +76,10 @@ try{
     assert.equal((await done(a.id)).status,'succeeded');assert.equal(await readFile(counter,'utf8'),'1');
     await call('devbox_job_submit',{...duplicateRequest,args:['--version']},true);
     const log=await call('devbox_job_logs',{job_id:a.id,max_chars:2000});assert.match(log.stdout,/DONE/);assert.equal(log.logs.truncated,true);
-    await rm(path.join(root,'jobs',a.id),{recursive:true,force:true});
+    // Terminal status is persisted before the detached runner closes its Windows lock handle.
+    // Model retention only after that exact job's runner exits; never delete an active runner's files.
+    await runnerReleased(a.id);
+    await rm(path.join(root,'jobs',a.id),{recursive:true,force:true,maxRetries:5,retryDelay:100});
     const expired=await call('devbox_job_submit',duplicateRequest);assert.equal(expired.replayed,true);assert.equal(expired.job.status,'result_expired');assert.equal(await readFile(counter,'utf8'),'1');ownedJobs.delete(a.id);
   });
   const sleeper=(task,operation)=>({task_id:task,operation_id:operation,program:'node',args:['-e','setInterval(()=>{},1000)'],working_dir:root,timeout_seconds:120});
