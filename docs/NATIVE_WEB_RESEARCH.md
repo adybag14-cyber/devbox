@@ -1,6 +1,6 @@
 # Native public-web research
 
-The C++23 service adds three research tools to the frozen compatibility and computer-use surface. Contract version 4 advertises 50 tools. Research uses native libcurl networking and Lexbor HTML parsing, with no Python, browser farm, embedding model or external LLM in the implementation.
+The C++23 service adds three research tools to the frozen compatibility and computer-use surface. Contract version 4 advertises 50 tools. Research uses native libcurl networking, Lexbor HTML parsing and pugixml RSS parsing, with no Python, browser farm, embedding model or external LLM in the implementation.
 
 ## Research presets
 
@@ -31,6 +31,8 @@ Call `devbox_web_research` with a stable task/operation identity, a topic and fo
 
 The call returns promptly with `job_id`. Repeating the same task/operation/input returns the original job; changed input under that identity conflicts. Existing `devbox_job_status` supports a passive wait. `devbox_job_cancel` requests cancellation asynchronously and may return `cancel_requested` while the runner or child is still active. Poll `devbox_job_status` until a terminal state confirms completion.
 
+Use a new operation ID for a new research or freshness check, and reuse an ID only when resuming the same run. The evidence from a completed run is immutable.
+
 Read `devbox_web_evidence` and follow `next_offset` until all source briefs have been inspected before claiming that the requested number of sources was consulted. `source_id` retrieves a larger immutable excerpt, tables and metadata. If `minimum_required_chars` appears, increase the output budget instead of repeating a non-advancing cursor. Source records do not become proof of truth merely because they were retrieved successfully.
 
 ```json
@@ -45,7 +47,13 @@ For known sources, `devbox_web_fetch` retrieves up to 16 URLs in one call, with 
 
 ## Keyless discovery and source access
 
-`discovery` selects `web` (best-effort public DuckDuckGo HTML), `scholarly` (Crossref discovery followed by publisher retrieval), `encyclopedia` (MediaWiki discovery followed by page retrieval), or `none` (seed URLs only). No paid API or API key is required. Public interfaces can change, block requests or omit relevant sites; this does not guarantee the coverage of a proprietary index. The agent can supply additional seed URLs from its own search. Only one bounded link-expansion step is performed.
+`discovery` selects `web` (DuckDuckGo HTML with an independent Bing RSS fallback), `scholarly` (Crossref discovery followed by publisher retrieval), `encyclopedia` (MediaWiki discovery followed by page retrieval), or `none` (seed URLs only). No paid API or API key is required. Public interfaces can change, block requests or omit relevant sites; this does not guarantee the coverage of a proprietary index. The agent can supply additional seed URLs from its own search. Only one bounded link-expansion step is performed.
+
+Bing RSS is a legacy public interface for personal, non-commercial aggregation. Its use notice is included in provider reports; other uses require Microsoft's permission. It is not represented as an unrestricted search API. Search snippets and feed timestamps are not source evidence or publication dates: the actual linked pages must be retrieved and evaluated. The [original Bing RSS description](https://blogs.bing.com/search/January-2005/RSS-Feeds-for-Search-Results) documents the feed parameter; current availability must be tested rather than inferred from that historical announcement.
+
+Search query starts are paced across jobs. Challenges (including DuckDuckGo's HTTP 202 page) and access blocks put that provider into a shared 15-minute cooldown; unavailable/rate-limited responses have a one-minute default, and malformed results a five-minute default. A longer valid Retry-After extends the cooldown. A blocked provider is not retried through another endpoint or identity. The independent fallback can continue while the blocked provider rests. State is bounded and kept under the project cache's `discovery` directory.
+
+Read `discovery.status` and its completed, failed and unattempted query counts in the result, as well as the document count. `discovery_blocked`, `discovery_unavailable` and `discovery_incomplete` are distinct from genuine `candidate_exhaustion`. A completed job or a target document count does not prove that every requested chip, phone or retailer was researched. If discovery fails, report the gap and provide independently discovered primary URLs, or retry after the reported cooldown. Known seed URLs remain usable even when all search providers are unavailable.
 
 Source retrieval respects robots rules and reports unavailable policies, access blocks and challenges. It does not bypass authentication, paywalls or CAPTCHAs. Only public HTTP(S) and standard web ports are eligible. Resolved addresses and redirects are validated; inherited proxies, netrc and cookies are not used. TLS verification stays enabled.
 
@@ -64,6 +72,7 @@ Use `max_age_seconds: 0` for volatile facts. This revalidates cached documents w
 - Up to four concurrent transfers and one per origin per client, with connection reuse.
 - Up to 256 candidate documents, 16 queries and 16 target domains per job.
 - At most 2 MiB decoded per response and 64 MiB decoded per research operation.
+- A response chunk that cannot fit the remaining aggregate budget stops further fetches and reports `byte_budget`, even if the retained byte count is slightly below the ceiling. This local limit does not penalize a search provider's health.
 - A 64 MiB normalized-document cache. Evidence lives in the existing owned job directory and follows job retention.
 - One collecting research job per project. Other research jobs wait while queued, before consuming execution slots, and remain cancellable.
 - Existing commands, computer use and health routes retain their own admission paths.

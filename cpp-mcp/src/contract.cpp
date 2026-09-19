@@ -282,6 +282,10 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                   {"max_concurrent_transfers", 4},
                   {"max_transfers_per_origin", 1},
                   {"partial_coverage_explicit", true},
+                  {"query_coverage_explicit", true},
+                  {"shared_provider_cooldown", true},
+                  {"web_discovery_providers", {"duckduckgo_html", "bing_rss"}},
+                  {"bing_rss_use", "personal_noncommercial"},
                   {"source_content_untrusted", true}}},
                 {"computer_use",
                  {{"supported", config.platform.is_windows && config.runtime_mode == RuntimeMode::host &&

@@ -3,6 +3,7 @@ find_package(ada CONFIG REQUIRED)
 find_package(re2 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(lexbor CONFIG REQUIRED)
+find_package(pugixml CONFIG REQUIRED)
 find_path(DEVBOX_LEXBOR_INCLUDE_DIR lexbor/html/interfaces/document.h
   HINTS "${lexbor_DIR}/../../include" REQUIRED)
 find_package(OpenSSL REQUIRED)
@@ -62,6 +63,7 @@ add_library(devbox_core
   src/search.cpp
   src/web_transport.cpp
   src/web_document.cpp
+  src/web_discovery.cpp
   src/research.cpp
   src/host_inspect.cpp
   src/usage.cpp
@@ -88,6 +90,7 @@ target_include_directories(devbox_core PUBLIC include)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl ZLIB::ZLIB Threads::Threads ada::ada re2::re2)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:lexbor::lexbor_static>,lexbor::lexbor_static,lexbor::lexbor>)
+target_link_libraries(devbox_core PUBLIC pugixml::pugixml)
 target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_NO_DEPRECATED)
 if(DEVBOX_FORCE_FORK_EXEC)
   target_compile_definitions(devbox_core PRIVATE DEVBOX_FORCE_FORK_EXEC=1)

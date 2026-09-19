@@ -121,13 +121,6 @@ bool source_candidate(std::string_view url) {
             return false;
     return true;
 }
-Json query_json(std::string_view body) {
-    return Json::parse(body, [](int depth, Json::parse_event_t, Json&) {
-        if (depth > 64)
-            throw Error("WEB_JSON_DEPTH");
-        return true;
-    });
-}
 } // namespace
 
 Json exact_term_matches(const Json& document, const std::vector<std::string>& exact_terms) {
@@ -397,106 +390,6 @@ struct ResearchService::State {
         }
         return results;
     }
-    std::vector<std::string> discover(const Json& plan, Json& provider_report, Clock::time_point deadline,
-                                      const Cancel& cancel) {
-        const auto queries = json_strings(plan, "queries");
-        const auto domains = json_strings(plan, "domains");
-        const auto mode = json_string(plan, "discovery", "web");
-        if (mode == "none")
-            return {};
-        std::vector<std::string> found;
-        // Sequential discovery avoids hammering one public engine. Document downloads are parallel.
-        for (const auto& original : queries) {
-            if (Clock::now() >= deadline)
-                break;
-            if (cancel)
-                cancel->check();
-            auto query = original;
-            if (domains.size() == 1)
-                query += " site:" + domains.front();
-            std::string endpoint;
-            if (mode == "scholarly")
-                endpoint =
-                    "https://api.crossref.org/works?rows=100&select=DOI,title,URL,resource,published&query=" +
-                    url_encode(query);
-            else if (mode == "encyclopedia")
-                endpoint = "https://en.wikipedia.org/w/"
-                           "api.php?action=query&list=search&srlimit=100&format=json&srsearch=" +
-                           url_encode(query);
-            else
-                endpoint = "https://html.duckduckgo.com/html/?q=" + url_encode(query);
-            const auto responses = transport.get({Request{endpoint, Json::object()}}, deadline, cancel);
-            const auto& response = responses.front();
-            Json report{{"query", query},
-                        {"provider", mode == "web"         ? "duckduckgo_html"
-                                     : mode == "scholarly" ? "crossref"
-                                                           : "mediawiki"},
-                        {"url", endpoint},
-                        {"http_status", response.status},
-                        {"duration_ms", response.duration_ms},
-                        {"results", 0}};
-            if (!response.error.empty() || response.status != 200) {
-                report["status"] = "unavailable";
-                report["error"] = response.error;
-                provider_report.push_back(report);
-                if (response.status == 429 || response.status == 403 || response.status == 503)
-                    break;
-                continue;
-            }
-            const auto before = found.size();
-            try {
-                if (mode == "web") {
-                    const auto document = extract_document(response);
-                    if (json_string(document, "status") == "challenge_required") {
-                        report["status"] = "challenge_required";
-                        provider_report.push_back(report);
-                        break;
-                    }
-                    for (const auto& link : document["links"]) {
-                        if (json_string(link, "class").find("result__a") == std::string::npos)
-                            continue;
-                        auto target = json_string(link, "url");
-                        const auto url = Url::parse(target);
-                        const auto parameters = query_parameters(url.query);
-                        if (parameters.contains("uddg"))
-                            target = json_string(parameters, "uddg");
-                        found.push_back(normalize_url(target));
-                    }
-                } else {
-                    const auto data = query_json(response.body);
-                    if (mode == "scholarly") {
-                        for (const auto& item : data.at("message").at("items")) {
-                            if (item.contains("resource") && item["resource"].contains("primary")) {
-                                auto url = json_string(item["resource"]["primary"], "URL");
-                                if (!url.empty())
-                                    found.push_back(normalize_url(url));
-                            } else {
-                                auto url = json_string(item, "URL");
-                                if (!url.empty())
-                                    found.push_back(normalize_url(url));
-                            }
-                        }
-                    } else {
-                        for (const auto& item : data.at("query").at("search"))
-                            found.push_back("https://en.wikipedia.org/wiki/" +
-                                            url_encode(replace_all(json_string(item, "title"), " ", "_")));
-                    }
-                }
-                report["status"] = found.size() > before ? "ok" : "no_results";
-                report["results"] = found.size() - before;
-            } catch (const std::exception& error) {
-                report["status"] = "parse_error";
-                report["error"] = error.what();
-            }
-            provider_report.push_back(std::move(report));
-            if (cancel) {
-                if (cancel->wait_for(Millis(1000)))
-                    throw Cancelled();
-            } else
-                std::this_thread::sleep_for(Millis(1000));
-        }
-        return found;
-    }
 };
 
 ResearchService::ResearchService(std::shared_ptr<const Config> config, TransportLimits limits)
@@ -612,6 +505,8 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
                 {"cache_hits", 0},
                 {"conditional_revalidations", 0},
                 {"network_documents", 0}};
+    ledger["attempted_urls"] = 0;
+    ledger["candidate_count"] = 0;
     const auto checkpoint = [&] {
         ledger["updated_at"] = utc_now();
         ledger["decoded_bytes"] = state_->transport.downloaded_bytes();
@@ -634,16 +529,20 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
         };
         for (const auto& url : json_strings(plan, "urls"))
             enqueue(url);
-        const auto discovered =
-            state_->discover(plan, ledger["providers"], std::min(deadline, started + budget / 3), cancel);
-        for (const auto& url : discovered)
+        const auto discovery =
+            discover_sources(state_->transport, plan, state_->cache / "discovery", state_->limits,
+                             std::min(deadline, started + budget / 3), cancel);
+        ledger["providers"] = discovery["providers"];
+        ledger["discovery"] = discovery["summary"];
+        for (const auto& url : json_strings(discovery, "urls"))
             enqueue(url);
         const auto initial_urls = seen_urls;
         ledger["phase"] = "retrieving";
         ledger["discovered_candidates"] = candidates.size();
         checkpoint();
         std::size_t position = 0;
-        while (position < candidates.size() && ledger["sources"].size() < target && Clock::now() < deadline) {
+        while (position < candidates.size() && ledger["sources"].size() < target && Clock::now() < deadline &&
+               !state_->transport.byte_budget_exhausted()) {
             if (cancel)
                 cancel->check();
             const auto count =
@@ -716,10 +615,14 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
         ledger["phase"] = "completed";
         ledger["coverage_status"] = json_bool(ledger, "target_met") ? "target_reached" : "partial";
         ledger["shortfall"] = target - ledger["sources"].size();
-        ledger["stop_reason"] = json_bool(ledger, "target_met") ? "target_reached"
-                                : Clock::now() >= deadline      ? "time_budget"
-                                : state_->transport.downloaded_bytes() >= state_->limits.max_total_bytes
-                                    ? "byte_budget"
+        const auto discovery_status = json_string(ledger["discovery"], "status");
+        ledger["stop_reason"] = json_bool(ledger, "target_met")             ? "target_reached"
+                                : Clock::now() >= deadline                  ? "time_budget"
+                                : state_->transport.byte_budget_exhausted() ? "byte_budget"
+                                : discovery_status == "blocked"             ? "discovery_blocked"
+                                : discovery_status == "unavailable"         ? "discovery_unavailable"
+                                : discovery_status == "partial" || discovery_status == "budget_exhausted"
+                                    ? "discovery_incomplete"
                                     : "candidate_exhaustion";
         ledger["completed_at"] = utc_now();
         checkpoint();

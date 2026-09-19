@@ -44,6 +44,10 @@ struct HttpFixture {
     Tcp::acceptor acceptor{io, {asio::ip::make_address("127.0.0.1"), 0}};
     std::atomic_bool stop{false};
     std::atomic_size_t requests{0}, connections{0}, active{0}, peak{0}, not_modified{0}, transient_calls{0};
+    std::atomic_size_t ddg_queries{0}, bing_queries{0};
+    std::atomic_int ddg_mode{1}, bing_mode{0};
+    std::mutex search_mutex;
+    std::vector<Clock::time_point> bing_starts;
     std::thread listener;
     std::vector<std::thread> workers;
     HttpFixture() {
@@ -76,7 +80,46 @@ struct HttpFixture {
                         response.keep_alive(true);
                         response.set(http::field::content_type, "text/html; charset=utf-8");
                         response.set(http::field::etag, "\"fixture-v1\"");
-                        if (target == "/robots.txt") {
+                        if (target.starts_with("/search/duckduckgo_html")) {
+                            const auto count = ++ddg_queries;
+                            if (ddg_mode == 0 || (ddg_mode == 4 && count == 1)) {
+                                response.body() =
+                                    "<html><a class='result__a' href='https://duckduckgo.com/l/?uddg=" +
+                                    url_encode(url("/doc/discovered")) +
+                                    "'>Photon detector evidence</a></html>";
+                            } else if (ddg_mode == 3) {
+                                response.body() = "<html><div class='no-results__message'>No results found "
+                                                  "for this query</div></html>";
+                            } else {
+                                response.result(http::status::accepted);
+                                response.body() =
+                                    R"(<html><title>DuckDuckGo</title><form id="challenge-form" action="/anomaly.js"><div class="anomaly-modal__mask">Complete this human verification</div></form></html>)";
+                            }
+                        } else if (target.starts_with("/search/bing_rss")) {
+                            ++bing_queries;
+                            {
+                                std::lock_guard lock(search_mutex);
+                                bing_starts.push_back(Clock::now());
+                            }
+                            if (bing_mode == 5) {
+                                response.result(http::status::too_many_requests);
+                                response.set(http::field::retry_after, "1800");
+                                response.body() = "Retry later";
+                            } else if (bing_mode == 1) {
+                                response.result(http::status::forbidden);
+                                response.body() = "Access denied";
+                            } else {
+                                response.set(http::field::content_type, "application/rss+xml; charset=utf-8");
+                                response.body() = "<rss version='2.0'><channel><title>Fixture search</title>";
+                                if (bing_mode != 3)
+                                    for (int i = 0; i < 3; ++i)
+                                        response.body() += "<item><title>Photon detector</title><link>" +
+                                                           url("/doc/search-" + std::to_string(i)) +
+                                                           "</link><description>This snippet is not a source "
+                                                           "document</description></item>";
+                                response.body() += "</channel></rss>";
+                            }
+                        } else if (target == "/robots.txt") {
                             response.set(http::field::content_type, "text/plain");
                             response.body() = "User-agent: *\nDisallow: /denied\nAllow: /denied/allowed\n";
                         } else if (target == "/rate") {
@@ -148,6 +191,30 @@ struct HttpFixture {
     }
 };
 void extraction_tests() {
+    web::Transfer challenge;
+    challenge.url = challenge.final_url = "https://html.duckduckgo.com/html/";
+    challenge.status = 202;
+    challenge.headers = Json{{"content-type", "text/html; charset=utf-8"}};
+    challenge.body = R"(<html><head><title>DuckDuckGo</title></head><body>
+      <form id="challenge-form" action="/anomaly.js"><div class="anomaly-modal__mask">
+      Please complete the following challenge to confirm this search was made by a human.
+      </div></form></body></html>)";
+    require(web::extract_document(challenge)["status"] == "challenge_required",
+            "HTTP 202 DuckDuckGo challenge is identified before generic provider failure");
+    auto meta_charset = challenge;
+    meta_charset.status = 200;
+    meta_charset.headers = Json{{"content-type", "text/html"}};
+    meta_charset.body =
+        "<html><head><meta charset='windows-1252'><title>Photon detector prices</title></head>"
+        "<body><p>Photon detector pricing and calibration information for a current laboratory "
+        "instrument. The product price is " +
+        std::string(1, static_cast<char>(0xa3)) +
+        "123.45, including documentation about measurements, uncertainty and verification.</p></body></html>";
+    const auto decoded_meta = web::extract_document(meta_charset);
+    require(decoded_meta["status"] == "ok" && decoded_meta["encoding_reported"] == "windows-1252" &&
+                decoded_meta["text"].get<std::string>().find("\xc2\xa3"
+                                                             "123.45") != std::string::npos,
+            "HTML meta-only charset decodes the pound sign when HTTP omits charset");
     web::Transfer response;
     response.url = response.final_url = "https://example.org/catalogue/item";
     response.status = 200;
@@ -246,6 +313,22 @@ void policy_tests() {
 }
 void transport_tests(HttpFixture& server) {
     {
+        auto limits = server.limits();
+        limits.max_total_bytes = 128;
+        web::Transport transport(limits);
+        const auto limited =
+            transport.get({{server.url("/doc/budget"), Json::object()}}, Clock::now() + Millis(3000));
+        require(limited[0].error == "WEB_BYTE_BUDGET" && transport.downloaded_bytes() <= 128,
+                "aggregate byte budget is explicit even when a chunk cannot fit the remaining bytes");
+        const auto before = server.requests.load();
+        const auto next =
+            transport.get({{server.url("/doc/not-requested"), Json::object()}}, Clock::now() + Millis(3000));
+        require(next[0].error == "WEB_BYTE_BUDGET" && server.requests == before,
+                "an exhausted byte budget starts no further network requests");
+        transport.reset_byte_budget();
+        require(!transport.byte_budget_exhausted(), "a new operation resets its byte budget state");
+    }
+    {
         web::Transport transport(server.limits());
         const auto before = server.connections.load();
         auto first = transport.get({{server.url("/doc/1"), Json::object()}}, Clock::now() + Millis(3000));
@@ -319,6 +402,18 @@ void research_tests(HttpFixture& server, const fs::path& root) {
     config->project_root = root;
     config->jobs_root = root / "jobs";
     config->runtime_mode = RuntimeMode::host;
+    {
+        auto limits = server.limits();
+        limits.max_total_bytes = 128;
+        web::ResearchService small_budget(config, limits);
+        const auto result = small_budget.run(Json{{"topic", "photon research"},
+                                                  {"mode", "fast"},
+                                                  {"discovery", "none"},
+                                                  {"urls", {server.url("/doc/budget")}}},
+                                             root / "budget-result", Millis(5000), {});
+        require(result["stop_reason"] == "byte_budget" && result["usable_sources"] == 0,
+                "research reports byte budget, not candidate exhaustion, when a chunk cannot fit");
+    }
     web::ResearchService service(config, server.limits());
     const auto first = service.fetch(Json{{"urls", {server.url("/doc/7"), server.url("/doc/7")}}});
     require(first["unique_urls"] == 1 && first["documents"][0]["status"] == "ok",
@@ -386,16 +481,177 @@ void research_tests(HttpFixture& server, const fs::path& root) {
     require(fifty["usable_sources"] == 50 && fifty["target_met"] == true, "Fast stops at 50 usable sources");
     std::cout << Json{{"standard", hundred}, {"fast", fifty}, {"partial", result}}.dump() << '\n';
 }
+void discovery_tests(HttpFixture& server, const fs::path& root) {
+    const auto config_for = [&](std::string_view name) {
+        auto config = std::make_shared<Config>();
+        config->project_root = root / name;
+        config->jobs_root = config->project_root / "jobs";
+        config->runtime_mode = RuntimeMode::host;
+        return config;
+    };
+    Json plan{{"topic", "Photon detector research"},
+              {"mode", "fast"},
+              {"discovery", "web"},
+              {"queries", {"Photon detector UK", "Photon detector prices"}},
+              {"exact_terms", {"Photon"}}};
+    auto config = config_for("discovery-recovery");
+    server.ddg_queries = 0;
+    server.bing_queries = 0;
+    web::ResearchService first(config, server.limits());
+    const auto recovered = first.run(plan, root / "recovery-result", Millis(20000), {});
+    require(recovered["usable_sources"] == 3 && recovered["discovery"]["queries_completed"] == 2 &&
+                recovered["discovery"]["fallback_queries"] == 2,
+            "independent fallback retrieves real documents after HTTP 202 challenge");
+    require(server.ddg_queries == 1 && server.bing_queries == 2 &&
+                recovered["providers"][0]["status"] == "challenge_required" &&
+                !recovered["providers"][0]["error"].get<std::string>().empty(),
+            "blocked provider is stopped after one request with a useful diagnostic");
+    web::ResearchService next(config, server.limits());
+    plan["queries"] = {"Photon detector current prices"};
+    const auto resumed = next.run(plan, root / "recovery-next-job", Millis(10000), {});
+    require(server.ddg_queries == 1 && server.bing_queries == 3 &&
+                resumed["providers"][0]["status"] == "cooldown" && resumed["usable_sources"] == 3,
+            "provider cooldown survives a new research service and job");
+    {
+        std::lock_guard lock(server.search_mutex);
+        require(server.bing_starts.size() >= 3 &&
+                    server.bing_starts[1] - server.bing_starts[0] >= Millis(900) &&
+                    server.bing_starts[2] - server.bing_starts[1] >= Millis(900),
+                "provider pacing applies across queries and jobs");
+    }
+    const auto health_root = config->project_root / "run" / "web-research-cache" / "discovery";
+    auto state = read_json(health_root / "health.json");
+    const auto now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<Millis>(std::chrono::system_clock::now().time_since_epoch()).count());
+    state["providers"]["bing_rss"]["next_request_ms"] = now_ms + 1000;
+    write_json_atomic(health_root / "health.json", state);
+    web::Transport paced_transport(server.limits());
+    const auto paced = web::discover_sources(paced_transport, plan, health_root, server.limits(),
+                                             Clock::now() + Millis(5), {});
+    require(paced["summary"]["status"] == "budget_exhausted" && paced["summary"]["provider_attempts"] == 0,
+            "pacing cannot overrun a short discovery budget");
+    auto cancel = std::make_shared<Cancellation>();
+    const auto began = Clock::now();
+    auto pending = std::async(std::launch::async, [&] {
+        return web::discover_sources(paced_transport, plan, health_root, server.limits(),
+                                     Clock::now() + Millis(3000), cancel);
+    });
+    std::this_thread::sleep_for(Millis(40));
+    cancel->cancel();
+    rejects([&] { pending.get(); }, "cancelled");
+    require(Clock::now() - began < Millis(700), "provider pacing remains promptly cancellable");
+
+    server.bing_mode = 1;
+    config = config_for("all-providers-blocked");
+    web::ResearchService blocked(config, server.limits());
+    plan["queries"] = {"Photon detector alpha", "Photon detector beta", "Photon detector gamma"};
+    plan["urls"] = {server.url("/doc/explicit-seed")};
+    const auto seeded = blocked.run(plan, root / "blocked-seeded", Millis(10000), {});
+    require(seeded["usable_sources"] == 1 && seeded["stop_reason"] == "discovery_blocked" &&
+                seeded["discovery"]["queries_failed"] == 3 && seeded["discovery"]["provider_attempts"] == 2,
+            "explicit seeds remain usable and blocked discovery is not source exhaustion");
+    plan["urls"] = Json::array();
+    web::ResearchService still_blocked(config, server.limits());
+    const auto empty = still_blocked.run(plan, root / "blocked-empty", Millis(10000), {});
+    require(empty["usable_sources"] == 0 && empty["attempted_urls"] == 0 &&
+                empty["stop_reason"] == "discovery_blocked" && empty["discovery"]["provider_attempts"] == 0,
+            "repeated blocked jobs make no network attempts and report zero coverage honestly");
+    server.ddg_mode = 4;
+    server.ddg_queries = 0;
+    config = config_for("partial-discovery");
+    web::ResearchService partial(config, server.limits());
+    const auto mixed = partial.run(plan, root / "partial-discovery-result", Millis(12000), {});
+    require(mixed["usable_sources"] == 1 && mixed["discovery"]["queries_completed"] == 1 &&
+                mixed["discovery"]["status"] == "partial" && mixed["stop_reason"] == "discovery_incomplete",
+            "a few successful queries do not imply complete discovery");
+    server.ddg_mode = 3;
+    server.bing_mode = 3;
+    config = config_for("genuine-no-results");
+    web::ResearchService no_results(config, server.limits());
+    plan["queries"] = {"Photon detector absent"};
+    const auto none = no_results.run(plan, root / "no-results", Millis(10000), {});
+    require(none["stop_reason"] == "candidate_exhaustion" && none["discovery"]["status"] == "complete" &&
+                none["discovery"]["queries_completed"] == 1,
+            "genuine empty searches remain distinct from blocked searches");
+    server.ddg_mode = 1;
+    server.bing_mode = 5;
+    config = config_for("retry-after-discovery");
+    web::ResearchService throttled(config, server.limits());
+    const auto rate_started = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<Millis>(std::chrono::system_clock::now().time_since_epoch()).count());
+    const auto limited = throttled.run(plan, root / "retry-after-result", Millis(10000), {});
+    const auto health =
+        read_json(config->project_root / "run" / "web-research-cache" / "discovery" / "health.json");
+    require(limited["stop_reason"] == "discovery_blocked" &&
+                health["providers"]["bing_rss"]["cooldown_until_ms"].get<std::uint64_t>() >=
+                    rate_started + 1800000,
+            "longer Retry-After survives in shared provider state");
+}
+void search_parser_tests() {
+    web::Transfer response;
+    response.url = response.final_url = "https://www.bing.com/search?format=rss";
+    response.status = 200;
+    response.body = R"(<rss><channel><title>Search</title>
+      <item><link>https://example.org/one?a=1&amp;b=2</link><pubDate>Fri, 1 Jan 2000</pubDate></item>
+      <item><link><![CDATA[https://example.org/two]]></link></item>
+      <item><link>https://example.org/two</link></item>
+      <item><link>javascript:alert(1)</link></item></channel></rss>)";
+    const auto parsed = web::parse_search_response("bing_rss", response);
+    require(parsed["status"] == "ok" && parsed["urls"].size() == 2 &&
+                parsed["urls"][0] == "https://example.org/one?a=1&b=2" && !parsed.contains("pubDate") &&
+                parsed.contains("use_notice"),
+            "RSS extracts bounded unique URLs and preserves notice without promoting feed dates");
+    for (const auto* body : {"<rss><channel>", "<html>Unexpected search markup</html>",
+                             "<!DOCTYPE rss [<!ENTITY e SYSTEM 'file:///private'>]><rss><channel/></rss>",
+                             "<rss><channel><item><link>javascript:alert(1)</link></item></channel></rss>"}) {
+        response.body = body;
+        require(web::parse_search_response("bing_rss", response)["status"] == "parse_error",
+                "malformed or unsafe RSS is explicit, not a no-results response");
+    }
+    response.status = 202;
+    response.body = "Accepted, processing later";
+    const auto accepted = web::parse_search_response("duckduckgo_html", response);
+    require(accepted["status"] == "unavailable" && !accepted["error"].get<std::string>().empty(),
+            "non-challenge HTTP 202 still has a useful unavailable diagnostic");
+    response.error = "WEB_BYTE_BUDGET";
+    require(web::parse_search_response("bing_rss", response)["status"] == "budget_exhausted",
+            "a local byte limit does not become a provider failure");
+    response.error.clear();
+    response.status = 200;
+    response.headers = Json{{"content-type", "text/html"}};
+    response.body = "<html><body>Unexpected search layout</body></html>";
+    require(web::parse_search_response("duckduckgo_html", response)["status"] == "parse_error",
+            "unrecognized search markup cannot silently become no results");
+    for (const auto* body :
+         {"<html><style>.no-results__message{color:red}</style><body>Changed layout</body></html>",
+          "<html><script>const marker='no-results__message';</script></html>",
+          "<html><!-- <div class='no-results__message'>No results</div> --></html>",
+          "<html><div hidden><div class='no-results__message'>No results</div></div></html>",
+          "<html><div class='other-no-results__message'>Changed layout</div></html>"}) {
+        response.body = body;
+        require(web::parse_search_response("duckduckgo_html", response)["status"] == "parse_error",
+                "CSS, scripts, comments, hidden and unrelated markers are not empty search results");
+    }
+    response.body = "<html><div class='extra\tno-results__message\nother'>No results found</div></html>";
+    require(web::parse_search_response("duckduckgo_html", response)["status"] == "no_results",
+            "actual empty-result element supports whitespace-separated class tokens");
+    response.body =
+        "<html><a class='extra\tresult__a\nother' href='https://example.org/source'>Result</a></html>";
+    require(web::parse_search_response("duckduckgo_html", response)["results"] == 1,
+            "result link classes are whitespace-delimited tokens");
+}
 int main() {
     const auto root = fs::temp_directory_path() / ("devbox-web-tests-" + uuid());
     try {
         ensure_directory(root);
         extraction_tests();
+        search_parser_tests();
         policy_tests();
         {
             HttpFixture server;
             transport_tests(server);
             research_tests(server, root);
+            discovery_tests(server, root);
         }
         if (root.parent_path() == fs::temp_directory_path() &&
             root.filename().string().starts_with("devbox-web-tests-"))

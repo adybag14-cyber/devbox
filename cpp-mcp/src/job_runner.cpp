@@ -259,8 +259,9 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
             logs.push(OutputStream::stdout_stream, report.dump() + "\n");
             output.exit_code = 0;
             final["research"] = Json::object();
-            for (const auto* key : {"target_sources", "usable_sources", "distinct_domains", "target_met",
-                                    "coverage_status", "stop_reason", "elapsed_ms", "decoded_bytes"})
+            for (const auto* key :
+                 {"target_sources", "usable_sources", "distinct_domains", "target_met", "coverage_status",
+                  "stop_reason", "elapsed_ms", "decoded_bytes", "discovery"})
                 final["research"][key] = report.at(key);
         } else if (mode == "program") {
             ProgramRequest options;
