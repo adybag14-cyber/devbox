@@ -8,6 +8,7 @@
     "boost-asio",
     "boost-beast",
     "nlohmann-json",
+    "lexbor",
     "openssl",
     "zlib",
     { "name": "libdeflate", "default-features": false, "features": ["compression", "gzip", "zlib"] },

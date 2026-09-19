@@ -1,6 +1,7 @@
 #include "devbox/contract.hpp"
 #include "computer_contract.hpp"
 #include "reference_contract.hpp"
+#include "research_contract.hpp"
 #include <algorithm>
 #include <cmath>
 #include <re2/re2.h>
@@ -196,6 +197,10 @@ ToolContract::ToolContract(const Config& config) {
         reinterpret_cast<const char*>(embedded_computer_contract), sizeof(embedded_computer_contract)));
     for (const auto& tool : computer)
         tools_.push_back(tool);
+    const auto research = Json::parse(std::string_view(
+        reinterpret_cast<const char*>(embedded_research_contract), sizeof(embedded_research_contract)));
+    for (const auto& tool : research)
+        tools_.push_back(tool);
     for (auto& tool : tools_) {
         const auto name = json_string(tool, "name");
         for (const auto* field : {"description", "title"})
@@ -269,6 +274,15 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                 {"schema_sha256", sha256(tools.dump())},
                 {"tools", names},
                 {"resource_classes", {"auto", "watch", "light", "heavy", "io-heavy"}},
+                {"web_research",
+                 {{"supported", true},
+                  {"keyless", true},
+                  {"standard_source_target", 100},
+                  {"fast_source_target", 50},
+                  {"max_concurrent_transfers", 4},
+                  {"max_transfers_per_origin", 1},
+                  {"partial_coverage_explicit", true},
+                  {"source_content_untrusted", true}}},
                 {"computer_use",
                  {{"supported", config.platform.is_windows && config.runtime_mode == RuntimeMode::host &&
                                     config.host_exec_enabled},

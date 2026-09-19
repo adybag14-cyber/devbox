@@ -236,10 +236,24 @@ Json UsageTelemetry::Invocation::event(std::string type) const {
                 {"arguments", arguments}, {"context", context}};
     if (tool == "host_computer_use" || tool == "host_computer_windows")
         result["usage_type"] = "computer_use";
+    if (tool.starts_with("devbox_web_"))
+        result["usage_type"] = "web_research";
     return result;
 }
 std::string UsageTelemetry::started(const std::string& tool, const Json& args, const Json& context) {
     auto summarized = summarize_arguments(args);
+    if (tool.starts_with("devbox_web_")) {
+        for (const auto* key : {"topic", "query", "queries", "urls", "domains", "exact_terms"})
+            if (args.contains(key)) {
+                const auto& value = args[key];
+                Json redacted{{"type", value.type_name()}, {"redacted", true}};
+                if (value.is_array())
+                    redacted["length"] = value.size();
+                else if (value.is_string())
+                    redacted["length"] = js_length(value.get_ref<const std::string&>());
+                summarized[key] = std::move(redacted);
+            }
+    }
     if (tool == "host_computer_use" && args.contains("text") && args["text"].is_string())
         summarized["text"] = Json{{"type", "string"},
                                   {"length", js_length(args["text"].get_ref<const std::string&>())},

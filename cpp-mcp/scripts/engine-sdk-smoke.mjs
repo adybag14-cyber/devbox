@@ -28,10 +28,13 @@ try {
   client=new Client({name:'cpp-engine-sdk-smoke',version:'1'}, {capabilities:{}});
   await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
   const listed=(await client.listTools()).tools;
-  assert.equal(listed.length,47,'complete implemented tool family');
+  assert.equal(listed.length,50,'complete implemented tool family');
   const invoke=async(name,args={})=>{const result=await client.callTool({name,arguments:args});assert.equal(result.isError,false,JSON.stringify(result));return result.structuredContent;};
   const capabilities=await invoke('devbox_capabilities');
   assertNativeContract(listed,capabilities.data);
+  const malformedResearch=await client.callTool({name:'devbox_web_research',arguments:{task_id:'invalid_research',operation_id:'validation',topic:42,urls:{nested:'PRIVATE-INVALID-WEB-ARGUMENT'}}});
+  assert.equal(malformedResearch.isError,true,'malformed research receives a tool validation result, not an internal RPC error');
+  assert(malformedResearch.content.some(item=>item.type==='text'&&item.text.includes('failed to deserialize parameters: invalid type: integer')&&item.text.includes('expected a string')),'schema validation remains authoritative: '+JSON.stringify(malformedResearch));
   const windows=await invoke('host_computer_windows',{title_contains:`no-such-cua-window-${process.pid}`});
   assert.equal(windows.data.supported,process.platform==='win32');
   assert.deepEqual(windows.data.windows,[]);
@@ -65,7 +68,7 @@ try {
   const status=(await invoke('devbox_status')).data;
   assert.equal(status.performance.process.pid,child.pid,'live serving PID');assert.equal(status.executionStore.ok,true);
   assert.equal(status.activeRequests,0,'cancelled/waited requests released');
-  assert.equal((await fetch(`${base}/readyz`)).status,listed.length===47?200:503);
+  assert.equal((await fetch(`${base}/readyz`)).status,listed.length===50?200:503);
   await client.close();client=undefined;
   await delay(100);
   const usage=await readFile(path.join(root,'run','tool-usage.jsonl'),'utf8');assert(usage.includes('tool_finish'));

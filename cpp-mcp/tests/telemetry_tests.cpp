@@ -137,6 +137,13 @@ int main() {
                  {"sequence", {{{"keys", {"PRIVATE-CUA-SEQUENCE-KEY"}}, {"duration_ms", 100}}}}},
             Json::object());
         usage.finished(cua_sequence, result_success("Sequence complete"));
+        for (const auto& value : Json::array({nullptr, 42, true, Json{{"nested", "PRIVATE-WEB-INVALID"}},
+                                              Json::array({"PRIVATE-WEB-ARRAY"}), "PRIVATE-WEB-QUERY"})) {
+            const auto malformed = usage.started(
+                "devbox_web_research", Json{{"topic", value}, {"urls", value}, {"exact_terms", value}},
+                Json::object());
+            usage.failed(malformed, "Invalid arguments");
+        }
         std::vector<std::string> pending;
         for (int i = 0; i < 36; ++i)
             pending.push_back(usage.started("devbox_wait", Json::object(), Json::object()));
@@ -156,6 +163,9 @@ int main() {
         usage.stop();
         require(usage.active_tools().empty(), "terminal invocation removal");
         const auto log = read_file(root / "run" / "tool-usage.jsonl");
+        require(log.find("PRIVATE-WEB-") == std::string::npos &&
+                    log.find("\"usage_type\":\"web_research\"") != std::string::npos,
+                "web telemetry redacts every raw argument type before validation");
         require(log.find("PASSWORD") == std::string::npos && log.find("tool_throw") != std::string::npos &&
                     log.find("\"queue_wait_ms\":12") != std::string::npos,
                 "tool lifecycle metadata logged and redacted");

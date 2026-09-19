@@ -87,7 +87,7 @@ export const prepareCppImplementation = async (root, {
     const hash = await digest(file);
     if (!matchesCppSource(info, source) || info.binarySha256 !== hash) throw new Error("C++ candidate provenance did not match the committed checkout and executable hash.");
     const report = JSON.parse((await run(runProcess, file, ["--parity-report"], root, childEnv, "C++ completion gate")).stdout);
-    if (report.implementation !== "cpp" || report.contract_version !== 3 || report.complete !== true || report.cutover_allowed !== true || report.implemented_tools !== 47 || report.target_tools !== 47) {
+    if (report.implementation !== "cpp" || report.contract_version !== 4 || report.complete !== true || report.cutover_allowed !== true || report.implemented_tools !== 50 || report.target_tools !== 50) {
       throw new Error("C++ replacement is incomplete or uncertified. The existing MCP was not stopped.");
     }
     return { info, hash };

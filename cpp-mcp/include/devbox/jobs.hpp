@@ -89,6 +89,7 @@ class JobManager {
                       std::string_view resource = "auto", bool read_only = false);
     Json submit_program(const ProgramRequest& options, const Submission& agent,
                         std::string_view resource = "auto");
+    Json submit_research(const Json& plan, const Submission& agent);
 };
 int run_job_request(std::shared_ptr<const Config> config, const fs::path& path);
 } // namespace devbox

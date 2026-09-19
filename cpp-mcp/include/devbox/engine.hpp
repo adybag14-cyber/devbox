@@ -6,6 +6,7 @@
 #include "lifecycle.hpp"
 #include "monitoring.hpp"
 #include "search.hpp"
+#include "research.hpp"
 #include "server.hpp"
 namespace devbox {
 class Engine final : public McpBackend, public std::enable_shared_from_this<Engine> {
@@ -21,6 +22,8 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     JobManager jobs_;
     DockerFiles docker_files_;
     SearchService search_;
+    web::ResearchService research_;
+    WorkPool research_workers_{1, 8};
     LifecycleService lifecycle_;
     GithubAuthService github_;
     CaptureService capture_;

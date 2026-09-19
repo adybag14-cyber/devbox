@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assertClientNativeContract, computerNames } from "../../cpp-mcp/scripts/native-contract.mjs";
+import { assertClientNativeContract, extensionNames } from "../../cpp-mcp/scripts/native-contract.mjs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -153,7 +153,7 @@ try {
   const names = listed.tools.map((tool) => tool.name).sort();
   const nativeTools = JSON.parse(await readFile(new URL("../parity/native-tools.json", import.meta.url), "utf8"));
   const capabilities = await assertClientNativeContract(client, listed.tools);
-  assert.deepEqual(names, [...expectedTools, ...nativeTools, ...(capabilities.implementation === "cpp" ? computerNames : [])].sort());
+  assert.deepEqual(names, [...expectedTools, ...nativeTools, ...(capabilities.implementation === "cpp" ? extensionNames : [])].sort());
 
   const wait = await client.callTool({
     name: "devbox_wait",
