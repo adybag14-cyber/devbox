@@ -9,6 +9,7 @@
     "boost-beast",
     "nlohmann-json",
     "lexbor",
+    "pugixml",
     "openssl",
     "zlib",
     { "name": "libdeflate", "default-features": false, "features": ["compression", "gzip", "zlib"] },

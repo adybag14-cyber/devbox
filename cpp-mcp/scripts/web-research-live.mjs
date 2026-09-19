@@ -71,6 +71,27 @@ try {
     await run('catalogue_fast',{topic:'Snapdragon 8 Elite Gen 5 smartphone prices UK GBP',mode:'fast',queries:['Snapdragon 8 Elite Gen 5 phone prices'],exact_terms:['Snapdragon 8 Elite Gen 5'],urls:[urls[0]],domains:['e-catalog.co.uk'],discovery:'web'});
     assert(report.results.catalogue_fast.usable_sources>0,'niche research yields actual evidence');
     assert(report.results.catalogue_fast.sources.every(source=>source.matched_exact_terms.includes('Snapdragon 8 Elite Gen 5')),'every counted source meets the entity filter');
+  }else if(report.case==='recovery'){
+    assert(process.env.DEVBOX_RESEARCH_PLAN_FILE,'Provide the authorized failed research input as DEVBOX_RESEARCH_PLAN_FILE');
+    const original=JSON.parse(await readFile(process.env.DEVBOX_RESEARCH_PLAN_FILE,'utf8'));
+    const plan={};
+    for(const key of ['topic','mode','queries','urls','domains','discovery','max_age_seconds','exact_terms'])
+      if(Object.hasOwn(original,key))plan[key]=original[key];
+    assert.equal(plan.mode,'fast');
+    assert.equal(plan.discovery,'web');
+    await run('provider_recovery',plan);
+    const evidence=report.results.provider_recovery;
+    assert(evidence.usable_sources>0,'failed pricing search now yields actual source evidence');
+    assert(evidence.discovery,'query coverage is explicit');
+    assert.equal(evidence.discovery.queries_total,plan.queries.length);
+    const challenged=evidence.providers.filter(p=>p.provider==='duckduckgo_html'&&p.status==='challenge_required');
+    if(challenged.length){
+      assert.equal(challenged.length,1,'a challenge stops this provider after one response');
+      assert(evidence.discovery.fallback_queries>0,'an independent provider recovered at least one query');
+      const firstChallenge=evidence.providers.indexOf(challenged[0]);
+      assert(evidence.providers.slice(firstChallenge+1).filter(p=>p.provider==='duckduckgo_html').every(p=>p.status==='cooldown'),'later queries respect the provider cooldown');
+    }
+    report.coverageCaveat='Source retrieval and provider recovery are verified; prices and purchase availability still require source review.';
   }else if(report.case==='rfc'){
     const urls=Array.from({length:151},(_,i)=>`https://www.rfc-editor.org/rfc/rfc${9000+i}.html`);
     const common={topic:'Internet protocol transport security specification',urls,discovery:'none',domains:['rfc-editor.org'],max_age_seconds:3600};

@@ -41,6 +41,11 @@ class Transport {
     void reset_byte_budget();
 };
 Json extract_document(const Transfer& response);
+bool response_requires_challenge(const Transfer& response);
+Json parse_search_response(std::string_view provider, const Transfer& response,
+                           std::optional<unsigned short> fixture_loopback_port = {});
+Json discover_sources(Transport& transport, const Json& plan, const fs::path& health_root,
+                      const TransportLimits& limits, Clock::time_point deadline, const Cancel& cancel);
 Json exact_term_matches(const Json& document, const std::vector<std::string>& exact_terms);
 std::string evidence_excerpt(std::string_view text, std::string_view query, std::size_t max_chars);
 bool robots_allowed(std::string_view robots, std::string_view path,

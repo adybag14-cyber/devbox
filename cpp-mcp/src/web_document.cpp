@@ -180,6 +180,13 @@ bool jsonld(const Json& value, Json& result) {
 }
 } // namespace
 
+bool response_requires_challenge(const Transfer& response) {
+    const auto body = lower(response.body.substr(0, 128 * 1024));
+    return (body.find("anomaly-modal") != body.npos && body.find("challenge-form") != body.npos &&
+            body.find("anomaly.js") != body.npos) ||
+           RE2::PartialMatch(body, RE2("<title[^>]*>\\s*(?:just a moment|attention required|access denied)"));
+}
+
 Json extract_document(const Transfer& response) {
     Json result{{"url", response.url},
                 {"final_url", response.final_url.empty() ? response.url : response.final_url},
@@ -205,6 +212,11 @@ Json extract_document(const Transfer& response) {
                 {"untrusted_source", true}};
     if (!response.error.empty()) {
         result["error"] = response.error;
+        return result;
+    }
+    if (response_requires_challenge(response)) {
+        result["status"] = "challenge_required";
+        result["error"] = "Source requires human verification; no challenge was attempted";
         return result;
     }
     if (response.status == 429 || response.status == 503) {
@@ -415,7 +427,7 @@ Json extract_document(const Transfer& response) {
                            title.find("attention required") != title.npos ||
                            (text.size() < 3000 && (beginning.find("verify you are human") != beginning.npos ||
                                                    beginning.find("unusual traffic") != beginning.npos)) ||
-                           body.find("anomaly__modal") != body.npos;
+                           response_requires_challenge(response);
     result["text"] = text;
     result["body_sha256"] = sha256(response.body);
     result["content_sha256"] = sha256(text);
