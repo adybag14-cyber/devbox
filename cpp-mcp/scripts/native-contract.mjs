@@ -6,7 +6,7 @@ export const computerTools = JSON.parse(await readFile(new URL('../contract/comp
 export const computerNames = computerTools.map(tool => tool.name).sort();
 export const researchTools = JSON.parse(await readFile(new URL('../contract/research-tools.json', import.meta.url), 'utf8'));
 export const researchNames = researchTools.map(tool => tool.name).sort();
-const extensionNames = [...computerNames, ...researchNames];
+export const extensionNames = [...computerNames, ...researchNames];
 const legacyNames = Object.values(frozen.profiles)[0].map(tool => tool.name).sort();
 assert.equal(legacyNames.length, 45, 'unchanged frozen reference contract');
 assert.equal(computerNames.length, 2, 'explicit C++ computer-use extension');

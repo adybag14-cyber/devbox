@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { assertClientNativeContract, computerNames } from "../../cpp-mcp/scripts/native-contract.mjs";
+import { assertClientNativeContract, assertCppExtensions } from "../../cpp-mcp/scripts/native-contract.mjs";
 import { readFile, writeFile, mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -121,7 +121,7 @@ const listRustTools = async () => {
     await client.connect(new StreamableHTTPClientTransport(baseUrl));
     const tools = (await client.listTools()).tools;
     const capabilities = await assertClientNativeContract(client, tools);
-    return capabilities.implementation === "cpp" ? tools.filter(tool => !computerNames.includes(tool.name)) : tools;
+    return capabilities.implementation === "cpp" ? assertCppExtensions(tools) : tools;
   } finally {
     if (client) await client.close().catch(() => {});
     if (server.exitCode === null && server.signalCode === null) {
