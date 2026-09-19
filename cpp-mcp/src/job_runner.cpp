@@ -84,10 +84,15 @@ class RunnerMonitor {
         return child_ ? std::optional(child_) : std::nullopt;
     }
     void finish(std::string status) {
-        set_status(std::move(status));
         stop_->cancel();
         if (thread_.joinable())
             thread_.join();
+        try {
+            set_status(std::move(status));
+        } catch (...) {
+            // The authoritative terminal status still records the known result if
+            // this best-effort heartbeat fails. No heartbeat writer remains alive.
+        }
     }
 };
 Json queued_status(const Json& request, const std::string& queued) {
@@ -114,7 +119,10 @@ void add_lease(Json& value, const std::optional<ExecutionLease>& lease,
     value["executionPool"] = lease ? Json(lease->pool) : Json(nullptr);
     value["executionWeight"] = lease ? Json(lease->weight) : weight ? Json(*weight) : Json(nullptr);
 }
-void persist_terminal(JobStore& store, const std::string& id, const Json& final) {
+void persist_terminal(JobStore& store, RunnerMonitor& monitor, const std::string& id, const Json& final) {
+    // Retention may remove the directory as soon as terminal status is published.
+    // Quiesce all heartbeat writes first so they cannot recreate a retired result.
+    monitor.finish(json_string(final, "status"));
     std::optional<Json> current;
     try {
         current = store.read_status_raw(id);
@@ -209,8 +217,7 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
         final["childPid"] = nullptr;
         final["error"] = error.what();
         final["logs"] = logs.finish();
-        persist_terminal(store, id, final);
-        monitor.finish(status);
+        persist_terminal(store, monitor, id, final);
         return 0;
     }
     if (cancellation->cancelled() || store.cancellation_requested(id)) {
@@ -221,8 +228,7 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
         add_lease(final, lease);
         final["childPid"] = nullptr;
         final["logs"] = logs.finish();
-        persist_terminal(store, id, final);
-        monitor.finish("cancelled");
+        persist_terminal(store, monitor, id, final);
         return 0;
     }
     const auto started = utc_now();
@@ -297,8 +303,7 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
     const auto child = monitor.child();
     final["childPid"] = child ? Json(*child) : Json(nullptr);
     final["logs"] = logs.finish();
-    persist_terminal(store, id, final);
-    monitor.finish(status);
+    persist_terminal(store, monitor, id, final);
     return 0;
 }
 } // namespace devbox

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { assertClientNativeContract, extensionNames } from "../../cpp-mcp/scripts/native-contract.mjs";
+import { readCompleteJsonl } from "./read-complete-jsonl.mjs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -649,9 +650,8 @@ try {
   }
 
   assert.ok(stateRoot, "RUST_MCP_STATE_ROOT is required for usage telemetry assertions");
-  const toolUsageText = await readFile(path.join(stateRoot, "run", "tool-usage.jsonl"), "utf8");
+  const { text: toolUsageText, events: toolUsage } = await readCompleteJsonl(path.join(stateRoot, "run", "tool-usage.jsonl"));
   assert.ok(!toolUsageText.includes("AP9hbHBoYQo="), "sensitive content_base64 must be redacted from tool telemetry");
-  const toolUsage = toolUsageText.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
   const waitStart = toolUsage.find((event) => event.type === "tool_start" && event.tool === "devbox_wait");
   const waitFinish = toolUsage.find((event) => event.type === "tool_finish" && event.tool === "devbox_wait");
   assert.ok(waitStart?.invocation_id);
@@ -677,8 +677,7 @@ try {
   assert.equal(processCancelFinish.is_error, true);
   assert.ok(processCancelFinish.duration_ms < 4_000);
 
-  const httpUsageText = await readFile(path.join(stateRoot, "run", "http-usage.jsonl"), "utf8");
-  const httpUsage = httpUsageText.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
+  const { events: httpUsage } = await readCompleteJsonl(path.join(stateRoot, "run", "http-usage.jsonl"));
   const rootGet = httpUsage.find((event) => event.type === "http_request" && event.method === "GET" && event.path === "/" && event.outcome === "finished");
   const mcpPost = httpUsage.find((event) => event.type === "http_request" && event.method === "POST" && event.path === "/" && event.outcome === "finished");
   assert.equal(rootGet?.status_code, 200);
