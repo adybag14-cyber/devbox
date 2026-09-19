@@ -113,6 +113,13 @@ int run(int argc, char** argv) {
         const auto finish = [&](const std::string& id) {
             const auto value = store.wait_status(id, Millis(10000), true, Millis(50));
             require(terminal_status(json_string(value, "status")), "job reached terminal status");
+            const auto paths = store.paths(id);
+            // Retention can remove the directory as soon as terminal status is visible.
+            // The final heartbeat must already be committed, with no later journal write.
+            require(read_json(paths.heartbeat)["status"] == value["status"],
+                    "terminal status follows the final heartbeat");
+            require(fs::last_write_time(paths.heartbeat) <= fs::last_write_time(paths.status),
+                    "terminal status is the final journal write");
             return value;
         };
         require(infer_program_resource("node", {"-e", "console.log('cargo build')"}) == ResourceClass::light,
