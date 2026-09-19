@@ -84,6 +84,7 @@ struct Transport::State {
     TransportLimits limits;
     CURLM* multi = nullptr;
     std::size_t total_bytes = 0;
+    bool byte_budget_exhausted = false;
     std::map<std::string, Clock::time_point> backoff;
     struct Item {
         State* owner;
@@ -163,8 +164,12 @@ struct Transport::State {
         if (size && count > SIZE_MAX / size)
             return 0;
         const auto length = size * count;
-        if (length > item.owner->limits.max_body_bytes - item.response.body.size() ||
+        if (item.owner->byte_budget_exhausted ||
             length > item.owner->limits.max_total_bytes - item.owner->total_bytes) {
+            item.owner->byte_budget_exhausted = true;
+            return 0;
+        }
+        if (length > item.owner->limits.max_body_bytes - item.response.body.size()) {
             item.too_large = true;
             return 0;
         }
@@ -250,8 +255,12 @@ Transport::~Transport() = default;
 std::size_t Transport::downloaded_bytes() const {
     return state_->total_bytes;
 }
+bool Transport::byte_budget_exhausted() const {
+    return state_->byte_budget_exhausted || state_->total_bytes >= state_->limits.max_total_bytes;
+}
 void Transport::reset_byte_budget() {
     state_->total_bytes = 0;
+    state_->byte_budget_exhausted = false;
 }
 std::vector<Transfer> Transport::get(const std::vector<Request>& requests, Clock::time_point deadline,
                                      const Cancel& cancel) {
@@ -294,7 +303,7 @@ std::vector<Transfer> Transport::get(const std::vector<Request>& requests, Clock
     while (!pending.empty() || !active.empty()) {
         if (cancel)
             cancel->check();
-        if (Clock::now() >= deadline || state.total_bytes >= state.limits.max_total_bytes) {
+        if (Clock::now() >= deadline || byte_budget_exhausted()) {
             for (auto& items : {&pending, &active})
                 for (auto& item : *items) {
                     if (item->easy)
@@ -347,9 +356,10 @@ std::vector<Transfer> Transport::get(const std::vector<Request>& requests, Clock
             curl_easy_getinfo(item->easy, CURLINFO_RESPONSE_CODE, &status);
             item->response.status = static_cast<int>(status);
             if (transfer_code != CURLE_OK)
-                item->response.error = item->denied_address ? "WEB_PRIVATE_ADDRESS: resolved peer rejected"
-                                       : item->too_large    ? "WEB_RESPONSE_TOO_LARGE"
-                                                            : curl_easy_strerror(transfer_code);
+                item->response.error = state.byte_budget_exhausted ? "WEB_BYTE_BUDGET"
+                                       : item->denied_address ? "WEB_PRIVATE_ADDRESS: resolved peer rejected"
+                                       : item->too_large      ? "WEB_RESPONSE_TOO_LARGE"
+                                                              : curl_easy_strerror(transfer_code);
             curl_easy_cleanup(item->easy);
             item->easy = nullptr;
             if (item->request_headers) {
@@ -370,8 +380,9 @@ std::vector<Transfer> Transport::get(const std::vector<Request>& requests, Clock
                 transfer_code == CURLE_OPERATION_TIMEDOUT || transfer_code == CURLE_RECV_ERROR ||
                 transfer_code == CURLE_SEND_ERROR || transfer_code == CURLE_GOT_NOTHING ||
                 (transfer_code == CURLE_OK && (status == 500 || status == 502 || status == 504));
-            if (transient && !item->denied_address && !item->too_large && item->retries == 0 &&
-                Clock::now() + Millis(750) < deadline && state.total_bytes < state.limits.max_total_bytes) {
+            if (transient && !state.byte_budget_exhausted && !item->denied_address && !item->too_large &&
+                item->retries == 0 && Clock::now() + Millis(750) < deadline &&
+                state.total_bytes < state.limits.max_total_bytes) {
                 ++item->retries;
                 item->ready_at = Clock::now() + Millis(500);
                 item->response.error.clear();

@@ -38,6 +38,7 @@ class Transport {
     std::vector<Transfer> get(const std::vector<Request>& requests, Clock::time_point deadline,
                               const Cancel& cancel = {});
     std::size_t downloaded_bytes() const;
+    bool byte_budget_exhausted() const;
     void reset_byte_budget();
 };
 Json extract_document(const Transfer& response);

@@ -541,7 +541,8 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
         ledger["discovered_candidates"] = candidates.size();
         checkpoint();
         std::size_t position = 0;
-        while (position < candidates.size() && ledger["sources"].size() < target && Clock::now() < deadline) {
+        while (position < candidates.size() && ledger["sources"].size() < target && Clock::now() < deadline &&
+               !state_->transport.byte_budget_exhausted()) {
             if (cancel)
                 cancel->check();
             const auto count =
@@ -615,12 +616,11 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
         ledger["coverage_status"] = json_bool(ledger, "target_met") ? "target_reached" : "partial";
         ledger["shortfall"] = target - ledger["sources"].size();
         const auto discovery_status = json_string(ledger["discovery"], "status");
-        ledger["stop_reason"] = json_bool(ledger, "target_met") ? "target_reached"
-                                : Clock::now() >= deadline      ? "time_budget"
-                                : state_->transport.downloaded_bytes() >= state_->limits.max_total_bytes
-                                    ? "byte_budget"
-                                : discovery_status == "blocked"     ? "discovery_blocked"
-                                : discovery_status == "unavailable" ? "discovery_unavailable"
+        ledger["stop_reason"] = json_bool(ledger, "target_met")             ? "target_reached"
+                                : Clock::now() >= deadline                  ? "time_budget"
+                                : state_->transport.byte_budget_exhausted() ? "byte_budget"
+                                : discovery_status == "blocked"             ? "discovery_blocked"
+                                : discovery_status == "unavailable"         ? "discovery_unavailable"
                                 : discovery_status == "partial" || discovery_status == "budget_exhausted"
                                     ? "discovery_incomplete"
                                     : "candidate_exhaustion";

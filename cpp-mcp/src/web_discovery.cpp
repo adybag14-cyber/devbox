@@ -152,6 +152,11 @@ bool blocked(std::string_view status) {
 Json parse_search_response(std::string_view provider, const Transfer& response,
                            std::optional<unsigned short> fixture_loopback_port) {
     Json result{{"status", "unavailable"}, {"urls", Json::array()}, {"results", 0}};
+    if (response.error == "WEB_BYTE_BUDGET" || response.error == "WEB_DEADLINE") {
+        result["status"] = "budget_exhausted";
+        result["error"] = response.error;
+        return result;
+    }
     if (response_requires_challenge(response)) {
         result["status"] = "challenge_required";
         result["error"] = "Search provider requires human verification; automatic requests stopped";
@@ -277,7 +282,8 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
     const auto domains = json_strings(plan, "domains");
     std::size_t completed = 0, failed = 0, attempted = 0, with_results = 0, fallback = 0;
     bool all_failures_blocked = true, exhausted = false;
-    for (std::size_t index = 0; index < queries.size() && Clock::now() < deadline; ++index) {
+    for (std::size_t index = 0;
+         index < queries.size() && Clock::now() < deadline && !transport.byte_budget_exhausted(); ++index) {
         ++attempted;
         auto query = queries[index];
         if (domains.size() == 1)
@@ -324,6 +330,9 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
                         for (const auto& candidate : urls)
                             result["urls"].push_back(candidate);
                     }
+                } else if (status == "budget_exhausted") {
+                    exhausted = true;
+                    all_failures_blocked = false;
                 } else {
                     all_failures_blocked = all_failures_blocked && blocked(status);
                     if (blocked(status))
@@ -339,7 +348,7 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
                 all_failures_blocked = false;
             }
             result["providers"].push_back(std::move(report));
-            if (found)
+            if (found || transport.byte_budget_exhausted())
                 break;
         }
         completed += conclusive ? 1 : 0;
@@ -356,10 +365,11 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
     if (fallback)
         summary["provider_use_notice"] = bing_notice;
     if (completed < queries.size()) {
-        summary["status"] = completed                               ? "partial"
-                            : exhausted || Clock::now() >= deadline ? "budget_exhausted"
-                            : all_failures_blocked                  ? "blocked"
-                                                                    : "unavailable";
+        summary["status"] = completed ? "partial"
+                            : exhausted || Clock::now() >= deadline || transport.byte_budget_exhausted()
+                                ? "budget_exhausted"
+                            : all_failures_blocked ? "blocked"
+                                                   : "unavailable";
         summary["guidance"] =
             "Discovery did not complete every query. Supply independently verified source URLs "
             "or retry after the reported cooldown; do not infer that matching products or sources do not "

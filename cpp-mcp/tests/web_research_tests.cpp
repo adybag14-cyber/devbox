@@ -313,6 +313,22 @@ void policy_tests() {
 }
 void transport_tests(HttpFixture& server) {
     {
+        auto limits = server.limits();
+        limits.max_total_bytes = 128;
+        web::Transport transport(limits);
+        const auto limited =
+            transport.get({{server.url("/doc/budget"), Json::object()}}, Clock::now() + Millis(3000));
+        require(limited[0].error == "WEB_BYTE_BUDGET" && transport.downloaded_bytes() <= 128,
+                "aggregate byte budget is explicit even when a chunk cannot fit the remaining bytes");
+        const auto before = server.requests.load();
+        const auto next =
+            transport.get({{server.url("/doc/not-requested"), Json::object()}}, Clock::now() + Millis(3000));
+        require(next[0].error == "WEB_BYTE_BUDGET" && server.requests == before,
+                "an exhausted byte budget starts no further network requests");
+        transport.reset_byte_budget();
+        require(!transport.byte_budget_exhausted(), "a new operation resets its byte budget state");
+    }
+    {
         web::Transport transport(server.limits());
         const auto before = server.connections.load();
         auto first = transport.get({{server.url("/doc/1"), Json::object()}}, Clock::now() + Millis(3000));
@@ -386,6 +402,18 @@ void research_tests(HttpFixture& server, const fs::path& root) {
     config->project_root = root;
     config->jobs_root = root / "jobs";
     config->runtime_mode = RuntimeMode::host;
+    {
+        auto limits = server.limits();
+        limits.max_total_bytes = 128;
+        web::ResearchService small_budget(config, limits);
+        const auto result = small_budget.run(Json{{"topic", "photon research"},
+                                                  {"mode", "fast"},
+                                                  {"discovery", "none"},
+                                                  {"urls", {server.url("/doc/budget")}}},
+                                             root / "budget-result", Millis(5000), {});
+        require(result["stop_reason"] == "byte_budget" && result["usable_sources"] == 0,
+                "research reports byte budget, not candidate exhaustion, when a chunk cannot fit");
+    }
     web::ResearchService service(config, server.limits());
     const auto first = service.fetch(Json{{"urls", {server.url("/doc/7"), server.url("/doc/7")}}});
     require(first["unique_urls"] == 1 && first["documents"][0]["status"] == "ok",
@@ -585,6 +613,10 @@ void search_parser_tests() {
     const auto accepted = web::parse_search_response("duckduckgo_html", response);
     require(accepted["status"] == "unavailable" && !accepted["error"].get<std::string>().empty(),
             "non-challenge HTTP 202 still has a useful unavailable diagnostic");
+    response.error = "WEB_BYTE_BUDGET";
+    require(web::parse_search_response("bing_rss", response)["status"] == "budget_exhausted",
+            "a local byte limit does not become a provider failure");
+    response.error.clear();
     response.status = 200;
     response.headers = Json{{"content-type", "text/html"}};
     response.body = "<html><body>Unexpected search layout</body></html>";

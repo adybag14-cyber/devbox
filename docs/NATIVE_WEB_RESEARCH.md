@@ -72,6 +72,7 @@ Use `max_age_seconds: 0` for volatile facts. This revalidates cached documents w
 - Up to four concurrent transfers and one per origin per client, with connection reuse.
 - Up to 256 candidate documents, 16 queries and 16 target domains per job.
 - At most 2 MiB decoded per response and 64 MiB decoded per research operation.
+- A response chunk that cannot fit the remaining aggregate budget stops further fetches and reports `byte_budget`, even if the retained byte count is slightly below the ceiling. This local limit does not penalize a search provider's health.
 - A 64 MiB normalized-document cache. Evidence lives in the existing owned job directory and follows job retention.
 - One collecting research job per project. Other research jobs wait while queued, before consuming execution slots, and remain cancellable.
 - Existing commands, computer use and health routes retain their own admission paths.
