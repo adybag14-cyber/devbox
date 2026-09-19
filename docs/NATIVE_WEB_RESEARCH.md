@@ -29,7 +29,7 @@ Call `devbox_web_research` with a stable task/operation identity, a topic and fo
 }
 ```
 
-The call returns promptly with `job_id`. Repeating the same task/operation/input returns the original job; changed input under that identity conflicts. Existing `devbox_job_status` supports a passive wait, and `devbox_job_cancel` stops the owned job.
+The call returns promptly with `job_id`. Repeating the same task/operation/input returns the original job; changed input under that identity conflicts. Existing `devbox_job_status` supports a passive wait. `devbox_job_cancel` requests cancellation asynchronously and may return `cancel_requested` while the runner or child is still active. Poll `devbox_job_status` until a terminal state confirms completion.
 
 Read `devbox_web_evidence` and follow `next_offset` until all source briefs have been inspected before claiming that the requested number of sources was consulted. `source_id` retrieves a larger immutable excerpt, tables and metadata. If `minimum_required_chars` appears, increase the output budget instead of repeating a non-advancing cursor. Source records do not become proof of truth merely because they were retrieved successfully.
 

@@ -32,6 +32,9 @@ try {
   const invoke=async(name,args={})=>{const result=await client.callTool({name,arguments:args});assert.equal(result.isError,false,JSON.stringify(result));return result.structuredContent;};
   const capabilities=await invoke('devbox_capabilities');
   assertNativeContract(listed,capabilities.data);
+  const malformedResearch=await client.callTool({name:'devbox_web_research',arguments:{task_id:'invalid_research',operation_id:'validation',topic:42,urls:{nested:'PRIVATE-INVALID-WEB-ARGUMENT'}}});
+  assert.equal(malformedResearch.isError,true,'malformed research receives a tool validation result, not an internal RPC error');
+  assert(malformedResearch.content.some(item=>item.type==='text'&&item.text.includes('failed to deserialize parameters: invalid type: integer')&&item.text.includes('expected a string')),'schema validation remains authoritative: '+JSON.stringify(malformedResearch));
   const windows=await invoke('host_computer_windows',{title_contains:`no-such-cua-window-${process.pid}`});
   assert.equal(windows.data.supported,process.platform==='win32');
   assert.deepEqual(windows.data.windows,[]);
