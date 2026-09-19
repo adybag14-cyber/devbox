@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
 
@@ -10,6 +11,34 @@ import { abortableSleep, waitForPathCondition } from "../src/wait-utils.js";
 import { shapeProcessOutput } from "../src/output-shaping.js";
 import { createRotatingFileSink } from "../src/job-logs.js";
 import { refreshExecutionStoreHealth } from "../src/execution-store-health.js";
+import { readCompleteJsonl } from "../rust-mcp/scripts/read-complete-jsonl.mjs";
+
+test("telemetry smoke reader waits for a split final JSONL record", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-jsonl-split-"));
+  const file = path.join(root, "usage.jsonl");
+  let writer;
+  try {
+    await writeFile(file, '{"event":1}\n{"event":');
+    writer = delay(50).then(() => appendFile(file, '2,"text":"café"}\n'));
+    const [result] = await Promise.all([readCompleteJsonl(file), writer]);
+    assert.deepEqual(result.events, [{ event: 1 }, { event: 2, text: "café" }]);
+    assert(result.text.endsWith("\n"));
+  } finally {
+    await writer?.catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("telemetry smoke reader rejects malformed committed records and unfinished tails", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "devbox-jsonl-invalid-"));
+  const file = path.join(root, "usage.jsonl");
+  try {
+    await writeFile(file, '{broken}\n{"pending":');
+    await assert.rejects(readCompleteJsonl(file), SyntaxError);
+    await writeFile(file, '{"event":1}\n{"pending":');
+    await assert.rejects(readCompleteJsonl(file, { timeoutMs: 25, pollMs: 5 }), /did not finish its final line/);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 const projectRoot = process.cwd();
 
