@@ -201,6 +201,20 @@ void extraction_tests() {
       </div></form></body></html>)";
     require(web::extract_document(challenge)["status"] == "challenge_required",
             "HTTP 202 DuckDuckGo challenge is identified before generic provider failure");
+    auto meta_charset = challenge;
+    meta_charset.status = 200;
+    meta_charset.headers = Json{{"content-type", "text/html"}};
+    meta_charset.body =
+        "<html><head><meta charset='windows-1252'><title>Photon detector prices</title></head>"
+        "<body><p>Photon detector pricing and calibration information for a current laboratory "
+        "instrument. The product price is " +
+        std::string(1, static_cast<char>(0xa3)) +
+        "123.45, including documentation about measurements, uncertainty and verification.</p></body></html>";
+    const auto decoded_meta = web::extract_document(meta_charset);
+    require(decoded_meta["status"] == "ok" && decoded_meta["encoding_reported"] == "windows-1252" &&
+                decoded_meta["text"].get<std::string>().find("\xc2\xa3"
+                                                             "123.45") != std::string::npos,
+            "HTML meta-only charset decodes the pound sign when HTTP omits charset");
     web::Transfer response;
     response.url = response.final_url = "https://example.org/catalogue/item";
     response.status = 200;
@@ -576,6 +590,23 @@ void search_parser_tests() {
     response.body = "<html><body>Unexpected search layout</body></html>";
     require(web::parse_search_response("duckduckgo_html", response)["status"] == "parse_error",
             "unrecognized search markup cannot silently become no results");
+    for (const auto* body :
+         {"<html><style>.no-results__message{color:red}</style><body>Changed layout</body></html>",
+          "<html><script>const marker='no-results__message';</script></html>",
+          "<html><!-- <div class='no-results__message'>No results</div> --></html>",
+          "<html><div hidden><div class='no-results__message'>No results</div></div></html>",
+          "<html><div class='other-no-results__message'>Changed layout</div></html>"}) {
+        response.body = body;
+        require(web::parse_search_response("duckduckgo_html", response)["status"] == "parse_error",
+                "CSS, scripts, comments, hidden and unrelated markers are not empty search results");
+    }
+    response.body = "<html><div class='extra\tno-results__message\nother'>No results found</div></html>";
+    require(web::parse_search_response("duckduckgo_html", response)["status"] == "no_results",
+            "actual empty-result element supports whitespace-separated class tokens");
+    response.body =
+        "<html><a class='extra\tresult__a\nother' href='https://example.org/source'>Result</a></html>";
+    require(web::parse_search_response("duckduckgo_html", response)["results"] == 1,
+            "result link classes are whitespace-delimited tokens");
 }
 int main() {
     const auto root = fs::temp_directory_path() / ("devbox-web-tests-" + uuid());

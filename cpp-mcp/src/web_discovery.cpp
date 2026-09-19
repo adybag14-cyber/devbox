@@ -4,6 +4,7 @@
 #include <array>
 #include <curl/curl.h>
 #include <pugixml.hpp>
+#include <re2/re2.h>
 #include <set>
 #include <thread>
 
@@ -189,8 +190,8 @@ Json parse_search_response(std::string_view provider, const Transfer& response,
                 return result;
             }
             for (const auto& link : document.value("links", Json::array())) {
-                const auto classes = split(json_string(link, "class"), ' ', false);
-                if (std::find(classes.begin(), classes.end(), "result__a") == classes.end())
+                static const RE2 result_class("(?:^|\\s)result__a(?:$|\\s)");
+                if (!RE2::PartialMatch(json_string(link, "class"), result_class))
                     continue;
                 auto target = json_string(link, "url");
                 const auto parameters = query_parameters(Url::parse(target).query);
@@ -198,7 +199,7 @@ Json parse_search_response(std::string_view provider, const Transfer& response,
                     target = json_string(parameters, "uddg");
                 add(target);
             }
-            if (result["urls"].empty() && lower(response.body).find("no-results") == std::string::npos)
+            if (result["urls"].empty() && !json_bool(document, "search_no_results"))
                 throw Error("Search HTML did not contain recognized result or no-result markup");
         } else if (provider == "bing_rss") {
             pugi::xml_document document;

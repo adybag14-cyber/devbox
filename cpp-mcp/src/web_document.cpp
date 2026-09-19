@@ -247,7 +247,7 @@ Json extract_document(const Transfer& response) {
     RE2::PartialMatch(type, charset, &encoding);
     if (encoding.empty() && (type.find("html") != type.npos || type.empty()))
         RE2::PartialMatch(response.body.substr(0, 8192),
-                          RE2("(?i)<meta[^>]{0,1024}charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)"), &encoding);
+                          RE2("(?i)<meta[^>]{0,1000}charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)"), &encoding);
     encoding = lower(encoding);
     if (encoding == "utf8")
         encoding = "utf-8";
@@ -339,6 +339,12 @@ Json extract_document(const Transfer& response) {
                                                   reinterpret_cast<const lxb_char_t*>("hidden"), 6) ||
                     lower(attribute(node, "aria-hidden")) == "true")
                     continue;
+                if (tag == LXB_TAG_DIV) {
+                    static const RE2 empty_search_class("(?:^|\\s)no-results__message(?:$|\\s)");
+                    if (RE2::PartialMatch(attribute(node, "class"), empty_search_class) &&
+                        !node_text(node, 500).empty())
+                        result["search_no_results"] = true;
+                }
                 if ((tag == LXB_TAG_H1 || tag == LXB_TAG_H2 || tag == LXB_TAG_H3 || tag == LXB_TAG_H4 ||
                      tag == LXB_TAG_H5 || tag == LXB_TAG_H6) &&
                     result["headings"].size() < 24)
