@@ -28,7 +28,7 @@ void contract_checks() {
     config.runtime_mode = RuntimeMode::host;
     config.host_exec_enabled = true;
     ToolContract contract(config);
-    require(contract.all().size() == 47, "native extension count");
+    require(contract.all().size() == 50, "native extension count");
     require(required_tool_scope("host_computer_use") == "mcp:host:exec", "input requires execution scope");
     require(!oauth_scope_allows({"mcp:host:read"}, "mcp:host:exec"), "read scope cannot inject input");
     require(contract.tool("host_computer_windows")["annotations"]["readOnlyHint"] == true,

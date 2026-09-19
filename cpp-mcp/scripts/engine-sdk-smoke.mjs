@@ -28,7 +28,7 @@ try {
   client=new Client({name:'cpp-engine-sdk-smoke',version:'1'}, {capabilities:{}});
   await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
   const listed=(await client.listTools()).tools;
-  assert.equal(listed.length,47,'complete implemented tool family');
+  assert.equal(listed.length,50,'complete implemented tool family');
   const invoke=async(name,args={})=>{const result=await client.callTool({name,arguments:args});assert.equal(result.isError,false,JSON.stringify(result));return result.structuredContent;};
   const capabilities=await invoke('devbox_capabilities');
   assertNativeContract(listed,capabilities.data);
@@ -65,7 +65,7 @@ try {
   const status=(await invoke('devbox_status')).data;
   assert.equal(status.performance.process.pid,child.pid,'live serving PID');assert.equal(status.executionStore.ok,true);
   assert.equal(status.activeRequests,0,'cancelled/waited requests released');
-  assert.equal((await fetch(`${base}/readyz`)).status,listed.length===47?200:503);
+  assert.equal((await fetch(`${base}/readyz`)).status,listed.length===50?200:503);
   await client.close();client=undefined;
   await delay(100);
   const usage=await readFile(path.join(root,'run','tool-usage.jsonl'),'utf8');assert(usage.includes('tool_finish'));

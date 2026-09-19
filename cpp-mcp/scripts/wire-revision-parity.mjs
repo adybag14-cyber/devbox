@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { assertComputerExtension } from './native-contract.mjs';
+import { assertCppExtensions } from './native-contract.mjs';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import net from 'node:net';
@@ -62,7 +62,7 @@ function normalized(value, implementation) {
   if (Array.isArray(value)) return value.map(item => normalized(item, implementation));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, child]) => {
     if (key === 'serverInfo' || key === 'io.modelcontextprotocol/serverInfo') return [key, '<implementation>'];
-    if (key === 'tools') return [key, Array.isArray(child) ? (implementation === 'cpp' ? assertComputerExtension(child) : child).length : child];
+    if (key === 'tools') return [key, Array.isArray(child) ? (implementation === 'cpp' ? assertCppExtensions(child) : child).length : child];
     return [key, normalized(child, implementation)];
   }));
   return value;

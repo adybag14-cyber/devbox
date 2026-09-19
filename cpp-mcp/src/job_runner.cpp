@@ -1,5 +1,6 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/jobs.hpp"
+#include "devbox/research.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <algorithm>
 #include <csignal>
 #include <thread>
@@ -129,8 +130,8 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
         throw Error("Job request must be a JSON object");
     const auto id = request.at("id").get<std::string>();
     const auto mode = request.at("mode").get<std::string>();
-    if (mode != "shell" && mode != "program")
-        throw Error("Job mode must be shell or program");
+    if (mode != "shell" && mode != "program" && mode != "research")
+        throw Error("Job mode must be shell, program or research");
     const auto class_name = request.at("resourceClass").get<std::string>();
     if (class_name != "watch" && class_name != "light" && class_name != "heavy" && class_name != "io-heavy")
         throw Error("Unknown job resource class");
@@ -178,9 +179,26 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
                             : 1;
     const auto cancellation = monitor.cancellation();
     std::optional<ExecutionLease> lease;
+    std::optional<FileLock> research_gate;
     try {
-        lease = scheduler.acquire({ExecutionKind::background, resource, weight, "devbox_job:" + id, {}},
-                                  cancellation);
+        const auto queue_started = Clock::now();
+        std::uint64_t research_wait_ms = 0;
+        if (mode == "research") {
+            const auto root = config->project_root / "run" / "web-research-cache";
+            ensure_directory(root);
+            // Research jobs wait while still queued, without consuming execution slots.
+            research_gate.emplace(root / ".research.lock", scheduler_config.queue_timeout, cancellation);
+            research_wait_ms = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<Millis>(Clock::now() - queue_started).count());
+        }
+        const auto remaining_queue =
+            mode == "research" ? std::optional<Millis>(std::max(
+                                     Millis(1), scheduler_config.queue_timeout -
+                                                    Millis(static_cast<Millis::rep>(research_wait_ms))))
+                               : std::nullopt;
+        lease = scheduler.acquire(
+            {ExecutionKind::background, resource, weight, "devbox_job:" + id, remaining_queue}, cancellation);
+        lease->queue_wait_ms += research_wait_ms;
     } catch (const std::exception& error) {
         auto final = queued_status(request, queued);
         const auto status =
@@ -228,7 +246,17 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
     std::string status = "succeeded";
     try {
         ProcessOutput output;
-        if (mode == "program") {
+        if (mode == "research") {
+            web::ResearchService research(config);
+            const auto report = research.run(request.at("research"), paths.dir / "research",
+                                             Millis(timeout_ms), cancellation);
+            logs.push(OutputStream::stdout_stream, report.dump() + "\n");
+            output.exit_code = 0;
+            final["research"] = Json::object();
+            for (const auto* key : {"target_sources", "usable_sources", "distinct_domains", "target_met",
+                                    "coverage_status", "stop_reason", "elapsed_ms", "decoded_bytes"})
+                final["research"][key] = report.at(key);
+        } else if (mode == "program") {
             ProgramRequest options;
             options.program = json_string(request, "program");
             options.args = json_strings(request, "args");

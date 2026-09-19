@@ -2,6 +2,9 @@ find_package(Boost CONFIG REQUIRED COMPONENTS asio beast)
 find_package(ada CONFIG REQUIRED)
 find_package(re2 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(lexbor CONFIG REQUIRED)
+find_path(DEVBOX_LEXBOR_INCLUDE_DIR lexbor/html/interfaces/document.h
+  HINTS "${lexbor_DIR}/../../include" REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(ZLIB REQUIRED)
@@ -19,6 +22,11 @@ string(REGEX REPLACE "(..)" "0x\\1," computer_bytes "${computer_hex}")
 file(WRITE "${DEVBOX_GENERATED_DIR}/computer_contract.hpp.tmp" "inline constexpr unsigned char embedded_computer_contract[] = {${computer_bytes}};\n")
 file(COPY_FILE "${DEVBOX_GENERATED_DIR}/computer_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/computer_contract.hpp" ONLY_IF_DIFFERENT)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/computer-tools.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/research-tools.json" research_hex HEX)
+string(REGEX REPLACE "(..)" "0x\\1," research_bytes "${research_hex}")
+file(WRITE "${DEVBOX_GENERATED_DIR}/research_contract.hpp.tmp" "inline constexpr unsigned char embedded_research_contract[] = {${research_bytes}};\n")
+file(COPY_FILE "${DEVBOX_GENERATED_DIR}/research_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/research_contract.hpp" ONLY_IF_DIFFERENT)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/research-tools.json")
 add_custom_target(devbox-build-identity
   COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${PROJECT_SOURCE_DIR}" "-DOUTPUT_DIR=${DEVBOX_GENERATED_DIR}"
     "-DCOMPILER=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}" "-DVERSION=${PROJECT_VERSION}"
@@ -52,6 +60,9 @@ add_library(devbox_core
   src/github_auth.cpp
   src/docker_files.cpp
   src/search.cpp
+  src/web_transport.cpp
+  src/web_document.cpp
+  src/research.cpp
   src/host_inspect.cpp
   src/usage.cpp
   src/allocator.cpp
@@ -72,9 +83,11 @@ add_library(devbox_core
 )
 add_dependencies(devbox_core devbox-build-identity)
 target_include_directories(devbox_core PRIVATE "${DEVBOX_GENERATED_DIR}")
+target_include_directories(devbox_core PRIVATE "${DEVBOX_LEXBOR_INCLUDE_DIR}")
 target_include_directories(devbox_core PUBLIC include)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl ZLIB::ZLIB Threads::Threads ada::ada re2::re2)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
+target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:lexbor::lexbor_static>,lexbor::lexbor_static,lexbor::lexbor>)
 target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_NO_DEPRECATED)
 if(DEVBOX_FORCE_FORK_EXEC)
   target_compile_definitions(devbox_core PRIVATE DEVBOX_FORCE_FORK_EXEC=1)
@@ -100,6 +113,13 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-web-research-tests tests/web_research_tests.cpp)
+  target_link_libraries(devbox-web-research-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-web-research-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME web-research COMMAND devbox-web-research-tests)
+  set_tests_properties(web-research PROPERTIES TIMEOUT 75)
   add_executable(devbox-computer-tests tests/computer_use_tests.cpp)
   target_link_libraries(devbox-computer-tests PRIVATE devbox_core)
   add_test(NAME computer-contract COMMAND devbox-computer-tests)

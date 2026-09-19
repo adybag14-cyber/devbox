@@ -133,6 +133,18 @@ Json JobManager::submit_program(const ProgramRequest& options, const Submission&
                                 std::string_view resource) {
     return submit(program_request(options, resource), agent);
 }
+Json JobManager::submit_research(const Json& plan, const Submission& agent) {
+    Json request{{"id", new_id()},
+                 {"mode", "research"},
+                 {"research", plan},
+                 {"workingDir", path_text(config_->project_root)},
+                 {"timeoutMs", json_uint(plan, "budget_seconds", 300) * 1000},
+                 {"readOnly", true},
+                 {"resourceClass", "io-heavy"},
+                 {"runtimeMode", config_->runtime_name()},
+                 {"createdAtUtc", utc_now()}};
+    return submit(std::move(request), agent);
+}
 Json JobManager::submit(Json request, const Submission& agent) {
     validate_key(agent.task_id);
     validate_key(agent.operation_id);

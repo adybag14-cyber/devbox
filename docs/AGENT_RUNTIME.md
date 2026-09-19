@@ -91,7 +91,7 @@ Cloudflare JWKS work runs outside the shared OAuth token/state lock. Fetching ha
 
 Launcher health requests bound both headers and body reads by the remaining startup deadline and reject oversized/unexpected health bodies. Native capture is tested through repeated new server instances and owned graphical fixtures. Legacy JavaScript capture assertions include the actual bounded tool diagnostic.
 
-C++ contract version 3 advertises 47 tools and computer-use support metadata. The frozen Rust reference retains contract version 2 and its 45 tools. `devbox_status` includes the current native capability manifest so even a client with an older registered tool set can detect drift. Compare the actual client registration with `devbox_capabilities` and its schema hash. Client-side registries that persist imported schemas must refresh their connection/tool catalog; restarting the server alone cannot rewrite an external registry. Verify the actual implementation's names, version, `io-heavy`, and computer-use support after refresh.
+C++ contract version 4 advertises 50 tools, computer-use support metadata and native web-research presets. The frozen Rust reference retains contract version 2 and its 45 tools. `devbox_status` includes the current native capability manifest so even a client with an older registered tool set can detect drift. Compare the actual client registration with `devbox_capabilities` and its schema hash. Client-side registries that persist imported schemas must refresh their connection/tool catalog; restarting the server alone cannot rewrite an external registry. Verify the actual implementation's names, version, `io-heavy`, and computer-use support after refresh.
 
 ## Validation
 

@@ -2,8 +2,8 @@
 #include "config.hpp"
 #include <set>
 namespace devbox {
-inline constexpr std::size_t cpp_tool_count = 47;
-inline constexpr unsigned cpp_contract_version = 3;
+inline constexpr std::size_t cpp_tool_count = 50;
+inline constexpr unsigned cpp_contract_version = 4;
 Json build_snapshot();
 std::string build_version();
 class ParameterError : public Error {

@@ -15,8 +15,8 @@ Engine::Engine(std::shared_ptr<const Config> config)
     : config_(std::move(config)), contract_(*config_),
       commands_(std::clamp<std::size_t>(config_->exec_max_concurrent + 1, 2, 16), 128), runtime_(config_),
       scheduler_(SchedulerConfig::from(*config_)), jobs_(config_), docker_files_(config_), search_(config_),
-      lifecycle_(config_, background_), github_(config_, runtime_, lifecycle_), capture_(config_),
-      usage_(*config_, background_), performance_(*config_, background_, build_snapshot),
+      research_(config_), lifecycle_(config_, background_), github_(config_, runtime_, lifecycle_),
+      capture_(config_), usage_(*config_, background_), performance_(*config_, background_, build_snapshot),
       monitoring_(config_, background_, scheduler_, jobs_.store(), runtime_, performance_, usage_,
                   [this] { return server_ ? server_->active_requests() : 0; }) {
     for (const auto& tool : contract_.all()) {
@@ -108,6 +108,32 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         if (!implemented_.contains(name))
             throw Error("Unknown tool: " + name);
         auto args = contract_.arguments(name, arguments);
+        if (name == "devbox_web_fetch" || name == "devbox_web_research" || name == "devbox_web_evidence") {
+            auto& pool = name == "devbox_web_fetch" ? research_workers_ : controls_;
+            auto pending = pool.run(
+                [this, name, args, cancel] {
+                    Json value;
+                    std::string summary;
+                    if (name == "devbox_web_fetch") {
+                        value = research_.fetch(args, cancel);
+                        summary = "Read public-web source evidence with the native C++23 transport.";
+                    } else if (name == "devbox_web_research") {
+                        if (auto refusal = monitoring_.reject_disk_work(ResourceClass::io_heavy, false,
+                                                                        "native_web_research"))
+                            return *refusal;
+                        value = web::submit_research(jobs_, args);
+                        summary = "Submitted durable native research; inspect coverage and evidence before "
+                                  "answering.";
+                    } else {
+                        value = web::research_evidence(jobs_.store(), args);
+                        summary =
+                            "Read native research status and source evidence; partial coverage is explicit.";
+                    }
+                    return result_success(summary, value);
+                },
+                cancel);
+            co_return co_await std::move(pending);
+        }
         if (name == "host_computer_windows" || name == "host_computer_use") {
             if (config_->runtime_mode != RuntimeMode::host || !config_->host_exec_enabled)
                 co_return result_error(

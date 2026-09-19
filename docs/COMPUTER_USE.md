@@ -1,6 +1,6 @@
 # Native computer use
 
-The C++23 MCP contract version 3 exposes 47 tools: the frozen 45-tool compatibility surface plus `host_computer_windows` and `host_computer_use`. Computer input is supported on the interactive Windows host runtime with `ENABLE_HOST_EXEC=true`. Other operating systems explicitly report unsupported input; Docker mode does not direct mouse or keyboard events into a container.
+The C++23 MCP contract version 4 exposes 50 tools: the frozen 45-tool compatibility surface, `host_computer_windows`, `host_computer_use`, and three [native research tools](NATIVE_WEB_RESEARCH.md). Computer input is supported on the interactive Windows host runtime with `ENABLE_HOST_EXEC=true`. Other operating systems explicitly report unsupported input; Docker mode does not direct mouse or keyboard events into a container.
 
 These tools use native Windows window/process APIs, SendInput, and GDI/WIC screenshots. They do not evaluate browser JavaScript or run a shell. Existing capture tools remain available for read-only capture.
 
@@ -67,7 +67,7 @@ The guard also rejects Ctrl+Esc (including Ctrl+Shift+Esc), Alt+Tab, and Alt+Esc
 {"action":"key_sequence","observation_id":"<latest ID>","sequence":[{"keys":["UP"],"duration_ms":500},{"keys":["UP","RIGHT"],"duration_ms":300},{"keys":["UP"],"duration_ms":500},{"keys":[],"duration_ms":100}]}
 ```
 
-This is a bounded, preplanned gesture. Use it where intermediate input is predictable; it does not inspect changing application content between segments. Window identity, bounds, foreground and desktop checks continue during execution. Re-observe after the returned image or an uncertain outcome. This additive action retains contract version 3 and 47 tools, but changes the schema hash; refresh the client before using it. Capabilities report the segment and duration limits.
+This is a bounded, preplanned gesture. Use it where intermediate input is predictable; it does not inspect changing application content between segments. Window identity, bounds, foreground and desktop checks continue during execution. Re-observe after the returned image or an uncertain outcome. The action was introduced as an additive computer-use schema change. Refresh the client after any schema change; the current contract also includes the research extensions. Capabilities report the segment and duration limits.
 
 ## Bounds, ownership, and outcomes
 

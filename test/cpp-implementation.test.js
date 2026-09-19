@@ -23,7 +23,7 @@ const fixture = async () => {
   if (process.platform !== "win32") await chmod(binary, 0o755);
   const hash = createHash("sha256").update(await readFile(binary)).digest("hex");
   const info = { implementation: "cpp", sanitizers: false, sourceDirty: false, gitSha: source.GitSha, sourceTree: source.SourceTree, sourceFingerprint: "a".repeat(64), binarySha256: hash };
-  const report = { implementation: "cpp", contract_version: 3, complete: true, cutover_allowed: true, implemented_tools: 47, target_tools: 47 };
+  const report = { implementation: "cpp", contract_version: 4, complete: true, cutover_allowed: true, implemented_tools: 50, target_tools: 50 };
   const calls = [];
   const runner = async (file, args, options) => {
     calls.push({ file, args });
