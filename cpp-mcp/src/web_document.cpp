@@ -178,6 +178,82 @@ bool jsonld(const Json& value, Json& result) {
     }
     return truncated || !stack.empty();
 }
+// Read inert, explicitly product-scoped variant data. Analytics and executable scripts are excluded.
+bool variant_script(lxb_dom_node_t* script) {
+    if (attribute(script, "data-element") == "variants-data")
+        return true;
+    auto* parent = script->parent;
+    for (unsigned i = 0; parent && i < 4; ++i, parent = parent->parent)
+        if (!attribute(parent, "data-url").empty())
+            return true;
+    return false;
+}
+void product_variants(lxb_dom_node_t* script, const Json& data, std::string_view base, Json& variants) {
+    auto* scope = script->parent;
+    std::string product_url;
+    for (unsigned i = 0; scope && i < 4; ++i, scope = scope->parent)
+        if (!attribute(scope, "data-url").empty()) {
+            product_url = attribute(scope, "data-url");
+            break;
+        }
+    const bool variant_map = attribute(script, "data-element") == "variants-data";
+    if (product_url.empty() && !variant_map)
+        return;
+    try {
+        product_url = normalize_url(product_url.empty() ? base : product_url, base);
+    } catch (...) {
+        return;
+    }
+    Json names = Json::array();
+    if (scope && !variant_map) {
+        std::vector<lxb_dom_node_t*> pending{scope};
+        std::size_t count = 0;
+        while (!pending.empty() && ++count < 5000 && names.size() < 8) {
+            auto* node = pending.back();
+            pending.pop_back();
+            const auto name = attribute(node, "name");
+            if (node->local_name == LXB_TAG_SELECT && name.starts_with("options[") && name.ends_with(']'))
+                names.push_back(clipped(name.substr(8, name.size() - 9), 150));
+            for (auto* child = node->last_child; child; child = child->prev)
+                pending.push_back(child);
+        }
+    }
+    const auto append = [&](const Json& item, std::string id) {
+        if (!item.is_object() || variants.size() >= 256 || !item.contains("options") ||
+            !item["options"].is_array() || item["options"].empty() || item["options"].size() > 8)
+            return;
+        if (id.empty() && item.contains("id"))
+            id = item["id"].is_string() ? item["id"].get<std::string>() : item["id"].dump();
+        if (!RE2::FullMatch(id, "[0-9]{1,24}"))
+            return;
+        Json options = Json::array();
+        for (const auto& option : item["options"]) {
+            if (!option.is_string())
+                return;
+            options.push_back(clipped(option.get<std::string>(), 200));
+        }
+        Json variant{{"id", id},
+                     {"product_url", product_url},
+                     {"options", options},
+                     {"evidence_path", variant_map ? "script[data-element=variants-data]"
+                                                   : "product-scoped script[type=application/json]"}};
+        if (names.size() == options.size())
+            variant["option_names"] = names;
+        for (const auto* key : {"title", "sku"})
+            if (item.contains(key) && item[key].is_string())
+                variant[key] = clipped(item[key].get<std::string>(), 500);
+        for (const auto* key : {"available", "requires_selling_plan"})
+            if (item.contains(key) && item[key].is_boolean())
+                variant[key] = item[key];
+        variants.push_back(std::move(variant));
+    };
+    if (variant_map && data.is_object())
+        for (const auto& entry : data.items())
+            append(entry.value(), entry.key());
+    else if (!variant_map && data.is_array())
+        for (const auto& item : data)
+            append(item, "");
+}
 } // namespace
 
 bool response_requires_challenge(const Transfer& response) {
@@ -193,6 +269,9 @@ Json extract_document(const Transfer& response) {
                 {"http_status", response.status},
                 {"retrieved_at", response.completed_at.empty() ? utc_now() : response.completed_at},
                 {"http_last_modified", json_string(response.headers, "last-modified")},
+                {"http_date", clipped(json_string(response.headers, "date"), 256)},
+                {"http_age", clipped(json_string(response.headers, "age"), 256)},
+                {"http_cache_control", clipped(json_string(response.headers, "cache-control"), 256)},
                 {"etag", json_string(response.headers, "etag")},
                 {"content_type", json_string(response.headers, "content-type")},
                 {"decoded_bytes", response.bytes},
@@ -269,6 +348,8 @@ Json extract_document(const Transfer& response) {
         return result;
     }
     std::string text;
+    Json schemas = Json::array(), variants = Json::array();
+    std::size_t structured_bytes = 0;
     const bool html = type.find("html") != type.npos || (type.empty() && body.find('<') != body.npos);
     if (html) {
         auto* document = lxb_html_document_create();
@@ -303,11 +384,32 @@ Json extract_document(const Transfer& response) {
                 if (tag == LXB_TAG_SCRIPT) {
                     if (lower(attribute(node, "type")) == "application/ld+json") {
                         try {
-                            const auto truncated = jsonld(bounded_json(node_text(node, 65536, true)),
-                                                          result["structured_metadata"]);
+                            const auto raw = node_text(node, 65536, true);
+                            const auto data = bounded_json(raw);
+                            const auto truncated = jsonld(data, result["structured_metadata"]);
                             result["structured_metadata_truncated"] =
                                 json_bool(result, "structured_metadata_truncated") || truncated;
+                            if (structured_bytes + raw.size() <= 512 * 1024 && schemas.size() < 32) {
+                                schemas.push_back(data);
+                                structured_bytes += raw.size();
+                            } else
+                                result["offers_truncated"] = true;
                         } catch (...) {
+                            result["structured_metadata_parse_warning"] = true;
+                        }
+                    } else if (lower(attribute(node, "type")) == "application/json" && variant_script(node)) {
+                        if (structured_bytes >= 512 * 1024) {
+                            result["variant_metadata_parse_warning"] = true;
+                            continue;
+                        }
+                        try {
+                            const auto raw = node_text(
+                                node, std::min<std::size_t>(256 * 1024, 512 * 1024 - structured_bytes), true);
+                            structured_bytes += raw.size();
+                            product_variants(node, bounded_json(raw), json_string(result, "final_url"),
+                                             variants);
+                        } catch (...) {
+                            result["variant_metadata_parse_warning"] = true;
                         }
                     }
                     continue;
@@ -397,6 +499,7 @@ Json extract_document(const Transfer& response) {
             try {
                 const auto data = bounded_json(body);
                 result["structured_metadata_truncated"] = jsonld(data, result["structured_metadata"]);
+                schemas.push_back(data);
                 const auto encoded = data.dump(1, ' ', false, Json::error_handler_t::replace);
                 result["content_truncated"] =
                     json_bool(result, "content_truncated") || encoded.size() > text_limit;
@@ -439,6 +542,10 @@ Json extract_document(const Transfer& response) {
     result["content_sha256"] = sha256(text);
     result["status"] = challenge ? "challenge_required" : text.size() < 120 ? "insufficient_text" : "ok";
     result["source_kind"] = html ? "html" : type.find("json") != type.npos ? "structured_data" : "text";
+    const auto offers = extract_offer_records(schemas, variants, json_string(result, "final_url"));
+    result["offers"] = offers["records"];
+    result["offers_truncated"] = json_bool(result, "offers_truncated") || json_bool(offers, "truncated");
+    result["ambiguous_offer_reference_ids"] = offers["ambiguous_reference_ids"];
     return result;
 }
 

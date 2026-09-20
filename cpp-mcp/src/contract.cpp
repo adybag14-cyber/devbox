@@ -277,6 +277,8 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                 {"web_research",
                  {{"supported", true},
                   {"keyless", true},
+                  {"product_offer_view", true},
+                  {"variant_options_preserved", true},
                   {"standard_source_target", 100},
                   {"fast_source_target", 50},
                   {"max_concurrent_transfers", 4},

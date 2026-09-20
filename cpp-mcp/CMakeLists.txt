@@ -63,6 +63,7 @@ add_library(devbox_core
   src/search.cpp
   src/web_transport.cpp
   src/web_document.cpp
+  src/web_offers.cpp
   src/web_discovery.cpp
   src/research.cpp
   src/host_inspect.cpp
@@ -116,6 +117,13 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-web-offer-tests tests/web_offer_tests.cpp)
+  target_link_libraries(devbox-web-offer-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-web-offer-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME web-offers COMMAND devbox-web-offer-tests)
+  set_tests_properties(web-offers PROPERTIES TIMEOUT 15)
   add_executable(devbox-web-research-tests tests/web_research_tests.cpp)
   target_link_libraries(devbox-web-research-tests PRIVATE devbox_core)
   if(MSVC)

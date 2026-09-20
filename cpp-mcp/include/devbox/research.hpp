@@ -42,6 +42,8 @@ class Transport {
     void reset_byte_budget();
 };
 Json extract_document(const Transfer& response);
+Json extract_offer_records(const Json& schemas, const Json& variants, std::string_view base_url);
+Json offer_view(const Json& document, std::size_t offset = 0, std::size_t limit = 20);
 bool response_requires_challenge(const Transfer& response);
 Json parse_search_response(std::string_view provider, const Transfer& response,
                            std::optional<unsigned short> fixture_loopback_port = {});
