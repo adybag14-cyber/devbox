@@ -277,10 +277,12 @@ int main(int argc, char** argv) {
             require(first.body() == "ok" && Json::parse(following.body())["id"] == "after-probe",
                     "health probe preserves the next pipelined request");
             const auto before = backend->cancelled.load();
+            const auto entered_before = backend->entered.load();
             second.body() = call("host_exec", 10000, "probe-then-disconnect").dump();
             second.prepare_payload();
             http::write(socket, second);
-            until([&] { return server.active_requests() == 1; }, "command after probe registered");
+            until([&] { return backend->entered > entered_before && server.active_requests() == 1; },
+                  "command after probe entered the backend");
             socket.close();
             until([&] { return backend->cancelled > before && server.active_requests() == 0; },
                   "command after probe retains disconnect cancellation");
@@ -319,6 +321,7 @@ int main(int argc, char** argv) {
                         first.body().find("sse-first") != std::string::npos,
                     "completed SSE response retains a reusable connection");
             const auto before = backend->cancelled.load();
+            const auto entered_before = backend->entered.load();
             http::request<http::string_body> pending{http::verb::post, "/mcp", 11};
             pending.set(http::field::host, "127.0.0.1");
             pending.set(http::field::content_type, "application/json");
@@ -326,7 +329,10 @@ int main(int argc, char** argv) {
             pending.body() = call("host_exec", 10000, "reused-disconnect").dump();
             pending.prepare_payload();
             http::write(*socket, pending);
-            until([&] { return server.active_requests() == 1; }, "reused connection command active");
+            // The preceding response can reach this client before its registration is released.
+            // A global active count of one alone does not identify the new request.
+            until([&] { return backend->entered > entered_before && server.active_requests() == 1; },
+                  "reused connection command entered the backend");
             boost::system::error_code ignored;
             socket->shutdown(Tcp::socket::shutdown_both, ignored);
             socket->close(ignored);
