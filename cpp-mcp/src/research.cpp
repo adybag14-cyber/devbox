@@ -56,6 +56,9 @@ Json brief(const Json& document, std::string_view query, std::size_t excerpt_cha
                             "published_at_reported",
                             "modified_at_reported",
                             "http_last_modified",
+                            "http_date",
+                            "http_age",
+                            "http_cache_control",
                             "content_sha256",
                             "body_sha256",
                             "cache_status",
@@ -67,6 +70,7 @@ Json brief(const Json& document, std::string_view query, std::size_t excerpt_cha
                             "content_truncated",
                             "structured_metadata_truncated",
                             "structured_metadata_parse_warning",
+                            "variant_metadata_parse_warning",
                             "encoding_reported",
                             "source_id",
                             "query_term_matches",
@@ -91,6 +95,7 @@ Json brief(const Json& document, std::string_view query, std::size_t excerpt_cha
     result["has_tables"] = document.contains("tables") && !document["tables"].empty();
     result["has_structured_metadata"] =
         document.contains("structured_metadata") && !document["structured_metadata"].empty();
+    result["offer_count"] = document.contains("offers") ? document["offers"].size() : 0;
     return result;
 }
 std::string untrack(std::string value) {
@@ -289,7 +294,7 @@ struct ResearchService::State {
     std::optional<Json> cached(std::string_view url) const {
         try {
             auto value = read_json_optional(cache / (sha256(url) + ".json"), 512 * 1024);
-            if (value && json_string(*value, "url") == url && json_uint(*value, "cache_version") == 2)
+            if (value && json_string(*value, "url") == url && json_uint(*value, "cache_version") == 3)
                 return value;
         } catch (...) {
         }
@@ -339,6 +344,8 @@ struct ResearchService::State {
                 continue;
             }
             Json headers = Json::object();
+            if (!age)
+                headers["Cache-Control"] = "no-cache";
             if (auto previous = cached(normalized[i]); previous && json_string(*previous, "status") == "ok") {
                 const auto checked_at = json_uint(*previous, "validated_unix_ms");
                 if (age && checked_at <= unix_millis() && unix_millis() - checked_at <= age * 1000) {
@@ -366,6 +373,11 @@ struct ResearchService::State {
                 results[i]["validated_at"] = reply.completed_at;
                 results[i]["validated_unix_ms"] = reply.completed_unix_ms;
                 results[i]["revalidation_duration_ms"] = reply.duration_ms;
+                for (const auto& [header, key] : {std::pair{"date", "http_date"},
+                                                  {"age", "http_age"},
+                                                  {"cache-control", "http_cache_control"}})
+                    if (reply.headers.contains(header))
+                        results[i][key] = evidence_excerpt(json_string(reply.headers, header), "", 256);
             } else {
                 try {
                     results[i] = extract_document(reply);
@@ -378,7 +390,7 @@ struct ResearchService::State {
                 results[i]["cache_status"] = "network";
                 results[i]["validated_at"] = reply.completed_at;
                 results[i]["validated_unix_ms"] = reply.completed_unix_ms;
-                results[i]["cache_version"] = 2;
+                results[i]["cache_version"] = 3;
             }
             if (json_string(results[i], "status") == "ok") {
                 try {
@@ -396,6 +408,11 @@ ResearchService::ResearchService(std::shared_ptr<const Config> config, Transport
     : state_(std::make_unique<State>(std::move(config), std::move(limits))) {}
 ResearchService::~ResearchService() = default;
 Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
+    const auto view = json_string(args, "view", "evidence");
+    const auto offer_offset = json_uint(args, "offer_offset", 0),
+               offer_limit = json_uint(args, "offer_limit", 20);
+    if ((view != "evidence" && view != "offers") || offer_offset > 255 || !offer_limit || offer_limit > 64)
+        throw Error("Invalid offer view or pagination");
     auto urls = json_strings(args, "urls");
     if (urls.empty() || urls.size() > 16)
         throw Error("web_fetch requires 1-16 URLs");
@@ -416,12 +433,15 @@ Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
     const auto output_budget = json_uint(args, "max_chars", 32000);
     std::size_t output_size = 1024;
     for (const auto& doc : docs) {
-        auto item = brief(doc, json_string(args, "query"), json_uint(args, "excerpt_chars", 2000));
-        if (doc.contains("tables"))
+        auto item = brief(doc, json_string(args, "query"),
+                          view == "offers" ? 350 : json_uint(args, "excerpt_chars", 2000));
+        if (view == "offers")
+            item.update(offer_view(doc, offer_offset, offer_limit));
+        if (view != "offers" && doc.contains("tables"))
             item["tables"] = doc["tables"];
-        if (doc.contains("structured_metadata"))
+        if (view != "offers" && doc.contains("structured_metadata"))
             item["structured_metadata"] = doc["structured_metadata"];
-        if (doc.contains("links")) {
+        if (view != "offers" && doc.contains("links")) {
             item["links"] = Json::array();
             for (const auto& link : doc["links"]) {
                 if (item["links"].size() == 16)
@@ -430,6 +450,10 @@ Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
             }
         }
         if (item.dump().size() > output_budget - 1024) {
+            const auto offer_minimum = item.contains("offers") && !item["offers"].empty()
+                                           ? item.dump().size() - item["offers"].dump().size() +
+                                                 item["offers"][0].dump().size() + 1024
+                                           : 0;
             item.erase("links");
             while (item.contains("tables") && !item["tables"].empty() &&
                    item.dump().size() > output_budget - 1024) {
@@ -441,6 +465,14 @@ Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
                 item["structured_metadata"].erase(item["structured_metadata"].end() - 1);
                 item["structured_metadata_truncated"] = true;
             }
+            while (item.contains("offers") && !item["offers"].empty() &&
+                   item.dump().size() > output_budget - 1024) {
+                item["offers"].erase(item["offers"].end() - 1);
+                item["next_offer_offset"] = offer_offset + item["offers"].size();
+                item["offer_output_truncated"] = true;
+            }
+            if (offer_minimum && item["offers"].empty())
+                item["minimum_offer_chars"] = offer_minimum;
             item["details_omitted"] = true;
         }
         const auto position = std::find(urls.begin(), urls.end(), json_string(doc, "url")) - urls.begin();
@@ -455,7 +487,8 @@ Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
     }
     const auto usable = std::count_if(docs.begin(), docs.end(),
                                       [](const auto& doc) { return json_string(doc, "status") == "ok"; });
-    Json result{{"documents", records},
+    Json result{{"view", view},
+                {"documents", records},
                 {"returned_documents", records.size()},
                 {"remaining_url_indexes", remaining},
                 {"output_truncated", !remaining.empty()},
@@ -681,6 +714,7 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
                             json_uint(args, "excerpt_chars", 12000));
         detail["tables"] = doc["tables"];
         detail["structured_metadata"] = doc["structured_metadata"];
+        detail.update(offer_view(doc));
         const auto allowance = budget - job.dump().size() - 512;
         while (detail.dump().size() > allowance) {
             if (!detail["tables"].empty()) {
@@ -689,6 +723,10 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
             } else if (!detail["structured_metadata"].empty()) {
                 detail["structured_metadata"].erase(detail["structured_metadata"].end() - 1);
                 detail["structured_metadata_truncated"] = true;
+            } else if (!detail["offers"].empty()) {
+                detail["offers"].erase(detail["offers"].end() - 1);
+                detail["next_offer_offset"] = detail["offers"].size();
+                detail["offer_output_truncated"] = true;
             } else if (json_string(detail, "excerpt").size() > 200)
                 detail["excerpt"] = evidence_excerpt(json_string(detail, "excerpt"), "",
                                                      json_string(detail, "excerpt").size() / 2);

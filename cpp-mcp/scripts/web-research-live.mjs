@@ -71,6 +71,27 @@ try {
     await run('catalogue_fast',{topic:'Snapdragon 8 Elite Gen 5 smartphone prices UK GBP',mode:'fast',queries:['Snapdragon 8 Elite Gen 5 phone prices'],exact_terms:['Snapdragon 8 Elite Gen 5'],urls:[urls[0]],domains:['e-catalog.co.uk'],discovery:'web'});
     assert(report.results.catalogue_fast.usable_sources>0,'niche research yields actual evidence');
     assert(report.results.catalogue_fast.sources.every(source=>source.matched_exact_terms.includes('Snapdragon 8 Elite Gen 5')),'every counted source meets the entity filter');
+  }else if(report.case==='prices'){
+    assert(process.env.DEVBOX_RESEARCH_PLAN_FILE,'Provide explicit retailer product URLs in DEVBOX_RESEARCH_PLAN_FILE');
+    const plan=JSON.parse(await readFile(process.env.DEVBOX_RESEARCH_PLAN_FILE,'utf8'));
+    assert(Array.isArray(plan.urls)&&plan.urls.length>=2&&plan.urls.length<=16);
+    report.results.offers=await invoke('devbox_web_fetch',{urls:plan.urls,view:'offers',max_age_seconds:0,offer_limit:64,max_chars:64000});
+    assert.equal(report.results.offers.remaining_url_indexes.length,0,'all requested retailer records returned');
+    const docs=report.results.offers.documents;
+    assert(docs.filter(doc=>doc.offers?.some(offer=>offer.assessment==='source_reported_offer'&&offer.currency==='GBP'&&offer.price&&offer.variant_name)).length>=2,'two live retailer pages have variant-bound GBP prices');
+    assert(docs.every(doc=>doc.checked_at&&doc.body_sha256),'freshness and source fingerprint retained');
+    if(plan.paymentOption){
+      const offers=docs.flatMap(doc=>doc.offers??[]);
+      assert(offers.some(offer=>offer.qualifiers?.some(value=>value.includes(plan.paymentOption)&&value.endsWith(' = Yes'))),'conditional payment price remains labelled');
+      assert(offers.some(offer=>offer.qualifiers?.some(value=>value.includes(plan.paymentOption)&&value.endsWith(' = No'))),'ordinary payment price remains separate');
+    }
+    const first=docs.find(doc=>doc.total_offers>1);
+    assert(first,'live pagination needs multiple variants');
+    const page=await invoke('devbox_web_fetch',{urls:[first.requested_url??first.url],view:'offers',max_age_seconds:0,offer_offset:1,offer_limit:1,max_chars:8000});
+    assert.equal(page.documents[0].offers[0].offer_index,1);
+    report.results.page=page;
+    report.coverageCaveat='Real source-reported prices and variant conditions, not checkout guarantees or an exhaustive price comparison.';
+    console.log(JSON.stringify({case:'prices',documents:docs.map(doc=>({url:doc.url,checked_at:doc.checked_at,offers:doc.total_offers,status:doc.status})),elapsed_ms:report.results.offers.elapsed_ms,decoded_bytes:report.results.offers.decoded_bytes}));
   }else if(report.case==='recovery'){
     assert(process.env.DEVBOX_RESEARCH_PLAN_FILE,'Provide the authorized failed research input as DEVBOX_RESEARCH_PLAN_FILE');
     const original=JSON.parse(await readFile(process.env.DEVBOX_RESEARCH_PLAN_FILE,'utf8'));

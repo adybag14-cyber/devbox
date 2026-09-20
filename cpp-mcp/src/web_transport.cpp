@@ -197,7 +197,8 @@ struct Transport::State {
             else if (split_at != line.npos && item.response.headers.size() < 64) {
                 auto name = lower(trim(line.substr(0, split_at)));
                 if (name == "content-type" || name == "etag" || name == "last-modified" ||
-                    name == "location" || name == "retry-after" || name == "cache-control")
+                    name == "location" || name == "retry-after" || name == "cache-control" ||
+                    name == "date" || name == "age")
                     item.response.headers[name] = trim(line.substr(split_at + 1));
             }
             return length;
@@ -238,9 +239,13 @@ struct Transport::State {
         curl_easy_setopt(easy, CURLOPT_OPENSOCKETFUNCTION, open_socket);
         curl_easy_setopt(easy, CURLOPT_OPENSOCKETDATA, &item);
         for (auto it = item.headers.begin(); it != item.headers.end(); ++it) {
-            if ((it.key() != "If-None-Match" && it.key() != "If-Modified-Since") || !it.value().is_string())
+            if ((it.key() != "If-None-Match" && it.key() != "If-Modified-Since" &&
+                 it.key() != "Cache-Control") ||
+                !it.value().is_string())
                 continue;
             const auto value = it.value().get<std::string>();
+            if (it.key() == "Cache-Control" && value != "no-cache")
+                continue;
             if (value.size() < 2048 && value.find_first_of("\r\n") == value.npos)
                 item.request_headers =
                     curl_slist_append(item.request_headers, (it.key() + ": " + value).c_str());

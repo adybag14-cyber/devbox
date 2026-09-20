@@ -45,6 +45,22 @@ Read `devbox_web_evidence` and follow `next_offset` until all source briefs have
 
 For known sources, `devbox_web_fetch` retrieves up to 16 URLs in one call, with excerpts, bounded tables/metadata and explicit failures. Duplicate input URLs are fetched once. `remaining_url_indexes` identifies omitted records by zero-based index in the original input. Increase `max_chars` or request a smaller batch for more detail; research jobs preserve immutable evidence for later drill-down.
 
+## Live product prices
+
+After discovery identifies real retailer product pages, use the compact native offer view:
+
+```json
+{"urls":["https://retailer.example/products/exact-phone"],"view":"offers","max_age_seconds":0,"offer_limit":20,"max_chars":32000}
+```
+
+Read `checked_at`, `currency`, the exact product and variant, `option_names` with `options`, `qualifiers`, `conflicts`, and `missing_fields` together. For example, a lower price with `Paying by Bank Transfer? = Yes` must retain that condition. Do not rank it as an ordinary card price. Stock and condition remain what the retailer reports; an unreported condition is unknown. Prices do not establish delivery cost, tax inclusion, import status or UK delivery eligibility. A product-family `aggregate_range` is not an exact purchasable variant.
+
+`offers` contains product-scoped Schema.org data. ProductGroup variants and unambiguous in-document references are supported. Inert product variant JSON can add option labels using an exact variant ID and matching product URL; executable scripts, analytics and search snippets cannot supply prices. The extractor supports the product-scoped variant arrays and explicit `variants-data` maps encountered in Shopify storefronts. It does not claim universal support for retailer templates or JavaScript-only stores. Conflicting variant stock/SKU data is marked. Date validity is evaluated at the recorded check time; a date without a timezone is treated as a calendar day in UTC, while unparseable dates require review.
+
+Follow each document's `next_offer_offset` with a new `offer_offset`, or request up to 64 rows per document. Extraction is capped at 128 offers and 128 KiB per document, with `offers_truncated` indicating the cap. Output truncation has its own flag and cursor; if one offer cannot fit, `minimum_offer_chars` explains the larger output budget needed to make progress. Variant rows are not independent research sources. Existing source detail reads also include the first offer page; use the original URL with the fetch offer view for a fresh or paginated check. When an explicit source `currency` parameter agrees with the offer's currency, otherwise currency-less same-product variant links retain that parameter; `url_reported` preserves the original merchant link. This does not perform currency conversion.
+
+Fresh checks request HTTP cache revalidation, preserving the response's Date, Age and Cache-Control when supplied. `checked_at` is the network validation time, not a promise that the merchant updated its listing at that instant. Positive cache ages permit explicitly labelled reuse. An inaccessible site stays inaccessible; another authorized reader may be needed to verify it. Final price comparisons should cite the retailer URL and give the check time, selected currency and any unresolved stock, variant, payment or delivery qualification.
+
 ## Keyless discovery and source access
 
 `discovery` selects `web` (DuckDuckGo HTML with an independent Bing RSS fallback), `scholarly` (Crossref discovery followed by publisher retrieval), `encyclopedia` (MediaWiki discovery followed by page retrieval), or `none` (seed URLs only). No paid API or API key is required. Public interfaces can change, block requests or omit relevant sites; this does not guarantee the coverage of a proprietary index. The agent can supply additional seed URLs from its own search. Only one bounded link-expansion step is performed.

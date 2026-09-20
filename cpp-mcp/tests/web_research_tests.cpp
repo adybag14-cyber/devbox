@@ -45,6 +45,8 @@ struct HttpFixture {
     std::atomic_bool stop{false};
     std::atomic_size_t requests{0}, connections{0}, active{0}, peak{0}, not_modified{0}, transient_calls{0};
     std::atomic_size_t ddg_queries{0}, bing_queries{0};
+    std::atomic_int price_version{1};
+    std::atomic_bool price_requested_revalidation{false};
     std::atomic_int ddg_mode{1}, bing_mode{0};
     std::mutex search_mutex;
     std::vector<Clock::time_point> bing_starts;
@@ -129,6 +131,27 @@ struct HttpFixture {
                         } else if (target == "/transient" && ++transient_calls == 1) {
                             response.result(http::status::bad_gateway);
                             response.body() = "temporary upstream failure";
+                        } else if (target == "/phone-price") {
+                            price_requested_revalidation = request[http::field::cache_control] == "no-cache";
+                            response.set(http::field::age, "42");
+                            response.set(http::field::date, "Sun, 20 Sep 2026 17:00:00 GMT");
+                            const auto version = price_version.load();
+                            const auto etag = "\"price-" + std::to_string(version) + "\"";
+                            response.set(http::field::etag, etag);
+                            if (request[http::field::if_none_match] == etag) {
+                                ++not_modified;
+                                response.result(http::status::not_modified);
+                            } else {
+                                auto product =
+                                    Json{{"@type", "Product"},
+                                         {"name", "Phone 256GB"},
+                                         {"offers", Json{{"@type", "Offer"},
+                                                         {"price", version == 1 ? 559 : 549},
+                                                         {"priceCurrency", "GBP"},
+                                                         {"availability", "https://schema.org/InStock"}}}};
+                                response.body() = page(target) + "<script type='application/ld+json'>" +
+                                                  product.dump() + "</script>";
+                            }
                         } else if (target == "/blocked") {
                             response.result(http::status::forbidden);
                             response.body() = "Access denied";
@@ -423,6 +446,36 @@ void research_tests(HttpFixture& server, const fs::path& root) {
     const auto revalidated = service.fetch(Json{{"urls", {server.url("/doc/7")}}, {"max_age_seconds", 0}});
     require(revalidated["documents"][0]["cache_status"] == "revalidated" && server.not_modified > 0,
             "conditional revalidation");
+    const auto price_args = Json{{"urls", {server.url("/phone-price")}},
+                                 {"view", "offers"},
+                                 {"max_age_seconds", 0},
+                                 {"max_chars", 4000}};
+    const auto price_first = service.fetch(price_args);
+    require(price_first["documents"][0]["offers"][0]["price"] == "559.00" &&
+                server.price_requested_revalidation && price_first["documents"][0]["http_age"] == "42",
+            "live price request revalidates intermediary caches");
+    server.price_version = 2;
+    const auto price_changed = service.fetch(price_args);
+    require(price_changed["documents"][0]["offers"][0]["price"] == "549.00" &&
+                price_changed["documents"][0]["cache_status"] == "network",
+            "fresh check sees price change");
+    const auto price_unchanged = service.fetch(price_args);
+    require(price_unchanged["documents"][0]["cache_status"] == "revalidated" &&
+                price_unchanged["documents"][0]["offers"][0]["price"] == "549.00",
+            "304 retains offer evidence");
+    require(price_unchanged.dump().size() <= 4000, "compact offer response respects output budget");
+    const auto cache_path =
+        config->project_root / "run" / "web-research-cache" / (sha256(server.url("/phone-price")) + ".json");
+    auto old_cache = read_json(cache_path);
+    old_cache["cache_version"] = 2;
+    old_cache.erase("offers");
+    write_json_atomic(cache_path, old_cache);
+    auto allow_cached = price_args;
+    allow_cached["max_age_seconds"] = 3600;
+    const auto upgraded = service.fetch(allow_cached);
+    require(upgraded["documents"][0]["cache_status"] == "network" &&
+                upgraded["documents"][0]["offers"][0]["price"] == "549.00",
+            "old normalized cache is not reused");
     const auto small = service.fetch(
         Json{{"urls",
               {server.url("/doc/11"), server.url("/doc/12"), server.url("/doc/13"), server.url("/doc/14")}},
