@@ -1,0 +1,69 @@
+{
+  "scope": "Windows local foundation qualification; remaining H04-H18 work and all-platform release qualification are pending",
+  "baseline": "46d22dc077cf5fb2072e75212491cc65427aeed2",
+  "tool_registry_count": 50,
+  "local_suites": {
+    "passed": 21,
+    "interactive_computer_input": "reserved for isolated hosted qualification",
+    "note": "The two inherited-environment fixture failures in the initial full run were fixed and rerun successfully; malformed telemetry input was subsequently fixed and verified against all 35 protocol cases."
+  },
+  "contract_profiles": {
+    "ok": true,
+    "comparison": "full schemas and metadata except declared implementation name",
+    "profiles": [
+      {
+        "mode": "host",
+        "variant": 0,
+        "tools": 50,
+        "match": true
+      },
+      {
+        "mode": "docker",
+        "variant": 1,
+        "tools": 50,
+        "match": true
+      },
+      {
+        "mode": "host",
+        "variant": 2,
+        "tools": 50,
+        "match": true
+      },
+      {
+        "mode": "host",
+        "variant": 3,
+        "tools": 50,
+        "match": true
+      }
+    ]
+  },
+  "sdk": {
+    "ok": true,
+    "toolCount": 50,
+    "binarySha256": "341ec76791f784c48a47ac482795e45891ebc54a7f87814bc37d20fbb0518deb",
+    "servingPid": 38272,
+    "sdk": "1.30.0",
+    "nativeJob": true,
+    "durableRetry": true,
+    "byteRoundtrip": true,
+    "concurrentPassiveWaits": 32,
+    "cancellation": true,
+    "healthMs": 19.46440000000007
+  },
+  "wire": {
+    "ok": true,
+    "total": 35,
+    "differences": []
+  },
+  "logs": {
+    "h02-h05-tests.log": "1b8a6dbff33c5a7733316121f58b38eee1aa3ec26c5a071460da78ccbd1c641d",
+    "foundations-ctest.log": "3907ac97e279acfa8d17dad38de35ba10654124261b91ce66c002e6c81320f14",
+    "foundations-fixture-tests.log": "df28d1fd2681738c972ab013adba0f19aded2ba6ff5ae2916dc648d35b61a4c9",
+    "foundations-wire-fix-telemetry.log": "956ae7cdc216585323104721f84061606dbd2831e7b52116d73263195286fb8f",
+    "foundations-compare-contract.log": "31ddfd9d66858f020b8eed6fea70164b7f4d04a672a7025d3570f1a9fe515805",
+    "foundations-engine-sdk-smoke.log": "b45b0d244007a518a14468155d82d45dc0511cc697c3f529af10be6fe51c551d",
+    "foundations-wire-parity-fixed.log": "4cb75dad3c86fd2c3c6d395ead06751f989504a0400320b1094cc188b64cf699"
+  },
+  "latest_binary_sha256": "02eb542523a102755a38b16c5357e7b04d938fe6fbfa1ea65a68c5fea0525150",
+  "live_server_changed": false
+}

@@ -69,7 +69,7 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                 throw Error("--elevated-shell-worker requires one request path");
             return elevated_shell_worker(path_from_utf8(args[1]));
         }
-        auto config = std::make_shared<Config>(Config::load());
+        auto config = std::make_shared<Config>(Config::load(mode != "--job-runner"));
         if (mode == "--job-runner") {
             if (args.size() != 2)
                 throw Error("--job-runner requires exactly one request.json path");

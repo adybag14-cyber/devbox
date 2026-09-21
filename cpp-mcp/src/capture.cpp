@@ -1,6 +1,6 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/capture.hpp"
 #include "devbox/native.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <algorithm>
 #include <charconv>
 #include <csignal>
@@ -71,8 +71,15 @@ ImageCapture CaptureService::attempt(std::optional<std::uint32_t> pid, unsigned 
         args.push_back(tree ? "true" : "false");
     }
     ProcessOptions options;
+    options.env = worker_environment();
+    // Desktop authentication is explicitly delegated only by the capture broker.
+    for (const auto* key : {"DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR"})
+        if (const auto value = environment(key))
+            (*options.env)[key] = *value;
     options.timeout = Millis(std::max<std::uint64_t>(1, config_->screen_capture_attempt_timeout_ms));
     options.max_capture_chars = 200000;
+    if (configure_worker_)
+        configure_worker_(options);
     auto result = spawn_process(path_text(executable_path()), args, options, cancel);
     Json metadata;
     try {

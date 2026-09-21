@@ -56,6 +56,10 @@ struct ProcessError : Error {
     using Error::Error;
 };
 Environment current_environment();
+// Explicit base environment for children. Credentials and loader/interpreter injection variables
+// never cross this boundary unless a dedicated broker supplies an explicit ProcessOptions::env.
+Environment worker_environment();
+Environment docker_environment();
 std::optional<fs::path> find_program(std::string_view program, const Environment* env = nullptr);
 std::string quote_windows_argument(std::string_view value);
 bool is_administrator();

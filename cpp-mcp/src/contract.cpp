@@ -1,9 +1,8 @@
 #include "devbox/contract.hpp"
-#include "computer_contract.hpp"
-#include "reference_contract.hpp"
-#include "research_contract.hpp"
+#include "tool_registry.hpp"
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <re2/re2.h>
 namespace devbox {
 namespace {
@@ -182,25 +181,49 @@ void validate(const Json& value, const Json& schema, const Json& root, const std
     }
 }
 } // namespace
+const Json& tool_registry() {
+    static const Json registry = Json::parse(std::string_view(
+        reinterpret_cast<const char*>(embedded_tool_registry), sizeof(embedded_tool_registry)));
+    return registry;
+}
+const Json& tool_policy(std::string_view name) {
+    static const auto index = [] {
+        std::map<std::string, const Json*, std::less<>> value;
+        for (const auto& entry : tool_registry()["tools"])
+            value.emplace(json_string(entry, "name"), &entry);
+        return value;
+    }();
+    static const Json absent;
+    const auto found = index.find(name);
+    return found == index.end() ? absent : *found->second;
+}
+Json capability_manifest(const Config& config) {
+    Json result = Json::array();
+    for (const auto& entry : tool_registry()["tools"]) {
+        Json capability;
+        for (const auto* key : {"name", "scope", "alias_of", "broker", "platforms", "runtime_profiles"})
+            capability[key] = entry[key];
+        const auto platforms = json_strings(entry, "platforms");
+        const auto profiles = json_strings(entry, "runtime_profiles");
+        const bool supported =
+            std::find(platforms.begin(), platforms.end(), config.platform.id) != platforms.end() &&
+            std::find(profiles.begin(), profiles.end(), config.runtime_name()) != profiles.end();
+        capability["support_state"] =
+            !supported ? "unsupported"
+            : (json_string(entry, "scope") == "mcp:host:exec" && !config.host_exec_enabled)
+                ? "permission_denied"
+                : "available";
+        capability["readonly_hint_is_sandbox"] = false;
+        result.push_back(std::move(capability));
+    }
+    return result;
+}
 ToolContract::ToolContract(const Config& config) {
-    const auto profile = config.runtime_name();
-    auto reference = Json::parse(
-        std::string_view(reinterpret_cast<const char*>(embedded_contract), sizeof(embedded_contract)),
-        [&profile](int depth, Json::parse_event_t event, Json& value) {
-            // Both profiles remain in the frozen input. Discard the inactive
-            // profile while parsing instead of allocating its unused schema DOM.
-            return event != Json::parse_event_t::key || depth != 2 ||
-                   value.get_ref<const std::string&>() == profile;
-        });
-    tools_ = std::move(reference["profiles"][profile]);
-    const auto computer = Json::parse(std::string_view(
-        reinterpret_cast<const char*>(embedded_computer_contract), sizeof(embedded_computer_contract)));
-    for (const auto& tool : computer)
-        tools_.push_back(tool);
-    const auto research = Json::parse(std::string_view(
-        reinterpret_cast<const char*>(embedded_research_contract), sizeof(embedded_research_contract)));
-    for (const auto& tool : research)
-        tools_.push_back(tool);
+    tools_ = Json::array();
+    for (const auto& entry : tool_registry()["tools"]) {
+        const auto& schemas = entry["schemas"];
+        tools_.push_back(schemas.contains("all") ? schemas["all"] : schemas[config.runtime_name()]);
+    }
     for (auto& tool : tools_) {
         const auto name = json_string(tool, "name");
         for (const auto* field : {"description", "title"})
@@ -273,6 +296,7 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                 {"implementation", "cpp"},
                 {"schema_sha256", sha256(tools.dump())},
                 {"tools", names},
+                {"tool_manifest", capability_manifest(config)},
                 {"resource_classes", {"auto", "watch", "light", "heavy", "io-heavy"}},
                 {"web_research",
                  {{"supported", true},

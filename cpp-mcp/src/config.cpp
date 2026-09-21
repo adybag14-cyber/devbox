@@ -289,10 +289,11 @@ fs::path discover_project_root() {
     }
     throw Error("could not discover Devbox project root; set DEVBOX_PROJECT_ROOT");
 }
-Config Config::load() {
+Config Config::load(bool read_env_files) {
     Config c;
     c.project_root = discover_project_root();
-    load_env_layers(c.project_root);
+    if (read_env_files)
+        load_env_layers(c.project_root);
     c.platform = Platform::detect();
     const auto runtime = lower(trim(env_or("DEVBOX_RUNTIME_MODE", "")));
     if (runtime == "docker" || ((runtime.empty() || runtime == "auto") && c.platform.is_windows))

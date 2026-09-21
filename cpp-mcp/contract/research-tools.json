@@ -18,7 +18,10 @@
         },
         "view": {
           "type": "string",
-          "enum": ["evidence", "offers"],
+          "enum": [
+            "evidence",
+            "offers"
+          ],
           "default": "evidence",
           "description": "Use offers for compact live product prices. Keeps exact variant options, payment conditions, currency, stock as reported, missing fields, conflicts and checked_at. Aggregate/from prices are explicitly separate. Use max_age_seconds=0 for a new check."
         },

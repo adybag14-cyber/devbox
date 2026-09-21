@@ -19,7 +19,7 @@ template <class F> void rejects(F&& operation, std::string_view part) {
 }
 int run(int argc, char** argv) {
     if (argc == 3 && std::string(argv[1]) == "--job-runner")
-        return run_job_request(std::make_shared<Config>(Config::load()), path_from_utf8(argv[2]));
+        return run_job_request(std::make_shared<Config>(Config::load(false)), path_from_utf8(argv[2]));
     if (argc >= 3 && std::string(argv[1]) == "--child") {
         const std::string mode = argv[2];
         if (mode == "count" && argc == 4) {
@@ -193,8 +193,14 @@ int run(int argc, char** argv) {
         // Restarting a runner on a completed request cannot repeat side effects.
         run_job_request(config, store.paths(id).request);
         require(read_file(root / "counter") == "x", "completed runner is never resurrected");
+        ProcessOptions frontend;
+        frontend.env = worker_environment();
+        // The owned frontend fixture needs the explicit configuration established above.
+        for (const auto& [key, prior] : original)
+            if (const auto value = environment(key))
+                (*frontend.env)[key] = *value;
         const auto launch = spawn_process(path_text(executable_path()),
-                                          {"--launch-and-exit", path_text(root / "parent-marker")});
+                                          {"--launch-and-exit", path_text(root / "parent-marker")}, frontend);
         const auto surviving = Json::parse(launch.stdout_text);
         track(surviving);
         require(finish(surviving["id"].get<std::string>())["status"] == "succeeded" &&

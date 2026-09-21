@@ -158,7 +158,11 @@ int main(int argc, char** argv) {
             io.stop();
             worker.join();
         });
-        CaptureService service(config);
+        CaptureService service(config, [](ProcessOptions& options) {
+            for (const auto* key : {"DEVBOX_TEST_CAPTURE_ROOT", "DEVBOX_TEST_CAPTURE_MODE"})
+                if (const auto value = environment(key))
+                    (*options.env)[key] = *value;
+        });
         set_environment("DEVBOX_TEST_CAPTURE_ROOT", path_text(root));
         set_environment("DEVBOX_TEST_CAPTURE_MODE", "retry");
         auto retried = invoke(io, service).get();

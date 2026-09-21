@@ -5,7 +5,7 @@ C++ setup TUI and JavaScript/PowerShell launchers remain the integration surface
 The C++ executable runs its own HTTP server, tools, job runners, capture workers,
 and Windows elevation workers; it does not invoke the Rust executable.
 
-The implementation is complete. Its `--parity-report` checks all 47 native
+The implementation is complete. Its `--parity-report` checks the complete native registry of
 handlers. Managed launch verifies the clean source and binary hash; publishing
 requires the complete CI matrix and package gate for the exact commit.
 [port-status.json](../cpp-mcp/port-status.json) records implementation completeness.

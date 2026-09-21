@@ -1,7 +1,7 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/native.hpp"
 #include "devbox/posix_process.hpp"
 #include "devbox/process.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <algorithm>
 #include <thread>
 #ifndef _WIN32
@@ -48,6 +48,8 @@ class ChildReaper {
 #endif
 std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string>& args, const fs::path& cwd,
                              const std::optional<Environment>& env) {
+    if (!env)
+        return spawn_detached(file, args, cwd, worker_environment());
     for (const auto& argument : args)
         if (argument.find('\0') != std::string::npos)
             throw Error("Detached arguments cannot contain NUL bytes");

@@ -44,11 +44,15 @@ int main() {
                                                    {"signal", "internal"},
                                                    {"values", Json::array({1, 2, 3, 4, 5, 6, 7, 8, 9})}});
         require(!args.contains("signal") && args["command"]["length"] == 242 &&
-                    args["command"]["preview"] == std::string(239, 'a') + "...",
-                "UTF16 bounded argument preview");
+                    args["command"]["redacted"] == true && !args["command"].contains("preview"),
+                "UTF16 argument lengths without payload previews");
         require(args.dump().find("NEVER-LOG-THIS") == std::string::npos &&
-                    args["content_base64"]["redacted"] == true && args["values"]["sample"].size() == 8,
-                "nested argument redaction and bounded arrays");
+                    args["content_base64"]["redacted"] == true && args["unrecognized_argument_count"] == 2,
+                "unknown field names and nested payloads cannot become telemetry");
+        const auto safe_enum =
+            summarize_arguments(Json{{"output_mode", "summary"}, {"command", "CANARY"}}, "host_exec");
+        require(safe_enum["output_mode"] == "summary" && safe_enum["command"]["redacted"] == true,
+                "only schema-declared safe enum values are recorded");
         JsonLogSink sink(root / "rotation.jsonl", 30, 2);
         for (int i = 0; i < 12; ++i)
             sink.append(Json{{"value", i}});
@@ -99,15 +103,18 @@ int main() {
         BackgroundTasks background;
         {
             UsageLogger burst(root / "burst.jsonl", 1024 * 1024, 1, background, "burst-writer");
+            burst.enqueue(Json{{"oversized", std::string(65536, 'x')}});
+            burst.enqueue(Json::binary(std::vector<std::uint8_t>(65536, 42)));
             for (int i = 0; i < 512; ++i)
                 burst.enqueue(Json{{"sequence", i}});
             burst.stop();
             const auto lines = split(read_file(root / "burst.jsonl"), '\n');
             for (std::size_t i = 0; i < 512; ++i)
                 require(Json::parse(lines.at(i))["sequence"] == i, "queued log event order and completeness");
-            require(burst.snapshot()["enqueued"] == 512 && burst.snapshot()["dropped"] == 0 &&
+            require(burst.snapshot()["enqueued"] == 512 && burst.snapshot()["dropped"] == 2 &&
+                        burst.snapshot()["queuedAndInflightBytes"] == 0 &&
                         burst.snapshot()["writeFailures"] == 0,
-                    "bounded burst drains without telemetry loss");
+                    "byte budgets reject oversized records explicitly and retain bounded bursts");
         }
         // A failed file open must increment failure state; a later event must recover.
         const auto path = root / "blocked.jsonl";
@@ -130,8 +137,16 @@ int main() {
         require(usage.active_tools().size() == 1, "active invocation registered");
         usage.finished(id, result_process("done", Json{{"execution", {{"queue_wait_ms", 12}, {"slot", 3}}}},
                                           "stdout", "stderr", 2, false));
-        const auto failure = usage.started("devbox_wait", Json::object(), Json::object());
-        usage.failed(failure, "cancelled");
+        const auto failure =
+            usage.started("devbox_wait", Json{{"reason", "CANARY-SECRET-IN-REASON"}},
+                          Json{{"request_id", "CANARY-SECRET-ID"}, {"user_agent", "CANARY-SECRET-UA"}});
+        usage.failed(failure, "CANARY-SECRET-IN-ERROR");
+        const auto payload = usage.started("devbox_task_put",
+                                           Json{{"task_id", "CANARY-SECRET-TASK"},
+                                                {"state", {{"key", "CANARY-SECRET-STATE"}}},
+                                                {"CANARY-SECRET-FIELD", 7}},
+                                           Json::object());
+        usage.finished(payload, result_error("CANARY-SECRET-IN-SUMMARY"));
         for (const auto outcome :
              {ToolOutcome::Cancelled, ToolOutcome::TimedOut, ToolOutcome::PolicyDenied}) {
             const auto classified = usage.started("host_exec", Json::object(), Json::object());
@@ -140,6 +155,11 @@ int main() {
         }
         const auto waited = usage.started("devbox_wait", Json{{"seconds", 10}}, Json::object());
         usage.finished(waited, result_success("done"));
+        for (const auto& value : Json::array({"bad", Json::object(), Json::array(), nullptr, false})) {
+            const auto invalid = usage.started("devbox_wait", Json{{"seconds", value}}, Json::object());
+            usage.finished(invalid,
+                           with_outcome(result_error("validation error"), ToolOutcome::InvalidArguments));
+        }
         const auto cua =
             usage.started("host_computer_use", Json{{"action", "type"}, {"text", "PRIVATE-CUA-TYPED-TEXT"}},
                           Json::object());
@@ -180,6 +200,9 @@ int main() {
         usage.stop();
         require(usage.active_tools().empty(), "terminal invocation removal");
         const auto log = read_file(root / "run" / "tool-usage.jsonl");
+        require(log.find("CANARY-SECRET") == std::string::npos,
+                "canary secrets excluded from arguments, field names, context, summaries and errors before "
+                "enqueue");
         const auto first_finish = Json::parse(split(log, '\n')[1]);
         for (const auto* outcome : {"cancelled", "timed_out", "policy_denied", "wait_completed"})
             require(log.find(std::string("\"outcome\":\"") + outcome + "\"") != std::string::npos,
@@ -203,7 +226,8 @@ int main() {
                 "CUA telemetry classifies native input without recording typed text");
         const auto http = read_json(root / "run" / "http-usage.jsonl");
         require(http["status_code"].is_null() && http["client_aborted"] == true &&
-                    http["forwarded_for"] == "1.2.3.4" && http.dump().find("SECRET") == std::string::npos &&
+                    http["forwarded_for_present"] == true &&
+                    http.dump().find("SECRET") == std::string::npos &&
                     http.dump().find("INQUERY") == std::string::npos,
                 "HTTP disconnect metadata excludes secrets");
         const auto before = allocator_snapshot();

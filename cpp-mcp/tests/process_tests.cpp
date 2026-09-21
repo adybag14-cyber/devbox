@@ -23,6 +23,8 @@ int child(int argc, char** argv) {
                           {"cwd", path_text(fs::current_path())},
                           {"environment", env_or("DEVBOX_PROCESS_TEST", "missing")}}
                          .dump();
+    } else if (mode == "environment") {
+        std::cout << Json(current_environment()).dump();
     } else if (mode == "pipes") {
         const std::string block(8192, 'o');
         for (int i = 0; i < 128; ++i) {
@@ -127,6 +129,26 @@ int test_main(int argc, char** argv) {
                     zero.snapshot().truncated,
                 "zero capture bound");
         const auto self = path_text(executable_path());
+        {
+            const auto prior = environment("DEVBOX_AUDIT_CANARY");
+            const auto prior_token = environment("OPENAI_API_KEY");
+            ScopeExit restore([&] {
+                set_environment("DEVBOX_AUDIT_CANARY", prior);
+                set_environment("OPENAI_API_KEY", prior_token);
+            });
+            set_environment("DEVBOX_AUDIT_CANARY", "SYNTHETIC-CREDENTIAL-NEVER-INHERIT");
+            set_environment("OPENAI_API_KEY", "SYNTHETIC-PROVIDER-KEY-NEVER-INHERIT");
+            const auto child_env = spawn_process(self, {"--child", "environment"}).stdout_text;
+            require(child_env.find("SYNTHETIC-") == std::string::npos &&
+                        child_env.find("DEVBOX_AUDIT_CANARY") == std::string::npos,
+                    "generic child environments exclude arbitrary and known credential variables");
+            ProcessOptions granted;
+            granted.env = worker_environment();
+            (*granted.env)["DEVBOX_EXPLICIT_GRANT_FIXTURE"] = "explicitly-authorized-fixture";
+            require(spawn_process(self, {"--child", "environment"}, granted)
+                            .stdout_text.find("explicitly-authorized-fixture") != std::string::npos,
+                    "dedicated callers can explicitly supply a scoped environment");
+        }
         require(!process_alive(0) && !process_instance(0), "PID zero exclusion");
         const auto identity = process_instance(process_id());
         require(identity && process_matches_instance(process_id(), identity) &&

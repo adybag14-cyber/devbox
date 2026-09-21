@@ -23,6 +23,7 @@ const args = ['-S', repo, '-B', build, `-DCMAKE_BUILD_TYPE=${configuration}`,
   `-DCMAKE_TOOLCHAIN_FILE=${path.join(vcpkg, 'scripts/buildsystems/vcpkg.cmake')}`,
   `-DVCPKG_TARGET_TRIPLET=${triplet}`, `-DVCPKG_INSTALLED_DIR=${path.join(repo, '.cpp-build/vcpkg_installed')}`];
 if (sanitizer) args.push('-DDEVBOX_SANITIZERS=ON', '-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O1 -g -DNDEBUG');
+await run(process.execPath, ['cpp-mcp/scripts/sync-registry.mjs']);
 await run('cmake', args);
 await run('cmake', ['--build', build, '--config', configuration, '--parallel', '4']);
 await run('ctest', ['--test-dir', build, '-C', configuration, '--output-on-failure']);

@@ -1,4 +1,5 @@
 #include "devbox/oauth.hpp"
+#include "devbox/contract.hpp"
 #include <algorithm>
 #include <openssl/core_names.h>
 #include <openssl/evp.h>
@@ -615,30 +616,9 @@ Json OAuthService::verify_identity(const std::optional<std::string>& assertion,
     }
 }
 std::optional<std::string> required_tool_scope(std::string_view tool) {
-    static const std::map<std::string, std::vector<std::string>> groups = {
-        {"mcp:devbox:read",
-         {"devbox_web_fetch", "devbox_web_evidence", "devbox_capabilities", "devbox_file_state",
-          "devbox_job_list", "devbox_task_get", "devbox_task_list", "devbox_status",
-          "devbox_github_auth_status", "devbox_job_logs", "devbox_job_status", "devbox_list_files",
-          "devbox_read_file", "devbox_read_large_file", "devbox_search_files", "devbox_wait",
-          "devbox_wait_for_file"}},
-        {"mcp:devbox:exec",
-         {"devbox_web_research", "devbox_write_file_atomic", "devbox_job_submit", "devbox_task_put",
-          "devbox_exec", "devbox_exec_readonly", "devbox_exec_start", "devbox_job_cancel",
-          "devbox_run_program", "devbox_run_program_start", "devbox_write_file", "devbox_write_large_file"}},
-        {"mcp:admin",
-         {"devbox_recreate", "devbox_restart", "devbox_start", "devbox_stop",
-          "devbox_sync_github_auth_from_host"}},
-        {"mcp:host:read",
-         {"host_computer_windows", "host_capture_display", "host_capture_program", "host_capture_window",
-          "host_status", "windows_host_capture_display", "windows_host_capture_program",
-          "windows_host_inspect_file", "windows_host_read_large_file", "windows_host_status"}},
-        {"mcp:host:exec",
-         {"host_computer_use", "host_exec", "host_run_program", "windows_host_exec",
-          "windows_host_run_program", "windows_host_write_large_file"}}};
-    for (const auto& [scope, names] : groups)
-        if (std::find(names.begin(), names.end(), tool) != names.end())
-            return scope;
+    const auto& policy = tool_policy(tool);
+    if (!policy.is_null())
+        return json_string(policy, "scope");
     return {};
 }
 bool oauth_scope_allows(const std::vector<std::string>& scopes, std::string_view required) {

@@ -48,7 +48,7 @@ struct Config {
     std::size_t screen_capture_retries = 1;
     double max_wait_seconds = 300;
     std::size_t command_output_limit_chars = 65536, max_mcp_transfer_chars = 4000000;
-    static Config load();
+    static Config load(bool read_env_files = true);
     std::string server_name() const;
     std::string runtime_label() const;
     std::string auth_name() const;

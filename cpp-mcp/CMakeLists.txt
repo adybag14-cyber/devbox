@@ -13,21 +13,17 @@ find_package(libdeflate CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 set(DEVBOX_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${DEVBOX_GENERATED_DIR}")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json" reference_hex HEX)
-string(REGEX REPLACE "(..)" "0x\\1," reference_bytes "${reference_hex}")
-file(WRITE "${DEVBOX_GENERATED_DIR}/reference_contract.hpp.tmp" "inline constexpr unsigned char embedded_contract[] = {${reference_bytes}};\n")
-file(COPY_FILE "${DEVBOX_GENERATED_DIR}/reference_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/reference_contract.hpp" ONLY_IF_DIFFERENT)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/computer-tools.json" computer_hex HEX)
-string(REGEX REPLACE "(..)" "0x\\1," computer_bytes "${computer_hex}")
-file(WRITE "${DEVBOX_GENERATED_DIR}/computer_contract.hpp.tmp" "inline constexpr unsigned char embedded_computer_contract[] = {${computer_bytes}};\n")
-file(COPY_FILE "${DEVBOX_GENERATED_DIR}/computer_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/computer_contract.hpp" ONLY_IF_DIFFERENT)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/computer-tools.json")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/research-tools.json" research_hex HEX)
-string(REGEX REPLACE "(..)" "0x\\1," research_bytes "${research_hex}")
-file(WRITE "${DEVBOX_GENERATED_DIR}/research_contract.hpp.tmp" "inline constexpr unsigned char embedded_research_contract[] = {${research_bytes}};\n")
-file(COPY_FILE "${DEVBOX_GENERATED_DIR}/research_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/research_contract.hpp" ONLY_IF_DIFFERENT)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/research-tools.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/tool-registry.json" registry_json)
+string(JSON registry_count LENGTH "${registry_json}" tools)
+string(JSON registry_version GET "${registry_json}" contract_version)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/tool-registry.json" registry_hex HEX)
+string(REGEX REPLACE "(..)" "0x\\1," registry_bytes "${registry_hex}")
+file(WRITE "${DEVBOX_GENERATED_DIR}/tool_registry.hpp.tmp" "inline constexpr unsigned char embedded_tool_registry[] = {${registry_bytes}};\n")
+file(COPY_FILE "${DEVBOX_GENERATED_DIR}/tool_registry.hpp.tmp" "${DEVBOX_GENERATED_DIR}/tool_registry.hpp" ONLY_IF_DIFFERENT)
+file(MAKE_DIRECTORY "${DEVBOX_GENERATED_DIR}/include/devbox")
+file(WRITE "${DEVBOX_GENERATED_DIR}/registry_counts.hpp.tmp" "#pragma once\n#include <cstddef>\nnamespace devbox { inline constexpr std::size_t cpp_tool_count = ${registry_count}; inline constexpr unsigned cpp_contract_version = ${registry_version}; }\n")
+file(COPY_FILE "${DEVBOX_GENERATED_DIR}/registry_counts.hpp.tmp" "${DEVBOX_GENERATED_DIR}/include/devbox/registry_counts.hpp" ONLY_IF_DIFFERENT)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/tool-registry.json")
 add_custom_target(devbox-build-identity
   COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${PROJECT_SOURCE_DIR}" "-DOUTPUT_DIR=${DEVBOX_GENERATED_DIR}"
     "-DCOMPILER=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}" "-DVERSION=${PROJECT_VERSION}"
@@ -43,6 +39,7 @@ add_library(devbox_core
   src/process.cpp
   src/posix_process.cpp
   src/storage.cpp
+  src/security.cpp
   src/runtime.cpp
   src/scheduler.cpp
   src/job_logs.cpp
@@ -87,7 +84,7 @@ add_library(devbox_core
 add_dependencies(devbox_core devbox-build-identity)
 target_include_directories(devbox_core PRIVATE "${DEVBOX_GENERATED_DIR}")
 target_include_directories(devbox_core PRIVATE "${DEVBOX_LEXBOR_INCLUDE_DIR}")
-target_include_directories(devbox_core PUBLIC include)
+target_include_directories(devbox_core PUBLIC include "${DEVBOX_GENERATED_DIR}/include")
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl ZLIB::ZLIB Threads::Threads ada::ada re2::re2)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:lexbor::lexbor_static>,lexbor::lexbor_static,lexbor::lexbor>)
@@ -117,6 +114,10 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-security-tests tests/security_tests.cpp)
+  target_link_libraries(devbox-security-tests PRIVATE devbox_core)
+  add_test(NAME security COMMAND devbox-security-tests)
+  set_tests_properties(security PROPERTIES TIMEOUT 30)
   add_executable(devbox-web-offer-tests tests/web_offer_tests.cpp)
   target_link_libraries(devbox-web-offer-tests PRIVATE devbox_core)
   if(MSVC)

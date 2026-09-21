@@ -58,8 +58,11 @@
         "A12",
         "L01"
       ],
-      "status": "in_progress",
-      "evidence": []
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/FOUNDATIONS-local.json",
+        "docs/TOOL_MANIFEST.md"
+      ]
     },
     {
       "id": "H03",
@@ -142,8 +145,14 @@
         "A05",
         "A06"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/audit-evidence/FOUNDATIONS-local.json"
+      ],
+      "remaining": [
+        "Wire durable security audit to grant admission and scoped secrets to provider adapters.",
+        "Extend adversarial checks to the new run controller and exports."
+      ]
     },
     {
       "id": "H06",
@@ -260,8 +269,13 @@
         "A07",
         "A08"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "Completion/deadline/cancellation arbitration and late-executor-destruction regression passed in async suite."
+      ],
+      "remaining": [
+        "Fenced coordinator, authenticated scheduler notifications and resource vectors depend on H08."
+      ]
     },
     {
       "id": "H10",

@@ -1,6 +1,6 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/runtime.hpp"
 #include "devbox/native.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <algorithm>
 #include <future>
 #include <regex>
@@ -30,6 +30,7 @@ ProcessOptions process_options(const ProgramRequest& request) {
     options.timeout = request.timeout;
     options.max_capture_chars = request.max_capture_chars;
     options.input = request.input;
+    options.env = request.environment;
     options.on_output = request.on_output;
     options.on_pid = request.on_pid;
     return options;
@@ -252,6 +253,7 @@ ProcessOutput RuntimeExecutor::run_program(ProgramRequest request, const Cancel&
     args.insert(args.end(), request.args.begin(), request.args.end());
     auto options = process_options(request);
     options.cwd.reset();
+    options.env = docker_environment();
     return spawn_process("docker", args, options, cancel);
 }
 ProcessOutput RuntimeExecutor::run_host_program_only(ProgramRequest request, const Cancel& cancel) const {
@@ -342,6 +344,7 @@ ProcessOutput RuntimeExecutor::run_shell(const ShellRequest& request, const Canc
                              "-lc", request.command});
     auto options = process_options(request);
     options.cwd.reset();
+    options.env = docker_environment();
     return spawn_process("docker", args, options, cancel);
 }
 ProcessOutput RuntimeExecutor::run_host_shell_only(const ShellRequest& request, const Cancel& cancel) const {
@@ -384,6 +387,7 @@ std::vector<std::string> RuntimeExecutor::get_versions(bool force, const Cancel&
             "python3 --version && printf 'git='; git --version && printf 'rg='; rg --version | head -n 1";
         ProcessOptions options;
         options.timeout = Millis(20000);
+        options.env = docker_environment();
         options.max_capture_chars = 32768;
         auto output = spawn_process("docker",
                                     {"exec", "-w", path_text(config_->devbox_workspace_path),

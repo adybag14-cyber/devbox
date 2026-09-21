@@ -3,6 +3,7 @@
 #include "devbox/result.hpp"
 #include "devbox/telemetry.hpp"
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <set>
 namespace devbox {
@@ -52,50 +53,40 @@ std::string_view text_member(const Json& value, std::string_view key) {
     const auto& field = member(value, key);
     return field.is_string() ? std::string_view(field.get_ref<const std::string&>()) : std::string_view();
 }
-std::string preview(std::string_view value, std::size_t units, bool ellipsis = true) {
-    if (js_length(value) <= units)
-        return std::string(value);
-    auto utf = to_utf16(value);
-    if (units && utf[units - 1] >= 0xd800 && utf[units - 1] <= 0xdbff)
-        --units;
-    return from_utf16(std::u16string_view(utf).substr(0, units)) + (ellipsis ? "..." : "");
+Json redacted_shape(const Json& value) {
+    Json result{{"type", value.type_name()}, {"redacted", true}};
+    if (value.is_string())
+        result["length"] = js_length(value.get_ref<const std::string&>());
+    else if (value.is_structured())
+        result["length"] = value.size();
+    return result;
 }
-bool sensitive(const std::string& name) {
-    const auto key = lower(name);
-    for (auto word :
-         {"token", "secret", "password", "authorization", "cookie", "content_base64", "expected_sha256"})
-        if (key.find(word) != key.npos)
-            return true;
-    return false;
-}
-Json summarize(const std::string& key, const Json& value, unsigned depth, std::size_t& budget) {
-    if (!budget || depth > 16)
-        return Json{{"omitted", true}};
-    --budget;
+// A conservative allocation/encoding charge; stop walking oversized or adversarial trees.
+std::size_t event_charge(const Json& value, std::size_t limit, unsigned depth = 0) {
+    if (depth > 32 || limit < 128)
+        return limit + 1;
+    std::size_t size = 128;
+    if (value.is_binary()) {
+        const auto bytes = value.get_binary().size();
+        return bytes > (limit - size) / 6 ? limit + 1 : size + bytes * 6;
+    }
     if (value.is_string()) {
-        const auto& text = value.get_ref<const std::string&>();
-        Json result{{"type", "string"}, {"length", js_length(text)}};
-        if (sensitive(key))
-            result["redacted"] = true;
-        else
-            result["preview"] = preview(text, 240);
-        return result;
+        const auto chars = value.get_ref<const std::string&>().size();
+        return chars > (limit - size) / 6 ? limit + 1 : size + chars * 6;
     }
-    if (value.is_array()) {
-        Json samples = Json::array();
-        for (std::size_t i = 0; i < std::min<std::size_t>(8, value.size()) && budget; ++i)
-            samples.push_back(summarize(key + "[]", value[i], depth + 1, budget));
-        return Json{{"type", "array"}, {"length", value.size()}, {"sample", samples}};
-    }
-    if (value.is_object()) {
-        Json result = Json::object();
-        auto sorted = canonical_json(value);
-        std::size_t count = 0;
-        for (auto it = sorted.begin(); it != sorted.end() && count < 12 && budget; ++it, ++count)
-            result[it.key()] = summarize(key + "." + it.key(), it.value(), depth + 1, budget);
-        return result;
-    }
-    return value;
+    if (value.is_structured())
+        for (auto it = value.begin(); it != value.end(); ++it) {
+            if (value.is_object()) {
+                if (it.key().size() > (limit - size) / 6)
+                    return limit + 1;
+                size += it.key().size() * 6;
+            }
+            const auto child = event_charge(*it, limit - size, depth + 1);
+            if (child > limit - size)
+                return limit + 1;
+            size += child;
+        }
+    return size;
 }
 } // namespace
 JsonLogSink::JsonLogSink(fs::path path, std::uint64_t maximum, std::size_t rotations)
@@ -190,13 +181,16 @@ void UsageLogger::stop() {
         thread_.join();
 }
 void UsageLogger::enqueue(Json event) {
+    const auto bytes = event_charge(event, max_event_bytes_);
     {
         std::lock_guard lock(mutex_);
-        if (stopping_ || queue_.size() >= 1024) {
+        if (stopping_ || queue_.size() >= 1024 || bytes > max_event_bytes_ ||
+            bytes > capacity_bytes_ - resident_bytes_) {
             ++dropped_;
             return;
         }
-        queue_.push_back(std::move(event));
+        queue_.emplace_back(std::move(event), bytes);
+        resident_bytes_ += bytes;
         ++enqueued_;
     }
     wake_.notify_one();
@@ -204,6 +198,7 @@ void UsageLogger::enqueue(Json event) {
 void UsageLogger::run() {
     for (;;) {
         std::vector<Json> events;
+        std::size_t batch_bytes = 0;
         {
             std::unique_lock lock(mutex_);
             wake_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
@@ -217,10 +212,15 @@ void UsageLogger::run() {
             const auto count = std::min<std::size_t>(256, queue_.size());
             events.reserve(count);
             for (std::size_t i = 0; i < count; ++i) {
-                events.push_back(std::move(queue_.front()));
+                events.push_back(std::move(queue_.front().first));
+                batch_bytes += queue_.front().second;
                 queue_.pop_front();
             }
         }
+        ScopeExit release_budget([&] {
+            std::lock_guard lock(mutex_);
+            resident_bytes_ -= batch_bytes;
+        });
         background_.attempt(name_);
         try {
             sink_.append_batch(events);
@@ -238,28 +238,58 @@ Json UsageLogger::snapshot() const {
                 {"dropped", dropped_.load()},
                 {"writeFailures", failures_.load()},
                 {"capacityEvents", 1024},
+                {"capacityBytes", capacity_bytes_},
+                {"maxEventBytes", max_event_bytes_},
+                {"queuedAndInflightBytes", resident_bytes_},
+                {"byteAccounting", "conservative_allocation_and_encoding_charge"},
                 {"queuedEvents", queue_.size()}};
 }
-Json summarize_arguments(const Json& arguments) {
-    static const std::set<std::string> internal{"signal",
-                                                "sessionId",
-                                                "_meta",
-                                                "authInfo",
-                                                "requestId",
-                                                "requestInfo",
-                                                "taskId",
-                                                "taskStore",
-                                                "taskRequestedTtl",
-                                                "closeSSEStream",
-                                                "closeStandaloneSSEStream"};
+Json summarize_arguments(const Json& arguments, std::string_view tool) {
     Json result = Json::object();
     if (!arguments.is_object())
         return result;
-    auto sorted = canonical_json(arguments);
-    std::size_t budget = 256;
-    for (auto it = sorted.begin(); it != sorted.end() && budget; ++it)
-        if (!internal.contains(it.key()))
-            result[it.key()] = summarize(it.key(), it.value(), 0, budget);
+    const auto& policy = tool_policy(tool);
+    std::set<std::string> known, safe;
+    auto collect = [&](const Json& entry) {
+        for (const auto& [profile, schema] : entry["schemas"].items())
+            for (const auto& [key, property] : schema["inputSchema"]["properties"].items())
+                known.insert(key);
+    };
+    if (policy.is_null())
+        for (const auto& entry : tool_registry()["tools"])
+            collect(entry);
+    else {
+        collect(policy);
+        for (const auto& field : policy["telemetry"]["safe_fields"])
+            safe.insert(field.get<std::string>());
+    }
+    std::size_t unknown = 0;
+    for (const auto& [key, value] : arguments.items()) {
+        if (key == "signal" || key == "_meta" || key == "authInfo")
+            continue;
+        if (!known.contains(key)) {
+            ++unknown;
+            continue;
+        }
+        bool safe_value = false;
+        if (safe.contains(key)) {
+            const auto& schemas = policy["schemas"];
+            const auto& property = schemas.begin().value()["inputSchema"]["properties"][key];
+            if (property.contains("enum"))
+                safe_value = std::find(property["enum"].begin(), property["enum"].end(), value) !=
+                             property["enum"].end();
+            else if (value.is_boolean() && json_string(property, "type") == "boolean")
+                safe_value = true;
+            else if (value.is_number() && std::isfinite(value.get<double>())) {
+                const auto n = value.get<double>();
+                safe_value = n >= json_number(property, "minimum", 0) &&
+                             n <= json_number(property, "maximum", 86400000);
+            }
+        }
+        result[key] = safe_value ? value : redacted_shape(value);
+    }
+    if (unknown)
+        result["unrecognized_argument_count"] = unknown;
     return result;
 }
 UsageTelemetry::UsageTelemetry(const Config& config, BackgroundTasks& background)
@@ -278,38 +308,29 @@ Json UsageTelemetry::Invocation::event(std::string type) const {
     return result;
 }
 std::string UsageTelemetry::started(const std::string& tool, const Json& args, const Json& context) {
-    auto summarized = summarize_arguments(args);
-    if (tool.starts_with("devbox_web_")) {
-        for (const auto* key : {"topic", "query", "queries", "urls", "domains", "exact_terms"})
-            if (args.contains(key)) {
-                const auto& value = args[key];
-                Json redacted{{"type", value.type_name()}, {"redacted", true}};
-                if (value.is_array())
-                    redacted["length"] = value.size();
-                else if (value.is_string())
-                    redacted["length"] = js_length(value.get_ref<const std::string&>());
-                summarized[key] = std::move(redacted);
-            }
-    }
-    if (tool == "host_computer_use" && args.contains("text") && args["text"].is_string())
-        summarized["text"] = Json{{"type", "string"},
-                                  {"length", js_length(args["text"].get_ref<const std::string&>())},
-                                  {"redacted", true}};
-    if (tool == "host_computer_use" && args.contains("keys") && args["keys"].is_array())
-        summarized["keys"] = Json{{"type", "array"}, {"length", args["keys"].size()}, {"redacted", true}};
-    if (tool == "host_computer_use" && args.contains("sequence") && args["sequence"].is_array())
-        summarized["sequence"] =
-            Json{{"type", "array"}, {"length", args["sequence"].size()}, {"redacted", true}};
-    auto attributed = context;
+    auto summarized = summarize_arguments(args, tool);
+    // Context headers and caller-provided request IDs are payload, too.
+    Json attributed{{"has_request_id", context.contains("request_id")},
+                    {"has_session_id", context.contains("session_id")},
+                    {"has_client_id", context.contains("client_id")}};
+    const auto http_id = json_string(context, "http_request_id");
+    if (http_id.size() == 36 && std::all_of(http_id.begin(), http_id.end(), [](unsigned char ch) {
+            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || ch == '-';
+        }))
+        attributed["http_request_id"] = http_id;
     attributed["build"] = build_;
     attributed["trace_schema"] = 2;
+    const auto positive_wait = [&](std::string_view key) {
+        const auto& value = member(args, key);
+        return value.is_number() && std::isfinite(value.get<double>()) && value.get<double>() > 0;
+    };
     attributed["duration_includes_requested_wait"] =
-        (tool == "devbox_wait" && json_number(args, "seconds") > 0) ||
+        (tool == "devbox_wait" && positive_wait("seconds")) ||
         ((tool == "devbox_job_status" || tool == "devbox_wait_for_file") &&
-         (json_number(args, "wait_seconds") > 0 || json_number(args, "timeout_seconds") > 0));
+         (positive_wait("wait_seconds") || positive_wait("timeout_seconds")));
     const auto start = Clock::now();
     Invocation invocation{uuid(),
-                          tool,
+                          tool_policy(tool).is_null() ? "unknown_tool" : tool,
                           utc_from_micros(static_cast<std::int64_t>(unix_micros())),
                           start,
                           std::move(summarized),
@@ -351,8 +372,9 @@ void UsageTelemetry::finished(const std::string& id, const Json& response) {
                       {"outcome", tool_outcome(structured, response, inv->tool)},
                       {"ok", json_bool(structured, "ok", !json_bool(response, "isError"))},
                       {"is_error", json_bool(response, "isError")},
-                      {"summary", preview(summary, 4096, false)},
-                      {"summary_truncated", js_length(summary) > 4096},
+                      {"summary", "Payload omitted by telemetry policy."},
+                      {"summary_chars", js_length(summary)},
+                      {"summary_redacted", true},
                       {"result_text_chars", result_chars},
                       {"stdout_chars", js_length(text_member(structured, "stdout"))},
                       {"stderr_chars", js_length(text_member(structured, "stderr"))},
@@ -378,34 +400,46 @@ void UsageTelemetry::failed(const std::string& id, const std::string& error) {
                       {"duration_ms", total_us / 1000},
                       {"duration_us", total_us},
                       {"outcome", "handler_exception"},
-                      {"error", preview(error.empty() ? "The command failed." : error, 4096, false)},
-                      {"error_truncated", js_length(error) > 4096}});
+                      {"error", "Handler exception; payload omitted by telemetry policy."},
+                      {"error_chars", js_length(error)},
+                      {"error_redacted", true}});
     tools_.enqueue(std::move(event));
 }
 void UsageTelemetry::http(const HttpRequest& request, int status, Millis duration, bool disconnected) {
     auto forwarded = json_string(request.headers, "x-forwarded-for");
     forwarded = trim(forwarded.substr(0, forwarded.find(',')));
-    Json event{{"type", "http_request"},
-               {"trace_schema", 2},
-               {"build", build_},
-               {"request_id", request.usage_id},
-               {"started_at", request.started_at},
-               {"connection_created_at", request.connection_created_at},
-               {"receive_started_at", request.receive_started_at},
-               {"finished_at", request.finished_at.empty() ? utc_now() : request.finished_at},
-               {"duration_ms", duration.count()},
-               {"duration_us", request.timing.completed
-                                   ? request.timing.duration_us
-                                   : static_cast<std::uint64_t>(duration.count()) * 1000},
-               {"timing_source", request.timing.completed ? "paired_wall_steady" : "legacy_observer"},
-               {"method", request.method},
-               {"path", request.path},
-               {"status_code", disconnected || !status ? Json() : Json(status)},
-               {"outcome", disconnected ? "client_aborted" : "finished"},
-               {"client_aborted", disconnected},
-               {"accept", json_string(request.headers, "accept")},
-               {"user_agent", json_string(request.headers, "user-agent")},
-               {"forwarded_for", forwarded.empty() ? Json() : Json(forwarded)}};
+    Json event{
+        {"type", "http_request"},
+        {"trace_schema", 2},
+        {"build", build_},
+        {"request_id", request.usage_id},
+        {"started_at", request.started_at},
+        {"connection_created_at", request.connection_created_at},
+        {"receive_started_at", request.receive_started_at},
+        {"finished_at", request.finished_at.empty() ? utc_now() : request.finished_at},
+        {"duration_ms", duration.count()},
+        {"duration_us", request.timing.completed ? request.timing.duration_us
+                                                 : static_cast<std::uint64_t>(duration.count()) * 1000},
+        {"timing_source", request.timing.completed ? "paired_wall_steady" : "legacy_observer"},
+        {"method", std::set<std::string>{"GET", "POST", "HEAD", "OPTIONS", "DELETE", "PUT", "PATCH"}.contains(
+                       request.method)
+                       ? request.method
+                       : "unrecognized"},
+        {"path", std::set<std::string>{"/", "/mcp", "/healthz", "/livez", "/readyz", "/metadata",
+                                       "/oauth/authorize", "/oauth/token", "/oauth/register", "/oauth/revoke",
+                                       "/.well-known/oauth-authorization-server",
+                                       "/.well-known/oauth-protected-resource"}
+                         .contains(request.path)
+                     ? request.path
+                     : "unrecognized"},
+        {"status_code", disconnected || !status ? Json() : Json(status)},
+        {"outcome", disconnected ? "client_aborted" : "finished"},
+        {"client_aborted", disconnected},
+        {"accept", json_string(request.headers, "accept").find("text/event-stream") != std::string::npos
+                       ? "sse"
+                       : "other"},
+        {"user_agent_chars", json_string(request.headers, "user-agent").size()},
+        {"forwarded_for_present", !forwarded.empty()}};
     if (request.timing.completed) {
         const auto& t = request.timing;
         event["wall_steady_delta_us"] = t.wall_steady_delta_us;

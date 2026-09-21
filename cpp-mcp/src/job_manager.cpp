@@ -9,7 +9,7 @@ std::uint64_t bounded_timeout(Millis timeout) {
     return static_cast<std::uint64_t>(std::clamp<Millis::rep>(timeout.count(), 1000, 86400000));
 }
 Environment runner_environment(const Config& config) {
-    auto values = current_environment();
+    auto values = config.runtime_mode == RuntimeMode::docker ? docker_environment() : worker_environment();
     const auto set = [&](std::string key, std::string value) {
 #ifdef _WIN32
         std::erase_if(values, [&](const auto& item) { return lower(item.first) == lower(key); });
@@ -17,6 +17,8 @@ Environment runner_environment(const Config& config) {
         values[std::move(key)] = std::move(value);
     };
     set("DEVBOX_PROJECT_ROOT", path_text(config.project_root));
+    if (const auto generation = environment("DEVBOX_DEPLOYMENT_GENERATION"))
+        set("DEVBOX_DEPLOYMENT_GENERATION", *generation);
     set("DEVBOX_RUNTIME_MODE", config.runtime_name());
     set("ENABLE_HOST_EXEC", config.host_exec_enabled ? "true" : "false");
     set("HOST_DEFAULT_WORKDIR", path_text(config.host_default_workdir));

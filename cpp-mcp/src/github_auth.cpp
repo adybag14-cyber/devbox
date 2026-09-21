@@ -8,6 +8,15 @@ ProcessOutput GithubAuthService::run(bool host, const std::string& program, std:
     request.args = std::move(args);
     request.timeout = timeout;
     request.input = std::move(input);
+    if (host || config_->runtime_mode == RuntimeMode::host) {
+        request.environment = worker_environment();
+        // Preserve the explicitly selected credential store without inheriting token variables.
+        for (const auto* key :
+             {"GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"})
+            if (const auto value = environment(key))
+                (*request.environment)[key] = *value;
+        (*request.environment)["GIT_CONFIG_COUNT"] = "0";
+    }
     request.max_capture_chars = 65536;
     request.working_dir = host || config_->runtime_mode == RuntimeMode::host ? config_->host_default_workdir
                                                                              : config_->devbox_workspace_path;

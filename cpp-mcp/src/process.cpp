@@ -197,6 +197,63 @@ Environment current_environment() {
 #endif
     return result;
 }
+Environment worker_environment() {
+    static const std::vector<std::string> allowed{"PATH",
+                                                  "PATHEXT",
+                                                  "SYSTEMROOT",
+                                                  "WINDIR",
+                                                  "SYSTEMDRIVE",
+                                                  "COMSPEC",
+                                                  "OS",
+                                                  "TEMP",
+                                                  "TMP",
+                                                  "TMPDIR",
+                                                  "HOME",
+                                                  "USERPROFILE",
+                                                  "HOMEDRIVE",
+                                                  "HOMEPATH",
+                                                  "APPDATA",
+                                                  "LOCALAPPDATA",
+                                                  "PROGRAMDATA",
+                                                  "PROGRAMFILES",
+                                                  "PROGRAMFILES(X86)",
+                                                  "COMMONPROGRAMFILES",
+                                                  "COMMONPROGRAMFILES(X86)",
+                                                  "PROCESSOR_ARCHITECTURE",
+                                                  "NUMBER_OF_PROCESSORS",
+                                                  "LANG",
+                                                  "LC_ALL",
+                                                  "LC_CTYPE",
+                                                  "TZ",
+                                                  "TERM",
+                                                  "COLORTERM",
+                                                  "PREFIX",
+                                                  "ANDROID_ROOT",
+                                                  "ANDROID_DATA",
+                                                  "TERMUX_VERSION",
+                                                  "CURL_CA_BUNDLE",
+                                                  "SSL_CERT_FILE"};
+    Environment result;
+    for (const auto& [key, value] : current_environment()) {
+        auto normalized = key;
+#ifdef _WIN32
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+#endif
+        if (std::find(allowed.begin(), allowed.end(), normalized) != allowed.end())
+            result[key] = value;
+    }
+    return result;
+}
+Environment docker_environment() {
+    auto result = worker_environment();
+    // Only the Docker service broker delegates these credential/configuration references.
+    for (const auto* key :
+         {"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"})
+        if (const auto value = environment(key))
+            result[key] = *value;
+    return result;
+}
 std::optional<fs::path> find_program(std::string_view program, const Environment* env) {
     if (program.empty())
         return std::nullopt;
@@ -892,6 +949,11 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
 #endif
 ProcessOutput spawn_process(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel) {
+    if (!options.env) {
+        auto isolated = options;
+        isolated.env = worker_environment();
+        return spawn_process(file, args, isolated, cancel);
+    }
     const auto started = Clock::now();
     CaptureAccumulator out(options.max_capture_chars), err(options.max_capture_chars);
     RawProcessResult raw;
