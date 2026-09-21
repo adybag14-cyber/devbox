@@ -1,4 +1,5 @@
 #include "devbox/server.hpp"
+#include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include <array>
 #include <boost/beast.hpp>
@@ -338,6 +339,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     beast::flat_buffer buffer{64 * 1024};
     HttpRequest request;
     std::string peer;
+    const std::string connection_created_at = utc_from_micros(static_cast<std::int64_t>(unix_micros()));
     Json bridge_headers = Json::object();
     Cancel cancel = std::make_shared<Cancellation>();
     std::uint64_t sequence, sent_bytes = 0;
@@ -352,8 +354,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     };
     std::shared_ptr<ReadAhead> read_ahead;
     Clock::time_point started_at = Clock::now();
-    Session(std::shared_ptr<Impl> owner, Tcp::socket socket, const Tcp::endpoint& endpoint,
-            std::uint64_t id)
+    Session(std::shared_ptr<Impl> owner, Tcp::socket socket, const Tcp::endpoint& endpoint, std::uint64_t id)
         : server(std::move(owner)), stream(std::move(socket)), peer(endpoint.address().to_string()),
           sequence(id) {
         boost::system::error_code ec;
@@ -414,6 +415,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         read_ahead.reset();
     }
     asio::awaitable<void> send(HttpReply reply) {
+        const auto prepare_start = Clock::now();
         if (request.method == "POST" && (request.path == "/mcp" || request.path == "/") &&
             reply.status == 200 && reply.body.size() >= 128 * 1024 &&
             json_string(reply.headers, "content-type").starts_with("application/json")) {
@@ -446,9 +448,17 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         // completions instead of submitting the entire body in one operation.
         http::response_serializer<http::string_body> serializer(response);
         serializer.limit(64 * 1024);
+        request.timing.prepare_us += std::chrono::duration_cast<Micros>(Clock::now() - prepare_start).count();
         boost::system::error_code ec;
-        sent_bytes +=
-            co_await http::async_write(stream, serializer, asio::redirect_error(asio::use_awaitable, ec));
+        {
+            const auto write_start = Clock::now();
+            ScopeExit observe([&] {
+                request.timing.write_us +=
+                    std::chrono::duration_cast<Micros>(Clock::now() - write_start).count();
+            });
+            sent_bytes +=
+                co_await http::async_write(stream, serializer, asio::redirect_error(asio::use_awaitable, ec));
+        }
         if (ec) {
             disconnected = true;
             throw boost::system::system_error(ec);
@@ -456,10 +466,15 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         completed = true;
     }
     asio::awaitable<void> send_chunk(std::string text) {
+        const auto write_start = Clock::now();
+        ScopeExit observe([&] {
+            request.timing.write_us += std::chrono::duration_cast<Micros>(Clock::now() - write_start).count();
+        });
         sent_bytes += co_await asio::async_write(stream.socket(), http::make_chunk(asio::buffer(text)),
                                                  asio::use_awaitable);
     }
     asio::awaitable<void> send_rpc(Json value, bool prefer_json = false) {
+        const auto prepare_start = Clock::now();
         auto reply = HttpReply::json(200, value);
         if (modern_protocol(request) && value.contains("error")) {
             const auto code = value["error"].value("code", 0);
@@ -475,6 +490,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             reply.headers["cache-control"] = "no-cache, no-transform";
             reply.headers["x-accel-buffering"] = "no";
         }
+        request.timing.prepare_us += std::chrono::duration_cast<Micros>(Clock::now() - prepare_start).count();
         co_await send(std::move(reply));
     }
     asio::awaitable<Json> call_tool(Json params, Json id) {
@@ -486,7 +502,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         const auto args = !params.contains("arguments") || params["arguments"].is_null()
                               ? Json::object()
                               : params["arguments"];
-        Json context{{"request_id", id}};
+        Json context{{"request_id", id}, {"http_request_id", request.usage_id}};
         for (const auto& [header, key] :
              {std::pair{"mcp-session-id", "session_id"}, std::pair{"user-agent", "user_agent"}}) {
             auto value = json_string(request.headers, header);
@@ -500,15 +516,23 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             Json result;
             const auto scope = required_tool_scope(name);
             if (request.oauth && scope && !oauth_scope_allows(json_strings(*request.oauth, "scopes"), *scope))
-                result = result_error(
-                    "OAuth token is missing the required scope " + *scope + " for tool " + name + ".",
-                    Json{{"requiredScope", *scope}, {"clientId", json_string(*request.oauth, "clientId")}});
+                result =
+                    with_outcome(result_error("OAuth token is missing the required scope " + *scope +
+                                                  " for tool " + name + ".",
+                                              Json{{"requiredScope", *scope},
+                                                   {"clientId", json_string(*request.oauth, "clientId")}}),
+                                 ToolOutcome::PolicyDenied);
             else
                 result = co_await server->backend->call_tool(name, args, cancel);
             server->backend->tool_finished(invocation, result);
+            strip_internal_result_metadata(result);
             if (modern_protocol(request))
                 result["resultType"] = "complete";
             co_return result;
+        } catch (const Cancelled& e) {
+            server->backend->tool_finished(invocation,
+                                           with_outcome(result_error(e.what()), ToolOutcome::Cancelled));
+            throw;
         } catch (const std::exception& e) {
             server->backend->tool_failed(invocation, e.what());
             throw;
@@ -580,7 +604,14 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             http::response_serializer<http::empty_body> serializer{headers};
             response_started = true;
             response_status = 200;
-            sent_bytes += co_await http::async_write_header(stream, serializer, asio::use_awaitable);
+            {
+                const auto write_start = Clock::now();
+                ScopeExit observe([&] {
+                    request.timing.write_us +=
+                        std::chrono::duration_cast<Micros>(Clock::now() - write_start).count();
+                });
+                sent_bytes += co_await http::async_write_header(stream, serializer, asio::use_awaitable);
+            }
             co_await send_chunk(": mcp-request-start\n\n");
             while (!completion->finished) {
                 completion->timer.expires_at(next_heartbeat);
@@ -595,8 +626,15 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 co_return;
             co_await send_chunk(
                 "event: message\ndata: " + json_dump(response, Json::error_handler_t::replace) + "\n\n");
-            sent_bytes +=
-                co_await asio::async_write(stream.socket(), http::make_chunk_last(), asio::use_awaitable);
+            {
+                const auto write_start = Clock::now();
+                ScopeExit observe([&] {
+                    request.timing.write_us +=
+                        std::chrono::duration_cast<Micros>(Clock::now() - write_start).count();
+                });
+                sent_bytes +=
+                    co_await asio::async_write(stream.socket(), http::make_chunk_last(), asio::use_awaitable);
+            }
             completed = true;
         } else {
             try {
@@ -737,11 +775,13 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         }
         Json body;
         std::optional<HttpReply> parse_failure;
+        const auto parse_start = Clock::now();
         try {
             body = bounded_json(request.body);
         } catch (...) {
             parse_failure.emplace(HttpReply::json(400, rpc_error(nullptr, -32700, "Parse error")));
         }
+        request.timing.parse_us += std::chrono::duration_cast<Micros>(Clock::now() - parse_start).count();
         if (parse_failure) {
             co_await send(std::move(*parse_failure));
             co_return;
@@ -829,6 +869,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             try {
                 stream.expires_after(Millis(15000));
                 boost::system::error_code ec;
+                const bool buffered_request = buffer.size() != 0;
                 if (!buffer.size()) {
                     const auto bytes = co_await stream.async_read_some(
                         buffer.prepare(8192), asio::redirect_error(asio::use_awaitable, ec));
@@ -839,6 +880,12 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 // Exclude an idle keep-alive interval from the next request's
                 // handling duration. Buffered pipeline bytes are never discarded.
                 started_at = Clock::now();
+                request.timing.begin(started_at, unix_micros());
+                request.started_at = utc_from_micros(static_cast<std::int64_t>(request.timing.start_wall_us));
+                request.connection_created_at = connection_created_at;
+                // Pipelined bytes may have arrived during the preceding response. Do not invent
+                // their receive timestamp; the handling boundary is still measured exactly.
+                request.receive_started_at = buffered_request ? "" : request.started_at;
                 http::request_parser<http::string_body> parser;
                 parser.header_limit(32768);
                 parser.body_limit(server->config->mcp_json_body_limit_bytes);
@@ -853,6 +900,8 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 if (!ec && !parser.is_done())
                     co_await http::async_read(stream, buffer, parser,
                                               asio::redirect_error(asio::use_awaitable, ec));
+                request.timing.receive_us =
+                    std::chrono::duration_cast<Micros>(Clock::now() - started_at).count();
                 if (ec == http::error::body_limit) {
                     // GCC 12/13 cannot lower this initializer-list temporary
                     // inside co_await in the request loop. Give it a local owner.
@@ -900,7 +949,13 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 } catch (...) {
                 }
             }
-            const auto duration = std::chrono::duration_cast<Millis>(Clock::now() - started_at);
+            const auto finished = Clock::now();
+            request.timing.finish(finished, unix_micros());
+            request.finished_at =
+                request.timing.completed
+                    ? utc_from_micros(static_cast<std::int64_t>(request.timing.finish_wall_us))
+                    : utc_now();
+            const auto duration = std::chrono::duration_cast<Millis>(finished - started_at);
             try {
                 server->backend->observe_http(request, response_status, sent_bytes, duration, disconnected);
             } catch (...) {

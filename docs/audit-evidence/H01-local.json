@@ -1,0 +1,13 @@
+{
+  "ticket": "H01",
+  "scope": "Windows MSVC local transport and telemetry qualification; release platform gates pending",
+  "base_revision": "46d22dc077cf5fb2072e75212491cc65427aeed2",
+  "old_loop_reproduced": true,
+  "old_failure": "ten-second keep-alive idle must not contaminate the request UTC handling span\nFixture: \"C:\\\\Users\\\\adyba\\\\AppData\\\\Local\\\\Temp\\\\devbox-cpp-transport-bbcaa6e3-ebe8-4b59-8bf1-a07e24774cc1\"\n",
+  "tests": "Test project C:/Users/adyba/devbox-audit-implementation-20260921/.cpp-build/windows\n    Start  9: telemetry\n1/2 Test  #9: telemetry ........................   Passed    0.63 sec\n    Start 17: transport\n2/2 Test #17: transport ........................   Passed   12.01 sec\n\n100% tests passed, 0 tests failed out of 2\n\nTotal Test time (real) =  12.64 sec\n",
+  "build_log_sha256": "59966ae2434766a6a1d70509c243f3d36d0909b2a45ac5002a240f79f91911a3",
+  "binaries": {
+    "devbox-transport-tests.exe": "bc574070a3f48ee0d475f5bc8a59ed85606cb04ff56b627c6a86351ee2dfd164",
+    "devbox-telemetry-tests.exe": "b39a9a754d2516ac60a73701f32a05753665a4dce5d2184e5aec519604a82e08"
+  }
+}

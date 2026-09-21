@@ -40,8 +40,14 @@ Json render_process_error(const std::exception& error, std::size_t maximum, std:
     if (const auto* process = dynamic_cast<const ProcessError*>(&error)) {
         const auto out = trim_error(process->stdout_text, maximum),
                    err = trim_error(process->stderr_text, maximum);
-        return result_process(error.what(), std::move(data), out.first, err.first, process->exit_code, false,
-                              out.second || err.second);
+        auto result = result_process(error.what(), std::move(data), out.first, err.first, process->exit_code,
+                                     false, out.second || err.second);
+        if (process->aborted)
+            return with_outcome(std::move(result), ToolOutcome::Cancelled);
+        if (process->timed_out)
+            return with_outcome(std::move(result), ToolOutcome::TimedOut);
+        return process->exit_code ? std::move(result)
+                                  : with_outcome(std::move(result), ToolOutcome::ProcessFailure);
     }
     if (dynamic_cast<const ElevationRequired*>(&error)) {
         if (!data)
@@ -56,9 +62,12 @@ Json render_process_error(const std::exception& error, std::size_t maximum, std:
               "Do not start MCP from a normal (non-admin) terminal if you want silent elevated host_exec.",
               "Set ALLOW_WINDOWS_HOST_EXEC_UAC=true only if you intentionally want per-command UAC "
               "prompts."}}};
-        return result_process(error.what(), std::move(data), "", "", 740, false);
+        return with_outcome(result_process(error.what(), std::move(data), "", "", 740, false),
+                            ToolOutcome::PolicyDenied);
     }
-    return result_process(error.what(), std::move(data), "", "", std::nullopt, false);
+    return with_outcome(result_process(error.what(), std::move(data), "", "", std::nullopt, false),
+                        dynamic_cast<const Cancelled*>(&error) ? ToolOutcome::Cancelled
+                                                               : ToolOutcome::ProcessFailure);
 }
 Json render_file_output(std::string summary, const ProcessOutput& output, std::size_t maximum) {
     const auto out = shape_output(output.stdout_text, "tail", maximum),

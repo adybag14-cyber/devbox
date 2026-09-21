@@ -44,6 +44,7 @@ class UsageTelemetry {
         Json event(std::string type) const;
     };
     UsageLogger tools_, http_;
+    const Json build_;
     mutable std::mutex mutex_;
     std::map<std::string, Invocation> active_;
     std::optional<Invocation> remove(const std::string& id);

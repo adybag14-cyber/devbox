@@ -1,0 +1,541 @@
+{
+  "schema_version": 1,
+  "status": "implementation_in_progress",
+  "estimation_note": "Engineer-weeks are rough scope estimates for experienced maintainers, not commitments or benchmark findings. Tasks overlap in design/testing; do not add ranges mechanically. Phase effort bands in the report are the budgeting guide.",
+  "priority_definition": {
+    "P0-before-autonomy": "Required before allowing unattended model-selected execution beyond the current trusted-operator threat model.",
+    "P1": "Reliability, correctness, observability or release foundation.",
+    "P2": "Scale, efficiency or optional capability expansion."
+  },
+  "tickets": [
+    {
+      "id": "H01",
+      "phase": "A",
+      "priority": "P1",
+      "title": "Correct timestamps and build-attributed tracing",
+      "estimated_engineer_weeks": [
+        0.5,
+        1
+      ],
+      "depends_on": [],
+      "implementation": [
+        "Capture UTC and steady request start at the same post-idle read boundary; retain separate connection and receive-start timestamps.",
+        "Record deployment generation, binary digest, run/operation IDs, phase timings and typed outcome categories."
+      ],
+      "acceptance_criteria": [
+        "An injected 10-second keep-alive idle does not appear in subsequent handling duration.",
+        "Wall/steady deltas agree within declared resolution absent clock adjustment.",
+        "Application nonzero exits and intentional waits do not count as infrastructure latency/failure."
+      ],
+      "evidence_refs": [
+        "A03",
+        "A04"
+      ],
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/H01-local.json"
+      ]
+    },
+    {
+      "id": "H02",
+      "phase": "A",
+      "priority": "P1",
+      "title": "One canonical capability and contract manifest",
+      "estimated_engineer_weeks": [
+        0.5,
+        1
+      ],
+      "depends_on": [],
+      "implementation": [
+        "Generate tool schemas, permission metadata, aliases, docs and declared counts from one registry.",
+        "Preserve frozen legacy request/response behavior; correct implementation-specific descriptions separately."
+      ],
+      "acceptance_criteria": [
+        "All 50 current names accounted for; stale count 47 eliminated.",
+        "All platform profiles and legacy/modern protocol compatibility gates pass."
+      ],
+      "evidence_refs": [
+        "A12",
+        "L01"
+      ],
+      "status": "in_progress",
+      "evidence": []
+    },
+    {
+      "id": "H03",
+      "phase": "A",
+      "priority": "P1",
+      "title": "Matched benchmark and failure taxonomy",
+      "estimated_engineer_weeks": [
+        1,
+        2
+      ],
+      "depends_on": [
+        "H01"
+      ],
+      "implementation": [
+        "Benchmark localhost and tunneled paths separately with fixed payloads, commands, datasets and cache states.",
+        "Record admissions, processing, child work, encoding, transfer, timer lateness and observer cost separately."
+      ],
+      "acceptance_criteria": [
+        "At least 1000 observations per short-operation class and multiple runs; publish p50/p95/p99 with uncertainty.",
+        "Build/binary/toolchain/CPU/power profile pinned; no production stress traffic."
+      ],
+      "evidence_refs": [
+        "A03",
+        "A10"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H04",
+      "phase": "B",
+      "priority": "P0-before-autonomy",
+      "title": "Capability grants and low-privilege execution profile",
+      "estimated_engineer_weeks": [
+        2,
+        4
+      ],
+      "depends_on": [
+        "H02"
+      ],
+      "implementation": [
+        "Make trusted elevated operator mode explicit; default autonomous workers to least privilege.",
+        "Authorize exact operation, principal, workspace, executable identity, argument constraints, egress and expiry.",
+        "Keep administration/update credentials and desktop input in separate narrowly authorized brokers."
+      ],
+      "acceptance_criteria": [
+        "Revoked/expired grants reject before side effects.",
+        "Readonly shell hints never represented as OS-enforced sandboxing.",
+        "Symlink/reparse, argument interpreter and executable substitution adversarial tests pass."
+      ],
+      "evidence_refs": [
+        "A05",
+        "L01"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H05",
+      "phase": "B",
+      "priority": "P0-before-autonomy",
+      "title": "Secret-safe telemetry and environment isolation",
+      "estimated_engineer_weeks": [
+        1,
+        2
+      ],
+      "depends_on": [
+        "H02"
+      ],
+      "implementation": [
+        "Schema-level deny-by-default recording of arguments, stdin, file content and task state.",
+        "Construct child environment from an allowlist; inject scoped secret references only through broker-controlled channels.",
+        "Separate durable security audit events from lossy operational telemetry; enforce byte and count budgets."
+      ],
+      "acceptance_criteria": [
+        "Synthetic canary credentials do not appear in process environment, argv, logs, export or crash bundle unless explicitly authorized.",
+        "Audit spool failure produces explicit policy behavior, never silent evidence loss."
+      ],
+      "evidence_refs": [
+        "A05",
+        "A06"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H06",
+      "phase": "B",
+      "priority": "P1",
+      "title": "Response and worker resource containment",
+      "estimated_engineer_weeks": [
+        1.5,
+        3
+      ],
+      "depends_on": [
+        "H01"
+      ],
+      "implementation": [
+        "Add per-write idle deadlines, overall response budgets and aggregate queued/in-flight byte limits.",
+        "Keep health and cancel control traffic reserved under large JSON and slow-reader load.",
+        "Separate potentially uninterruptible operations into killable worker processes with explicit shutdown escalation.",
+        "Extend existing per-execution Job Objects with compatible limits and test kill-on-owner-close without killing durable runners on frontend restart."
+      ],
+      "acceptance_criteria": [
+        "Slow readers and high fanout remain within configured byte/connection budgets.",
+        "Shutdown reaches its declared deadline during stuck-worker injection.",
+        "Foreground orphan tests and durable-runner survival tests both pass."
+      ],
+      "evidence_refs": [
+        "A07",
+        "A05"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H07",
+      "phase": "B",
+      "priority": "P1",
+      "title": "Dependency and binary release assurance",
+      "estimated_engineer_weeks": [
+        1,
+        2
+      ],
+      "depends_on": [
+        "H02"
+      ],
+      "implementation": [
+        "Promote exact tested artifacts; attach signed provenance, SBOM, dependency notices and vulnerability results.",
+        "Add Windows ASan/analysis and separate Linux TSan/fuzz lanes where supported.",
+        "Gate CI cache reuse by exact compiler, SDK, triplet, flags and dependency baseline."
+      ],
+      "acceptance_criteria": [
+        "Downloaded artifact digest, test receipt digest and deployed digest identical.",
+        "Failure to verify signature, schema compatibility or required tests prevents promotion.",
+        "All bundled dependency notices enumerated from the resolved graph."
+      ],
+      "evidence_refs": [
+        "A02",
+        "A11"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H08",
+      "phase": "C",
+      "priority": "P1",
+      "title": "Indexed durable state and fenced coordinator",
+      "estimated_engineer_weeks": [
+        2,
+        4
+      ],
+      "depends_on": [
+        "H01",
+        "H06"
+      ],
+      "implementation": [
+        "Introduce a StateStore interface and local single-writer SQLite/WAL metadata store or equivalent transactional implementation.",
+        "Index runs, jobs, operations, events and resource leases; retain artifact files out of the database.",
+        "Migrate with one authoritative writer and generation fencing; retain export/recovery compatibility."
+      ],
+      "acceptance_criteria": [
+        "10k/100k-record list and receipt admission tests have bounded work/page.",
+        "Crash between every durable transition preserves operation identity and truthful uncertain state.",
+        "Rollback cannot resurrect already admitted external effects."
+      ],
+      "evidence_refs": [
+        "A08",
+        "A09"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H09",
+      "phase": "C",
+      "priority": "P1",
+      "title": "Event-driven scheduler and completion waits",
+      "estimated_engineer_weeks": [
+        1.5,
+        3
+      ],
+      "depends_on": [
+        "H08"
+      ],
+      "implementation": [
+        "Notify same-process waiters and cross-process workers through authenticated IPC; preserve periodic reconciliation.",
+        "Replace 10ms future polling with completion/deadline/cancellation arbitration.",
+        "Keep weighted fairness and interactive reservation; add memory/GPU/disk resource dimensions."
+      ],
+      "acceptance_criteria": [
+        "When capacity is free, notification-to-grant p95 below 20ms in the qualification workload.",
+        "No starvation, double lease or stale-owner release under restart and PID reuse tests.",
+        "Successful 1-2ms admission fast path does not regress materially."
+      ],
+      "evidence_refs": [
+        "A07",
+        "A08"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H10",
+      "phase": "C",
+      "priority": "P2",
+      "title": "Content-addressed resumable artifact uploads",
+      "estimated_engineer_weeks": [
+        1.5,
+        3
+      ],
+      "depends_on": [
+        "H08"
+      ],
+      "implementation": [
+        "Separate upload staging from final atomic publish; hash each chunk and verify whole-file hash once at finalize.",
+        "Use idempotent upload IDs/chunk offsets; maintain final file CAS protection.",
+        "Bound large-directory enumeration independently from displayed result count."
+      ],
+      "acceptance_criteria": [
+        "Repeated chunk writes are replay-safe; interrupted finalization leaves either old or new published artifact.",
+        "Uploaded-byte I/O scales linearly rather than recopying the previous prefix per chunk.",
+        "Very large directories remain within a stated memory ceiling."
+      ],
+      "evidence_refs": [
+        "A09"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H11",
+      "phase": "C",
+      "priority": "P2",
+      "title": "Measured allocation and observer optimization",
+      "estimated_engineer_weeks": [
+        1,
+        2
+      ],
+      "depends_on": [
+        "H03"
+      ],
+      "implementation": [
+        "A/B test global allocation instrumentation versus sampled or thread-local counters.",
+        "Use typed snapshots and reusable buffers; avoid repeated copying/sorting of timer-lateness windows.",
+        "Try PGO only with representative workloads and independently validated profiles."
+      ],
+      "acceptance_criteria": [
+        "Demonstrate service CPU improvement under matched workload without hidden telemetry loss.",
+        "No precision change silently relabels a metric; no safety or cross-platform regressions."
+      ],
+      "evidence_refs": [
+        "A10",
+        "A11"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H12",
+      "phase": "D",
+      "priority": "P1",
+      "title": "Model-provider and local-worker adapters",
+      "estimated_engineer_weeks": [
+        2,
+        4
+      ],
+      "depends_on": [
+        "H04",
+        "H05",
+        "H06"
+      ],
+      "implementation": [
+        "Implement explicit generate/stream/cancel/usage interfaces with provider-specific capability negotiation.",
+        "Use direct APIs or isolated local inference servers; do not build new orchestration on deprecated MCP sampling.",
+        "Enforce model/context/VRAM/token/cost budgets and robust partial tool-call parsing."
+      ],
+      "acceptance_criteria": [
+        "Test adapter reconnect, malformed streaming fragments, cancellation, rate limits and unknown billing/response outcomes.",
+        "Keys never enter generic worker environment or model-visible context.",
+        "Unsupported model tool/vision capabilities fail explicitly."
+      ],
+      "evidence_refs": [
+        "A12",
+        "W02"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H13",
+      "phase": "D",
+      "priority": "P1",
+      "title": "Durable run controller and approval state machine",
+      "estimated_engineer_weeks": [
+        3,
+        5
+      ],
+      "depends_on": [
+        "H08",
+        "H09",
+        "H12"
+      ],
+      "implementation": [
+        "Persist model rounds, tool calls, grants, checkpoints, context manifests and observed effects.",
+        "Implement run create/get/events/pause/resume/cancel/approve; bound turns, repetitions, cost and output.",
+        "Use existing operation-ID deduplication underneath an outbox and effect-state reconciliation."
+      ],
+      "acceptance_criteria": [
+        "Restart at every run transition recovers without duplicated admitted effects.",
+        "Unknown external outcomes pause for reconciliation rather than blind retry.",
+        "Cancellation receipt and actual terminal state are distinct and auditable."
+      ],
+      "evidence_refs": [
+        "A09",
+        "A12"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H14",
+      "phase": "D",
+      "priority": "P1",
+      "title": "Harness evaluation and adversarial regression suite",
+      "estimated_engineer_weeks": [
+        2,
+        4
+      ],
+      "depends_on": [
+        "H03",
+        "H13"
+      ],
+      "implementation": [
+        "Pair task-success, cost, calls, completion time and edit correctness against a frozen baseline.",
+        "Exercise prompt injection, untrusted evidence, approvals, context compaction and cross-run information isolation.",
+        "Add deterministic controller fixtures and recorded provider traces; distinguish replay from deterministic model generation."
+      ],
+      "acceptance_criteria": [
+        "No increase in unauthorized side effects or secret exposure in the adversarial corpus.",
+        "Report success-rate confidence intervals and per-task outcomes, not only aggregate token throughput.",
+        "Automatic budget/loop circuit breakers verified."
+      ],
+      "evidence_refs": [
+        "A03",
+        "A05",
+        "A12"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H15",
+      "phase": "E",
+      "priority": "P2",
+      "title": "MCP Tasks, resources and optional UI integration",
+      "estimated_engineer_weeks": [
+        1.5,
+        3
+      ],
+      "depends_on": [
+        "H13"
+      ],
+      "implementation": [
+        "Map durable jobs/runs to the current opt-in Tasks extension.",
+        "Expose artifact/evidence resources and versioned workflow instructions; optionally add approval/run-monitor UI.",
+        "Keep existing job tools as fallback and constrain caching to authorization-equivalent views."
+      ],
+      "acceptance_criteria": [
+        "Never return task-shaped results to clients that did not negotiate support.",
+        "Reconnect/cancel/input-required flows pass current and legacy client matrix tests."
+      ],
+      "evidence_refs": [
+        "A12",
+        "W03",
+        "W11"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H16",
+      "phase": "E",
+      "priority": "P2",
+      "title": "Research quality and provider extensibility",
+      "estimated_engineer_weeks": [
+        1,
+        2
+      ],
+      "depends_on": [
+        "H02",
+        "H05"
+      ],
+      "implementation": [
+        "Preserve actual checked_at, source content hashes, stock, SKU/variant and payment distinctions.",
+        "Add provider adapters with explicit terms and coverage; support HTTP-date Retry-After and consistent egress policy.",
+        "Evaluate domain diversity, primary evidence coverage and incomplete queries rather than rewarding source count alone."
+      ],
+      "acceptance_criteria": [
+        "Inaccessible/currently failed sources never reuse stale prices as current.",
+        "Existing peer-IP/private-address/redirect/TLS/budget tests continue passing."
+      ],
+      "evidence_refs": [
+        "A13"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H17",
+      "phase": "E",
+      "priority": "P2",
+      "title": "Platform-specific execution and desktop expansion",
+      "estimated_engineer_weeks": [
+        2,
+        5
+      ],
+      "depends_on": [
+        "H04",
+        "H06"
+      ],
+      "implementation": [
+        "Add a structured WSL backend with explicit distribution/path mapping rather than treating arbitrary host shell as a portable API.",
+        "Qualify native Linux/macOS/Android capabilities independently; add real-device arm64/mobile lifecycle tests before claims.",
+        "Preserve single-owner desktop input and fresh observation semantics; use platform-granted desktop permissions."
+      ],
+      "acceptance_criteria": [
+        "Platform manifest distinguishes unavailable, unsupported and permission-denied capabilities.",
+        "Existing Windows popup/coordinate/stale-observation protections remain covered."
+      ],
+      "evidence_refs": [
+        "A05",
+        "A11",
+        "A13",
+        "L01"
+      ],
+      "status": "not_started",
+      "evidence": []
+    },
+    {
+      "id": "H18",
+      "phase": "F",
+      "priority": "P1",
+      "title": "Canary, migration and rollback certification",
+      "estimated_engineer_weeks": [
+        1,
+        2
+      ],
+      "depends_on": [
+        "H07",
+        "H14"
+      ],
+      "implementation": [
+        "Run isolated canaries, one-writer state migration, staged admission drain and exact-artifact promotion.",
+        "Preserve Guardian/tunnel ownership; separate worker/frontend lifetimes and state format versions.",
+        "Conduct rollback and recovery drills with durable runner and operation receipts intact."
+      ],
+      "acceptance_criteria": [
+        "No lost acknowledged job or duplicate effect in deployment/restart tests.",
+        "Healthy known-good C++ release can be restored without unsafe state downgrade.",
+        "All release health, isolation, budget, performance and compatibility gates pass."
+      ],
+      "evidence_refs": [
+        "A02",
+        "A08",
+        "A09",
+        "A11"
+      ],
+      "status": "not_started",
+      "evidence": []
+    }
+  ],
+  "scope": {
+    "all_backend_tickets": true,
+    "hermes_ui": false,
+    "confirmed_by_user": true
+  }
+}

@@ -162,7 +162,7 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
             try {
                 co_await async_delay(Millis(static_cast<Millis::rep>(seconds * 1000)), cancel);
             } catch (const Cancelled&) {
-                co_return result_error("Wait was cancelled.");
+                co_return with_outcome(result_error("Wait was cancelled."), ToolOutcome::Cancelled);
             }
             co_return result_success(
                 "Waited " + args["seconds"].dump() + " seconds without an execution process.",
@@ -251,8 +251,11 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         auto pending = pool.run([this, name, args, cancel] { return files(name, args, cancel); }, cancel);
         co_return co_await std::move(pending);
     } catch (const ParameterError& e) {
-        co_return Json{{"content", Json::array({Json{{"type", "text"}, {"text", e.what()}}})},
-                       {"isError", true}};
+        co_return with_outcome(
+            Json{{"content", Json::array({Json{{"type", "text"}, {"text", e.what()}}})}, {"isError", true}},
+            ToolOutcome::InvalidArguments);
+    } catch (const Cancelled& e) {
+        co_return with_outcome(result_error(e.what()), ToolOutcome::Cancelled);
     } catch (const std::exception& e) {
         co_return result_error(e.what());
     }

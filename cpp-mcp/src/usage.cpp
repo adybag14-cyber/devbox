@@ -1,9 +1,45 @@
+#include "devbox/contract.hpp"
+#include "devbox/native.hpp"
+#include "devbox/result.hpp"
 #include "devbox/telemetry.hpp"
 #include <algorithm>
 #include <fstream>
 #include <set>
 namespace devbox {
 namespace {
+std::uint64_t elapsed_us(Clock::time_point start) {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<Micros>(Clock::now() - start).count());
+}
+Json trace_build() {
+    const auto build = build_snapshot();
+    Json result = Json::object();
+    for (const auto* key : {"gitSha", "sourceTree", "binarySha256", "deploymentGeneration"})
+        result[key] = build[key];
+#ifdef _WIN32
+    result["pid"] = GetCurrentProcessId();
+#else
+    result["pid"] = getpid();
+#endif
+    return result;
+}
+std::string tool_outcome(const Json& structured, const Json& response, std::string_view tool) {
+    if (const auto classified = result_outcome(response); !classified.empty())
+        return classified;
+    const auto code = json_string(structured, "error_code");
+    if (code.find("CANCEL") != code.npos)
+        return "cancelled";
+    if (code.find("TIMEOUT") != code.npos || code.find("TIMED_OUT") != code.npos)
+        return "timed_out";
+    if (code.find("DENIED") != code.npos || code.find("POLICY") != code.npos ||
+        code.find("SCOPE") != code.npos)
+        return "policy_denied";
+    const auto exit = structured.find("exitCode");
+    if (exit != structured.end() && exit->is_number_integer() && exit->get<std::int64_t>() != 0)
+        return "application_exit";
+    if (!json_bool(structured, "ok", !json_bool(response, "isError")))
+        return "tool_error"; // An unclassified tool failure is not asserted to be infrastructure failure.
+    return tool == "devbox_wait" || tool == "devbox_job_status" ? "wait_completed" : "success";
+}
 std::uint64_t elapsed(Clock::time_point start) {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<Millis>(Clock::now() - start).count());
 }
@@ -230,7 +266,8 @@ UsageTelemetry::UsageTelemetry(const Config& config, BackgroundTasks& background
     : tools_(config.project_root / "run" / "tool-usage.jsonl", config.usage_log_max_bytes,
              config.usage_log_rotations, background, "usage-tool-writer"),
       http_(config.project_root / "run" / "http-usage.jsonl", config.usage_log_max_bytes,
-            config.usage_log_rotations, background, "usage-http-writer") {}
+            config.usage_log_rotations, background, "usage-http-writer"),
+      build_(trace_build()) {}
 Json UsageTelemetry::Invocation::event(std::string type) const {
     Json result{{"type", type},           {"invocation_id", id}, {"tool", tool}, {"started_at", started_at},
                 {"arguments", arguments}, {"context", context}};
@@ -263,7 +300,20 @@ std::string UsageTelemetry::started(const std::string& tool, const Json& args, c
     if (tool == "host_computer_use" && args.contains("sequence") && args["sequence"].is_array())
         summarized["sequence"] =
             Json{{"type", "array"}, {"length", args["sequence"].size()}, {"redacted", true}};
-    Invocation invocation{uuid(), tool, utc_now(), Clock::now(), std::move(summarized), context};
+    auto attributed = context;
+    attributed["build"] = build_;
+    attributed["trace_schema"] = 2;
+    attributed["duration_includes_requested_wait"] =
+        (tool == "devbox_wait" && json_number(args, "seconds") > 0) ||
+        ((tool == "devbox_job_status" || tool == "devbox_wait_for_file") &&
+         (json_number(args, "wait_seconds") > 0 || json_number(args, "timeout_seconds") > 0));
+    const auto start = Clock::now();
+    Invocation invocation{uuid(),
+                          tool,
+                          utc_from_micros(static_cast<std::int64_t>(unix_micros())),
+                          start,
+                          std::move(summarized),
+                          std::move(attributed)};
     const auto id = invocation.id;
     tools_.enqueue(invocation.event("tool_start"));
     std::lock_guard lock(mutex_);
@@ -294,8 +344,11 @@ void UsageTelemetry::finished(const std::string& id, const Json& response) {
     for (const auto& part : member(response, "content"))
         if (json_string(part, "type") == "text")
             result_chars += js_length(text_member(part, "text"));
-    event.update(Json{{"finished_at", utc_now()},
-                      {"duration_ms", elapsed(inv->start)},
+    const auto total_us = elapsed_us(inv->start);
+    event.update(Json{{"finished_at", utc_from_micros(static_cast<std::int64_t>(unix_micros()))},
+                      {"duration_ms", total_us / 1000},
+                      {"duration_us", total_us},
+                      {"outcome", tool_outcome(structured, response, inv->tool)},
                       {"ok", json_bool(structured, "ok", !json_bool(response, "isError"))},
                       {"is_error", json_bool(response, "isError")},
                       {"summary", preview(summary, 4096, false)},
@@ -307,6 +360,12 @@ void UsageTelemetry::finished(const std::string& id, const Json& response) {
                       {"truncated", json_bool(structured, "truncated")},
                       {"queue_wait_ms", member(execution, "queue_wait_ms")},
                       {"execution_slot", member(execution, "slot")}});
+    if (member(execution, "queue_wait_ms").is_number_unsigned() ||
+        member(execution, "queue_wait_ms").is_number_integer()) {
+        const auto queue_us = json_uint(execution, "queue_wait_ms") * 1000;
+        event["queue_wait_us"] = queue_us;
+        event["post_admission_us"] = total_us > queue_us ? total_us - queue_us : 0;
+    }
     tools_.enqueue(std::move(event));
 }
 void UsageTelemetry::failed(const std::string& id, const std::string& error) {
@@ -314,8 +373,11 @@ void UsageTelemetry::failed(const std::string& id, const std::string& error) {
     if (!inv)
         return;
     auto event = inv->event("tool_throw");
-    event.update(Json{{"finished_at", utc_now()},
-                      {"duration_ms", elapsed(inv->start)},
+    const auto total_us = elapsed_us(inv->start);
+    event.update(Json{{"finished_at", utc_from_micros(static_cast<std::int64_t>(unix_micros()))},
+                      {"duration_ms", total_us / 1000},
+                      {"duration_us", total_us},
+                      {"outcome", "handler_exception"},
                       {"error", preview(error.empty() ? "The command failed." : error, 4096, false)},
                       {"error_truncated", js_length(error) > 4096}});
     tools_.enqueue(std::move(event));
@@ -323,19 +385,41 @@ void UsageTelemetry::failed(const std::string& id, const std::string& error) {
 void UsageTelemetry::http(const HttpRequest& request, int status, Millis duration, bool disconnected) {
     auto forwarded = json_string(request.headers, "x-forwarded-for");
     forwarded = trim(forwarded.substr(0, forwarded.find(',')));
-    http_.enqueue(Json{{"type", "http_request"},
-                       {"request_id", request.usage_id},
-                       {"started_at", request.started_at},
-                       {"finished_at", utc_now()},
-                       {"duration_ms", duration.count()},
-                       {"method", request.method},
-                       {"path", request.path},
-                       {"status_code", disconnected || !status ? Json() : Json(status)},
-                       {"outcome", disconnected ? "client_aborted" : "finished"},
-                       {"client_aborted", disconnected},
-                       {"accept", json_string(request.headers, "accept")},
-                       {"user_agent", json_string(request.headers, "user-agent")},
-                       {"forwarded_for", forwarded.empty() ? Json() : Json(forwarded)}});
+    Json event{{"type", "http_request"},
+               {"trace_schema", 2},
+               {"build", build_},
+               {"request_id", request.usage_id},
+               {"started_at", request.started_at},
+               {"connection_created_at", request.connection_created_at},
+               {"receive_started_at", request.receive_started_at},
+               {"finished_at", request.finished_at.empty() ? utc_now() : request.finished_at},
+               {"duration_ms", duration.count()},
+               {"duration_us", request.timing.completed
+                                   ? request.timing.duration_us
+                                   : static_cast<std::uint64_t>(duration.count()) * 1000},
+               {"timing_source", request.timing.completed ? "paired_wall_steady" : "legacy_observer"},
+               {"method", request.method},
+               {"path", request.path},
+               {"status_code", disconnected || !status ? Json() : Json(status)},
+               {"outcome", disconnected ? "client_aborted" : "finished"},
+               {"client_aborted", disconnected},
+               {"accept", json_string(request.headers, "accept")},
+               {"user_agent", json_string(request.headers, "user-agent")},
+               {"forwarded_for", forwarded.empty() ? Json() : Json(forwarded)}};
+    if (request.timing.completed) {
+        const auto& t = request.timing;
+        event["wall_steady_delta_us"] = t.wall_steady_delta_us;
+        event["clock_adjustment_suspected"] =
+            t.wall_steady_delta_us > 100000 || t.wall_steady_delta_us < -100000;
+        event["phase_timings_us"] = Json{{"receive", t.receive_us},
+                                         {"parse", t.parse_us},
+                                         {"response_prepare", t.prepare_us},
+                                         {"write", t.write_us}};
+        const auto accounted = t.receive_us + t.parse_us + t.prepare_us + t.write_us;
+        event["phase_timings_us"]["handler_and_wait"] =
+            t.duration_us > accounted ? t.duration_us - accounted : 0;
+    }
+    http_.enqueue(std::move(event));
 }
 Json UsageTelemetry::active_tools() const {
     std::lock_guard lock(mutex_);

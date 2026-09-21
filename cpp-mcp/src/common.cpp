@@ -340,6 +340,24 @@ std::uint64_t unix_millis() {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<Millis>(std::chrono::system_clock::now().time_since_epoch()).count());
 }
+std::uint64_t unix_micros() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<Micros>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+std::string utc_from_micros(std::int64_t us) {
+    auto ms = us / 1000;
+    auto remainder = us % 1000;
+    if (remainder < 0) {
+        --ms;
+        remainder += 1000;
+    }
+    auto value = utc_from_millis(ms);
+    value.pop_back();
+    value += static_cast<char>('0' + remainder / 100);
+    value += static_cast<char>('0' + (remainder / 10) % 10);
+    value += static_cast<char>('0' + remainder % 10);
+    return value + 'Z';
+}
 std::string utc_from_millis(std::int64_t ms) {
     auto seconds = ms / 1000;
     auto remainder = ms % 1000;

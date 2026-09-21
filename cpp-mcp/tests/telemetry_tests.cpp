@@ -29,6 +29,15 @@ int main() {
         fs::remove_all(root, ec);
     });
     try {
+        require(utc_from_micros(1234567) == "1970-01-01T00:00:01.234567Z" &&
+                    utc_from_micros(1) == "1970-01-01T00:00:00.000001Z",
+                "microsecond UTC formatting");
+        RequestTiming adjusted;
+        const auto monotonic = Clock::now();
+        adjusted.begin(monotonic, 10000000);
+        adjusted.finish(monotonic + Micros(1250), 9001250);
+        require(adjusted.duration_us == 1250 && adjusted.wall_steady_delta_us == -1000000,
+                "a backwards UTC clock change does not become a negative or slow handling duration");
         const auto args = summarize_arguments(Json{{"command", std::string(239, 'a') + "😀z"},
                                                    {"nested", {{"refresh_token", "NEVER-LOG-THIS"}}},
                                                    {"content_base64", "SECRET-BYTES"},
@@ -123,6 +132,14 @@ int main() {
                                           "stdout", "stderr", 2, false));
         const auto failure = usage.started("devbox_wait", Json::object(), Json::object());
         usage.failed(failure, "cancelled");
+        for (const auto outcome :
+             {ToolOutcome::Cancelled, ToolOutcome::TimedOut, ToolOutcome::PolicyDenied}) {
+            const auto classified = usage.started("host_exec", Json::object(), Json::object());
+            usage.finished(classified,
+                           with_outcome(result_process("classified", {}, "", "", 137, false), outcome));
+        }
+        const auto waited = usage.started("devbox_wait", Json{{"seconds", 10}}, Json::object());
+        usage.finished(waited, result_success("done"));
         const auto cua =
             usage.started("host_computer_use", Json{{"action", "type"}, {"text", "PRIVATE-CUA-TYPED-TEXT"}},
                           Json::object());
@@ -163,6 +180,16 @@ int main() {
         usage.stop();
         require(usage.active_tools().empty(), "terminal invocation removal");
         const auto log = read_file(root / "run" / "tool-usage.jsonl");
+        const auto first_finish = Json::parse(split(log, '\n')[1]);
+        for (const auto* outcome : {"cancelled", "timed_out", "policy_denied", "wait_completed"})
+            require(log.find(std::string("\"outcome\":\"") + outcome + "\"") != std::string::npos,
+                    "typed outcomes separate cancellation, deadlines, policy, waits and child failures");
+        require(log.find("\"duration_includes_requested_wait\":true") != std::string::npos,
+                "intentional waits are classified separately from handling overhead");
+        require(first_finish["outcome"] == "application_exit" && first_finish.contains("duration_us") &&
+                    first_finish["context"]["build"].contains("binarySha256") &&
+                    first_finish["context"]["build"].contains("deploymentGeneration"),
+                "nonzero child exit is not an infrastructure failure and every event is build-attributed");
         require(log.find("PRIVATE-WEB-") == std::string::npos &&
                     log.find("\"usage_type\":\"web_research\"") != std::string::npos,
                 "web telemetry redacts every raw argument type before validation");

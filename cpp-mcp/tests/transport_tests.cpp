@@ -54,6 +54,7 @@ struct FixtureBackend : McpBackend {
         invalid_identities{0};
     std::mutex identity_mutex;
     std::set<std::string> usage_ids;
+    std::vector<Json> http_traces;
     mutable std::atomic_bool pause_ready{false};
     mutable std::atomic_size_t ready_entered{0};
     Json server_info() const override {
@@ -97,7 +98,8 @@ struct FixtureBackend : McpBackend {
             ++cancelled;
             throw;
         }
-        auto result = result_success("fixture complete", Json{{"name", name}});
+        auto result =
+            with_outcome(result_success("fixture complete", Json{{"name", name}}), ToolOutcome::Cancelled);
         const auto bytes = json_uint(arguments, "reply_bytes");
         if (bytes && bytes <= 1024 * 1024) {
             result["structuredContent"]["data"]["payload"] =
@@ -115,7 +117,8 @@ struct FixtureBackend : McpBackend {
         }
         return true;
     }
-    void observe_http(const HttpRequest& request, int, std::uint64_t, Millis, bool disconnected) override {
+    void observe_http(const HttpRequest& request, int, std::uint64_t, Millis duration,
+                      bool disconnected) override {
         ++observations;
         if (request.peer != "127.0.0.1")
             ++unexpected_peers;
@@ -124,6 +127,14 @@ struct FixtureBackend : McpBackend {
             if (request.usage_id.empty() || request.started_at.empty() ||
                 !usage_ids.insert(request.usage_id).second)
                 ++invalid_identities;
+            http_traces.push_back(
+                Json{{"target", request.target},
+                     {"started", request.started_at},
+                     {"finished", request.finished_at.empty() ? utc_now() : request.finished_at},
+                     {"connection_created", request.connection_created_at},
+                     {"received", request.receive_started_at},
+                     {"duration_ms", duration.count()},
+                     {"duration_us", request.timing.duration_us}});
         }
         if (disconnected)
             ++disconnects;
@@ -260,6 +271,45 @@ int main(int argc, char** argv) {
             asio::io_context client_io;
             Tcp::socket socket(client_io);
             socket.connect({asio::ip::make_address("127.0.0.1"), port});
+            http::request<http::empty_body> first{http::verb::get, "/readyz?audit-first", 11};
+            first.set(http::field::host, "127.0.0.1");
+            http::write(socket, first);
+            beast::flat_buffer incoming;
+            http::response<http::string_body> response;
+            http::read(socket, incoming, response);
+            require(response.result_int() == 200 && response.keep_alive(),
+                    "audit fixture can reuse connection");
+            std::this_thread::sleep_for(Millis(10020));
+            first.target("/readyz?audit-after-idle");
+            http::write(socket, first);
+            response = {};
+            http::read(socket, incoming, response);
+            Json trace;
+            until(
+                [&] {
+                    std::lock_guard lock(backend->identity_mutex);
+                    for (const auto& observed : backend->http_traces)
+                        if (observed["target"] == "/readyz?audit-after-idle") {
+                            trace = observed;
+                            return true;
+                        }
+                    return false;
+                },
+                "post-idle request observed");
+            const auto start = parse_utc(json_string(trace, "started"));
+            const auto finish = parse_utc(json_string(trace, "finished"));
+            require(start && finish &&
+                        std::abs((*finish - *start) - trace["duration_ms"].get<std::int64_t>()) < 100,
+                    "ten-second keep-alive idle must not contaminate the request UTC handling span");
+            require(json_uint(trace, "duration_us") >= json_uint(trace, "duration_ms") * 1000 &&
+                        !json_string(trace, "connection_created").empty() &&
+                        !json_string(trace, "received").empty(),
+                    "request boundary includes microseconds and distinct connection/receive observations");
+        }
+        {
+            asio::io_context client_io;
+            Tcp::socket socket(client_io);
+            socket.connect({asio::ip::make_address("127.0.0.1"), port});
             http::request<http::empty_body> probe{http::verb::get, "/healthz", 11};
             probe.set(http::field::host, "127.0.0.1");
             http::write(socket, probe);
@@ -304,6 +354,8 @@ int main(int argc, char** argv) {
                 http::response<http::string_body> response;
                 http::read(*socket, incoming, response);
                 const auto result = Json::parse(response.body());
+                require(result.dump().find("_devboxTelemetry") == std::string::npos,
+                        "private lifecycle metadata never changes client response envelopes");
                 require(result["id"] == id && result["result"]["structuredContent"]["ok"] == true,
                         "read-ahead preserves pipelined bytes and per-request cancellation");
             }
