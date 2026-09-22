@@ -735,7 +735,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
         if (assigned)
             TerminateJobObject(job.get(), 1);
         TerminateProcess(process.get(), 1);
-        WaitForSingleObject(process.get(), 3000);
+        WaitForSingleObject(process.get(), static_cast<DWORD>(std::clamp(options.termination_grace.count(),
+                                                                         Millis::rep(0), Millis::rep(3000))));
     });
     if (!AssignProcessToJobObject(job.get(), process.get()))
         throw Error("Unable to contain child process: " + windows_error());
@@ -836,7 +837,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     }
     if (!exited) {
         TerminateJobObject(job.get(), 1);
-        WaitForSingleObject(process.get(), 3000);
+        // The declared termination grace was already spent in the loop. Do not silently add 3s.
+        WaitForSingleObject(process.get(), 0);
     }
     terminate_on_error.disarm();
     return result;
@@ -922,6 +924,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     const auto started = Clock::now();
     const std::array close_fds{input_pipe.read.get(),   input_pipe.write.get(), stdout_pipe.read.get(),
                                stdout_pipe.write.get(), stderr_pipe.read.get(), stderr_pipe.write.get()};
+    const auto reap_slot = reserve_posix_reap_slot();
+    ScopeExit release_slot([&] { release_posix_reap_slot(reap_slot); });
     const pid_t child = spawn_posix(
         program, argv.data(), options.env ? envp.data() : environ, options.cwd ? &*options.cwd : nullptr,
         {input_pipe.read.get(), stdout_pipe.write.get(), stderr_pipe.write.get()}, close_fds, true);
@@ -930,7 +934,10 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
         if (!reaped) {
             ::kill(-child, SIGKILL);
             int status;
-            while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+            const auto observed = ::waitpid(child, &status, WNOHANG);
+            if (observed != child && !(observed < 0 && errno == ECHILD)) {
+                defer_posix_reap(reap_slot, child);
+                release_slot.disarm();
             }
         }
     });
@@ -1007,7 +1014,7 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
             ::kill(-child, SIGTERM);
             forced = now;
         }
-        if (forced && !killed && now - *forced >= Millis(250)) {
+        if (forced && !killed && now - *forced >= std::min(Millis(250), options.termination_grace)) {
             ::kill(-child, SIGKILL);
             killed = true;
         }
@@ -1016,7 +1023,7 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
                 ::kill(-child, SIGKILL);
             break;
         }
-        if (forced && !exited && now - *forced >= options.termination_grace + Millis(250))
+        if (forced && !exited && now - *forced >= options.termination_grace)
             break;
         pollfd descriptors[]{{stdout_pipe.read.get(), POLLIN, 0},
                              {stderr_pipe.read.get(), POLLIN, 0},

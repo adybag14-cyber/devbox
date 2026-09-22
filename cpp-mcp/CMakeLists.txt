@@ -44,6 +44,7 @@ add_library(devbox_core
   src/posix_process.cpp
   src/storage.cpp
   src/filesystem_worker.cpp
+  src/child_reaper.cpp
   src/artifacts.cpp
   src/security.cpp
   src/provider.cpp

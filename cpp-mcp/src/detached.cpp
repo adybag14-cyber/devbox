@@ -12,40 +12,6 @@
 extern char** environ;
 #endif
 namespace devbox {
-#ifndef _WIN32
-namespace {
-class ChildReaper {
-    std::mutex mutex_;
-    std::condition_variable wake_;
-    std::vector<pid_t> children_;
-    ScopedThread thread_;
-
-  public:
-    ChildReaper()
-        : thread_([this](ThreadStopToken stop) {
-              std::unique_lock lock(mutex_);
-              while (!stop.stop_requested()) {
-                  std::erase_if(children_, [](pid_t pid) {
-                      int status = 0;
-                      const auto result = ::waitpid(pid, &status, WNOHANG);
-                      return result == pid || (result < 0 && errno == ECHILD);
-                  });
-                  wake_.wait_for(lock, Millis(100));
-              }
-          }) {}
-    ~ChildReaper() {
-        thread_.request_stop();
-        wake_.notify_all();
-        thread_.join();
-    }
-    void add(pid_t pid) {
-        std::lock_guard lock(mutex_);
-        children_.push_back(pid);
-        wake_.notify_one();
-    }
-};
-} // namespace
-#endif
 std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string>& args, const fs::path& cwd,
                              const std::optional<Environment>& env, std::optional<std::uint64_t>* instance) {
     if (!env)
@@ -161,13 +127,15 @@ std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string
         envp.push_back(nullptr);
     }
     // Initialize the reaper before spawning so an allocation failure cannot lose a child.
-    static ChildReaper reaper;
+    const auto reap_slot = reserve_posix_reap_slot();
+    ScopeExit release_slot([&] { release_posix_reap_slot(reap_slot); });
     const std::array close_fds{null.get()};
     const auto pid = spawn_posix(file, argv.data(), env ? envp.data() : environ, &cwd,
                                  {null.get(), null.get(), null.get()}, close_fds, false);
+    defer_posix_reap(reap_slot, pid);
+    release_slot.disarm();
     if (instance)
         *instance = process_instance(static_cast<std::uint32_t>(pid));
-    reaper.add(pid);
     return static_cast<std::uint32_t>(pid);
 #endif
 }

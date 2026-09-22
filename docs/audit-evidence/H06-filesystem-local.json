@@ -52,5 +52,27 @@
     "Kernel-level unkillable device/driver I/O is not certified by synthetic stalls",
     "Artifact assembly and legacy metadata maintenance still require lifecycle integration",
     "Production unchanged"
-  ]
+  ],
+  "shutdown_followup": {
+    "posix": "Fixed-capacity owned child reaper is reserved before spawn. Cleanup uses WNOHANG and defers unreaped children; static shutdown never waits for child exit. No later PID-based signal is sent by the reaper.",
+    "windows": "Removed an extra undeclared 3-second wait after the termination grace expired.",
+    "job_outcome": "Interrupted and workloadTerminationVerified=false when timeout/cancel occurs without an observed child exit.",
+    "validation": {
+      "windows": [
+        "process",
+        "jobs",
+        "filesystem-worker",
+        "shutdown-terminate",
+        "shutdown-interrupt",
+        "shutdown-stuck-filesystem"
+      ],
+      "linux": [
+        "process",
+        "filesystem-worker",
+        "jobs",
+        "indexed-jobs"
+      ],
+      "reaper": "4096-slot admission bound and asynchronous child collection verified"
+    }
+  }
 }

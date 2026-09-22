@@ -1,4 +1,5 @@
 #include "devbox/native.hpp"
+#include "devbox/posix_process.hpp"
 #include "devbox/process.hpp"
 #include "devbox/scoped_thread.hpp"
 #include <cstdlib>
@@ -120,6 +121,49 @@ int test_main(int argc, char** argv) {
         fs::remove_all(root, ec);
     });
     try {
+#ifndef _WIN32
+        {
+            std::vector<std::size_t> slots;
+            ScopeExit release([&] {
+                for (const auto slot : slots)
+                    release_posix_reap_slot(slot);
+            });
+            for (int i = 0; i < 4096; ++i)
+                slots.push_back(reserve_posix_reap_slot());
+            bool full = false;
+            try {
+                (void)reserve_posix_reap_slot();
+            } catch (const Error&) {
+                full = true;
+            }
+            require(full, "bounded reaper admission refuses before an untrackable child is launched");
+        }
+        {
+            const auto slot = reserve_posix_reap_slot();
+            ScopeExit release([&] { release_posix_reap_slot(slot); });
+            const auto pid = ::fork();
+            require(pid >= 0, "reaper fixture fork");
+            if (pid == 0) {
+                const timespec delay{0, 60000000};
+                ::nanosleep(&delay, nullptr);
+                ::_exit(0);
+            }
+            defer_posix_reap(slot, pid);
+            release.disarm();
+            const auto deadline = Clock::now() + Millis(2000);
+            bool reaped = false;
+            while (Clock::now() < deadline) {
+                siginfo_t observed{};
+                if (::waitid(P_PID, static_cast<id_t>(pid), &observed, WEXITED | WNOHANG | WNOWAIT) < 0 &&
+                    errno == ECHILD) {
+                    reaped = true;
+                    break;
+                }
+                std::this_thread::sleep_for(Millis(5));
+            }
+            require(reaped, "deferred child collected without a blocking shutdown waitpid");
+        }
+#endif
         for (const auto input : {std::optional<std::string>(), std::optional<std::string>("")}) {
             ProcessOptions options;
             options.input = input;
