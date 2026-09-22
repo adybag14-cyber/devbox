@@ -2,6 +2,7 @@
 #include "devbox/native.hpp"
 #include "devbox/resource_budget.hpp"
 #include "devbox/result.hpp"
+#include "devbox/tasks.hpp"
 #include <array>
 #include <boost/beast.hpp>
 #include <iostream>
@@ -620,9 +621,27 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 auto pending = server->backend->call_tool_authenticated(name, args, cancel, principal);
                 result = co_await std::move(pending);
             }
+            Json task;
+            const bool eligible = name == "devbox_job_submit" || name == "devbox_web_research" ||
+                                  (name == "devbox_agent_run" && json_string(args, "action") == "create");
+            if (eligible && client_supports_tasks(params) &&
+                server->backend->handles_method("tasks/augment") &&
+                server->backend->extension_capabilities()
+                    .value("extensions", Json::object())
+                    .contains(tasks_extension)) {
+                const auto principal =
+                    request.oauth
+                        ? "principal-" + sha256(json_string(*request.oauth, "clientId")).substr(0, 40)
+                        : "operator";
+                const Json task_params{{"name", name}, {"arguments", args}, {"reply", result}};
+                auto pending = server->backend->call_method("tasks/augment", task_params, cancel, principal);
+                task = co_await std::move(pending);
+            }
             server->backend->tool_finished(invocation, result);
             strip_internal_result_metadata(result);
-            if (modern_protocol(request))
+            if (!task.is_null())
+                result = std::move(task);
+            if (modern_protocol(request) && !result.contains("resultType"))
                 result["resultType"] = "complete";
             co_return result;
         } catch (const Cancelled& e) {
@@ -928,10 +947,12 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                                {"serverInfo", server->backend->server_info()}};
             co_await send_rpc(rpc_result(id, result));
         } else if (method == "server/discover") {
+            auto declared = capabilities();
+            declared.update(server->backend->extension_capabilities());
             const Json result{
                 {"resultType", "complete"},
                 {"supportedVersions", supported_protocols()},
-                {"capabilities", capabilities()},
+                {"capabilities", declared},
                 {"ttlMs", 0},
                 {"cacheScope", "private"},
                 {"_meta", {{"io.modelcontextprotocol/serverInfo", server->backend->server_info()}}}};
@@ -950,8 +971,44 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             co_await send_rpc(rpc_result(id, result));
         } else if (method == "tools/call")
             co_await tool_response(id, params, accept.find("text/event-stream") != accept.npos);
-        else if (method == "resources/list" || method == "resources/templates/list" ||
-                 method == "prompts/list") {
+        else if (method == "tasks/get" || method == "tasks/update" || method == "tasks/cancel" ||
+                 (modern_protocol(request) && method.starts_with("resources/") &&
+                  server->backend->handles_method(method))) {
+            if (method.starts_with("tasks/") && !client_supports_tasks(params)) {
+                const Json required{{"requiredCapabilities",
+                                     {{"extensions", {{std::string(tasks_extension), Json::object()}}}}}};
+                co_await send_rpc(rpc_error(id, -32021, "Missing required client capability", required));
+                co_return;
+            }
+            if (!server->backend->handles_method(method)) {
+                co_await send_rpc(rpc_error(id, -32601, method));
+                co_return;
+            }
+            const std::string scope =
+                method == "tasks/update" || method == "tasks/cancel" ? "mcp:devbox:exec" : "mcp:devbox:read";
+            if (request.oauth && !oauth_scope_allows(json_strings(*request.oauth, "scopes"), scope)) {
+                co_await send_rpc(rpc_error(id, -32000, "Required scope missing"));
+                co_return;
+            }
+            Json response;
+            try {
+                const auto principal =
+                    request.oauth
+                        ? "principal-" + sha256(json_string(*request.oauth, "clientId")).substr(0, 40)
+                        : "operator";
+                auto pending = server->backend->call_method(method, params, cancel, principal);
+                const auto result = co_await std::move(pending);
+                response = rpc_result(id, result);
+            } catch (const std::exception& error) {
+                const auto message = std::string_view(error.what());
+                const bool invalid = message.starts_with("TASK_") || message.starts_with("RESOURCE_") ||
+                                     message.starts_with("RUN_NOT_FOUND") ||
+                                     message.starts_with("RUN_ARTIFACT_");
+                response = rpc_error(id, invalid ? -32602 : -32603, error.what());
+            }
+            co_await send_rpc(std::move(response));
+        } else if (method == "resources/list" || method == "resources/templates/list" ||
+                   method == "prompts/list") {
             Json result = Json::object();
             if (modern_protocol(request))
                 result["resultType"] = "complete";

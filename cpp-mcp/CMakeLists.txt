@@ -50,6 +50,8 @@ add_library(devbox_core
   src/grants.cpp
   src/runs.cpp
   src/run_service.cpp
+  src/tasks.cpp
+  src/engine_extensions.cpp
   src/isolation.cpp
   src/isolation_linux.cpp
   src/runtime.cpp

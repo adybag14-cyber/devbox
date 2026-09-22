@@ -44,7 +44,17 @@ const env={...process.env,DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(
   DEVBOX_WORKSPACE_PATH:workspace,HOST_DEFAULT_WORKDIR:workspace,NODE_EXE:process.execPath,
   MCP_STATE_BACKEND:'sqlite',MCP_STATE_ROOT:path.join(root,'run','state'),MCP_JOBS_ROOT:path.join(root,'jobs'),
   MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),MCP_PERFORMANCE_STATE_PATH:path.join(root,'run','performance.json'),DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE:'0'};
-let child,exited,client,output='',runId,complete=false;
+let child,exited,client,output='',runId,taskId,complete=false;
+const tasks=process.env.DEVBOX_TEST_TASKS==='1';
+let rpcId=0;
+async function rpc(method,params={},optIn=true){
+  const meta={'io.modelcontextprotocol/protocolVersion':'2026-07-28','io.modelcontextprotocol/clientCapabilities':optIn?{extensions:{'io.modelcontextprotocol/tasks':{}}}:{}};
+  const headers={'content-type':'application/json',accept:'application/json','mcp-protocol-version':'2026-07-28','mcp-method':method};
+  if(method==='tools/call')headers['mcp-name']=params.name;
+  if(method==='resources/read')headers['mcp-name']=params.uri;
+  const response=await fetch(`http://127.0.0.1:${port}/mcp`,{method:'POST',headers,body:JSON.stringify({jsonrpc:'2.0',id:++rpcId,method,params:{...params,_meta:meta}}),signal:AbortSignal.timeout(15000)});
+  return response.json();
+}
 async function start(){
   child=spawn(binary,[],{cwd:repo,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
   const owned=child;output='';for(const stream of [child.stdout,child.stderr])stream.on('data',v=>{output=(output+v).slice(-12000);});
@@ -72,24 +82,53 @@ try{
   const providerList=await invoke({action:'providers'});assert.equal(providerList.providers[0].id,'mock');
   const create={action:'create',request_id:'sdk_run',provider_id:'mock',goal:'Run the operator-approved isolated native probe and report only its actual result.'};
   const created=await invoke(create);runId=created.run_id;
+  if(tasks){
+    const discover=await rpc('server/discover');assert(discover.result.capabilities.extensions['io.modelcontextprotocol/tasks']);
+    const task=await rpc('tools/call',{name:'devbox_agent_run',arguments:create});assert.equal(task.result.resultType,'task',JSON.stringify(task));taskId=task.result.taskId;
+    assert.equal((await rpc('tasks/get',{taskId},false)).error.code,-32021);
+    assert.equal((await rpc('tasks/get',{taskId:'task-missing'})).error.code,-32602);
+  }
   const pending=await waitStatus('awaiting_approval');assert.equal(generations,1);assert.equal(pending.tool_calls,0);
   assert.equal((await invoke(create)).run_id,runId,'create retry keeps identity');
   await stopFrontend();await start();
   const retained=await invoke({action:'get',run_id:runId});assert.equal(retained.status,'awaiting_approval');
+  if(tasks){
+    const poll=await rpc('tasks/get',{taskId});assert.equal(poll.result.status,'input_required');assert(poll.result.inputRequests[retained.pending_approval.operation_id]);
+    const ignored=await rpc('tasks/update',{taskId,inputResponses:{not_issued:{action:'accept',content:{grant_id:'fake'}}}});assert.equal(ignored.result.resultType,'complete');
+  }
   const grant={principal:retained.principal_id,run:runId,operation:retained.pending_approval.operation_id,tool:'program',
     arguments:retained.pending_approval.arguments,workspace:retained.workspace,executable:probe,executable_sha256:hash(await readFile(probe)),egress_origins:[],expires_at_ms:Date.now()+60000};
   const grantFile=path.join(root,'operator-grant.json');await writeFile(grantFile,JSON.stringify(grant),{mode:0o600});
   const issued=await runCheckedProcess(binary,['--grant-issue',grantFile],{cwd:repo,env,timeoutMs:10000,label:'Issue exact fixture grant'});
   const grantId=JSON.parse(issued.stdout).grant_id;
-  await invoke({action:'approve',run_id:runId,grant_id:grantId});
+  if(tasks){
+    const update={taskId,inputResponses:{[retained.pending_approval.operation_id]:{action:'accept',content:{grant_id:grantId}}}};
+    assert.equal((await rpc('tasks/update',update)).result.resultType,'complete');
+    assert.equal((await rpc('tasks/update',update)).result.resultType,'complete','duplicate fulfilled input ignored');
+  }else await invoke({action:'approve',run_id:runId,grant_id:grantId});
   const finished=await waitStatus('completed');
   assert.equal(finished.tool_calls,1);assert.equal(generations,2);assert(sawToolOutput);
   assert.equal(await readFile(path.join(finished.workspace,'result.txt'),'utf8'),'isolated-workspace-output');
   const events=await invoke({action:'events',run_id:runId});assert(events.events.some(e=>e.type==='operator_approved'));
   assert.equal((await invoke(create)).run_id,runId);assert.equal(generations,2);
   const payload=await invoke({action:'artifact',run_id:runId,sha256:finished.answer_artifact.sha256});assert(payload.untrusted_content);
+  if(tasks){
+    const final=await rpc('tasks/get',{taskId});assert.equal(final.result.status,'completed');assert.equal(final.result.result.structuredContent.data.run_id,runId);
+    assert.equal((await rpc('tasks/cancel',{taskId})).result.resultType,'complete');
+    assert.deepEqual((await rpc('tasks/get',{taskId})).result,final.result,'terminal task state is immutable');
+    const listed=await rpc('resources/list');assert(listed.result.resources.some(r=>r.uri==='devbox://instructions/backend-v1'));
+    const resource=await rpc('resources/read',{uri:`devbox://runs/${runId}/artifacts/${finished.answer_artifact.sha256}`});assert(JSON.parse(resource.result.contents[0].text).untrusted_content);
+    const jobScript=path.join(workspace,'task-job.mjs');
+    await writeFile(jobScript,"import{appendFileSync}from'node:fs';appendFileSync(process.argv[2],'x');\n");
+    const job=await rpc('tools/call',{name:'devbox_job_submit',arguments:{task_id:'task_fixture',operation_id:'once',program:'node',args:[jobScript,path.join(workspace,'task-effect')]}});
+    assert.equal(job.result.resultType,'task');
+    const until=Date.now()+15000;let jobTask;
+    do{jobTask=(await rpc('tasks/get',{taskId:job.result.taskId})).result;if(jobTask.status==='completed')break;assert(Date.now()<until,JSON.stringify(jobTask));await delay(100);}while(true);
+    assert.equal(jobTask.result.isError,false,JSON.stringify(jobTask));
+    assert.equal(await readFile(path.join(workspace,'task-effect'),'utf8'),'x');
+  }
   complete=true;
-  console.log(JSON.stringify({ok:true,binarySha256:binaryHash,runId,modelRequests:generations,isolatedEffects:1,frontendRestart:true,operatorGrant:true,completedReceiptReplay:true,paidRequests:0},null,2));
+  console.log(JSON.stringify({ok:true,binarySha256:binaryHash,runId,modelRequests:generations,isolatedEffects:1,frontendRestart:true,operatorGrant:true,completedReceiptReplay:true,paidRequests:0,tasksExtension:tasks},null,2));
 }finally{
   if(client&&runId&&!complete){await invoke({action:'cancel',run_id:runId}).catch(()=>{});await delay(1500);}
   await stopFrontend();

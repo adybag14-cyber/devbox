@@ -64,6 +64,10 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     asio::awaitable<Json> call_tool(std::string name, Json arguments, Cancel cancel) override;
     asio::awaitable<Json> call_tool_authenticated(std::string name, Json arguments, Cancel cancel,
                                                   std::string principal) override;
+    Json extension_capabilities() const override;
+    bool handles_method(std::string_view method) const override;
+    asio::awaitable<Json> call_method(std::string method, Json params, Cancel cancel,
+                                      std::string principal) override;
     asio::awaitable<Json> metadata(const HttpRequest& request) override;
     bool ready() const override;
     std::string tool_started(const std::string& name, const Json& args, const Json& context) override;

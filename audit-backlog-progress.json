@@ -496,8 +496,11 @@
         "W03",
         "W11"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/H15-tasks-local.json",
+        "docs/MCP_TASKS_AND_RESOURCES.md"
+      ]
     },
     {
       "id": "H16",
