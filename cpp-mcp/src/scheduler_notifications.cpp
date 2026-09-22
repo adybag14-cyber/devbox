@@ -45,6 +45,7 @@ struct SchedulerNotifications::State {
     explicit State(fs::path value) : root(std::move(value) / ".notifications") {
         ensure_directory(root.parent_path());
         ensure_private_state_directory(root);
+        root = fs::canonical(root);
         const auto signal_path = root / ".changed";
 #ifdef _WIN32
         directory.reset(CreateFileW(
@@ -66,7 +67,16 @@ struct SchedulerNotifications::State {
         directory.reset(::open(root.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
         if (!directory)
             throw Error("SCHEDULER_NOTIFICATION_DIRECTORY_REJECTED");
-        file.reset(::openat(directory.get(), ".changed", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600));
+        // Bound retries for ENOENT observed during concurrent first-open macOS qualification.
+        // Retry only missing/interrupted opens against the same pinned directory descriptor;
+        // owner, permissions, type and link-count checks still apply to the eventual handle.
+        for (int attempt = 0; attempt < 8; ++attempt) {
+            file.reset(
+                ::openat(directory.get(), ".changed", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600));
+            if (file || (errno != ENOENT && errno != EINTR))
+                break;
+            std::this_thread::sleep_for(Millis(1));
+        }
         struct stat info{};
         const auto opened_error = file ? 0 : errno;
         const auto stat_error = file && ::fstat(file.get(), &info) ? errno : 0;

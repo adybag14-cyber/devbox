@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": 8,
+  "contract_version": 9,
   "tools": [
     {
       "name": "devbox_capabilities",
@@ -8332,6 +8332,102 @@
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 3600
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true,
+            "idempotentHint": false,
+            "openWorldHint": true
+          }
+        }
+      }
+    },
+    {
+      "name": "devbox_wsl",
+      "family": "wsl",
+      "scope": "mcp:host:exec",
+      "alias_of": null,
+      "broker": "structured_wsl",
+      "platforms": [
+        "windows"
+      ],
+      "runtime_profiles": [
+        "host"
+      ],
+      "telemetry": {
+        "payloads": false,
+        "safe_fields": [
+          "action",
+          "direction",
+          "timeout_seconds"
+        ]
+      },
+      "schemas": {
+        "all": {
+          "name": "devbox_wsl",
+          "description": "Structured trusted-operator WSL backend on Windows. Discover registered distributions, map paths with that distribution's wslpath, or run an absolute Linux program with literal argv and stdin in an explicit absolute Linux working directory. Run requires distribution/program/working_dir; the distribution's default user must be non-root. Uses a clean guest environment and GNU timeout. This is not an autonomous sandbox. Cancellation of the Windows bridge does not prove guest workload termination; inspect the returned status. The backend never installs, unregisters, shuts down or terminates a distribution. Other platforms report unsupported.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "distributions",
+                  "map_path",
+                  "run"
+                ]
+              },
+              "distribution": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "program": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "working_dir": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "args": {
+                "type": "array",
+                "maxItems": 128,
+                "items": {
+                  "type": "string",
+                  "maxLength": 8192
+                }
+              },
+              "input": {
+                "type": "string",
+                "maxLength": 131072
+              },
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 300,
+                "default": 30
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "direction": {
+                "type": "string",
+                "enum": [
+                  "to_linux",
+                  "to_windows"
+                ],
+                "default": "to_linux"
               }
             },
             "required": [

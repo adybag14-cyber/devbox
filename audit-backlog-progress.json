@@ -568,8 +568,10 @@
         "A13",
         "L01"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/audit-evidence/H17-wsl-local.json"
+      ]
     },
     {
       "id": "H18",

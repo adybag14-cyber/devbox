@@ -44,6 +44,7 @@ add_library(devbox_core
   src/posix_process.cpp
   src/storage.cpp
   src/filesystem_worker.cpp
+  src/wsl.cpp
   src/child_reaper.cpp
   src/artifacts.cpp
   src/security.cpp
@@ -146,6 +147,10 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-wsl-tests tests/wsl_tests.cpp)
+  target_link_libraries(devbox-wsl-tests PRIVATE devbox_core)
+  add_test(NAME wsl-contract COMMAND devbox-wsl-tests)
+  set_tests_properties(wsl-contract PROPERTIES TIMEOUT 45)
   add_executable(devbox-state-snapshot-tests tests/state_snapshot_tests.cpp)
   target_link_libraries(devbox-state-snapshot-tests PRIVATE devbox_core)
   add_test(NAME state-snapshot COMMAND devbox-state-snapshot-tests)

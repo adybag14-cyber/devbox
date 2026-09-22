@@ -1,0 +1,36 @@
+{
+  "ticket": "H17",
+  "date": "2026-09-23",
+  "status": "partial_local_verified",
+  "language": "C++23",
+  "contract_version": 9,
+  "tool_count": 53,
+  "new_tool": "devbox_wsl",
+  "actions": [
+    "distributions",
+    "map_path",
+    "run"
+  ],
+  "validation": {
+    "real_windows_wsl_distribution": "Ubuntu",
+    "literal_unicode_and_metacharacter_argv": true,
+    "stdin_roundtrip": true,
+    "guest_timeout": true,
+    "path_mapping": true,
+    "windows_engine": true,
+    "windows_sqlite_sdk_tools": 53,
+    "linux_contract_scheduler_snapshot": true,
+    "linux_sqlite_sdk_tools": 53
+  },
+  "development_binary_sha256": {
+    "windows": "2408811023db1da926edd5403a9dd249b67bce27e3e9f320125b2aef0a1fc7e7",
+    "linux": "7e95745ee1169427d52321477c6effc30555e07b3dbf246b8c2e2e39bf7ad565"
+  },
+  "limits": [
+    "Trusted operator, not autonomous sandbox",
+    "Bridge cancellation does not prove guest workload termination",
+    "No distribution lifecycle commands issued",
+    "Physical mobile lifecycle not qualified",
+    "Hosted final qualification and production refresh pending"
+  ]
+}

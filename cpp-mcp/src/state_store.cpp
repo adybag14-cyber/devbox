@@ -699,13 +699,14 @@ PRAGMA user_version=2;
         if (!destination.is_absolute() || fs::exists(destination))
             throw Error("STATE_SNAPSHOT_REQUIRES_NEW_ABSOLUTE_DIRECTORY");
         private_local_directory(destination, true);
-        FileLock target_lock(destination / ".writer.lock", Millis(1000), {}, true);
-        const auto database = destination / "metadata.sqlite3";
+        const auto target_root = fs::canonical(destination);
+        FileLock target_lock(target_root / ".writer.lock", Millis(1000), {}, true);
+        const auto database = target_root / "metadata.sqlite3";
         Json fence{
             {"format", "devbox-private-state-snapshot-v1"},
             {"recovery_fenced", true},
             {"reason", "Metadata snapshot may predate external effects; automatic replay is prohibited"}};
-        write_json_atomic(destination / "recovery-fenced.json", fence);
+        write_json_atomic(target_root / "recovery-fenced.json", fence);
 #ifdef _WIN32
         NativeHandle guard(CreateFileW(database.c_str(), GENERIC_READ | GENERIC_WRITE,
                                        FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW,
@@ -770,7 +771,7 @@ PRAGMA user_version=2;
                       {"external_artifacts_included", false},
                       {"broker_credential_files_included", false},
                       {"provider_configuration_files_included", false}};
-        write_json_atomic(destination / "manifest.json", manifest);
+        write_json_atomic(target_root / "manifest.json", manifest);
         return manifest;
     }
 };

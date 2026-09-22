@@ -1,6 +1,7 @@
 #include "devbox/contract.hpp"
 #include "devbox/isolation.hpp"
 #include "devbox/research.hpp"
+#include "devbox/wsl.hpp"
 #include "tool_registry.hpp"
 #include <algorithm>
 #include <cmath>
@@ -241,10 +242,11 @@ ToolContract::ToolContract(const Config& config) {
             set("content_base64", "maxLength",
                 std::min<std::uint64_t>(config.max_mcp_transfer_chars, max_safe_integer));
         else {
-            set("working_dir", "default",
-                path_text(name.starts_with("host_") || name.starts_with("windows_host_")
-                              ? config.host_default_workdir
-                              : config.devbox_workspace_path));
+            if (name != "devbox_wsl")
+                set("working_dir", "default",
+                    path_text(name.starts_with("host_") || name.starts_with("windows_host_")
+                                  ? config.host_default_workdir
+                                  : config.devbox_workspace_path));
             set("user", "default", config.devbox_default_user);
             if (name == "devbox_list_files" || name == "devbox_search_files")
                 set("path", "default", path_text(config.devbox_workspace_path));
@@ -324,6 +326,14 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                   {"chunk_replay_safe", true},
                   {"final_publish_cas", true}}},
                 {"resource_classes", {"auto", "watch", "light", "heavy", "io-heavy"}},
+                {"wsl", wsl_capabilities(config)},
+                {"platform_availability",
+                 {{"native_host_execution", config.host_exec_enabled ? "available" : "permission_denied"},
+                  {"desktop_input", !config.platform.is_windows ? "unsupported"
+                                    : !config.host_exec_enabled ? "permission_denied"
+                                                                : "permission_probe_on_use"},
+                  {"scoped_program", isolation_capabilities()},
+                  {"mobile_device_lifecycle", "not_qualified_on_physical_device"}}},
                 {"web_research",
                  {{"supported", true},
                   {"keyless", true},

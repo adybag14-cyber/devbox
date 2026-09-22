@@ -3,6 +3,7 @@
 #include "devbox/filesystem_worker.hpp"
 #include "devbox/result.hpp"
 #include "devbox/run_service.hpp"
+#include "devbox/wsl.hpp"
 #include <algorithm>
 namespace devbox {
 namespace {
@@ -141,6 +142,27 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         if (!implemented_.contains(name))
             throw Error("Unknown tool: " + name);
         auto args = contract_.arguments(name, arguments);
+        if (name == "devbox_wsl") {
+            std::optional<ExecutionLease> lease;
+            if (json_string(args, "action") == "run")
+                lease = co_await acquire(
+                    {ExecutionKind::interactive, ResourceClass::light, 1, "structured-wsl", {}}, cancel);
+            auto pending = commands_.run(
+                [this, args, cancel] {
+                    auto value = wsl_operation(*config_, args, cancel);
+                    const auto state = json_string(value, "status");
+                    if (state == "available" || state == "completed")
+                        return result_success("Structured WSL operation completed.", value);
+                    auto result = result_error("WSL operation status: " + state, value);
+                    if (state == "cancel_requested")
+                        return with_outcome(result, ToolOutcome::Cancelled);
+                    if (state == "guest_deadline" || state == "bridge_deadline")
+                        return with_outcome(result, ToolOutcome::TimedOut);
+                    return result;
+                },
+                cancel);
+            co_return co_await std::move(pending);
+        }
         if (name == "devbox_web_fetch" || name == "devbox_web_research" || name == "devbox_web_evidence") {
             auto& pool = name == "devbox_web_fetch" ? research_workers_ : controls_;
             auto pending = pool.run(
