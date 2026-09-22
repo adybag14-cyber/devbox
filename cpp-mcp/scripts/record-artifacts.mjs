@@ -4,6 +4,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
+import {collectDependencies} from './dependency-assurance.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const options = Object.fromEntries(process.argv.slice(2).map((arg, i, args) =>
@@ -60,7 +61,14 @@ for (const name of ['devbox-mcp', 'devbox-setup', 'devbox-tui']) {
   if (name === 'devbox-mcp' && !android) assert.equal(build.binarySha256, sha256);
   binaries.push({ name, file, bytes: bytes.length, sha256 });
 }
-const manifest = { schema: 1, implementation: 'cpp', target, gitSha, sourceTree, setupVersion, releaseReady, build,
+const dependencyTriplet = android ? `${({'arm64-v8a':'arm64','armeabi-v7a':'arm',x86_64:'x64',x86:'x86'})[android]}-android-api21`
+  : `${process.arch==='arm64'?'arm64':'x64'}-${process.platform==='win32'?'windows-static':process.platform==='darwin'?'osx':'linux'}`;
+const assurance = await collectDependencies({
+  installed:path.resolve(options.installed || path.join(repo,android?'.cpp-build/android/vcpkg_installed':'.cpp-build/vcpkg_installed')),
+  triplet:dependencyTriplet,manifest:JSON.parse(await readFile(path.join(repo,'vcpkg.json'),'utf8')),
+  output:packageRoot,sourceSha:gitSha,
+});
+const manifest = { schema: 1, assurance, implementation: 'cpp', target, gitSha, sourceTree, setupVersion, releaseReady, build,
   dependencyBaseline: JSON.parse(await readFile(path.join(repo, 'vcpkg.json'), 'utf8'))['builtin-baseline'],
   ...(android ? { ndk: '29.0.14206865', minimumAndroidApi: 21 } : {}), binaries };
 await writeFile(path.join(packageRoot, 'build-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);

@@ -11,6 +11,10 @@ permissions:
 jobs:
   certify:
     name: Certify every C++ runtime and installer
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/cpp-runtime.yml
 
   release:

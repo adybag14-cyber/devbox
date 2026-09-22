@@ -227,8 +227,10 @@
         "A02",
         "A11"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/audit-evidence/H07-assurance-local.json"
+      ]
     },
     {
       "id": "H08",

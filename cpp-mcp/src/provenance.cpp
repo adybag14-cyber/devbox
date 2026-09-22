@@ -27,6 +27,8 @@ Json build_snapshot() {
                     {"buildUnixSeconds", build_identity::built},
                     {"compiler", build_identity::compiler},
                     {"implementation", "cpp"},
+                    {"contractVersion", cpp_contract_version},
+                    {"toolCount", cpp_tool_count},
                     {"stateSchemaVersion", state_store_schema_version},
                     {"stateCoordinatorProtocol", 1},
                     {"sanitizers",
