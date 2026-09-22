@@ -49,6 +49,28 @@ try {
   const bytes=Buffer.from([0,255,1,2,13,10,254]);
   await invoke('devbox_write_large_file',{path:pathName,content_base64:bytes.toString('base64')});
   assert.deepEqual(Buffer.from((await invoke('devbox_read_large_file',{path:pathName})).data.content_base64,'base64'),bytes);
+  const uploadBytes=Buffer.concat([Buffer.alloc(65536,17),Buffer.alloc(65536,203)]);
+  const hash=value=>createHash('sha256').update(value).digest('hex');
+  const upload={upload_id:'sdk_upload'};
+  const begin={...upload,action:'begin',path:'uploaded.bin',total_bytes:uploadBytes.length,sha256:hash(uploadBytes),expected_file_sha256:'missing'};
+  if(capabilities.data.artifact_uploads.supported){
+    await invoke('devbox_artifact_upload',begin);
+    for(const offset of [0,65536]){
+      const chunk=uploadBytes.subarray(offset,offset+65536);
+      const args={...upload,action:'chunk',offset_bytes:offset,content_base64:chunk.toString('base64'),sha256:hash(chunk)};
+      assert.equal((await invoke('devbox_artifact_upload',args)).data.next_offset_bytes,offset+chunk.length);
+      assert.equal((await invoke('devbox_artifact_upload',args)).data.replayed,true);
+    }
+    assert.equal((await invoke('devbox_artifact_upload',{...upload,action:'finalize'})).data.status,'completed');
+    assert.deepEqual(await readFile(path.join(workspace,'uploaded.bin')),uploadBytes);
+    await writeFile(path.join(workspace,'uploaded.bin'),'later-edit');
+    assert.equal((await invoke('devbox_artifact_upload',{...upload,action:'finalize'})).data.replayed,true);
+    assert.equal(await readFile(path.join(workspace,'uploaded.bin'),'utf8'),'later-edit');
+  }else{
+    const unavailable=await client.callTool({name:'devbox_artifact_upload',arguments:begin});
+    assert.equal(unavailable.isError,true,'legacy backend explicitly refuses modern upload admission');
+    assert(JSON.stringify(unavailable).includes('UPLOAD_REQUIRES_INDEXED_STATE'));
+  }
   const first=await invoke('devbox_task_put',{task_id:'sdk_task',expected_revision:0,state:{phase:'integration'}});
   assert.equal(first.data.record.revision,1);
   const script=path.join(workspace,'job.mjs');

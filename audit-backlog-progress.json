@@ -316,8 +316,11 @@
       "evidence_refs": [
         "A09"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/H10-artifacts-local.json",
+        "docs/ARTIFACT_UPLOADS.md"
+      ]
     },
     {
       "id": "H11",

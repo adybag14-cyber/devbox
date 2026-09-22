@@ -21,12 +21,14 @@ class DiskFile {
 
   public:
     bool missing = false;
-    explicit DiskFile(const fs::path& path, bool create_new = false) {
+    explicit DiskFile(const fs::path& path, bool create_new = false, bool no_alias = false) {
 #ifdef _WIN32
         handle_.reset(CreateFileW(path.c_str(), create_new ? GENERIC_WRITE | GENERIC_READ : GENERIC_READ,
                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
                                   create_new ? CREATE_NEW : OPEN_EXISTING,
-                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+                                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN |
+                                      (no_alias ? FILE_FLAG_OPEN_REPARSE_POINT : 0),
+                                  nullptr));
         if (!handle_) {
             const auto error = GetLastError();
             if (!create_new && (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
@@ -38,10 +40,15 @@ class DiskFile {
         if (GetFileType(handle_.get()) != FILE_TYPE_DISK ||
             (info().dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
             throw Error("Target is not a regular file");
+        if (no_alias &&
+            ((info().dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || info().nNumberOfLinks != 1))
+            throw Error("Artifact chunk must be an ordinary unaliased file");
 #else
-        handle_.reset(::open(
-            path.c_str(),
-            create_new ? O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC : O_RDONLY | O_CLOEXEC | O_NONBLOCK, 0600));
+        handle_.reset(
+            ::open(path.c_str(),
+                   (create_new ? O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC : O_RDONLY | O_CLOEXEC | O_NONBLOCK) |
+                       (no_alias ? O_NOFOLLOW : 0),
+                   0600));
         if (!handle_) {
             if (!create_new && errno == ENOENT) {
                 missing = true;
@@ -51,6 +58,8 @@ class DiskFile {
         }
         if (!S_ISREG(info().st_mode))
             throw Error("Target is not a regular file");
+        if (no_alias && info().st_nlink != 1)
+            throw Error("Artifact chunk must be an ordinary unaliased file");
 #endif
     }
 #ifdef _WIN32
@@ -507,6 +516,97 @@ WriteReceipt atomic_write(const fs::path& path, std::string_view payload, bool a
     cleanup.disarm();
     return {path_text(path), previous, current, false};
 }
+WriteReceipt publish_chunks(const fs::path& destination, const fs::path& staging,
+                            std::span<const ArtifactChunk> chunks, std::uint64_t bytes,
+                            std::string_view whole_sha256, std::string_view expected_sha256,
+                            const Cancel& cancel, const std::function<void(std::string_view)>& hook) {
+    const auto hash = normalize_hash(std::string(whole_sha256));
+    const auto expected =
+        expected_sha256 == "missing" ? std::string("missing") : normalize_hash(std::string(expected_sha256));
+    const auto target = canonical_target(destination);
+    if (target != destination || staging.parent_path().parent_path() != target.parent_path())
+        throw Error("UPLOAD_UNSAFE_STAGING_LAYOUT");
+    FileLock lock(atomic_lock_root() / (std::to_string(atomic_lock_stripe(target)) + ".lock"), Millis(5000),
+                  cancel, true);
+    if (cancel)
+        cancel->check();
+    DiskFile prior(target);
+    const auto previous = state_from_file(prior);
+    if ((expected == "missing" && previous.exists) || (expected != "missing" && previous.sha256 != expected))
+        throw Error("UPLOAD_DESTINATION_VERSION_CONFLICT");
+    if (!prior.missing)
+        prior.reject_readonly_or_alias();
+    // A previous killed finalize can leave only this upload's private, deterministic stage.
+    std::error_code error;
+    fs::remove(staging, error);
+    if (error)
+        throw Error("UPLOAD_STAGE_CLEANUP_FAILED");
+    ScopeExit cleanup([&] {
+        std::error_code ec;
+        fs::remove(staging, ec);
+    });
+    DiskFile output(staging, true, true);
+    auto* whole = EVP_MD_CTX_new();
+    auto* part = EVP_MD_CTX_new();
+    ScopeExit free_digests([&] {
+        EVP_MD_CTX_free(whole);
+        EVP_MD_CTX_free(part);
+    });
+    if (!whole || !part || EVP_DigestInit_ex(whole, EVP_sha256(), nullptr) != 1)
+        throw Error("UPLOAD_HASH_INITIALIZATION_FAILED");
+    std::vector<char> buffer(65536);
+    std::uint64_t total = 0;
+    for (const auto& chunk : chunks) {
+        if (cancel)
+            cancel->check();
+        DiskFile input(chunk.path, false, true);
+        if (input.missing || input.size() != chunk.bytes || chunk.bytes > bytes - total)
+            throw Error("UPLOAD_CHUNK_SIZE_CHANGED");
+        if (EVP_DigestInit_ex(part, EVP_sha256(), nullptr) != 1)
+            throw Error("UPLOAD_HASH_INITIALIZATION_FAILED");
+        std::uint64_t remaining = chunk.bytes;
+        while (remaining) {
+            if (cancel)
+                cancel->check();
+            const auto count = input.read(std::span(buffer).first(
+                static_cast<std::size_t>(std::min<std::uint64_t>(buffer.size(), remaining))));
+            if (!count)
+                throw Error("UPLOAD_CHUNK_SIZE_CHANGED");
+            if (EVP_DigestUpdate(part, buffer.data(), count) != 1 ||
+                EVP_DigestUpdate(whole, buffer.data(), count) != 1)
+                throw Error("UPLOAD_HASH_FAILED");
+            output.write(std::string_view(buffer.data(), count));
+            remaining -= count;
+            total += count;
+        }
+        std::array<std::uint8_t, 32> part_hash{};
+        unsigned length = 0;
+        if (EVP_DigestFinal_ex(part, part_hash.data(), &length) != 1 || length != part_hash.size() ||
+            hex(part_hash) != chunk.sha256)
+            throw Error("UPLOAD_CHUNK_HASH_CHANGED");
+    }
+    std::array<std::uint8_t, 32> whole_hash{};
+    unsigned length = 0;
+    if (total != bytes || EVP_DigestFinal_ex(whole, whole_hash.data(), &length) != 1 ||
+        length != whole_hash.size() || hex(whole_hash) != hash)
+        throw Error("UPLOAD_WHOLE_HASH_MISMATCH");
+    if (!prior.missing)
+        output.preserve_permissions(prior);
+    output.sync();
+    output.close();
+    prior.close();
+    if (cancel)
+        cancel->check();
+    if (file_state(target).sha256 != previous.sha256)
+        throw Error("UPLOAD_DESTINATION_VERSION_CONFLICT");
+    if (hook)
+        hook("before_publish");
+    replace_staged(staging, target, previous.exists);
+    cleanup.disarm();
+    if (hook)
+        hook("after_publish");
+    return {path_text(destination), previous, FileState{true, bytes, hash}, false};
+}
 std::string read_text(const fs::path& path, std::size_t max_bytes) {
     DiskFile file(path);
     if (file.missing)
@@ -593,10 +693,18 @@ ProcessOutput list_files(const ListOptions& options, const Cancel& cancel) {
             excluded.insert(lower(trim(value)));
     const auto max_entries = std::max<std::size_t>(1, options.max_entries);
     const auto max_depth = options.recursive ? std::max<std::size_t>(1, options.max_depth) : 1;
+    const auto memory_budget = std::clamp<std::size_t>(options.memory_budget_bytes, 1024, 4 * 1024 * 1024);
+    const auto scan_budget = std::clamp<std::size_t>(options.max_enumerated_entries, 1, 16384);
+    const auto path_charge = [](const fs::path& path) {
+        return 2 * (sizeof(fs::path) + sizeof(std::size_t) + 64 +
+                    (path.native().size() + 1) * sizeof(fs::path::value_type));
+    };
     std::vector<std::pair<fs::path, std::size_t>> stack{{options.path, 0}};
     std::vector<std::string> collected, notices;
     std::size_t pruned = 0, skipped = 0;
     bool timed_out = false, truncated = false;
+    std::size_t buffered_paths = path_charge(options.path), buffered_text = 0, enumerated = 0;
+    bool enumeration_stopped = false, memory_stopped = false;
     const auto skippable = [](const std::error_code& ec) {
         return ec == std::errc::no_such_file_or_directory || ec == std::errc::permission_denied;
     };
@@ -609,6 +717,7 @@ ProcessOutput list_files(const ListOptions& options, const Cancel& cancel) {
         }
         const auto [path, depth] = stack.back();
         stack.pop_back();
+        buffered_paths -= path_charge(path);
         std::error_code ec;
         const auto status = fs::symlink_status(path, ec);
         if (skippable(ec) || status.type() == fs::file_type::not_found) {
@@ -623,13 +732,20 @@ ProcessOutput list_files(const ListOptions& options, const Cancel& cancel) {
                               : fs::is_regular_file(status) ? 'f'
                               : fs::is_symlink(status)      ? 'l'
                                                             : '?';
-            collected.push_back(std::string(1, type) + '\t' + path_text(path));
+            auto line = std::string(1, type) + '\t' + path_text(path);
+            const auto charge = 2 * (sizeof(std::string) + line.size() + 65);
+            if (charge > memory_budget / 2 - buffered_text) {
+                memory_stopped = true;
+                break;
+            }
+            buffered_text += charge;
+            collected.push_back(std::move(line));
             if (collected.size() >= max_entries) {
                 truncated = true;
                 break;
             }
         }
-        if (!directory || depth >= max_depth)
+        if (!directory || depth >= max_depth || enumeration_stopped)
             continue;
         fs::directory_iterator iterator(path, ec);
         if (skippable(ec)) {
@@ -646,26 +762,40 @@ ProcessOutput list_files(const ListOptions& options, const Cancel& cancel) {
                 timed_out = true;
                 break;
             }
-            children.push_back(entry.path().filename());
+            if (++enumerated > scan_budget) {
+                enumeration_stopped = true;
+                break;
+            }
+            if (excluded.contains(lower(path_text(entry.path().filename())))) {
+                ++pruned;
+                continue;
+            }
+            const auto charge = path_charge(entry.path());
+            if (buffered_paths > memory_budget / 2 || charge > memory_budget / 2 - buffered_paths) {
+                enumeration_stopped = memory_stopped = true;
+                break;
+            }
+            buffered_paths += charge;
+            children.push_back(entry.path());
         }
         if (timed_out)
             break;
         std::sort(children.begin(), children.end(), [](const auto& a, const auto& b) {
-            const auto left = lower(path_text(a)), right = lower(path_text(b));
+            const auto left = lower(path_text(a.filename())), right = lower(path_text(b.filename()));
             return left == right ? a < b : left < right;
         });
         for (auto child = children.rbegin(); child != children.rend(); ++child) {
-            if (excluded.contains(lower(path_text(*child)))) {
-                ++pruned;
-                continue;
-            }
-            stack.emplace_back(path / *child, depth + 1);
+            stack.emplace_back(std::move(*child), depth + 1);
         }
     }
     if (timed_out)
         notices.push_back("listing stopped after " + std::to_string(options.timeout.count()) + " ms");
     if (truncated)
         notices.push_back("listing capped at " + std::to_string(max_entries) + " entries");
+    if (enumeration_stopped || memory_stopped)
+        notices.push_back("partial listing: enumeration bounded to " + std::to_string(scan_budget) +
+                          " entries and " + std::to_string(memory_budget) +
+                          " buffered path/text bytes; only the observed subset is sorted");
     if (pruned)
         notices.push_back("pruned " + std::to_string(pruned) + " excluded directories");
     if (skipped)

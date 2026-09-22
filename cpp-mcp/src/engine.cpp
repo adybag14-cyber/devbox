@@ -1,4 +1,5 @@
 #include "devbox/engine.hpp"
+#include "devbox/artifacts.hpp"
 #include "devbox/result.hpp"
 #include <algorithm>
 namespace devbox {
@@ -241,6 +242,51 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
                                                             : "Failed to cancel detached job ") +
                                             id + ": " + e.what());
                     }
+                },
+                cancel);
+            co_return co_await std::move(pending);
+        }
+        if (name == "devbox_artifact_upload") {
+            require_agent_host();
+            auto pending = atomic_.run(
+                [this, args, cancel] {
+                    if (!jobs_.store().indexed())
+                        throw Error("UPLOAD_REQUIRES_INDEXED_STATE: migrate and select the SQLite state "
+                                    "backend first");
+                    ArtifactUploads uploads(jobs_.store().index(), config_->state_root / "artifacts",
+                                            config_->devbox_workspace_path);
+                    const auto action = json_string(args, "action"), id = json_string(args, "upload_id");
+                    Json result;
+                    if (action == "begin") {
+                        if (!args.contains("total_bytes") || !args.contains("path"))
+                            throw Error(
+                                "Upload begin requires path, total_bytes, sha256 and expected_file_sha256");
+                        result = uploads.begin("operator", id, path_from_utf8(json_string(args, "path")),
+                                               json_uint(args, "total_bytes"), json_string(args, "sha256"),
+                                               json_string(args, "expected_file_sha256"));
+                    } else if (action == "chunk") {
+                        const auto encoded = json_string(args, "content_base64");
+                        if (!args.contains("offset_bytes") || encoded.size() > 1398104 ||
+                            (config_->max_mcp_transfer_chars &&
+                             encoded.size() > config_->max_mcp_transfer_chars))
+                            throw Error("Upload chunk requires an offset and at most 1 MiB of bytes within "
+                                        "the configured transfer limit");
+                        const auto bytes = base64_decode(encoded);
+                        if (base64_encode(bytes) != encoded)
+                            throw Error("content_base64 must be canonical");
+                        result = uploads.chunk(
+                            "operator", id, json_uint(args, "offset_bytes"),
+                            std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+                            json_string(args, "sha256"));
+                    } else if (action == "finalize")
+                        result = uploads.finalize("operator", id, cancel);
+                    else if (action == "cancel")
+                        result = uploads.cancel("operator", id);
+                    else if (action == "status")
+                        result = uploads.status("operator", id);
+                    else
+                        throw Error("Unknown artifact upload action");
+                    return result_explicit("Resumable artifact upload.", result, result.dump());
                 },
                 cancel);
             co_return co_await std::move(pending);

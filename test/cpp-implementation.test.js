@@ -14,7 +14,10 @@ const fixture = async () => {
   await git("config", "user.name", "Devbox C++ fixture");
   await git("config", "user.email", "fixture@example.invalid");
   await writeFile(path.join(root, ".gitignore"), "run/\nbin/native/\n.cpp-build/\n");
-  await git("add", ".gitignore");
+  const registry = { contract_version: 19, tools: Array.from({ length: 52 }, (_, i) => ({ name: `fixture_${i}` })) };
+  await mkdir(path.join(root, "cpp-mcp", "contract"), { recursive: true });
+  await writeFile(path.join(root, "cpp-mcp", "contract", "tool-registry.json"), JSON.stringify(registry));
+  await git("add", ".gitignore", "cpp-mcp/contract/tool-registry.json");
   await git("commit", "--quiet", "-m", "Fixture source");
   const source = await readCppSourceIdentity(root, { runProcess: runCheckedProcess });
   const binary = getCppMcpBinaryPath(root);
@@ -23,7 +26,7 @@ const fixture = async () => {
   if (process.platform !== "win32") await chmod(binary, 0o755);
   const hash = createHash("sha256").update(await readFile(binary)).digest("hex");
   const info = { implementation: "cpp", sanitizers: false, sourceDirty: false, gitSha: source.GitSha, sourceTree: source.SourceTree, sourceFingerprint: "a".repeat(64), binarySha256: hash };
-  const report = { implementation: "cpp", contract_version: 4, complete: true, cutover_allowed: true, implemented_tools: 50, target_tools: 50 };
+  const report = { implementation: "cpp", contract_version: registry.contract_version, complete: true, cutover_allowed: true, implemented_tools: registry.tools.length, target_tools: registry.tools.length };
   const calls = [];
   const runner = async (file, args, options) => {
     calls.push({ file, args });
@@ -76,6 +79,21 @@ test("uncertified C++ replacement preserves the existing promotion manifest", as
     f.report.cutover_allowed = false;
     await assert.rejects(prepareCppImplementation(f.root, { env: { ...process.env, CPP_MCP_EXE: f.binary }, runProcess: f.runner }), /incomplete or uncertified/u);
     assert.equal(await readFile(manifest, "utf8"), previous);
+  } finally { await f.close(); }
+});
+
+test("C++ preflight derives version and inventory from the committed canonical registry", async () => {
+  const f = await fixture();
+  try {
+    const env = { ...process.env, CPP_MCP_EXE: f.binary };
+    f.report.contract_version -= 1;
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /incomplete or uncertified/u);
+    f.report.contract_version += 1;
+    f.report.target_tools -= 1;
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /incomplete or uncertified/u);
+    f.report.target_tools += 1;
+    f.report.implemented_tools -= 1;
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /incomplete or uncertified/u);
   } finally { await f.close(); }
 });
 

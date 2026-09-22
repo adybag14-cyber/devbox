@@ -43,6 +43,7 @@ add_library(devbox_core
   src/process.cpp
   src/posix_process.cpp
   src/storage.cpp
+  src/artifacts.cpp
   src/security.cpp
   src/runtime.cpp
   src/scheduler.cpp
@@ -123,6 +124,10 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-artifacts-tests tests/artifacts_tests.cpp)
+  target_link_libraries(devbox-artifacts-tests PRIVATE devbox_core)
+  add_test(NAME artifacts COMMAND devbox-artifacts-tests)
+  set_tests_properties(artifacts PROPERTIES TIMEOUT 120)
   add_executable(devbox-indexed-jobs-tests tests/indexed_jobs_tests.cpp)
   target_link_libraries(devbox-indexed-jobs-tests PRIVATE devbox_core)
   add_test(NAME indexed-jobs COMMAND devbox-indexed-jobs-tests)

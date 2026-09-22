@@ -364,7 +364,7 @@ void policy_tests() {
     config.runtime_mode = RuntimeMode::host;
     config.platform = Platform::detect();
     ToolContract contract(config);
-    require(contract.all().size() == 50, "complete additive contract");
+    require(contract.all().size() == cpp_tool_count, "complete additive contract");
     require(required_tool_scope("devbox_web_fetch") == "mcp:devbox:read", "fetch scope");
     require(required_tool_scope("devbox_web_research") == "mcp:devbox:exec", "research admission scope");
     rejects([&] { contract.arguments("devbox_web_fetch", Json{{"urls", Json::array()}}); }, "arguments");

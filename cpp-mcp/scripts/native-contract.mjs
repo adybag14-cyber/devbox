@@ -8,7 +8,8 @@ export const computerTools = registry.tools.filter(tool => tool.family === 'comp
 export const computerNames = computerTools.map(tool => tool.name).sort();
 export const researchTools = registry.tools.filter(tool => tool.family === 'research').map(tool => tool.schemas.all);
 export const researchNames = researchTools.map(tool => tool.name).sort();
-export const extensionNames = [...computerNames, ...researchNames];
+const extensionTools = registry.tools.filter(tool => tool.family !== 'legacy').map(tool => tool.schemas.all);
+export const extensionNames = extensionTools.map(tool => tool.name);
 const legacyNames = Object.values(frozen.profiles)[0].map(tool => tool.name).sort();
 assert.equal(legacyNames.length, 45, 'unchanged frozen reference contract');
 assert.equal(computerNames.length, 2, 'explicit C++ computer-use extension');
@@ -19,6 +20,7 @@ export function assertCppExtensions(tools) {
   assert.deepEqual(actual, expected, 'computer-use schemas, descriptions and security annotations match their source');
   const actualResearch = tools.filter(tool => researchNames.includes(tool.name)).sort((a,b) => a.name.localeCompare(b.name));
   assert.deepEqual(actualResearch, [...researchTools].sort((a,b) => a.name.localeCompare(b.name)), 'research schemas and security annotations match their source');
+  assert.deepEqual(tools.filter(tool => extensionNames.includes(tool.name)).sort((a,b) => a.name.localeCompare(b.name)), [...extensionTools].sort((a,b) => a.name.localeCompare(b.name)), 'all native extension schemas match the canonical registry');
   return tools.filter(tool => !extensionNames.includes(tool.name));
 }
 

@@ -66,6 +66,13 @@ export const prepareCppImplementation = async (root, {
   root = path.resolve(root);
   if (typeof runProcess !== "function") throw new Error("C++ preparation requires a bounded process runner.");
   const source = await readCppSourceIdentity(root, { env, runProcess });
+  const registry = JSON.parse(await readFile(path.join(root, "cpp-mcp", "contract", "tool-registry.json"), "utf8"));
+  if (!Number.isSafeInteger(registry.contract_version) || registry.contract_version < 1
+      || !Array.isArray(registry.tools) || registry.tools.length < 1
+      || registry.tools.some(tool => typeof tool.name !== "string")
+      || new Set(registry.tools.map(tool => tool.name)).size !== registry.tools.length) {
+    throw new Error("Invalid canonical C++ capability registry. The existing MCP was not stopped.");
+  }
   const versioned = path.join(root, "run", "bin");
   const currentManifest = path.join(versioned, "current-cpp.json");
   const candidates = [];
@@ -87,7 +94,7 @@ export const prepareCppImplementation = async (root, {
     const hash = await digest(file);
     if (!matchesCppSource(info, source) || info.binarySha256 !== hash) throw new Error("C++ candidate provenance did not match the committed checkout and executable hash.");
     const report = JSON.parse((await run(runProcess, file, ["--parity-report"], root, childEnv, "C++ completion gate")).stdout);
-    if (report.implementation !== "cpp" || report.contract_version !== 4 || report.complete !== true || report.cutover_allowed !== true || report.implemented_tools !== 50 || report.target_tools !== 50) {
+    if (report.implementation !== "cpp" || report.contract_version !== registry.contract_version || report.complete !== true || report.cutover_allowed !== true || report.implemented_tools !== registry.tools.length || report.target_tools !== registry.tools.length) {
       throw new Error("C++ replacement is incomplete or uncertified. The existing MCP was not stopped.");
     }
     return { info, hash };

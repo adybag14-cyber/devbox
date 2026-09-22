@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": 5,
+  "contract_version": 6,
   "tools": [
     {
       "name": "devbox_capabilities",
@@ -8079,6 +8079,97 @@
           "annotations": {
             "readOnlyHint": true,
             "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false
+          }
+        }
+      }
+    },
+    {
+      "name": "devbox_artifact_upload",
+      "family": "artifacts",
+      "scope": "mcp:devbox:exec",
+      "alias_of": null,
+      "broker": "files",
+      "platforms": [
+        "windows",
+        "linux",
+        "macos",
+        "android",
+        "termux"
+      ],
+      "runtime_profiles": [
+        "host"
+      ],
+      "telemetry": {
+        "payloads": false,
+        "safe_fields": [
+          "action"
+        ]
+      },
+      "schemas": {
+        "all": {
+          "name": "devbox_artifact_upload",
+          "description": "Resumable native C++23 artifact upload in host mode with SQLite state. Begin with a stable upload_id, destination, total bytes, whole hash and expected destination version; send sequential verified chunks; finalize once for atomic publication. Status and exact retries survive restarts. Published receipts never republish a later-edited file. Cancel receiving uploads to release their disk reservation. No shell or external service is used.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "begin",
+                  "chunk",
+                  "status",
+                  "finalize",
+                  "cancel"
+                ]
+              },
+              "upload_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80,
+                "description": "Stable lowercase ASCII operation identity; reuse it after a lost acknowledgement."
+              },
+              "path": {
+                "type": "string",
+                "maxLength": 32767,
+                "description": "Destination within the configured workspace; parent directory must already exist. Required for begin."
+              },
+              "total_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1073741824
+              },
+              "offset_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1073741824
+              },
+              "content_base64": {
+                "type": "string",
+                "maxLength": 1398104,
+                "description": "Canonical base64 of one non-empty chunk, at most 1 MiB decoded."
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64,
+                "description": "Whole-file SHA-256 for begin, chunk SHA-256 for chunk."
+              },
+              "expected_file_sha256": {
+                "type": "string",
+                "description": "Required for begin: prior destination SHA-256 or missing; checked under the atomic publication lock."
+              }
+            },
+            "required": [
+              "action",
+              "upload_id"
+            ],
+            "additionalProperties": false
+          },
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true,
             "idempotentHint": true,
             "openWorldHint": false
           }

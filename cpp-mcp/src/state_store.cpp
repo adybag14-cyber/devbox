@@ -33,11 +33,18 @@ void private_local_directory(const fs::path& directory, bool create) {
     if (text.starts_with(L"\\\\") && !(text.starts_with(L"\\\\?\\") && text.size() > 6 && text[5] == L':'))
         throw Error("STATE_NETWORK_OR_DEVICE_PATH_DENIED");
     for (auto parent = path.parent_path(); !parent.empty();) {
-        const auto attributes = GetFileAttributesW(parent.c_str());
+        const auto native_parent = parent.native();
+        // std::filesystem can treat the extended DOS prefix as a root name and return
+        // "\\?\C:" before "\\?\". Validate the actual volume root, not that device prefix.
+        const bool extended_drive_root =
+            text.starts_with(L"\\\\?\\") &&
+            (native_parent == text.substr(0, 6) || native_parent == text.substr(0, 7));
+        const auto checked_parent = extended_drive_root ? text.substr(0, 7) : native_parent;
+        const auto attributes = GetFileAttributesW(checked_parent.c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
             throw Error("STATE_REPARSE_PARENT_DENIED");
         const auto next = parent.parent_path();
-        if (next == parent)
+        if (next == parent || extended_drive_root)
             break;
         parent = next;
     }
