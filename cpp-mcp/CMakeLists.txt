@@ -77,6 +77,7 @@ add_library(devbox_core
   src/search.cpp
   src/web_transport.cpp
   src/web_document.cpp
+  src/web_retailers.cpp
   src/web_offers.cpp
   src/web_discovery.cpp
   src/web_policy.cpp

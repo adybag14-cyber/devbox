@@ -531,7 +531,8 @@
       ],
       "status": "implemented_local_verified",
       "evidence": [
-        "docs/audit-evidence/H16-research-local.json"
+        "docs/audit-evidence/H16-research-local.json",
+        "docs/audit-evidence/H16-browser-regressions-local.json"
       ]
     },
     {

@@ -1,5 +1,6 @@
 #include "devbox/native.hpp"
 #include "devbox/research.hpp"
+#include "devbox/web_retailers.hpp"
 #include <algorithm>
 #include <cctype>
 #include <lexbor/dom/interfaces/element.h>
@@ -544,6 +545,8 @@ Json extract_document(const Transfer& response) {
     result["source_kind"] = html ? "html" : type.find("json") != type.npos ? "structured_data" : "text";
     const auto offers = extract_offer_records(schemas, variants, json_string(result, "final_url"));
     result["offers"] = offers["records"];
+    if (result["offers"].empty() && !challenge)
+        result["offers"] = retailer_offer_records(result);
     result["offers_truncated"] = json_bool(result, "offers_truncated") || json_bool(offers, "truncated");
     result["ambiguous_offer_reference_ids"] = offers["ambiguous_reference_ids"];
     return result;

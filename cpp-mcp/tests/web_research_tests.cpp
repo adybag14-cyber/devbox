@@ -517,6 +517,18 @@ void research_tests(HttpFixture& server, const fs::path& root) {
                 unavailable["documents"][0].value("offers", Json::array()).empty(),
             "a failed fresh price check never returns cached offers as current");
     server.price_failed = false;
+    const auto filtered =
+        service.run(Json{{"topic", "Photon Phone"},
+                         {"mode", "fast"},
+                         {"discovery", "none"},
+                         {"urls", {server.url("/phone-price"), server.url("/doc/nonproduct")}},
+                         {"product_targets", Json::array({Json{{"label", "phone256"},
+                                                               {"must_include", {"Phone", "256GB"}},
+                                                               {"require_offer", true}}})}},
+                    root / "product-filter-result", Millis(5000), {});
+    require(filtered["usable_sources"] == 1 && filtered["product_target_source_counts"]["phone256"] == 1,
+            "product filters affect the actual research ledger and keep irrelevant sources out of coverage "
+            "counts");
     const auto small = service.fetch(
         Json{{"urls",
               {server.url("/doc/11"), server.url("/doc/12"), server.url("/doc/13"), server.url("/doc/14")}},
