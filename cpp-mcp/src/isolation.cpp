@@ -11,13 +11,17 @@
 #include <unistd.h>
 #endif
 namespace devbox {
+#if defined(__linux__) && !defined(__ANDROID__) && (defined(__x86_64__) || defined(__aarch64__))
+Json linux_isolation_capabilities();
+ProcessOutput run_linux_isolated_program(const IsolatedProgram&, const Cancel&);
+#endif
 namespace {
-bool beneath(const fs::path& path, const fs::path& root) {
+[[maybe_unused]] bool beneath(const fs::path& path, const fs::path& root) {
     const auto relative = path.lexically_relative(root);
     return !relative.empty() && !relative.is_absolute() && relative != "." &&
            std::none_of(relative.begin(), relative.end(), [](const auto& part) { return part == ".."; });
 }
-void no_links(const fs::path& path) {
+[[maybe_unused]] void no_links(const fs::path& path) {
     auto cursor = path.root_path();
     for (const auto& part : path.relative_path()) {
         if (part == "." || part == "..")
@@ -124,10 +128,8 @@ Json isolation_capabilities() {
                 {"max_captured_chars_per_stream", 4096},
                 {"workspace", "private_run_workspace"},
                 {"enforced_only_after_successful_launch", true}};
-#elif defined(__linux__) && !defined(__ANDROID__)
-    return Json{{"profile", "linux_bubblewrap"},
-                {"status", "unsupported"},
-                {"reason", "Linux isolation backend has not yet been qualified"}};
+#elif defined(__linux__) && !defined(__ANDROID__) && (defined(__x86_64__) || defined(__aarch64__))
+    return linux_isolation_capabilities();
 #else
     return Json{{"profile", "none"},
                 {"status", "unsupported"},
@@ -135,7 +137,9 @@ Json isolation_capabilities() {
 #endif
 }
 ProcessOutput run_isolated_program(const IsolatedProgram& request, const Cancel& cancel) {
-#ifndef _WIN32
+#if defined(__linux__) && !defined(__ANDROID__) && (defined(__x86_64__) || defined(__aarch64__))
+    return run_linux_isolated_program(request, cancel);
+#elif !defined(_WIN32)
     (void)request;
     (void)cancel;
     throw Error("ISOLATION_UNSUPPORTED: this platform cannot execute autonomous grants yet");

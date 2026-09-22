@@ -120,13 +120,13 @@
       "status": "in_progress",
       "evidence": [
         "docs/audit-evidence/H04-grants-windows-local.json",
-        "docs/SCOPED_EXECUTION.md"
+        "docs/SCOPED_EXECUTION.md",
+        "docs/audit-evidence/H04-linux-local.json"
       ],
       "remaining": [
-        "Linux namespace backend and independent qualification",
-        "Integration with the provider and run controller",
+        "Provider and run-controller integration",
         "Further cancellation/resource and cross-platform adversarial qualification",
-        "Hosted Windows timeout investigation and complete release gates"
+        "Complete hosted release gates"
       ]
     },
     {

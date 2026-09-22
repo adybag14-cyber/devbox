@@ -64,6 +64,11 @@ jobs:
           key: cpp-vcpkg-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.sanitizers }}-${{ hashFiles('vcpkg.json') }}
       - name: Install SDK and launcher test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install native Linux isolation dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
       - name: Select Clang sanitizer compiler
         if: matrix.sanitizers == '1'
         shell: bash
@@ -76,6 +81,9 @@ jobs:
         run: node cpp-mcp/scripts/ci-native.mjs
       - name: Fresh packaged installer and TUI discovery
         run: node cpp-bootstrap/scripts/fresh-install.mjs
+      - name: Require actual Linux namespace and syscall isolation
+        if: matrix.name == 'Linux GCC' || matrix.name == 'Linux ARM64 GCC'
+        run: sudo env DEVBOX_REQUIRE_LINUX_ISOLATION=1 ctest --test-dir .cpp-build/ci -R '^isolation$' --output-on-failure
       - name: Verified POSIX and Termux download flows
         if: runner.os != 'Windows'
         run: node cpp-bootstrap/scripts/download-install.mjs

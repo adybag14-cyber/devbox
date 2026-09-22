@@ -16,6 +16,8 @@ void require(bool value, const char* message) {
         throw Error(message);
 }
 int run(int argc, char** argv) {
+    if (argc == 3 && std::string_view(argv[1]) == "--linux-isolation-worker")
+        return run_linux_isolation_worker(path_from_utf8(argv[2]));
     (void)argc;
     (void)argv;
     const auto root = fs::canonical(fs::temp_directory_path()) / ("devbox-isolation-" + uuid());
@@ -57,7 +59,7 @@ int run(int argc, char** argv) {
         asio::io_context io;
         asio::ip::tcp::acceptor listener(io, {asio::ip::make_address("127.0.0.1"), 0});
 #else
-        fs::copy_file(executable_path(), program);
+        fs::copy_file(executable_path().parent_path() / "devbox-isolation-probe", program);
 #endif
         IsolatedProgram request;
         request.private_root = root;
@@ -109,6 +111,32 @@ int run(int argc, char** argv) {
                                             definition.arguments)["replayed"] == true &&
                         read_file(workspace / "result.txt") == "later edit",
                     "durable granted effect cannot repeat after receipt replay");
+        }
+#elif defined(__linux__) && !defined(__ANDROID__) && (defined(__x86_64__) || defined(__aarch64__))
+        if (isolation_capabilities()["status"] == "unavailable") {
+            if (env_or("DEVBOX_REQUIRE_LINUX_ISOLATION", "0") == "1")
+                throw Error("Required bubblewrap unavailable");
+            std::cout
+                << "Linux isolation unavailable: OS-owned bubblewrap not installed; qualification skipped\n";
+            return 77;
+        }
+        request.arguments = {path_text(root / "outside-secret")};
+        try {
+            const auto output = run_isolated_program(request);
+            require(output.stdout_text.find("Linux namespaces") != std::string::npos &&
+                        read_file(workspace / "result.txt") == "isolated-workspace-output",
+                    "actual isolated Linux worker ran");
+            std::cout << output.stdout_text;
+        } catch (const ProcessError& error) {
+            if (env_or("DEVBOX_REQUIRE_LINUX_ISOLATION", "0") != "1" &&
+                error.stderr_text.starts_with("bwrap:") &&
+                (error.stderr_text.find("Operation not permitted") != std::string::npos ||
+                 error.stderr_text.find("Permission denied") != std::string::npos)) {
+                std::cout << "Linux namespace creation permission denied; qualification skipped, no "
+                             "unrestricted fallback\n";
+                return 77;
+            }
+            throw;
         }
 #else
         bool denied = false;

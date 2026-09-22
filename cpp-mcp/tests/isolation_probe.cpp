@@ -81,6 +81,62 @@ int wmain(int argc, wchar_t** argv) {
         return 3;
     }
 }
+#elif defined(__linux__) && !defined(__ANDROID__) && (defined(__x86_64__) || defined(__aarch64__))
+#include <cerrno>
+#include <cstdlib>
+#include <fcntl.h>
+#include <sys/prctl.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <thread>
+#include <unistd.h>
+int main(int argc, char** argv) {
+    try {
+        if (argc != 2)
+            throw std::runtime_error("probe arguments");
+        if (::prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) != 1 || ::prctl(PR_GET_SECCOMP, 0, 0, 0, 0) != 2)
+            throw std::runtime_error("kernel privilege and seccomp policy required");
+        if (std::getenv("OPENAI_API_KEY") || std::getenv("ISOLATION_TEST_SECRET"))
+            throw std::runtime_error("ambient credential leaked");
+        if (std::ifstream(argv[1]))
+            throw std::runtime_error("outside private file readable");
+        if (::socket(AF_INET, SOCK_STREAM, 0) != -1 || errno != EACCES)
+            throw std::runtime_error("network socket policy did not deny access");
+        const auto child = ::fork();
+        if (child == 0)
+            ::_exit(41);
+        if (child >= 0) {
+            int status = 0;
+            ::waitpid(child, &status, 0);
+            throw std::runtime_error("child process was permitted");
+        }
+        if (errno != EPERM)
+            throw std::runtime_error("unexpected child-process denial");
+        bool ran = false;
+        std::thread thread([&] { ran = true; });
+        thread.join();
+        if (!ran)
+            throw std::runtime_error("ordinary worker thread unavailable");
+        {
+            std::ofstream output("result.txt");
+            output << "isolated-workspace-output";
+            if (!output)
+                throw std::runtime_error("workspace not writable");
+        }
+        if (std::ofstream("../escape.txt"))
+            throw std::runtime_error("namespace root should be readonly");
+        for (int fd = 3; fd < 256; ++fd)
+            if (::fcntl(fd, F_GETFD) != -1 || errno != EBADF)
+                throw std::runtime_error("unexpected inherited descriptor");
+        std::cout << "Linux namespaces, seccomp, network and child denial, secret denial and "
+                     "thread/workspace access verified\n";
+        return 0;
+    } catch (const std::exception& error) {
+        std::cerr << error.what() << '\n';
+        return 3;
+    }
+}
 #else
 int main() {
     return 77;

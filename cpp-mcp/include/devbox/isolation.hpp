@@ -14,4 +14,5 @@ struct IsolatedProgram {
 // The caller is an admitted grant broker, never the general trusted-operator shell adapter.
 ProcessOutput run_isolated_program(const IsolatedProgram& request, const Cancel& cancel = {});
 Json isolation_capabilities();
+int run_linux_isolation_worker(const fs::path& request_path);
 } // namespace devbox

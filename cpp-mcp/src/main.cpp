@@ -38,6 +38,11 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
 #endif
     try {
         const auto mode = args.empty() ? "" : args.front();
+        if (mode == "--linux-isolation-worker") {
+            if (args.size() != 2)
+                throw Error("Isolated worker requires a private request file");
+            return run_linux_isolation_worker(path_from_utf8(args[1]));
+        }
         if (mode == "--stop-state-coordinator") {
             if (args.size() != 2)
                 throw Error("--stop-state-coordinator requires a private state directory");

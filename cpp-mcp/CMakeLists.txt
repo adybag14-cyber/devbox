@@ -47,6 +47,7 @@ add_library(devbox_core
   src/security.cpp
   src/grants.cpp
   src/isolation.cpp
+  src/isolation_linux.cpp
   src/runtime.cpp
   src/scheduler.cpp
   src/job_logs.cpp
@@ -131,6 +132,12 @@ if(DEVBOX_BUILD_TESTS)
   add_test(NAME grants COMMAND devbox-grants-tests)
   set_tests_properties(grants PROPERTIES TIMEOUT 30)
   add_executable(devbox-isolation-probe tests/isolation_probe.cpp)
+  if(DEVBOX_SANITIZERS AND NOT MSVC)
+    # The broker stays instrumented. The tiny OS-policy probe must fit the worker's
+    # address-space limit instead of reserving an ASan shadow mapping of the host.
+    target_compile_options(devbox-isolation-probe PRIVATE -fno-sanitize=all)
+    target_link_options(devbox-isolation-probe PRIVATE -fno-sanitize=all)
+  endif()
   if(WIN32)
     target_link_libraries(devbox-isolation-probe PRIVATE advapi32 ws2_32)
     target_compile_definitions(devbox-isolation-probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
@@ -139,7 +146,7 @@ if(DEVBOX_BUILD_TESTS)
   target_link_libraries(devbox-isolation-tests PRIVATE devbox_core)
   add_dependencies(devbox-isolation-tests devbox-isolation-probe)
   add_test(NAME isolation COMMAND devbox-isolation-tests)
-  set_tests_properties(isolation PROPERTIES TIMEOUT 60)
+  set_tests_properties(isolation PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
   add_executable(devbox-artifacts-tests tests/artifacts_tests.cpp)
   target_link_libraries(devbox-artifacts-tests PRIVATE devbox_core)
   add_test(NAME artifacts COMMAND devbox-artifacts-tests)
@@ -162,6 +169,11 @@ if(DEVBOX_BUILD_TESTS)
   endif()
   add_test(NAME state-store COMMAND devbox-state-store-tests)
   set_tests_properties(state-store PROPERTIES TIMEOUT 180)
+  if(WIN32)
+    # Hosted FULL/WAL seeding was observed progressing through 80k rows at 167s.
+    # Keep all 100k records and query-step limits; allow disk-dependent fixture setup to finish.
+    set_tests_properties(state-store PROPERTIES TIMEOUT 360)
+  endif()
   add_executable(devbox-resource-budget-tests tests/resource_budget_tests.cpp)
   target_link_libraries(devbox-resource-budget-tests PRIVATE devbox_core)
   if(MSVC)

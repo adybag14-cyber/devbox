@@ -178,16 +178,21 @@ int test_main(int argc, char** argv) {
         {
             const auto prior = environment("DEVBOX_AUDIT_CANARY");
             const auto prior_token = environment("OPENAI_API_KEY");
+            const auto prior_identity = environment("USERNAME");
             ScopeExit restore([&] {
                 set_environment("DEVBOX_AUDIT_CANARY", prior);
                 set_environment("OPENAI_API_KEY", prior_token);
+                set_environment("USERNAME", prior_identity);
             });
             set_environment("DEVBOX_AUDIT_CANARY", "SYNTHETIC-CREDENTIAL-NEVER-INHERIT");
             set_environment("OPENAI_API_KEY", "SYNTHETIC-PROVIDER-KEY-NEVER-INHERIT");
+            set_environment("USERNAME", "devbox-public-runtime-identity");
             const auto child_env = spawn_process(self, {"--child", "environment"}).stdout_text;
             require(child_env.find("SYNTHETIC-") == std::string::npos &&
                         child_env.find("DEVBOX_AUDIT_CANARY") == std::string::npos,
                     "generic child environments exclude arbitrary and known credential variables");
+            require(child_env.find("devbox-public-runtime-identity") != std::string::npos,
+                    "standard nonsecret runtime identity remains available without inheriting credentials");
             ProcessOptions granted;
             granted.env = worker_environment();
             (*granted.env)["DEVBOX_EXPLICIT_GRANT_FIXTURE"] = "explicitly-authorized-fixture";
