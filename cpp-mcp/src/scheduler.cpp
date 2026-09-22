@@ -32,16 +32,18 @@ std::string execution_name(ExecutionKind value) {
     return value == ExecutionKind::background ? "background" : "interactive";
 }
 SchedulerConfig SchedulerConfig::from(const Config& config) {
-    return {config.execution_slot_root,
-            config.exec_max_concurrent,
-            config.exec_reserved_interactive,
-            config.watch_max_concurrent,
-            Millis(config.exec_queue_timeout_ms),
-            config.exec_heavy_capacity,
-            config.exec_heavy_weight,
-            config.exec_io_heavy_capacity,
-            config.exec_io_heavy_weight,
-            Millis(config.background_priority_age_ms)};
+    return {
+        config.execution_slot_root,
+        config.exec_max_concurrent,
+        config.exec_reserved_interactive,
+        config.watch_max_concurrent,
+        Millis(config.exec_queue_timeout_ms),
+        config.exec_heavy_capacity,
+        config.exec_heavy_weight,
+        config.exec_io_heavy_capacity,
+        config.exec_io_heavy_weight,
+        Millis(config.background_priority_age_ms),
+        {config.exec_memory_capacity_bytes, config.exec_gpu_capacity_bytes, config.exec_disk_capacity_bytes}};
 }
 SchedulerConfig SchedulerConfig::normalized() const {
     auto out = *this;
@@ -484,13 +486,16 @@ void ExecutionLease::release() {
         state_->release();
 }
 Json ExecutionLease::json() const {
-    return Json{{"slot", slots.empty() ? Json(nullptr) : Json(slots.front())},
-                {"slots", slots},
-                {"kind", execution_name(kind)},
-                {"pool", pool},
-                {"resourceClass", resource_name(resource_class)},
-                {"weight", weight},
-                {"queueWaitMs", queue_wait_ms}};
+    auto result = Json{{"slot", slots.empty() ? Json(nullptr) : Json(slots.front())},
+                       {"slots", slots},
+                       {"kind", execution_name(kind)},
+                       {"pool", pool},
+                       {"resourceClass", resource_name(resource_class)},
+                       {"weight", weight},
+                       {"queueWaitMs", queue_wait_ms}};
+    if (resources.any())
+        result["resourceReservation"] = resources.json();
+    return result;
 }
 struct ExecutionWaiter::State {
     SchedulerConfig config;
@@ -509,6 +514,13 @@ struct ExecutionWaiter::State {
           request(std::move(req)), started(Clock::now()),
           timeout(std::max(request.queue_timeout.value_or(config.queue_timeout), Millis(1))),
           plan(config, request, disk_pressure(config.root)) {
+        const auto fits = [](std::uint64_t needed, std::uint64_t capacity) {
+            return !capacity || needed <= capacity;
+        };
+        if (!fits(request.resources.memory_bytes, config.capacity.memory_bytes) ||
+            !fits(request.resources.gpu_bytes, config.capacity.gpu_bytes) ||
+            !fits(request.resources.disk_bytes, config.capacity.disk_bytes))
+            throw Error("RESOURCE_REQUEST_EXCEEDS_CAPACITY");
         std::lock_guard lock(metrics->mutex);
         ++metrics->queued;
     }
@@ -626,6 +638,56 @@ struct ExecutionWaiter::State {
         return false;
     }
     std::optional<std::vector<OwnedFile>> claim_slots() {
+        std::unique_ptr<Claim> resource_gate;
+        if (request.resources.any() && config.capacity.any()) {
+            resource_gate = claim_once(config.root / ".resource-claim.json",
+                                       Json{{"purpose", "resource-vector-admission"}});
+            if (!resource_gate)
+                return std::nullopt;
+            ResourceVector used;
+            const auto add = [](std::uint64_t& total, std::uint64_t amount) {
+                if (amount > UINT64_MAX - total)
+                    throw Error("RESOURCE_ACCOUNTING_OVERFLOW");
+                total += amount;
+            };
+            for (const auto* pool : {"execution", "watch"}) {
+                const auto count =
+                    std::string_view(pool) == "watch" ? config.watch_max_concurrent : config.max_concurrent;
+                if (count > 1024)
+                    throw Error("RESOURCE_SLOT_SCAN_BUDGET");
+                for (std::size_t i = 0; i < count; ++i) {
+                    const auto path = slot_path(config.root, pool, i);
+                    auto owner = inspect(path);
+                    if (!owner) {
+                        if (fresh(path, Millis(5000)))
+                            return std::nullopt;
+                        else
+                            continue;
+                    }
+                    if (!owner_process_alive(*owner) && remove_stale(path))
+                        continue;
+                    if (owner->contains("resources") &&
+                        (!owner->contains("resourceLeader") || !(*owner)["resourceLeader"].is_boolean()))
+                        throw Error("RESOURCE_LEASE_INVALID");
+                    if (!json_bool(*owner, "resourceLeader"))
+                        continue;
+                    const auto cost = owner->value("resources", Json::object());
+                    for (const auto* key : {"memory_bytes", "gpu_bytes", "disk_bytes"})
+                        if (!cost.is_object() || !cost.contains(key) || !cost[key].is_number_unsigned())
+                            throw Error("RESOURCE_LEASE_INVALID");
+                    add(used.memory_bytes, json_uint(cost, "memory_bytes"));
+                    add(used.gpu_bytes, json_uint(cost, "gpu_bytes"));
+                    add(used.disk_bytes, json_uint(cost, "disk_bytes"));
+                }
+            }
+            const auto available = [](std::uint64_t needed, std::uint64_t used, std::uint64_t capacity) {
+                return !capacity || (used <= capacity && needed <= capacity - used);
+            };
+            if (!available(request.resources.memory_bytes, used.memory_bytes, config.capacity.memory_bytes) ||
+                !available(request.resources.gpu_bytes, used.gpu_bytes, config.capacity.gpu_bytes) ||
+                !available(request.resources.disk_bytes, used.disk_bytes, config.capacity.disk_bytes))
+                return std::nullopt;
+        }
         std::unique_ptr<Claim> weighted;
         if (plan.weight > 1) {
             weighted = claim_once(config.root / path_from_utf8(plan.pool + "-weighted-claim.json"),
@@ -645,15 +707,19 @@ struct ExecutionWaiter::State {
         for (auto index = plan.protected_low; index < plan.usable && owned.size() < plan.weight; ++index) {
             const auto path = slot_path(config.root, plan.pool, index);
             const auto token = uuid();
-            const auto owner = Json{{"token", token},
-                                    {"pid", process_id()},
-                                    {"processInstance", instance_json()},
-                                    {"kind", execution_name(request.kind)},
-                                    {"pool", plan.pool},
-                                    {"resourceClass", resource_name(request.resource_class)},
-                                    {"weight", plan.weight},
-                                    {"label", request.label},
-                                    {"acquiredAtUtc", utc_now()}};
+            auto owner = Json{{"token", token},
+                              {"pid", process_id()},
+                              {"processInstance", instance_json()},
+                              {"kind", execution_name(request.kind)},
+                              {"pool", plan.pool},
+                              {"resourceClass", resource_name(request.resource_class)},
+                              {"weight", plan.weight},
+                              {"label", request.label},
+                              {"acquiredAtUtc", utc_now()}};
+            if (request.resources.any()) {
+                owner["resourceLeader"] = owned.empty();
+                owner["resources"] = owned.empty() ? request.resources.json() : ResourceVector{}.json();
+            }
             auto result = create_new_json(path, owner);
             if (result == CreateResult::exists && remove_stale(path))
                 result = create_new_json(path, owner);
@@ -747,6 +813,7 @@ std::optional<ExecutionLease> ExecutionWaiter::poll(const Cancel& cancel) {
         lease.pool = state.plan.pool;
         lease.weight = state.plan.weight;
         lease.queue_wait_ms = elapsed_ms(state.started);
+        lease.resources = state.request.resources;
         for (const auto& file : *owned)
             lease.slots.push_back(file.index);
         lease.state_ = std::make_unique<ExecutionLease::State>();
@@ -868,6 +935,9 @@ Json ExecutionScheduler::snapshot() const {
     }
     return Json{{"max_concurrent", config_.max_concurrent},
                 {"notifications", notifications_->snapshot()},
+                {"resource_capacity", config_.capacity.json()},
+                {"resource_capacity_policy",
+                 "zero_dimension_disables_aggregate_limit; declared_reservations_are_not_OS_usage"},
                 {"reserved_interactive", config_.reserved_interactive},
                 {"heavy_capacity", config_.heavy_capacity},
                 {"io_heavy_capacity", config_.io_heavy_capacity},

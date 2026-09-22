@@ -77,6 +77,13 @@ int main(int argc, char** argv) {
             require(web::retailer_offer_records(document).empty(),
                     "new and used option evidence cannot be mixed");
             companion["0"]["buyingOptionType"] = "NEW";
+            auto primary_currency = primary;
+            primary_currency["desktop_buybox_group_1"][0]["currencySymbol"] = "\xc2\xa3";
+            companion["0"]["price"]["currencyCode"] = "USD";
+            document["text"] = primary_currency.dump() + " " + companion.dump();
+            require(web::retailer_offer_records(document).empty(),
+                    "price blocks with different currencies cannot be combined");
+            companion["0"]["price"]["currencyCode"] = "GBP";
             companion["0"].erase("isAvailable");
             document["text"] = primary.dump() + " " + companion.dump();
             require(!web::retailer_offer_records(document)[0].contains("availability"),

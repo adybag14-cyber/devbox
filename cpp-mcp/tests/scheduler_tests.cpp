@@ -49,6 +49,40 @@ int run(int argc, char** argv) {
         fs::remove_all(root, ec);
     });
     try {
+        {
+            SchedulerConfig bounded;
+            bounded.root = root / "resource-vectors";
+            bounded.max_concurrent = 3;
+            bounded.reserved_interactive = 0;
+            bounded.capacity = {100, 50, 80};
+            bounded.heavy_capacity = 3;
+            ExecutionScheduler resources(bounded);
+            AcquireRequest first{ExecutionKind::interactive, ResourceClass::heavy, 2, "reserved", {}};
+            first.resources = {60, 30, 40};
+            auto held = resources.acquire(first);
+            AcquireRequest second{ExecutionKind::interactive, ResourceClass::light, 1, "second", {}};
+            second.resources = {20, 10, 10};
+            auto other = resources.acquire(second);
+            require(held.slots.size() == 2 && other.slots.size() == 1,
+                    "weighted resource charge applied once per lease");
+            auto check_blocked = [&](ResourceVector requested) {
+                AcquireRequest probe{ExecutionKind::interactive, ResourceClass::watch, 1, "vector-probe", {}};
+                probe.resources = requested;
+                auto waiter = resources.begin(probe);
+                require(!waiter.poll(), "memory/GPU/disk capacity shared across execution and watch pools");
+            };
+            check_blocked({30, 0, 0});
+            check_blocked({0, 20, 0});
+            check_blocked({0, 0, 40});
+            other.release();
+            AcquireRequest watch{ExecutionKind::interactive, ResourceClass::watch, 1, "released-memory", {}};
+            watch.resources = {30, 0, 0};
+            auto available = resources.acquire(watch);
+            require(available.json()["resourceReservation"]["memory_bytes"] == 30,
+                    "release returns exactly the declared vector capacity");
+            watch.resources = {101, 0, 0};
+            rejects([&] { (void)resources.begin(watch); }, "EXCEEDS_CAPACITY");
+        }
         SchedulerConfig config;
         config.root = root / "basic";
         config.max_concurrent = 3;

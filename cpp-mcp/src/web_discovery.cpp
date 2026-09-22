@@ -84,6 +84,19 @@ class ProviderHealth {
             pause(Millis(static_cast<Millis::rep>(wait_ms)), cancel);
         }
     }
+    void completed(const std::string& provider, Clock::time_point deadline) {
+        FileLock lock(root_ / ".health.lock",
+                      std::max(Millis(1), std::min(remaining(deadline), Millis(1000))), {}, true);
+        auto state = read();
+        auto& entry = state["providers"][provider];
+        if (!entry.is_object())
+            throw Error("Invalid search-provider health entry");
+        const auto now = unix_ms();
+        // Reserving before a slow durable health write can otherwise bunch actual network starts.
+        // Completion is a conservative observable boundary shared by subsequent jobs/processes.
+        entry["next_request_ms"] = std::max(json_uint(entry, "next_request_ms"), now + minimum_interval_ms);
+        write_json_atomic(root_ / "health.json", state);
+    }
     void failed(const std::string& provider, std::string_view reason, const Transfer& response,
                 Clock::time_point deadline, const Cancel& cancel) {
         std::uint64_t delay = reason == "challenge_required" || reason == "access_blocked"
@@ -216,6 +229,8 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
             report["terms_url"] = adapter.terms_url;
             report["use_notice"] = adapter.use_notice;
             try {
+                FileLock provider_request(health_root / ("." + provider + ".request.lock"),
+                                          std::max(Millis(1), remaining(deadline)), cancel, true);
                 const auto reservation = health.reserve(provider, deadline, cancel);
                 if (json_string(reservation, "status") != "ready") {
                     report.update(reservation);
@@ -229,6 +244,7 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
                 const auto url = endpoint(provider, query, limits);
                 const auto responses = transport.get({Request{url, Json::object()}}, deadline, cancel);
                 const auto& response = responses.front();
+                health.completed(provider, deadline);
                 if (cancel)
                     cancel->check();
                 auto parsed = parse_search_response(provider, response, limits.fixture_loopback_port);

@@ -291,8 +291,14 @@ int RunService::drive_impl(std::string_view principal, std::string_view id,
         auto request = supplied;
         request.stream = provider_profile.streaming;
         request.budget.available_vram_bytes = json_uint(configured, "available_vram_bytes");
-        auto lease = scheduler.acquire(
-            {ExecutionKind::background, ResourceClass::light, 1, "agent-model", {}}, cancellation);
+        if (provider_profile.local && provider_profile.required_vram_bytes &&
+            !config_->exec_gpu_capacity_bytes)
+            throw Error("RUN_GPU_ADMISSION_CAPACITY_REQUIRED: configure MCP_EXEC_GPU_CAPACITY_BYTES for "
+                        "local GPU models");
+        AcquireRequest admission{ExecutionKind::background, ResourceClass::light, 1, "agent-model", {}};
+        if (provider_profile.local)
+            admission.resources.gpu_bytes = provider_profile.required_vram_bytes;
+        auto lease = scheduler.acquire(admission, cancellation);
         return provider.generate(request, scope, cancellation);
     };
     hooks.tool = [&](const GrantDefinition& definition) {
@@ -311,8 +317,9 @@ int RunService::drive_impl(std::string_view principal, std::string_view id,
             request.input = json_string(definition.arguments, "input");
         request.timeout = Millis(json_uint(definition.arguments, "timeout_ms", 30000));
         request.output_chars = json_uint(definition.arguments, "output_chars", 4096);
-        auto lease = scheduler.acquire(
-            {ExecutionKind::background, ResourceClass::light, 1, "agent-program", {}}, cancellation);
+        AcquireRequest admission{ExecutionKind::background, ResourceClass::light, 1, "agent-program", {}};
+        admission.resources.memory_bytes = request.memory_bytes;
+        auto lease = scheduler.acquire(admission, cancellation);
         const auto output = run_isolated_program(request, cancellation);
         return Json{{"exit_code", output.exit_code},
                     {"stdout", output.stdout_text},

@@ -8,12 +8,22 @@ enum class ExecutionKind { interactive, background };
 ResourceClass resource_class(std::string_view value);
 std::string resource_name(ResourceClass value);
 std::string execution_name(ExecutionKind value);
+struct ResourceVector {
+    std::uint64_t memory_bytes = 0, gpu_bytes = 0, disk_bytes = 0;
+    bool any() const {
+        return memory_bytes || gpu_bytes || disk_bytes;
+    }
+    Json json() const {
+        return Json{{"memory_bytes", memory_bytes}, {"gpu_bytes", gpu_bytes}, {"disk_bytes", disk_bytes}};
+    }
+};
 struct SchedulerConfig {
     fs::path root;
     std::size_t max_concurrent = 6, reserved_interactive = 1, watch_max_concurrent = 4;
     Millis queue_timeout{15000};
     std::size_t heavy_capacity = 4, heavy_weight = 2, io_heavy_capacity = 2, io_heavy_weight = 2;
     Millis background_priority_age{30000};
+    ResourceVector capacity;
     static SchedulerConfig from(const Config& config);
     SchedulerConfig normalized() const;
 };
@@ -23,6 +33,7 @@ struct AcquireRequest {
     std::size_t weight = 1;
     std::string label;
     std::optional<Millis> queue_timeout;
+    ResourceVector resources;
 };
 struct QueueTimeout : Error {
     Json details;
@@ -50,6 +61,7 @@ class ExecutionLease {
     std::string pool;
     std::size_t weight = 1;
     std::uint64_t queue_wait_ms = 0;
+    ResourceVector resources;
     void release();
     Json json() const;
 };

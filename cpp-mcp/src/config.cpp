@@ -414,6 +414,9 @@ Config Config::load(bool read_env_files) {
     ENV_NUMBER(oauth_max_clients, "MCP_OAUTH_MAX_CLIENTS", 256);
     c.oauth_max_clients = std::max<std::size_t>(1, c.oauth_max_clients);
     ENV_NUMBER(exec_max_concurrent, "MCP_EXEC_MAX_CONCURRENT", 6);
+    ENV_NUMBER(exec_memory_capacity_bytes, "MCP_EXEC_MEMORY_CAPACITY_BYTES", 0);
+    ENV_NUMBER(exec_gpu_capacity_bytes, "MCP_EXEC_GPU_CAPACITY_BYTES", 0);
+    ENV_NUMBER(exec_disk_capacity_bytes, "MCP_EXEC_DISK_CAPACITY_BYTES", 0);
     ENV_NUMBER(exec_reserved_interactive, "MCP_EXEC_RESERVED_INTERACTIVE", 1);
     ENV_NUMBER(exec_queue_timeout_ms, "MCP_EXEC_QUEUE_TIMEOUT_MS", 15000);
     ENV_NUMBER(background_queue_timeout_ms, "MCP_BACKGROUND_QUEUE_TIMEOUT_MS", 300000);

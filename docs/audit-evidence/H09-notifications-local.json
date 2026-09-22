@@ -58,9 +58,23 @@
   },
   "limitations": [
     "Development build measurement, not final release certification",
-    "Resource-vector admission and indexed lease integration remain outstanding",
     "Free-capacity fast-path comparison and wider benchmark uncertainty remain under H03/H11",
     "Native macOS implementation requires hosted qualification",
-    "Notifications carry no grant authority; protected filesystem access authenticates the channel boundary"
-  ]
+    "Notifications carry no grant authority; protected filesystem access authenticates the channel boundary",
+    "Durable indexed lease projection/integration remains outstanding"
+  ],
+  "resource_vectors": {
+    "capacities": [
+      "MCP_EXEC_MEMORY_CAPACITY_BYTES",
+      "MCP_EXEC_GPU_CAPACITY_BYTES",
+      "MCP_EXEC_DISK_CAPACITY_BYTES"
+    ],
+    "policy": "Declared reservations, charged once per weighted lease across execution and watch pools. Zero disables that aggregate dimension; these are not measurements of OS usage. Existing process sandbox limits remain separate.",
+    "adapters": [
+      "isolated backend program memory reservation",
+      "configured local-provider GPU reservation requiring explicit global GPU capacity",
+      "research runner memory and disk reservation"
+    ],
+    "tests": "Memory/GPU/disk contention, shared pool accounting, weighted single charge, release and impossible-request refusal passed on Windows and Linux. Backend run + actual isolated effect + Tasks SDK passed on both platforms."
+  }
 }

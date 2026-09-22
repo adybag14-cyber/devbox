@@ -207,8 +207,11 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
                                      Millis(1), scheduler_config.queue_timeout -
                                                     Millis(static_cast<Millis::rep>(research_wait_ms))))
                                : std::nullopt;
-        lease = scheduler.acquire(
-            {ExecutionKind::background, resource, weight, "devbox_job:" + id, remaining_queue}, cancellation);
+        AcquireRequest admission{ExecutionKind::background, resource, weight, "devbox_job:" + id,
+                                 remaining_queue};
+        if (mode == "research")
+            admission.resources = {256ULL * 1024 * 1024, 0, 64ULL * 1024 * 1024};
+        lease = scheduler.acquire(admission, cancellation);
         lease->queue_wait_ms += research_wait_ms;
     } catch (const std::exception& error) {
         auto final = queued_status(request, queued);

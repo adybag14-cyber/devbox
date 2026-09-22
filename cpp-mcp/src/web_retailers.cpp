@@ -194,6 +194,22 @@ Json retailer_offer_records(const Json& document) {
                     continue;
                 const auto& price = evidence["price"];
                 const auto currency = json_string(price, "currencyCode");
+                auto primary_currency = json_string(option, "currencyCode");
+                if (primary_currency.empty()) {
+                    const auto symbol = json_string(option, "currencySymbol");
+                    if (symbol == "\xc2\xa3")
+                        primary_currency = "GBP";
+                    else if (symbol == "\xe2\x82\xac")
+                        primary_currency = "EUR";
+                    else if (symbol == "US$")
+                        primary_currency = "USD";
+                    else if (symbol == "CA$")
+                        primary_currency = "CAD";
+                    else if (symbol == "AU$")
+                        primary_currency = "AUD";
+                }
+                if (!primary_currency.empty() && currency != primary_currency)
+                    continue;
                 if (!price.contains("amount") || decimal(price["amount"]) != amount ||
                     !RE2::FullMatch(currency, "[A-Z]{3}"))
                     continue;

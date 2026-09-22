@@ -41,6 +41,9 @@ Environment runner_environment(const Config& config) {
     set("MCP_EXEC_SLOT_ROOT", path_text(config.execution_slot_root));
     set("MCP_BACKGROUND_QUEUE_TIMEOUT_MS", std::to_string(config.background_queue_timeout_ms));
     set("MCP_EXEC_MAX_CONCURRENT", std::to_string(config.exec_max_concurrent));
+    set("MCP_EXEC_MEMORY_CAPACITY_BYTES", std::to_string(config.exec_memory_capacity_bytes));
+    set("MCP_EXEC_GPU_CAPACITY_BYTES", std::to_string(config.exec_gpu_capacity_bytes));
+    set("MCP_EXEC_DISK_CAPACITY_BYTES", std::to_string(config.exec_disk_capacity_bytes));
     set("MCP_EXEC_RESERVED_INTERACTIVE", std::to_string(config.exec_reserved_interactive));
     set("MCP_WATCH_MAX_CONCURRENT", std::to_string(config.watch_max_concurrent));
     set("MCP_EXEC_HEAVY_CAPACITY", std::to_string(config.exec_heavy_capacity));

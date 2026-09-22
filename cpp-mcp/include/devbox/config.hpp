@@ -45,6 +45,7 @@ struct Config {
     std::uint64_t exec_queue_timeout_ms = 15000, background_queue_timeout_ms = 300000;
     std::size_t exec_heavy_capacity = 4, exec_heavy_weight = 2, exec_io_heavy_capacity = 2,
                 exec_io_heavy_weight = 2;
+    std::uint64_t exec_memory_capacity_bytes = 0, exec_gpu_capacity_bytes = 0, exec_disk_capacity_bytes = 0;
     std::uint64_t background_priority_age_ms = 30000, job_log_max_bytes = 32 * 1024 * 1024;
     std::size_t job_log_rotations = 2;
     std::uint64_t job_heartbeat_ms = 5000, job_orphan_stale_ms = 15000, job_retention_hours = 168;

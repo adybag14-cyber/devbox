@@ -192,7 +192,9 @@ const acquireQueueHeadLock = async (queueClass, { signal, deadlineMs }) => {
       await sleep(10);
     }
   }
-  throw new Error(`timed out acquiring queue-head lock for ${queueClass}`);
+  const timeout = new Error(`timed out acquiring queue-head lock for ${queueClass}`);
+  timeout.code = "EXECUTION_QUEUE_HEAD_TIMEOUT";
+  throw timeout;
 };
 
 const nextQueueSequence = async (queueClass, { signal, deadlineMs }) => {
@@ -760,6 +762,16 @@ export const acquireExecutionSlot = async ({
     }
   } catch (error) {
     if (metrics.queued > 0) metrics.queued -= 1;
+    if (error?.code === "EXECUTION_QUEUE_HEAD_TIMEOUT") {
+      metrics.timedOut += 1;
+      const elapsed = Date.now() - queuedAt;
+      throw new ExecutionQueueTimeoutError(
+        `Execution queue remained saturated for ${elapsed} ms during queue admission.`,
+        { kind, label, pool, resource_class: normalizedClass, weight: requestedWeight,
+          queue_wait_ms: elapsed, max_concurrent: total, reserved_interactive: reserved,
+          phase: "queue-head" },
+      );
+    }
     throw error;
   } finally {
     await ticket?.release().catch(() => {});
