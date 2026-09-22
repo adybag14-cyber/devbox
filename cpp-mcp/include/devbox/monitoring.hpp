@@ -25,7 +25,7 @@ class OperationalMonitor {
     Clock::time_point last_incident_{};
     JsonLogSink incidents_;
     void scheduler_iteration();
-    void job_iteration(bool quota);
+    void job_iteration(bool quota, const Cancel& cancel);
     void incident_iteration();
 
   public:

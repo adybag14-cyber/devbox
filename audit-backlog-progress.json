@@ -260,7 +260,8 @@
       "evidence": [
         "docs/audit-evidence/H08-store-local.json",
         "docs/audit-evidence/H08-coordinator-local.json",
-        "docs/audit-evidence/H08-indexed-integration-local.json"
+        "docs/audit-evidence/H08-indexed-integration-local.json",
+        "docs/audit-evidence/H08-maintenance-local.json"
       ],
       "remaining": [
         "Complete indexed maintenance and certified export/recovery.",

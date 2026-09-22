@@ -1,3 +1,4 @@
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/jobs.hpp"
 #include <iostream>
 #include <thread>
@@ -7,6 +8,8 @@ void require(bool value, const char* message) {
         throw Error(message);
 }
 int run(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
+        return run_filesystem_worker();
     if (argc == 3 && std::string_view(argv[1]) == "--state-coordinator") {
         try {
             return run_state_coordinator(path_from_utf8(argv[2]), [] { return false; });

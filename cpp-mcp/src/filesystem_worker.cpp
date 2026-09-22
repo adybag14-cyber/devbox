@@ -1,4 +1,5 @@
 #include "devbox/filesystem_worker.hpp"
+#include "devbox/jobs.hpp"
 #include "devbox/resource_budget.hpp"
 #include "devbox/search.hpp"
 #ifndef _WIN32
@@ -73,6 +74,8 @@ std::optional<std::string> optional_text(const Json& value, const char* key) {
 }
 } // namespace
 Json filesystem_operation(std::string_view operation, const Json& args) {
+    if (operation == "job_files")
+        return job_filesystem_operation(args);
     const auto path = path_from_utf8(json_string(args, "path"));
     if (operation == "path_state")
         return path_state(path);

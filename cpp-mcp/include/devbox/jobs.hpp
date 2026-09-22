@@ -9,6 +9,7 @@ struct JobPaths {
 };
 bool terminal_status(std::string_view status);
 std::string validate_job_id(std::string_view value);
+Json job_filesystem_operation(const Json& args);
 std::vector<std::string> job_ids(const fs::path& root, std::size_t maximum = 10000);
 class JobLogPump {
     struct State;
@@ -32,6 +33,7 @@ class JobStore {
     std::shared_ptr<Maintenance> maintenance_;
     mutable std::shared_ptr<StateStore> index_;
     std::shared_ptr<std::mutex> index_mutex_ = std::make_shared<std::mutex>();
+    Json indexed_maintenance(std::size_t maximum, bool quota, const Cancel& cancel);
     Json reconcile(const JobPaths& paths, Json value) const;
     Json reconcile_cancelled(const JobPaths& paths, Json value) const;
     Json interrupt_orphan(const JobPaths& paths, Json value, const std::optional<Json>& heartbeat,
@@ -65,8 +67,8 @@ class JobStore {
     Json list(const std::optional<std::string>& task, const std::vector<std::string>& statuses,
               const std::optional<std::string>& cursor, std::size_t limit) const;
     void admit(const std::optional<std::string>& task = {}) const;
-    Json reconcile_maintenance(std::size_t maximum = 32);
-    Json enforce_store_quota();
+    Json reconcile_maintenance(std::size_t maximum = 32, const Cancel& cancel = {});
+    Json enforce_store_quota(const Cancel& cancel = {});
     Json quota_snapshot() const;
 };
 struct Submission {

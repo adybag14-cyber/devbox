@@ -149,7 +149,7 @@ JobPaths JobStore::create_job(std::string_view id, const Json& request, const Js
                              0};
         state->apply({&record, 1});
     }
-    {
+    if (!state) {
         std::lock_guard lock(maintenance_->mutex);
         auto position = std::lower_bound(maintenance_->ids.begin(), maintenance_->ids.end(), value.id);
         if (position == maintenance_->ids.end() || *position != value.id) {
@@ -176,6 +176,11 @@ Json JobStore::read_request(std::string_view id) const {
 Json JobStore::read_status_raw(std::string_view id) const {
     if (const auto state = index()) {
         const auto record = state->get("job", id);
+        if (record && json_bool(record->data, "artifacts_pruned")) {
+            auto result = record->data.at("status");
+            result["artifactsAvailable"] = false;
+            return result;
+        }
         if (!record || !fs::exists(paths(id).dir))
             throw Error("JOB_STATE_UNAVAILABLE: result artifacts are missing");
         return record->data.at("status");
@@ -223,7 +228,7 @@ void JobStore::write_status(std::string_view id, const Json& status) const {
         std::lock_guard lock(maintenance_->mutex);
         initialized = maintenance_->quota_initialized;
     }
-    if (initialized) {
+    if (initialized && !indexed()) {
         std::uint64_t bytes = 0;
         for (const auto& entry : fs::directory_iterator(path.dir))
             if (entry.is_regular_file() && !entry.is_symlink())
@@ -251,6 +256,9 @@ Json JobStore::reconcile(const JobPaths& paths, Json value) const {
     if (!value.is_object())
         throw Error("Job status " + path_text(paths.status) + " is not a JSON object.");
     const auto status = json_string(value, "status");
+    if (terminal_status(status) && value.contains("artifactsAvailable") &&
+        value["artifactsAvailable"] == false)
+        return decorate(std::move(value), paths, false, {});
     if (!pid_field(value, "runnerPid")) {
         if (const auto owner = read_json_optional(paths.dir / "runner-owner.json", 4096);
             owner && json_string(*owner, "id") == paths.id && pid_field(*owner, "pid") &&

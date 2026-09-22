@@ -1,3 +1,4 @@
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/jobs.hpp"
 #include <future>
 #include <iostream>
@@ -18,6 +19,8 @@ template <class F> void rejects(F&& operation, std::string_view part) {
     throw Error("Expected rejection: " + std::string(part));
 }
 int run(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
+        return run_filesystem_worker();
     if (argc == 3 && std::string(argv[1]) == "--job-runner")
         return run_job_request(std::make_shared<Config>(Config::load(false)), path_from_utf8(argv[2]));
     if (argc >= 3 && std::string(argv[1]) == "--child") {
