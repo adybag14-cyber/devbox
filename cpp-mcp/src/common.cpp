@@ -668,7 +668,9 @@ void ensure_directory(const fs::path& path) {
 void write_json_atomic(const fs::path& path, const Json& value) {
     if (!path.parent_path().empty())
         ensure_directory(path.parent_path());
-    const auto temporary = path_from_utf8(path_text(path) + "." + uuid() + ".tmp");
+    // Keep the temporary basename independent of long operation/ticket IDs. Appending another
+    // UUID to the destination name can exceed Windows' legacy path bound even when the final path fits.
+    const auto temporary = path.parent_path() / path_from_utf8(".devbox-" + uuid() + ".tmp");
     try {
         write_file(temporary, value.dump(2));
 #ifdef _WIN32

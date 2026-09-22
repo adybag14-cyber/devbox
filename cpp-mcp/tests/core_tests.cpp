@@ -112,6 +112,13 @@ int main() {
             write_json_atomic(root / "state.json", Json{{"state", "old"}});
             write_json_atomic(root / "state.json", Json{{"state", "new"}});
             require(read_json(root / "state.json")["state"] == "new", "atomic JSON replacement");
+#ifdef _WIN32
+            require(root.native().size() < 220, "bounded long-path regression fixture root");
+            const auto long_json = root / std::string(230 - root.native().size() - 1, 'q');
+            write_json_atomic(long_json, Json{{"state", "long-name"}});
+            require(read_json(long_json)["state"] == "long-name",
+                    "atomic temporary name does not extend a long destination basename");
+#endif
             const auto journal = root / "journal.json";
             const auto padding = std::string(256 * 1024, 'x');
             write_json_atomic(journal, Json{{"revision", 0}, {"padding", padding}});

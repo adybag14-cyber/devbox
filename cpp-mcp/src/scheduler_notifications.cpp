@@ -68,9 +68,14 @@ struct SchedulerNotifications::State {
             throw Error("SCHEDULER_NOTIFICATION_DIRECTORY_REJECTED");
         file.reset(::openat(directory.get(), ".changed", O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600));
         struct stat info{};
-        if (!file || ::fstat(file.get(), &info) || !S_ISREG(info.st_mode) || info.st_nlink != 1 ||
+        const auto opened_error = file ? 0 : errno;
+        const auto stat_error = file && ::fstat(file.get(), &info) ? errno : 0;
+        if (!file || stat_error || !S_ISREG(info.st_mode) || info.st_nlink != 1 ||
             info.st_uid != ::geteuid() || (info.st_mode & 077))
-            throw Error("SCHEDULER_NOTIFICATION_FILE_REJECTED");
+            throw Error("SCHEDULER_NOTIFICATION_FILE_REJECTED: open=" + std::to_string(opened_error) +
+                        " stat=" + std::to_string(stat_error) + " mode=" + std::to_string(info.st_mode) +
+                        " links=" + std::to_string(info.st_nlink) + " owner=" + std::to_string(info.st_uid) +
+                        " caller=" + std::to_string(::geteuid()));
 #if defined(__linux__)
         events.reset(::inotify_init1(IN_CLOEXEC | IN_NONBLOCK));
         if (!events || ::inotify_add_watch(events.get(), signal_path.c_str(),
