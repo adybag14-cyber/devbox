@@ -67,6 +67,8 @@ add_library(devbox_core
   src/web_document.cpp
   src/web_offers.cpp
   src/web_discovery.cpp
+  src/web_policy.cpp
+  src/web_providers.cpp
   src/research.cpp
   src/host_inspect.cpp
   src/usage.cpp

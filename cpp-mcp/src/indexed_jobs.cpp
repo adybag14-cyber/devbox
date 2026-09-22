@@ -10,8 +10,8 @@ Json layout(const Config& config) {
         {"version", 1},
         {"backend", "sqlite"},
         {"minimum_writer_schema", 2},
-        {"jobs_root", path_text(fs::absolute(config.jobs_root).lexically_normal())},
-        {"tasks_root", path_text(fs::absolute(config.project_root / "run" / "tasks").lexically_normal())}};
+        {"jobs_root", path_text(fs::weakly_canonical(fs::absolute(config.jobs_root)))},
+        {"tasks_root", path_text(fs::weakly_canonical(fs::absolute(config.project_root / "run" / "tasks")))}};
 }
 bool has_legacy_state(const Config& config) {
     for (const auto& root : {config.jobs_root, config.project_root / "run" / "tasks"}) {

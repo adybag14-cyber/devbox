@@ -157,6 +157,14 @@
             "maxLength": 200
           },
           "description": "For precise products, chips or named entities, require at least one exact phrase in substantive source evidence. Quoted query phrases are used automatically if omitted. Avoid substituting neighbouring model names."
+        },
+        "primary_domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "description": "Optional caller-declared primary-source hostnames to assess evidence coverage; does not restrict retrieval or verify publisher independence."
         }
       },
       "required": [

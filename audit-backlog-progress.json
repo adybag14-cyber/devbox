@@ -494,8 +494,10 @@
       "evidence_refs": [
         "A13"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/H16-research-local.json"
+      ]
     },
     {
       "id": "H17",

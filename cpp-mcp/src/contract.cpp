@@ -1,4 +1,5 @@
 #include "devbox/contract.hpp"
+#include "devbox/research.hpp"
 #include "tool_registry.hpp"
 #include <algorithm>
 #include <cmath>
@@ -311,6 +312,9 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                   {"partial_coverage_explicit", true},
                   {"query_coverage_explicit", true},
                   {"shared_provider_cooldown", true},
+                  {"http_date_retry_after", true},
+                  {"evidence_quality", true},
+                  {"provider_catalog", web::discovery_provider_catalog()},
                   {"web_discovery_providers", {"duckduckgo_html", "bing_rss"}},
                   {"bing_rss_use", "personal_noncommercial"},
                   {"source_content_untrusted", true}}},

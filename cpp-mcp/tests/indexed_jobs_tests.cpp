@@ -89,6 +89,11 @@ int run(int argc, char** argv) {
             }
             require(denied, "legacy writable mode cannot resurrect effects after SQLite cutover");
         }
+        auto canonical_config = std::make_shared<Config>(*config);
+        canonical_config->project_root = fs::canonical(config->project_root);
+        canonical_config->jobs_root = fs::canonical(config->jobs_root);
+        require(JobStore(canonical_config).index()->count("job") == 1,
+                "canonical runner paths resolve the same migrated layout");
         JobManager indexed(config);
         require(indexed_task_get(indexed.store(), "checkpoint") == before,
                 "checkpoint revision and byte hash survive migration");
@@ -100,8 +105,10 @@ int run(int argc, char** argv) {
         operation.operation_id = "after_migration";
         const auto fresh = indexed.submit_program(program, operation);
         const auto next = json_string(fresh, "id");
-        require(indexed.store().wait_status(next, Millis(5000), true, Millis(20))["status"] == "succeeded" &&
-                    read_file(root / "counter") == "xx",
+        const auto terminal = indexed.store().wait_status(next, Millis(5000), true, Millis(20));
+        if (terminal["status"] != "succeeded")
+            std::cerr << "Indexed runner status: " << terminal.dump() << '\n';
+        require(terminal["status"] == "succeeded" && read_file(root / "counter") == "xx",
                 "new detached runners write authoritative indexed state");
         const auto page = indexed.store().list({}, {}, {}, 1);
         require(page["jobs"].size() == 1 && page["next_cursor"].is_string(),

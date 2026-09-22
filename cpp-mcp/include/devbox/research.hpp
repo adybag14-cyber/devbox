@@ -24,6 +24,16 @@ struct TransportLimits {
     // Native fixture injection only. No CLI, environment variable or MCP field exposes it.
     std::optional<unsigned short> fixture_loopback_port;
 };
+std::optional<std::uint64_t> retry_after_millis(std::string_view value, std::uint64_t now_ms = unix_millis());
+Json evidence_quality(const Json& sources, const std::vector<std::string>& declared_primary_domains,
+                      const Json& discovery);
+struct DiscoveryProvider {
+    std::string id, coverage, terms_url, use_notice;
+    std::function<std::string(std::string_view)> endpoint;
+    std::function<void(const Transfer&, const std::function<void(const std::string&)>&, Json&)> extract;
+};
+const DiscoveryProvider& discovery_provider(std::string_view id);
+Json discovery_provider_catalog();
 bool public_address(std::string_view address);
 std::string normalize_url(std::string_view value, std::string_view base = {});
 class Transport {

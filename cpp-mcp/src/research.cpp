@@ -211,15 +211,17 @@ Json validate_plan(const Json& args, std::optional<unsigned short> fixture_loopb
             url = normalize_url(url);
     }
     plan["urls"] = urls;
-    auto domains = json_strings(plan, "domains");
-    if (domains.size() > 16)
-        throw Error("At most 16 target domains are supported");
-    for (auto& domain : domains) {
-        if (domain.empty() || domain.find_first_of("/:@?#\\ ") != domain.npos)
-            throw Error("domains must contain host names only");
-        domain = host_of(normalize_url("https://" + domain));
+    for (const auto* field : {"domains", "primary_domains"}) {
+        auto domains = json_strings(plan, field);
+        if (domains.size() > 16)
+            throw Error("At most 16 target domains are supported");
+        for (auto& domain : domains) {
+            if (domain.empty() || domain.find_first_of("/:@?#\\ ") != domain.npos)
+                throw Error("domains must contain host names only");
+            domain = host_of(normalize_url("https://" + domain));
+        }
+        plan[field] = domains;
     }
-    plan["domains"] = domains;
     const auto freshness = json_uint(plan, "max_age_seconds", 0);
     if (freshness > 3600)
         throw Error("max_age_seconds must be 0-3600; use 0 to revalidate current facts");
@@ -541,6 +543,9 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
     ledger["attempted_urls"] = 0;
     ledger["candidate_count"] = 0;
     const auto checkpoint = [&] {
+        ledger["evidence_quality"] =
+            evidence_quality(ledger["sources"], json_strings(plan, "primary_domains"),
+                             ledger.value("discovery", Json::object()));
         ledger["updated_at"] = utc_now();
         ledger["decoded_bytes"] = state_->transport.downloaded_bytes();
         ledger["elapsed_ms"] = std::chrono::duration_cast<Millis>(Clock::now() - started).count();
@@ -783,6 +788,17 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
         } else if (!summary["providers"].empty()) {
             summary["providers"].erase(summary["providers"].end() - 1);
             summary["provider_reports_truncated"] = true;
+        } else if (summary.contains("evidence_quality") &&
+                   summary["evidence_quality"].contains("documents_by_hostname")) {
+            summary["evidence_quality"].erase("documents_by_hostname");
+            summary["evidence_quality"]["hostname_details_omitted"] = true;
+        } else if (summary.contains("evidence_quality") &&
+                   summary["evidence_quality"].contains("missing_declared_primary_domains")) {
+            auto& quality = summary["evidence_quality"];
+            quality["missing_declared_primary_domain_count"] =
+                quality["missing_declared_primary_domains"].size();
+            quality.erase("missing_declared_primary_domains");
+            quality["primary_domain_details_omitted"] = true;
         } else
             break;
     }

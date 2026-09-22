@@ -46,7 +46,7 @@ struct HttpFixture {
     std::atomic_size_t requests{0}, connections{0}, active{0}, peak{0}, not_modified{0}, transient_calls{0};
     std::atomic_size_t ddg_queries{0}, bing_queries{0};
     std::atomic_int price_version{1};
-    std::atomic_bool price_requested_revalidation{false};
+    std::atomic_bool price_requested_revalidation{false}, price_failed{false};
     std::atomic_int ddg_mode{1}, bing_mode{0};
     std::mutex search_mutex;
     std::vector<Clock::time_point> bing_starts;
@@ -124,6 +124,10 @@ struct HttpFixture {
                         } else if (target == "/robots.txt") {
                             response.set(http::field::content_type, "text/plain");
                             response.body() = "User-agent: *\nDisallow: /denied\nAllow: /denied/allowed\n";
+                        } else if (target == "/rate-date") {
+                            response.result(http::status::too_many_requests);
+                            response.set(http::field::retry_after, "Fri, 01 Jan 2100 00:00:00 GMT");
+                            response.body() = "retry later";
                         } else if (target == "/rate") {
                             response.result(http::status::too_many_requests);
                             response.set(http::field::retry_after, "60");
@@ -131,6 +135,9 @@ struct HttpFixture {
                         } else if (target == "/transient" && ++transient_calls == 1) {
                             response.result(http::status::bad_gateway);
                             response.body() = "temporary upstream failure";
+                        } else if (target == "/phone-price" && price_failed) {
+                            response.result(http::status::forbidden);
+                            response.body() = "Price access currently unavailable";
                         } else if (target == "/phone-price") {
                             price_requested_revalidation = request[http::field::cache_control] == "no-cache";
                             response.set(http::field::age, "42");
@@ -302,6 +309,34 @@ void extraction_tests() {
             "query-focused actual excerpt");
 }
 void policy_tests() {
+    constexpr std::uint64_t reference = 784111777000ULL;
+    require(web::retry_after_millis(" 120 ", reference) == 120000, "numeric Retry-After");
+    for (const auto* date :
+         {"Sun, 06 Nov 1994 08:49:37 GMT", "Sunday, 06-Nov-94 08:49:37 GMT", "Sun Nov  6 08:49:37 1994"}) {
+        require(web::retry_after_millis(date, reference - 1234) == 1234, "HTTP-date Retry-After");
+        require(web::retry_after_millis(date, reference + 1) == 0, "past retry date");
+    }
+    require(!web::retry_after_millis("not a date", reference) && !web::retry_after_millis("", reference),
+            "invalid Retry-After is explicit");
+    require(web::retry_after_millis("99999999999999999999999999", reference) == UINT64_MAX,
+            "overflow cannot shorten a cooldown");
+    const auto quality = web::evidence_quality(Json::array({Json{{"url", "https://lab.example.org/a"},
+                                                                 {"content_sha256", "hash"},
+                                                                 {"validated_at", "1994-11-06T08:49:37Z"}},
+                                                            Json{{"url", "https://lab.example.org/b"}}}),
+                                               {"example.org", "absent.org"},
+                                               Json{{"queries_failed", 1}, {"queries_unattempted", 2}});
+    require(quality["declared_primary_documents"] == 2 &&
+                quality["missing_declared_primary_domains"] == Json::array({"absent.org"}) &&
+                quality["source_hashes_present"] == 1 && quality["checked_timestamps_present"] == 1 &&
+                quality["incomplete_queries"] == 3 && quality["publisher_independence"] == "not_verified",
+            "evidence coverage distinguishes caller declarations from verified publishers");
+    require(web::discovery_provider_catalog().size() == 4, "all provider adapters report coverage and terms");
+    rejects([&] { (void)web::discovery_provider("unknown"); }, "Unknown search provider");
+    rejects([&] { (void)web::parse_search_response("unknown", web::Transfer{}); }, "Unknown search provider");
+    rejects(
+        [&] { (void)web::validate_plan(Json{{"topic", "x"}, {"primary_domains", {"example.org/path"}}}); },
+        "host names");
     for (const auto* ip : {"127.0.0.1", "10.2.3.4", "169.254.169.254", "100.64.0.1", "192.168.1.1", "::1",
                            "::ffff:127.0.0.1", "fc00::1", "fe80::1", "2002:7f00:1::"})
         require(!web::public_address(ip), "special address denied");
@@ -397,9 +432,9 @@ void transport_tests(HttpFixture& server) {
         require(results[0].error == "WEB_RESPONSE_TOO_LARGE" && results[1].status == 200,
                 "oversize is isolated");
     }
-    {
+    for (const auto* route : {"/rate", "/rate-date"}) {
         web::Transport transport(server.limits());
-        auto result = transport.get({{server.url("/rate"), Json::object()}}, Clock::now() + Millis(3000));
+        auto result = transport.get({{server.url(route), Json::object()}}, Clock::now() + Millis(3000));
         const auto before = server.requests.load();
         auto next = transport.get({{server.url("/doc/1"), Json::object()}}, Clock::now() + Millis(3000));
         require(result[0].status == 429 && next[0].error.find("WEB_RATE_LIMITED") != std::string::npos &&
@@ -476,6 +511,12 @@ void research_tests(HttpFixture& server, const fs::path& root) {
     require(upgraded["documents"][0]["cache_status"] == "network" &&
                 upgraded["documents"][0]["offers"][0]["price"] == "549.00",
             "old normalized cache is not reused");
+    server.price_failed = true;
+    const auto unavailable = service.fetch(price_args);
+    require(unavailable["documents"][0]["status"] != "ok" &&
+                unavailable["documents"][0].value("offers", Json::array()).empty(),
+            "a failed fresh price check never returns cached offers as current");
+    server.price_failed = false;
     const auto small = service.fetch(
         Json{{"urls",
               {server.url("/doc/11"), server.url("/doc/12"), server.url("/doc/13"), server.url("/doc/14")}},
@@ -511,6 +552,11 @@ void research_tests(HttpFixture& server, const fs::path& root) {
     require(hundred["usable_sources"] == 100 && hundred["target_met"] == true &&
                 hundred["distinct_domains"] == 1,
             "100 distinct documents, one honest domain count");
+    require(hundred["evidence_quality"]["largest_hostname_share"] == 1.0 &&
+                hundred["evidence_quality"]["source_hashes_present"] == 100 &&
+                hundred["evidence_quality"]["checked_timestamps_present"] == 100 &&
+                hundred["evidence_quality"]["publisher_independence"] == "not_verified",
+            "one hundred pages do not imply independent publishers or verified agreement");
     std::size_t read_count = 0;
     std::uint64_t offset = 0;
     for (;;) {
