@@ -192,7 +192,8 @@
       ],
       "status": "in_progress",
       "evidence": [
-        "docs/audit-evidence/H06-transport-local.json"
+        "docs/audit-evidence/H06-transport-local.json",
+        "docs/audit-evidence/H06-filesystem-local.json"
       ],
       "remaining": [
         "Isolate potentially blocking filesystem operations in owned killable workers.",

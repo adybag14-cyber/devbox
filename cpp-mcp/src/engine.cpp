@@ -1,5 +1,6 @@
 #include "devbox/engine.hpp"
 #include "devbox/artifacts.hpp"
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/result.hpp"
 #include "devbox/run_service.hpp"
 #include <algorithm>
@@ -321,7 +322,8 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
             name == "devbox_task_put" || name == "devbox_task_list" || name == "devbox_job_list" ||
             name == "devbox_capabilities") {
             auto& pool = name == "devbox_write_file_atomic" ? atomic_ : files_;
-            auto pending = pool.run([this, name, args] { return durable(name, args); }, cancel);
+            auto pending =
+                pool.run([this, name, args, cancel] { return durable(name, args, cancel); }, cancel);
             co_return co_await std::move(pending);
         }
         auto& pool = name.find("write") != name.npos ? atomic_ : files_;
@@ -337,7 +339,7 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         co_return result_error(e.what());
     }
 }
-Json Engine::durable(std::string name, const Json& args) {
+Json Engine::durable(std::string name, const Json& args, const Cancel& cancel) {
     Json value;
     std::string summary;
     if (name == "devbox_capabilities") {
@@ -374,7 +376,7 @@ Json Engine::durable(std::string name, const Json& args) {
         const auto path = path_from_utf8(json_string(args, "path"));
         const auto resolved = path.is_absolute() ? path : config_->devbox_workspace_path / path;
         if (name == "devbox_file_state") {
-            value = file_state(resolved).json();
+            value = isolated_filesystem("state", Json{{"path", path_text(resolved)}}, Millis(30000), cancel);
             summary = "Read file version.";
         } else {
             const auto encoded = json_string(args, "content_base64");
@@ -387,15 +389,10 @@ Json Engine::durable(std::string name, const Json& args) {
             const auto payload = base64_decode(encoded);
             if (base64_encode(payload) != encoded)
                 throw Error("content_base64 must be canonical");
-            Preconditions expected;
-            expected.sha256 = json_string(args, "expected_file_sha256");
-            if (args.contains("expected_offset_bytes") && args["expected_offset_bytes"].is_number())
-                expected.offset = json_uint(args, "expected_offset_bytes");
-            value =
-                atomic_write(resolved,
-                             std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()),
-                             append, json_bool(args, "create_dirs", true), expected)
-                    .json();
+            auto request = args;
+            request["path"] = path_text(resolved);
+            request["expected_file_sha256"] = json_string(args, "expected_file_sha256");
+            value = isolated_filesystem("atomic_write", request, Millis(30000), cancel);
             summary = "Committed atomic file write.";
         }
     }

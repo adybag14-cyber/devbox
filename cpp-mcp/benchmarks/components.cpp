@@ -1,5 +1,6 @@
 #include "devbox/contract.hpp"
 #include "devbox/engine.hpp"
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/result.hpp"
 #include "devbox/scheduler.hpp"
 #include "devbox/storage.hpp"
@@ -162,6 +163,8 @@ int run(const fs::path& root) {
 }
 } // namespace
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
+        return run_filesystem_worker();
     try {
         if (argc != 2)
             throw Error("Usage: devbox-component-bench NEW_FIXTURE_DIRECTORY");

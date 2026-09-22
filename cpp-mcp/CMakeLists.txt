@@ -43,6 +43,7 @@ add_library(devbox_core
   src/process.cpp
   src/posix_process.cpp
   src/storage.cpp
+  src/filesystem_worker.cpp
   src/artifacts.cpp
   src/security.cpp
   src/provider.cpp
@@ -133,6 +134,10 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-filesystem-worker-tests tests/filesystem_worker_tests.cpp)
+  target_link_libraries(devbox-filesystem-worker-tests PRIVATE devbox_core)
+  add_test(NAME filesystem-worker COMMAND devbox-filesystem-worker-tests)
+  set_tests_properties(filesystem-worker PROPERTIES TIMEOUT 20)
   add_executable(devbox-runs-tests tests/runs_tests.cpp)
   target_link_libraries(devbox-runs-tests PRIVATE devbox_core)
   add_test(NAME runs COMMAND devbox-runs-tests)
@@ -310,7 +315,8 @@ if(DEVBOX_BUILD_TESTS)
     endif()
     add_test(NAME shutdown-terminate COMMAND devbox-shutdown-tests terminate)
     add_test(NAME shutdown-interrupt COMMAND devbox-shutdown-tests interrupt)
-    set_tests_properties(shutdown-terminate shutdown-interrupt PROPERTIES TIMEOUT 20)
+    add_test(NAME shutdown-stuck-filesystem COMMAND devbox-shutdown-tests stuck)
+    set_tests_properties(shutdown-terminate shutdown-interrupt shutdown-stuck-filesystem PROPERTIES TIMEOUT 20)
   endif()
   add_executable(devbox-lifecycle-tests tests/lifecycle_tests.cpp)
   target_link_libraries(devbox-lifecycle-tests PRIVATE devbox_core)

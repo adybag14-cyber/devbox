@@ -1,4 +1,5 @@
 #include "devbox/engine.hpp"
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/result.hpp"
 namespace devbox {
 namespace {
@@ -40,24 +41,34 @@ Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
     const auto path =
         host ? resolve_windows_host_path(requested, working_dir(args, true)) : path_from_utf8(requested);
     if (name == "windows_host_inspect_file") {
-        InspectFileRequest inspect;
-        inspect.path = requested;
-        inspect.working_dir = working_dir(args, true);
-        inspect.resolved_path = path;
-        inspect.max_bytes = json_uint(args, "max_bytes", 65536);
-        return result_success("Inspected " + requested + " on the Windows host.",
-                              inspect_host_file(*config_, runtime_, inspect, cancel));
+        return result_success(
+            "Inspected " + requested + " on the Windows host.",
+            isolated_filesystem("inspect",
+                                Json{{"path", path_text(path)},
+                                     {"requested_path", requested},
+                                     {"working_dir", path_text(working_dir(args, true))},
+                                     {"max_bytes", json_uint(args, "max_bytes", 65536)},
+                                     {"powershell", config_->power_shell_exe},
+                                     {"powershell_fallback", config_->power_shell_fallback_exe}},
+                                Millis(20000), cancel));
     }
     if (name == "devbox_read_large_file" || name == "windows_host_read_large_file") {
         try {
             const auto offset = json_uint(args, "offset_bytes"),
                        maximum = json_uint(args, "max_bytes", 262144);
-            auto data = docker ? docker_files_.read_large(requested, offset, maximum, cancel)
-                               : read_large(path, offset, maximum);
+            auto data =
+                docker
+                    ? docker_files_.read_large(requested, offset, maximum, cancel)
+                    : isolated_filesystem(
+                          "read_large",
+                          Json{{"path", path_text(path)}, {"offset_bytes", offset}, {"max_bytes", maximum}},
+                          Millis(30000), cancel);
             const auto summary =
                 "Read " + requested + " from byte " + std::to_string(offset) +
                 (host ? " on the Windows host." : " in the " + config_->runtime_label() + ".");
             return large_result(summary, std::move(data), true);
+        } catch (const Cancelled&) {
+            throw;
         } catch (const std::exception& e) {
             return result_error(host ? e.what() : "Failed to read " + requested + ": " + e.what());
         }
@@ -66,16 +77,24 @@ Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
         const auto encoded = payload(args);
         const bool append = json_bool(args, "append");
         try {
-            auto data = docker ? docker_files_.write_large(requested, encoded, append,
-                                                           json_bool(args, "create_dirs", true),
-                                                           optional_text(args, "expected_sha256"), cancel)
-                               : write_large(path, encoded, append, json_bool(args, "create_dirs", true),
-                                             optional_text(args, "expected_sha256"));
+            auto data =
+                docker ? docker_files_.write_large(requested, encoded, append,
+                                                   json_bool(args, "create_dirs", true),
+                                                   optional_text(args, "expected_sha256"), cancel)
+                       : isolated_filesystem("write_large",
+                                             Json{{"path", path_text(path)},
+                                                  {"content_base64", encoded},
+                                                  {"append", append},
+                                                  {"create_dirs", json_bool(args, "create_dirs", true)},
+                                                  {"expected_sha256", args.value("expected_sha256", Json())}},
+                                             Millis(30000), cancel);
             const auto summary =
                 std::string(append ? "Appended large payload to " : "Wrote large payload to ") + requested +
                 (host ? " on the Windows host" : " in the " + config_->runtime_label()) +
                 " and verified the exact bytes.";
             return large_result(summary, std::move(data), false);
+        } catch (const Cancelled&) {
+            throw;
         } catch (const std::exception& e) {
             return result_error(host ? e.what()
                                      : "Failed to write large payload to " + requested + ": " + e.what());
@@ -94,15 +113,27 @@ Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
             list.max_entries = json_uint(args, "max_entries", 5000);
             list.timeout = Millis(json_uint(args, "timeout_seconds", 30) * 1000);
             list.exclude_directories = json_strings(args, "exclude_directories");
-            output = docker ? docker_files_.list(directory, list.recursive, list.max_depth, list.max_entries,
-                                                 list.timeout, list.exclude_directories, cancel)
-                            : list_files(list, cancel);
+            if (docker)
+                output = docker_files_.list(directory, list.recursive, list.max_depth, list.max_entries,
+                                            list.timeout, list.exclude_directories, cancel);
+            else {
+                auto request = args;
+                request["path"] = directory;
+                const auto value = isolated_filesystem("list", request, list.timeout + Millis(1000), cancel);
+                output.stdout_text = json_string(value, "stdout");
+                output.stderr_text = json_string(value, "stderr");
+            }
             summary = "Listed files in " + directory + ".";
         } else if (name == "devbox_read_file") {
             if (docker)
                 output = docker_files_.read_text(requested, json_uint(args, "max_bytes", 65536), cancel);
             else
-                output.stdout_text = read_text(path, json_uint(args, "max_bytes", 65536));
+                output.stdout_text =
+                    json_string(isolated_filesystem("read_text",
+                                                    Json{{"path", path_text(path)},
+                                                         {"max_bytes", json_uint(args, "max_bytes", 65536)}},
+                                                    Millis(30000), cancel),
+                                "text");
             summary = "Read " + requested + " from the " + config_->runtime_label() + ".";
         } else if (name == "devbox_write_file") {
             if (docker)
@@ -110,13 +141,19 @@ Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
                                                   json_bool(args, "append"),
                                                   json_bool(args, "create_dirs", true), cancel);
             else
-                atomic_write(path, json_string(args, "content"), json_bool(args, "append"),
-                             json_bool(args, "create_dirs", true));
+                (void)isolated_filesystem("write_text",
+                                          Json{{"path", path_text(path)},
+                                               {"content", json_string(args, "content")},
+                                               {"append", json_bool(args, "append")},
+                                               {"create_dirs", json_bool(args, "create_dirs", true)}},
+                                          Millis(30000), cancel);
             summary = std::string(json_bool(args, "append") ? "Appended text to " : "Wrote ") + requested +
                       " in the " + config_->runtime_label() + ".";
         } else
             throw Error("Unknown file tool: " + name);
         return render_file_output(summary, output, config_->command_output_limit_chars);
+    } catch (const Cancelled&) {
+        throw;
     } catch (const std::exception& e) {
         return result_process(e.what(), std::nullopt, "", "", std::nullopt, false);
     }

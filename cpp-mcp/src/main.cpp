@@ -1,5 +1,6 @@
 #include "devbox/computer_use.hpp"
 #include "devbox/engine.hpp"
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/grants.hpp"
 #include "devbox/run_service.hpp"
 #include "devbox/state_coordinator.hpp"
@@ -39,6 +40,11 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
 #endif
     try {
         const auto mode = args.empty() ? "" : args.front();
+        if (mode == "--filesystem-worker") {
+            if (args.size() != 1)
+                throw Error("Filesystem worker accepts its bounded request on stdin only");
+            return run_filesystem_worker();
+        }
         if (mode == "--linux-isolation-worker") {
             if (args.size() != 2)
                 throw Error("Isolated worker requires a private request file");

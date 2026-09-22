@@ -1,4 +1,5 @@
 #include "devbox/engine.hpp"
+#include "devbox/filesystem_worker.hpp"
 #include <future>
 #include <iostream>
 using namespace devbox;
@@ -30,6 +31,8 @@ Json data(const Json& result) {
 }
 } // namespace
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
+        return run_filesystem_worker();
     if (argc == 3 && std::string_view(argv[1]) == "--job-runner")
         return run_job_request(std::make_shared<Config>(Config::load(false)), path_from_utf8(argv[2]));
     if (argc >= 2 && std::string_view(argv[1]) == "--probe") {

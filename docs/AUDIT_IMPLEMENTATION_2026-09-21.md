@@ -37,3 +37,9 @@ The audit's verifier reproduced the input ZIP's 382 verified member hashes, 778 
 - Qualify changes locally and in hosted gates, then promote the exact tested artifact through the existing ownership-aware deployment workflow. Preserve Guardian, the tunnel, credentials, unrelated jobs and recovery data.
 
 Progress and acceptance evidence are tracked in `audit-backlog-progress.json`. A ticket is complete only when its implementation and applicable acceptance evidence are present; a declared unsupported capability is not a claim that a backend was implemented.
+
+## Filesystem worker lifecycle checkpoint
+
+Host file reads, writes, CAS checks, bounded listings, file inspection and wait observations execute in an owned C++23 worker. Requests and responses have independent byte caps; the parent collects JSON in a bounded byte buffer. Cancellation and deadline escalation terminate only that child. Windows workers have a 256 MiB Job Object limit and a one-process limit (two for the explicitly configured PowerShell inspection child). This isolates lifecycle failures while retaining existing trusted-operator file authority. A missing acknowledgement never proves a write did not occur.
+
+Windows passed five focused native tests including real frontend shutdown during a deliberately stalled file worker; Linux passed its filesystem/engine tests. Both passed the 52-tool SDK fixture including exact bytes, durable retry, cancellation and 32 concurrent waits. A deadline-edge regression discovered by the engine test was fixed: an expired file wait returns a timeout observation, with unknown existence when no observation completed. See `docs/audit-evidence/H06-filesystem-local.json`. Artifact assembly and legacy metadata maintenance remain under H06/H08 integration; production is unchanged.

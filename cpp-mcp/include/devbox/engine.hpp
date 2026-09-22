@@ -44,7 +44,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     asio::awaitable<Json> wait_file(Json args, Cancel cancel);
     asio::awaitable<Json> wait_job(Json args, Cancel cancel);
     Json files(std::string name, const Json& args, const Cancel& cancel);
-    Json durable(std::string name, const Json& args);
+    Json durable(std::string name, const Json& args, const Cancel& cancel);
     Json detached(std::string name, const Json& args);
     Json status(const Cancel& cancel);
     Json host_status() const;
