@@ -313,11 +313,21 @@ std::string UsageTelemetry::started(const std::string& tool, const Json& args, c
     Json attributed{{"has_request_id", context.contains("request_id")},
                     {"has_session_id", context.contains("session_id")},
                     {"has_client_id", context.contains("client_id")}};
-    const auto http_id = json_string(context, "http_request_id");
-    if (http_id.size() == 36 && std::all_of(http_id.begin(), http_id.end(), [](unsigned char ch) {
-            return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || ch == '-';
-        }))
-        attributed["http_request_id"] = http_id;
+    // These identities come from the transport and verified OAuth store, never tool arguments.
+    // Only the server-issued UUID form is recordable; arbitrary headers/request IDs remain redacted.
+    for (const auto* key : {"http_request_id", "client_id"}) {
+        const auto& field = member(context, key);
+        if (!field.is_string())
+            continue;
+        const auto& value = field.get_ref<const std::string&>();
+        bool uuid_form = value.size() == 36;
+        for (std::size_t i = 0; uuid_form && i < value.size(); ++i)
+            uuid_form = i == 8 || i == 13 || i == 18 || i == 23
+                            ? value[i] == '-'
+                            : (value[i] >= '0' && value[i] <= '9') || (value[i] >= 'a' && value[i] <= 'f');
+        if (uuid_form)
+            attributed[key] = value;
+    }
     attributed["build"] = build_;
     attributed["trace_schema"] = 2;
     const auto positive_wait = [&](std::string_view key) {

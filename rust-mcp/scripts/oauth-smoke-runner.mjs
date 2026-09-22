@@ -231,10 +231,18 @@ try {
   const toolUsage = toolUsageText.trim().split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line));
   const oauthStart = toolUsage.find((event) =>
     event.type === "tool_start"
-      && event.tool === "devbox_wait"
-      && event.arguments?.reason?.preview === "oauth-context-smoke",
+      && event.tool === "devbox_wait",
   );
   assert.equal(oauthStart?.context?.client_id, registered.client_id);
+  if (oauthStart.context.trace_schema === 2) {
+    assert.equal(oauthStart.arguments.reason.redacted, true);
+    assert.equal(oauthStart.arguments.reason.preview, undefined);
+    assert(!toolUsageText.includes('oauth-context-smoke'), 'C++ operational telemetry excludes raw payloads');
+  } else {
+    assert.equal(oauthStart.arguments.reason.preview, 'oauth-context-smoke');
+  }
+  assert(!toolUsageText.includes(tokens.access_token) && !toolUsageText.includes(tokens.refresh_token),
+    'OAuth credentials never enter operational telemetry');
   await client.close();
   client = undefined;
 

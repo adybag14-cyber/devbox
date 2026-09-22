@@ -133,7 +133,9 @@ int main() {
         config.project_root = root;
         config.mcp_performance_state_path = root / "perf.json";
         UsageTelemetry usage(config, background);
-        const auto id = usage.started("host_exec", Json{{"password", "PASSWORD"}}, Json{{"request_id", 7}});
+        const auto issued_client = uuid();
+        const auto id = usage.started("host_exec", Json{{"password", "PASSWORD"}},
+                                      Json{{"request_id", 7}, {"client_id", issued_client}});
         require(usage.active_tools().size() == 1, "active invocation registered");
         usage.finished(id, result_process("done", Json{{"execution", {{"queue_wait_ms", 12}, {"slot", 3}}}},
                                           "stdout", "stderr", 2, false));
@@ -204,6 +206,8 @@ int main() {
                 "canary secrets excluded from arguments, field names, context, summaries and errors before "
                 "enqueue");
         const auto first_finish = Json::parse(split(log, '\n')[1]);
+        require(first_finish["context"]["client_id"] == issued_client,
+                "server-issued OAuth identity remains available for trace correlation");
         for (const auto* outcome : {"cancelled", "timed_out", "policy_denied", "wait_completed"})
             require(log.find(std::string("\"outcome\":\"") + outcome + "\"") != std::string::npos,
                     "typed outcomes separate cancellation, deadlines, policy, waits and child failures");
