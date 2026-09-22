@@ -67,10 +67,11 @@ std::string line_endings(const std::string& text) {
         return "none";
     return crlf ? "crlf" : lf ? "lf" : "cr";
 }
-Json syntax_failure(const std::string& message) {
+Json syntax_failure(const std::string& message, std::string_view status = "unavailable") {
     return Json{
-        {"parse_ok", false},
-        {"error_count", 1},
+        {"parse_ok", nullptr},
+        {"status", status},
+        {"error_count", nullptr},
         {"errors", Json::array({Json{
                        {"message", message}, {"line", nullptr}, {"column", nullptr}, {"text", nullptr}}})}};
 }
@@ -116,10 +117,24 @@ Json powershell_syntax(const RuntimeExecutor& runtime, const fs::path& path, con
     try {
         const auto output = runtime.run_inspection_shell(request, cancel);
         try {
-            return Json::parse(trim(output.stdout_text));
+            auto value = Json::parse(trim(output.stdout_text));
+            if (!value.is_object() || !value.contains("parse_ok") || !value["parse_ok"].is_boolean() ||
+                !value.contains("error_count") || !value["error_count"].is_number_unsigned() ||
+                !value.contains("errors") || !value["errors"].is_array())
+                return syntax_failure("PowerShell parser returned an invalid result shape",
+                                      "invalid_response");
+            value["status"] = "checked";
+            return value;
         } catch (const std::exception& e) {
-            return syntax_failure(std::string("PowerShell parser returned invalid JSON: ") + e.what());
+            (void)e;
+            return syntax_failure("PowerShell parser returned invalid JSON", "invalid_response");
         }
+    } catch (const Cancelled&) {
+        throw;
+    } catch (const ProcessError& e) {
+        if (e.aborted)
+            throw Cancelled();
+        return syntax_failure(e.what(), e.timed_out ? "timed_out" : "unavailable");
     } catch (const std::exception& e) {
         return syntax_failure(e.what());
     }
@@ -294,8 +309,13 @@ Json inspect_host_file(const Config& config, const RuntimeExecutor& runtime,
     if (config.platform.is_windows && (extension == ".ps1" || extension == ".psm1" || extension == ".psd1")) {
         const auto syntax = powershell_syntax(runtime, resolved, request.working_dir, cancel);
         info["powershell_syntax"] = syntax;
-        const bool invalid = syntax.value("parse_ok", true) == false;
-        info["syntax_invalid"] = invalid;
+        const bool checked = syntax["parse_ok"].is_boolean();
+        const bool invalid = checked && syntax["parse_ok"] == false;
+        info["syntax_invalid"] = checked ? Json(invalid) : Json(nullptr);
+        info["syntax_check_status"] = json_string(syntax, "status");
+        if (!checked)
+            info["observations"].push_back(
+                "PowerShell syntax could not be checked. No syntax defect has been established.");
         if (invalid)
             info["observations"].push_back("PowerShell reported " +
                                            std::to_string(json_uint(syntax, "error_count", 1)) +

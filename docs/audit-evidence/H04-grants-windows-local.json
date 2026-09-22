@@ -1,0 +1,29 @@
+{
+  "ticket": "H04",
+  "status": "in_progress",
+  "source_base": "b9f4df3292dbbc5589275200c97288325cf6c9db",
+  "binary_sha256": "994e570dafbb0b5aafebc413ff0f65f7eab4a18077e17c5450f23f5d6ffb49b7",
+  "checks": {
+    "grants": "passed exact identity/argument scope, expiry, revocation, replay, uncertain effect, audit-failure and executable substitution fixtures",
+    "windows_isolation": "passed actual LPAC effective-access, secret/environment denial, workspace, network-socket denial, Win32k/child mitigation and path replacement checks",
+    "combined_grant_worker": "passed actual restricted execution and receipt replay without repeating the effect",
+    "process": "passed",
+    "state_store": "passed 100k fixture, 14.74 seconds",
+    "runtime": "passed",
+    "search": "passed including unavailable-parser classification regression",
+    "sqlite_mcp_sdk": "passed, 51 tools"
+  },
+  "remaining": [
+    "Linux namespace backend and independent qualification",
+    "Integration with the provider and run controller",
+    "Further cancellation/resource and cross-platform adversarial qualification",
+    "Hosted Windows timeout investigation and complete release gates"
+  ],
+  "notes": [
+    "Metadata-only directory handles did not prevent Windows renaming; FILE_LIST_DIRECTORY access activates the required sharing protection",
+    "LPAC console startup requires detached console semantics; worker lifetime still belongs to the kill-on-close Job Object",
+    "Local TokenIsLessPrivilegedAppContainer query returned ERROR_INVALID_PARAMETER; effective ALL APPLICATION PACKAGES access denial was verified instead",
+    "Private Windows AppContainer profiles were removed after the completed probe runs",
+    "No production deployment or migration was performed"
+  ]
+}

@@ -45,6 +45,8 @@ add_library(devbox_core
   src/storage.cpp
   src/artifacts.cpp
   src/security.cpp
+  src/grants.cpp
+  src/isolation.cpp
   src/runtime.cpp
   src/scheduler.cpp
   src/job_logs.cpp
@@ -115,7 +117,7 @@ endif()
 if(WIN32)
   target_link_libraries(devbox-mcp PRIVATE synchronization)
   target_compile_definitions(devbox_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-  target_link_libraries(devbox_core PUBLIC ws2_32 bcrypt crypt32 advapi32 psapi userenv shell32 ole32 windowscodecs gdi32 dwmapi shcore)
+  target_link_libraries(devbox_core PUBLIC ws2_32 bcrypt crypt32 advapi32 psapi userenv shell32 ole32 windowscodecs gdi32 dwmapi shcore OneCoreUAP)
 endif()
 if(APPLE)
   target_link_libraries(devbox_core PUBLIC "-framework ApplicationServices")
@@ -124,6 +126,20 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-grants-tests tests/grants_tests.cpp)
+  target_link_libraries(devbox-grants-tests PRIVATE devbox_core)
+  add_test(NAME grants COMMAND devbox-grants-tests)
+  set_tests_properties(grants PROPERTIES TIMEOUT 30)
+  add_executable(devbox-isolation-probe tests/isolation_probe.cpp)
+  if(WIN32)
+    target_link_libraries(devbox-isolation-probe PRIVATE advapi32 ws2_32)
+    target_compile_definitions(devbox-isolation-probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+  endif()
+  add_executable(devbox-isolation-tests tests/isolation_tests.cpp)
+  target_link_libraries(devbox-isolation-tests PRIVATE devbox_core)
+  add_dependencies(devbox-isolation-tests devbox-isolation-probe)
+  add_test(NAME isolation COMMAND devbox-isolation-tests)
+  set_tests_properties(isolation PROPERTIES TIMEOUT 60)
   add_executable(devbox-artifacts-tests tests/artifacts_tests.cpp)
   target_link_libraries(devbox-artifacts-tests PRIVATE devbox_core)
   add_test(NAME artifacts COMMAND devbox-artifacts-tests)

@@ -66,6 +66,7 @@ int run(int argc, char** argv) {
         config->host_shell = env_or("COMSPEC", "cmd.exe");
         config->power_shell_exe = "missing-devbox-test-powershell-123.exe";
         config->power_shell_fallback_exe = "powershell.exe";
+        std::cout << "[runtime] CMD override\n" << std::flush;
         shell.command = "echo runtime-cmd";
         require(trim(runtime.run_shell(shell).stdout_text) == "runtime-cmd",
                 "HOST_SHELL CMD override without admin probe");
@@ -73,9 +74,11 @@ int run(int argc, char** argv) {
         rejects([&] { runtime.run_shell(shell); }, "8000 UTF-16 units");
         shell.command =
             "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); Write-Output 'powershell é😀'";
+        std::cout << "[runtime] PowerShell cold fallback and Unicode\n" << std::flush;
         require(trim(runtime.run_inspection_shell(shell).stdout_text) == "powershell é😀",
                 "PowerShell fallback and Unicode");
         shell.command = std::string(20000, '#') + "\nWrite-Output 'large-script-ok'";
+        std::cout << "[runtime] PowerShell staged script\n" << std::flush;
         require(trim(runtime.run_inspection_shell(shell).stdout_text) == "large-script-ok",
                 "PowerShell large script staging");
         config->host_shell = config->power_shell_exe;
@@ -120,6 +123,7 @@ int run(int argc, char** argv) {
 }
 #ifdef _WIN32
 int wmain(int argc, wchar_t** wide_argv) {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     std::vector<std::string> arguments;
     for (int i = 0; i < argc; ++i)
         arguments.push_back(narrow(wide_argv[i]));

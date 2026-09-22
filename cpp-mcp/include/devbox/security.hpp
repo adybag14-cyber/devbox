@@ -1,7 +1,7 @@
 #pragma once
 #include "storage.hpp"
 namespace devbox {
-enum class AuditDecision { Admitted, Denied, Revoked, Completed, Uncertain, CancelRequested };
+enum class AuditDecision { Granted, Admitted, Denied, Revoked, Completed, Uncertain, CancelRequested };
 // IDs are issued by the control plane. Never pass arguments, prompts, exceptions or provider payloads.
 struct SecurityEvent {
     AuditDecision decision;

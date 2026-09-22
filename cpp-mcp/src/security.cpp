@@ -14,6 +14,8 @@ bool valid_id(std::string_view id) {
 }
 std::string_view decision_name(AuditDecision value) {
     switch (value) {
+    case AuditDecision::Granted:
+        return "granted";
     case AuditDecision::Admitted:
         return "admitted";
     case AuditDecision::Denied:

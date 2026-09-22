@@ -48,6 +48,7 @@ int run(int argc, char** argv) {
         fs::remove_all(root, error);
     });
     try {
+        std::cout << "[state-store] writer, transactions and fencing\n" << std::flush;
         auto store = open_state_store(root / "state");
         const auto generation = store->generation();
         require(generation > 0, "durable writer generation exists");
@@ -92,6 +93,7 @@ int run(int argc, char** argv) {
         store = next;
         next.reset();
         const auto started = Clock::now();
+        std::cout << "[state-store] seeding 100000 durable indexed records\n" << std::flush;
         for (std::size_t start = 0; start < 100000;) {
             std::vector<StateMutation> batch;
             while (batch.size() < 256 && start < 100000) {
@@ -103,6 +105,12 @@ int run(int argc, char** argv) {
                 ++start;
             }
             store->apply(batch);
+            if (start / 10000 != (start - batch.size()) / 10000)
+                std::cout << Json{{"seeded", start},
+                                  {"elapsed_ms",
+                                   std::chrono::duration_cast<Millis>(Clock::now() - started).count()}}
+                                 .dump()
+                          << std::endl;
             if (start >= 10000 && start - batch.size() < 10000) {
                 StateQuery query{"job"};
                 query.limit = 50;
@@ -140,6 +148,7 @@ int run(int argc, char** argv) {
         store.reset();
         reader.reset();
         for (const auto* stage : {"mutation_written", "event_written", "before_commit", "after_commit"}) {
+            std::cout << "[state-store] crash boundary " << stage << '\n' << std::flush;
             const auto directory = root / stage;
             ProcessOptions options;
             options.timeout = Millis(10000);
@@ -214,6 +223,7 @@ int run(int argc, char** argv) {
 }
 #ifdef _WIN32
 int wmain(int argc, wchar_t** wide_args) {
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
     std::vector<std::string> args;
     for (int i = 0; i < argc; ++i)
         args.push_back(narrow(wide_args[i]));

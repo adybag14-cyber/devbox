@@ -9,6 +9,7 @@
 #include <sstream>
 #include <thread>
 #ifdef _WIN32
+#include <sddl.h>
 #include <tlhelp32.h>
 #else
 #include <fcntl.h>
@@ -616,17 +617,68 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
         if (entries.empty())
             environment_block.push_back(L'\0');
     }
+    const DWORD attribute_count = options.appcontainer_sid ? 5 : 1;
     SIZE_T attribute_bytes = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_bytes);
+    InitializeProcThreadAttributeList(nullptr, attribute_count, 0, &attribute_bytes);
     std::vector<unsigned char> attribute_storage(attribute_bytes);
     auto attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_storage.data());
-    if (!InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_bytes))
+    if (!InitializeProcThreadAttributeList(attributes, attribute_count, 0, &attribute_bytes))
         throw Error(windows_error());
     ScopeExit free_attributes([&] { DeleteProcThreadAttributeList(attributes); });
     HANDLE handles[]{stdin_pipe.child.get(), stdout_pipe.child.get(), stderr_pipe.child.get()};
     if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, sizeof(handles),
                                    nullptr, nullptr))
         throw Error(windows_error());
+    PSID app_sid = nullptr;
+    ScopeExit free_sid([&] {
+        if (app_sid)
+            LocalFree(app_sid);
+    });
+    SECURITY_CAPABILITIES security{};
+    PSID* capability_groups = nullptr;
+    PSID* capability_sids = nullptr;
+    DWORD capability_group_count = 0, capability_count = 0;
+    SID_AND_ATTRIBUTES registry_read{};
+    ScopeExit free_capabilities([&] {
+        for (DWORD i = 0; i < capability_group_count; ++i)
+            LocalFree(capability_groups[i]);
+        for (DWORD i = 0; i < capability_count; ++i)
+            LocalFree(capability_sids[i]);
+        if (capability_groups)
+            LocalFree(capability_groups);
+        if (capability_sids)
+            LocalFree(capability_sids);
+    });
+    DWORD packages_policy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
+    DWORD child_policy = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
+    DWORD64 mitigation = PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON |
+                         PROCESS_CREATION_MITIGATION_POLICY_EXTENSION_POINT_DISABLE_ALWAYS_ON;
+    if (options.appcontainer_sid) {
+        if (options.allow_durable_children || !options.env || !options.cwd || options.process_limit != 1)
+            throw Error("LPAC_REQUIRES_BOUNDED_BROKER_PROFILE");
+        if (!ConvertStringSidToSidW(wide(*options.appcontainer_sid).c_str(), &app_sid))
+            throw Error("LPAC_INVALID_IDENTITY");
+        security.AppContainerSid = app_sid;
+        // LPAC needs the explicit read-only registry capability for normal Windows DLL
+        // initialization. Access still requires matching capability ACLs; no network, COM,
+        // identity-service or credential capability is granted.
+        if (!DeriveCapabilitySidsFromName(L"registryRead", &capability_groups, &capability_group_count,
+                                          &capability_sids, &capability_count) ||
+            capability_count != 1)
+            throw Error("LPAC_REGISTRY_CAPABILITY_UNAVAILABLE");
+        registry_read = {capability_sids[0], SE_GROUP_ENABLED};
+        security.Capabilities = &registry_read;
+        security.CapabilityCount = 1;
+        if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security,
+                                       sizeof(security), nullptr, nullptr) ||
+            !UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                                       &packages_policy, sizeof(packages_policy), nullptr, nullptr) ||
+            !UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
+                                       &child_policy, sizeof(child_policy), nullptr, nullptr) ||
+            !UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigation,
+                                       sizeof(mitigation), nullptr, nullptr))
+            throw Error("LPAC_ATTRIBUTES_UNAVAILABLE: " + windows_error());
+    }
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -664,8 +716,9 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     if (cancel)
         cancel->check();
     if (!CreateProcessW(native_program.c_str(), native_command.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED |
-                            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                        (options.appcontainer_sid ? DETACHED_PROCESS : CREATE_NO_WINDOW) |
+                            CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT |
+                            CREATE_UNICODE_ENVIRONMENT,
                         options.env ? environment_block.data() : nullptr, options.cwd ? cwd.c_str() : nullptr,
                         &startup.StartupInfo, &information))
         throw Error(windows_error());
@@ -972,6 +1025,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
 ProcessOutput spawn_process(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel) {
 #ifndef _WIN32
+    if (options.appcontainer_sid)
+        throw Error("LPAC_UNSUPPORTED: Windows token isolation is unavailable on this platform");
     if (options.memory_limit_bytes || options.cpu_limit_ms || options.process_limit)
         throw Error("Native Job Object limits are unavailable on this platform; use a qualified isolated "
                     "worker backend");

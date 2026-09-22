@@ -1,4 +1,5 @@
 #include "devbox/contract.hpp"
+#include "devbox/isolation.hpp"
 #include "devbox/research.hpp"
 #include "tool_registry.hpp"
 #include <algorithm>
@@ -299,6 +300,12 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                 {"schema_sha256", sha256(tools.dump())},
                 {"tools", names},
                 {"tool_manifest", capability_manifest(config)},
+                {"execution_profiles",
+                 {{"existing_tools", "trusted_operator"},
+                  {"trusted_operator_uses_host_account", true},
+                  {"read_only_hints_are_os_sandbox", false},
+                  {"autonomous_requires_scoped_grant", true},
+                  {"autonomous_worker", isolation_capabilities()}}},
                 {"artifact_uploads",
                  {{"supported", config.state_backend == "sqlite" &&
                                     config.runtime_mode == RuntimeMode::host && config.host_exec_enabled},

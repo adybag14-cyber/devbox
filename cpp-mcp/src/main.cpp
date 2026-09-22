@@ -1,5 +1,6 @@
 #include "devbox/computer_use.hpp"
 #include "devbox/engine.hpp"
+#include "devbox/grants.hpp"
 #include "devbox/state_coordinator.hpp"
 #include "server_main.hpp"
 #include <csignal>
@@ -30,6 +31,11 @@ BOOL WINAPI console_handler(DWORD event) {
 } // namespace
 int devbox::run_mcp(const std::vector<std::string>& args) {
     using namespace devbox;
+#ifdef _WIN32
+    // A headless service and its owned workers report launch/crash errors through the protocol.
+    // Windows critical-error dialogs must not hold a failed worker open on the user's desktop.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+#endif
     try {
         const auto mode = args.empty() ? "" : args.front();
         if (mode == "--stop-state-coordinator") {
@@ -80,7 +86,8 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                       << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
                          "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|"
-                         "--stop-state-coordinator ROOT]\n";
+                         "--stop-state-coordinator ROOT|--grant-create-workspace ID|--grant-issue JSON|"
+                         "--grant-revoke ID|--grant-inspect ID|--execute-granted JSON]\n";
             return 0;
         }
         if (mode == "--build-info") {
@@ -93,6 +100,46 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
             return elevated_shell_worker(path_from_utf8(args[1]));
         }
         auto config = std::make_shared<Config>(Config::load(mode != "--job-runner"));
+        if (mode == "--grant-create-workspace" || mode == "--grant-issue" || mode == "--grant-revoke" ||
+            mode == "--grant-inspect" || mode == "--execute-granted") {
+            if (args.size() != 2 || config->state_backend != "sqlite")
+                throw Error("Grant administration requires one operand and MCP_STATE_BACKEND=sqlite");
+            JobStore jobs(config);
+            auto state = jobs.index();
+            const auto private_root = config->state_root / "isolated";
+            ensure_private_state_directory(private_root);
+            if (mode == "--grant-create-workspace") {
+                validate_key(args[1]);
+                const auto workspace = private_root / args[1];
+                ensure_private_state_directory(workspace);
+                std::cout << Json{{"workspace", path_text(fs::canonical(workspace))}}.dump() << '\n';
+                return 0;
+            }
+            GrantAuthority authority(state, config->state_root / "grants");
+            if (mode == "--grant-issue")
+                std::cout << Json{{"grant_id", authority.issue(grant_definition(
+                                                   read_json(path_from_utf8(args[1]), 65536)))}}
+                                 .dump()
+                          << '\n';
+            else if (mode == "--grant-revoke") {
+                authority.revoke(args[1]);
+                std::cout << authority.inspect(args[1]).dump() << '\n';
+            } else if (mode == "--grant-inspect")
+                std::cout << authority.inspect(args[1]).dump() << '\n';
+            else {
+                if (config->runtime_mode != RuntimeMode::host || !config->host_exec_enabled)
+                    throw Error("Granted program execution requires the enabled host runtime");
+                const auto request = read_json(path_from_utf8(args[1]), 65536);
+                std::cout << execute_granted_program(
+                                 authority, private_root, json_string(request, "grant_id"),
+                                 {json_string(request, "principal"), json_string(request, "run"),
+                                  json_string(request, "operation")},
+                                 request.at("arguments"))
+                                 .dump()
+                          << '\n';
+            }
+            return 0;
+        }
         if (mode == "--migrate-state") {
             if (args.size() != 1)
                 throw Error("--migrate-state does not accept request payloads");

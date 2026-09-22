@@ -43,6 +43,8 @@ struct ProcessOptions {
     // Only a trusted frontend supervisor may permit independently owned durable runners.
     // Generic and autonomous execution keep this false.
     bool allow_durable_children = false;
+    // Broker-only Windows LPAC identity. No generic tool argument can set this attribute.
+    std::optional<std::string> appcontainer_sid;
 };
 struct ProcessOutput {
     std::string stdout_text, stderr_text;
