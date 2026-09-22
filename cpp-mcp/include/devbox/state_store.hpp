@@ -61,7 +61,11 @@ class StateStore {
     virtual std::uint64_t generation() const = 0;
     virtual void release_writer() = 0;
     virtual Json diagnostics() const = 0;
+    // Operator-only private snapshot. The normal diagnostic export below never includes payloads.
+    virtual Json private_snapshot(const fs::path& destination) = 0;
 };
 std::shared_ptr<StateStore> open_state_store(const fs::path& directory, StateStoreOptions options = {});
 void ensure_private_state_directory(const fs::path& directory);
+Json export_state_summary(const StateStore& store);
+Json restore_state_snapshot(const fs::path& snapshot, const fs::path& destination);
 } // namespace devbox

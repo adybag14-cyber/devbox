@@ -1,0 +1,32 @@
+{
+  "tickets": [
+    "H05",
+    "H08"
+  ],
+  "date": "2026-09-22",
+  "status": "partial_local_verified",
+  "validation": {
+    "windows": [
+      "state-snapshot",
+      "state-coordinator",
+      "isolated operator CLI export/snapshot/restore"
+    ],
+    "linux": [
+      "state-snapshot",
+      "state-coordinator"
+    ],
+    "canary_default_export_absent": true,
+    "explicit_private_payload_preserved": true,
+    "ordered_events_preserved": true,
+    "live_state_overwrite_refused": true,
+    "writable_recovery_refused": true,
+    "manifest_tampering_rejected": true
+  },
+  "scope": [
+    "Metadata database only",
+    "External artifacts and broker credential/provider configuration files excluded",
+    "Restoration is fenced for inspection/reconciliation; automatic old-effect replay is prohibited",
+    "Full data recovery/reactivation certification and indexed lease work remain under H08/H18",
+    "Production unchanged"
+  ]
+}

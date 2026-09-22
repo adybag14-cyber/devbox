@@ -186,6 +186,8 @@ class Coordinator final : public McpBackend {
         const auto op = json_string(payload, "op");
         if (op == "diagnostics")
             return store_->diagnostics();
+        if (op == "private_snapshot")
+            return store_->private_snapshot(path_from_utf8(json_string(payload, "destination")));
         if (op == "get") {
             const auto value = store_->get(json_string(payload, "kind"), json_string(payload, "id"));
             return value ? wire(*value) : Json();
@@ -459,6 +461,9 @@ class StateClient final : public StateStore {
     }
     Json diagnostics() const override {
         return rpc(Json{{"op", "diagnostics"}});
+    }
+    Json private_snapshot(const fs::path& destination) override {
+        return rpc(Json{{"op", "private_snapshot"}, {"destination", path_text(destination)}});
     }
 };
 } // namespace

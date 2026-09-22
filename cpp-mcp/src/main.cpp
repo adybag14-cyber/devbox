@@ -99,7 +99,9 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
                          "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|"
                          "--stop-state-coordinator ROOT|--grant-create-workspace ID|--grant-issue JSON|"
-                         "--grant-revoke ID|--grant-inspect ID|--execute-granted JSON]\n";
+                         "--grant-revoke ID|--grant-inspect ID|--execute-granted JSON|--state-export REPORT|"
+                         "--private-state-snapshot NEW_DIR --include-private-state|--restore-state-snapshot "
+                         "SNAPSHOT NEW_DIR]\n";
             return 0;
         }
         if (mode == "--build-info") {
@@ -170,6 +172,32 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
             if (args.size() != 1)
                 throw Error("--migrate-state does not accept request payloads");
             std::cout << migrate_legacy_state(config).dump(2) << '\n';
+            return 0;
+        }
+        if (mode == "--restore-state-snapshot") {
+            if (args.size() != 3)
+                throw Error("Restore requires snapshot and new destination directories");
+            std::cout << restore_state_snapshot(path_from_utf8(args[1]), path_from_utf8(args[2])).dump(2)
+                      << '\n';
+            return 0;
+        }
+        if (mode == "--state-export" || mode == "--private-state-snapshot") {
+            if (config->state_backend != "sqlite")
+                throw Error("State export requires the SQLite backend");
+            if ((mode == "--state-export" && args.size() != 2) ||
+                (mode == "--private-state-snapshot" &&
+                 (args.size() != 3 || args[2] != "--include-private-state")))
+                throw Error("Private snapshots require an explicit --include-private-state flag; default "
+                            "exports omit payloads");
+            StateStoreOptions options;
+            options.writable = false;
+            auto state = open_state_store(config->state_root, options);
+            const auto destination = path_from_utf8(args[1]);
+            const auto report = mode == "--state-export" ? export_state_summary(*state)
+                                                         : state->private_snapshot(destination);
+            if (mode == "--state-export")
+                atomic_write(destination, report.dump(2) + '\n', false, true, Preconditions{"missing", {}});
+            std::cout << report.dump(2) << '\n';
             return 0;
         }
         if (mode == "--job-runner") {

@@ -157,7 +157,8 @@
       "status": "in_progress",
       "evidence": [
         "docs/audit-evidence/FOUNDATIONS-local.json",
-        "docs/audit-evidence/H12-H14-harness-local.json"
+        "docs/audit-evidence/H12-H14-harness-local.json",
+        "docs/audit-evidence/H08-snapshot-local.json"
       ],
       "remaining": [
         "Finish export/crash-bundle confidentiality qualification"
@@ -261,7 +262,8 @@
         "docs/audit-evidence/H08-store-local.json",
         "docs/audit-evidence/H08-coordinator-local.json",
         "docs/audit-evidence/H08-indexed-integration-local.json",
-        "docs/audit-evidence/H08-maintenance-local.json"
+        "docs/audit-evidence/H08-maintenance-local.json",
+        "docs/audit-evidence/H08-snapshot-local.json"
       ],
       "remaining": [
         "Complete indexed maintenance and certified export/recovery.",

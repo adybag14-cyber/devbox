@@ -4,6 +4,7 @@
 #include <array>
 #include <set>
 #include <sqlite3.h>
+#include <thread>
 #ifdef _WIN32
 #include <aclapi.h>
 #include <sddl.h>
@@ -194,6 +195,7 @@ class SqliteStore final : public StateStore {
     std::function<void(std::string_view)> transition_hook_;
     mutable std::mutex mutex_;
     std::uint64_t generation_ = 0;
+    std::string journal_mode_ = "wal";
     mutable int last_query_steps_ = 0;
     void sql(const char* statement) const {
         check(db_, sqlite3_exec(db_, statement, nullptr, nullptr, nullptr));
@@ -229,6 +231,9 @@ class SqliteStore final : public StateStore {
         if (options.writable)
             writer_ =
                 std::make_unique<FileLock>(directory_ / ".writer.lock", options.writer_wait, Cancel{}, true);
+        if (options.writable && fs::exists(directory_ / "recovery-fenced.json"))
+            throw Error("STATE_RECOVERY_RECONCILIATION_REQUIRED: snapshot metadata cannot authorize "
+                        "automatic effect replay");
         const auto database = directory_ / "metadata.sqlite3";
         if (fs::exists(database) && fs::symlink_status(database).type() != fs::file_type::regular)
             throw Error("STATE_DATABASE_ALIAS_DENIED");
@@ -352,8 +357,10 @@ PRAGMA user_version=2;
             rollback.disarm();
         } else {
             Statement mode(db_, "PRAGMA journal_mode");
-            if (!mode.step() || mode.text(0) != "wal")
+            if (!mode.step() || (mode.text(0) != "wal" && !(fs::exists(directory_ / "recovery-fenced.json") &&
+                                                            mode.text(0) == "delete")))
                 throw Error("STATE_WAL_UNAVAILABLE");
+            journal_mode_ = mode.text(0);
             generation_ = scalar("SELECT generation FROM control WHERE singleton=1");
         }
         cleanup.disarm();
@@ -683,9 +690,88 @@ PRAGMA user_version=2;
                     {"writable", writer_ != nullptr},
                     {"sqlite_version", sqlite3_libversion()},
                     {"last_query_vm_steps", last_query_steps_},
-                    {"journal_mode", "wal"},
+                    {"journal_mode", journal_mode_},
                     {"durability", "full"},
                     {"artifact_storage", "external_files"}};
+    }
+    Json private_snapshot(const fs::path& destination) override {
+        std::lock_guard lock(mutex_);
+        if (!destination.is_absolute() || fs::exists(destination))
+            throw Error("STATE_SNAPSHOT_REQUIRES_NEW_ABSOLUTE_DIRECTORY");
+        private_local_directory(destination, true);
+        FileLock target_lock(destination / ".writer.lock", Millis(1000), {}, true);
+        const auto database = destination / "metadata.sqlite3";
+        Json fence{
+            {"format", "devbox-private-state-snapshot-v1"},
+            {"recovery_fenced", true},
+            {"reason", "Metadata snapshot may predate external effects; automatic replay is prohibited"}};
+        write_json_atomic(destination / "recovery-fenced.json", fence);
+#ifdef _WIN32
+        NativeHandle guard(CreateFileW(database.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                       FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, CREATE_NEW,
+                                       FILE_ATTRIBUTE_NORMAL, nullptr));
+#else
+        NativeHandle guard(
+            ::open(database.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600));
+#endif
+        if (!guard)
+            throw Error("STATE_SNAPSHOT_DATABASE_CREATE_FAILED");
+        sqlite3* target = nullptr;
+        const auto opened =
+            sqlite3_open_v2(path_text(database).c_str(), &target,
+                            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX | SQLITE_OPEN_NOFOLLOW, nullptr);
+        ScopeExit close([&] {
+            if (target)
+                sqlite3_close_v2(target);
+        });
+        check(target, opened);
+        check(target, sqlite3_db_config(target, SQLITE_DBCONFIG_DEFENSIVE, 1, nullptr));
+        check(target, sqlite3_db_config(target, SQLITE_DBCONFIG_TRUSTED_SCHEMA, 0, nullptr));
+        check(target, sqlite3_db_config(target, SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, 0, nullptr));
+        auto* copy = sqlite3_backup_init(target, "main", db_, "main");
+        if (!copy)
+            throw Error("STATE_SNAPSHOT_BACKUP_INIT_FAILED");
+        ScopeExit finish([&] {
+            if (copy)
+                sqlite3_backup_finish(copy);
+        });
+        const auto deadline = Clock::now() + Millis(30000);
+        int result;
+        do {
+            if (Clock::now() >= deadline)
+                throw Error("STATE_SNAPSHOT_DEADLINE");
+            result = sqlite3_backup_step(copy, 256);
+            if (result == SQLITE_BUSY || result == SQLITE_LOCKED)
+                std::this_thread::sleep_for(Millis(5));
+        } while (result == SQLITE_OK || result == SQLITE_BUSY || result == SQLITE_LOCKED);
+        if (result != SQLITE_DONE)
+            check(target, result);
+        const auto finished = sqlite3_backup_finish(copy);
+        copy = nullptr;
+        check(target, finished);
+        check(target, sqlite3_exec(target, "PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode=DELETE;",
+                                   nullptr, nullptr, nullptr));
+        {
+            Statement integrity(target, "PRAGMA quick_check");
+            if (!integrity.step() || integrity.text(0) != "ok")
+                throw Error("STATE_SNAPSHOT_DATABASE_INTEGRITY");
+        }
+        check(target, sqlite3_close(target));
+        target = nullptr;
+        const auto hash = sha256_file(database, 1024ULL * 1024 * 1024);
+        Json manifest{{"format", "devbox-private-state-snapshot-v1"},
+                      {"schema_version", schema_version},
+                      {"source_generation", generation_},
+                      {"database", "metadata.sqlite3"},
+                      {"database_sha256", hash},
+                      {"created_at", utc_now()},
+                      {"contains_private_payloads", true},
+                      {"recovery_fenced", true},
+                      {"external_artifacts_included", false},
+                      {"broker_credential_files_included", false},
+                      {"provider_configuration_files_included", false}};
+        write_json_atomic(destination / "manifest.json", manifest);
+        return manifest;
     }
 };
 } // namespace
@@ -694,5 +780,50 @@ std::shared_ptr<StateStore> open_state_store(const fs::path& directory, StateSto
 }
 void ensure_private_state_directory(const fs::path& directory) {
     private_local_directory(directory, true);
+}
+Json export_state_summary(const StateStore& store) {
+    Json counts = Json::object();
+    for (const auto* kind : {"job", "job_operation", "task", "run", "grant", "grant_operation", "upload",
+                             "upload_chunk", "mcp_task"})
+        counts[kind] = store.count(kind);
+    const auto diagnostic = store.diagnostics();
+    const auto mode = json_string(diagnostic, "journal_mode");
+    Json storage{{"schema_version", state_store_schema_version},
+                 {"writer_generation", store.generation()},
+                 {"sqlite_version", sqlite3_libversion()},
+                 {"journal_mode", mode == "wal" || mode == "delete" ? mode : "unknown"},
+                 {"artifact_storage", "external_files"}};
+    return Json{{"format", "devbox-state-diagnostics-v1"},
+                {"sampled_at", utc_now()},
+                {"consistency", "individually_sampled_counts"},
+                {"contains_private_payloads", false},
+                {"records_by_kind", counts},
+                {"storage", storage},
+                {"omitted",
+                 {"record_ids", "arguments", "prompts", "task_state", "events", "logs", "artifacts",
+                  "provider_configuration", "credentials"}}};
+}
+Json restore_state_snapshot(const fs::path& snapshot, const fs::path& destination) {
+    private_local_directory(snapshot, false);
+    const auto manifest = read_json(snapshot / "manifest.json", 65536);
+    if (json_string(manifest, "format") != "devbox-private-state-snapshot-v1" ||
+        json_uint(manifest, "schema_version") != state_store_schema_version ||
+        json_string(manifest, "database") != "metadata.sqlite3" ||
+        !json_bool(manifest, "contains_private_payloads") || !json_bool(manifest, "recovery_fenced"))
+        throw Error("STATE_SNAPSHOT_MANIFEST_REJECTED");
+    const auto expected = json_string(manifest, "database_sha256");
+    if (expected.size() != 64 ||
+        sha256_file(snapshot / "metadata.sqlite3", 1024ULL * 1024 * 1024) != expected)
+        throw Error("STATE_SNAPSHOT_INTEGRITY");
+    StateStoreOptions read_only;
+    read_only.writable = false;
+    auto source = open_state_store(snapshot, read_only);
+    auto result = source->private_snapshot(destination);
+    if (sha256_file(snapshot / "metadata.sqlite3", 1024ULL * 1024 * 1024) != expected)
+        throw Error("STATE_SNAPSHOT_CHANGED_DURING_RESTORE");
+    result["source_snapshot_sha256"] = expected;
+    result["recovery_action"] = "read_only_reconciliation_required; external_artifacts_remain_separate";
+    write_json_atomic(destination / "manifest.json", result);
+    return result;
 }
 } // namespace devbox
