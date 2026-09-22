@@ -149,9 +149,12 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
     if (timeout_ms > static_cast<std::uint64_t>(INT64_MAX))
         throw Error("Job timeout exceeds the supported range");
     JobStore store(config);
+    store.require_writable_backend();
     const auto paths = store.paths(id);
     if (canonical_target(paths.request) != canonical_target(request_path))
         throw Error("C++ job request path does not match configured job root path.");
+    if (store.indexed() && canonical_json(store.read_request(id)) != canonical_json(request))
+        throw Error("JOB_REQUEST_INTEGRITY: admitted request changed before execution");
     // An exclusive runner lock prevents a second CLI invocation from running the same request.
     FileLock runner_lock(paths.dir / ".runner.lock", Millis(1));
     const auto initial = store.read_status_raw(id);

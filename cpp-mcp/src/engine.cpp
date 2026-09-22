@@ -19,6 +19,7 @@ Engine::Engine(std::shared_ptr<const Config> config)
       capture_(config_), usage_(*config_, background_), performance_(*config_, background_, build_snapshot),
       monitoring_(config_, background_, scheduler_, jobs_.store(), runtime_, performance_, usage_,
                   [this] { return server_ ? server_->active_requests() : 0; }) {
+    jobs_.store().require_writable_backend();
     for (const auto& tool : contract_.all()) {
         const auto name = json_string(tool, "name");
         implemented_.insert(name);
@@ -34,6 +35,9 @@ void Engine::attach(HttpServer& server) {
     if (server_)
         throw Error("Engine is already attached");
     server_ = &server;
+    ensure_directory(config_->project_root / "run");
+    frontend_lock_ = std::make_unique<FileLock>(config_->project_root / "run" / ".frontend.lock",
+                                                Millis(1000), Cancel{}, true);
     // Compute the binary digest outside the HTTP I/O executor before accepting tool work.
     (void)build_snapshot();
     performance_.attach(server.executor(), server.stop_token());
@@ -48,6 +52,7 @@ void Engine::stop() {
         return;
     background_.stop();
     usage_.stop();
+    frontend_lock_.reset();
 }
 Json Engine::server_info() const {
     return Json{{"name", config_->server_name()},
@@ -74,7 +79,7 @@ Json Engine::parity_report() const {
                 {"build", build_snapshot()}};
 }
 bool Engine::ready() const {
-    return monitoring_.ready(implemented_.size());
+    return !stopped_ && monitoring_.ready(implemented_.size());
 }
 std::string Engine::tool_started(const std::string& name, const Json& args, const Json& context) {
     return usage_.started(name, args, context);
@@ -274,14 +279,22 @@ Json Engine::durable(std::string name, const Json& args) {
     } else if (name.starts_with("devbox_task_")) {
         const auto root = config_->project_root / "run" / "tasks";
         if (name == "devbox_task_get") {
-            value = task_get(root, json_string(args, "task_id"));
+            value = jobs_.store().indexed() ? indexed_task_get(jobs_.store(), json_string(args, "task_id"))
+                                            : task_get(root, json_string(args, "task_id"));
             summary = "Read task checkpoint.";
         } else if (name == "devbox_task_put") {
-            value = task_put(root, json_string(args, "task_id"), json_uint(args, "expected_revision"),
-                             args["state"]);
+            jobs_.store().require_writable_backend();
+            value = jobs_.store().indexed()
+                        ? indexed_task_put(jobs_.store(), json_string(args, "task_id"),
+                                           json_uint(args, "expected_revision"), args["state"])
+                        : task_put(root, json_string(args, "task_id"), json_uint(args, "expected_revision"),
+                                   args["state"]);
             summary = "Saved task checkpoint.";
         } else {
-            value = task_list(root, optional_string(args, "cursor"), json_uint(args, "limit", 50));
+            value = jobs_.store().indexed()
+                        ? indexed_task_list(jobs_.store(), optional_string(args, "cursor"),
+                                            json_uint(args, "limit", 50))
+                        : task_list(root, optional_string(args, "cursor"), json_uint(args, "limit", 50));
             summary = "Listed task checkpoints.";
         }
     } else {

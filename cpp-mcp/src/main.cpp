@@ -32,6 +32,13 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
     using namespace devbox;
     try {
         const auto mode = args.empty() ? "" : args.front();
+        if (mode == "--stop-state-coordinator") {
+            if (args.size() != 2)
+                throw Error("--stop-state-coordinator requires a private state directory");
+            if (!stop_state_coordinator(path_from_utf8(args[1])))
+                throw Error("STATE_COORDINATOR_STOP_UNCONFIRMED");
+            return 0;
+        }
         if (mode == "--state-coordinator") {
             if (args.size() != 2)
                 throw Error("--state-coordinator requires a private state directory");
@@ -72,7 +79,8 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
             std::cout << "Devbox C++ MCP " << build_version()
                       << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
-                         "--computer-use-broker PIPE|--computer-use-probe PIPE]\n";
+                         "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|"
+                         "--stop-state-coordinator ROOT]\n";
             return 0;
         }
         if (mode == "--build-info") {
@@ -85,6 +93,12 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
             return elevated_shell_worker(path_from_utf8(args[1]));
         }
         auto config = std::make_shared<Config>(Config::load(mode != "--job-runner"));
+        if (mode == "--migrate-state") {
+            if (args.size() != 1)
+                throw Error("--migrate-state does not accept request payloads");
+            std::cout << migrate_legacy_state(config).dump(2) << '\n';
+            return 0;
+        }
         if (mode == "--job-runner") {
             if (args.size() != 2)
                 throw Error("--job-runner requires exactly one request.json path");

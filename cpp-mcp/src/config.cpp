@@ -372,6 +372,10 @@ Config Config::load(bool read_env_files) {
     c.execution_slot_root =
         env_path("MCP_EXEC_SLOT_ROOT").value_or(c.project_root / "run" / "execution-slots");
     c.jobs_root = env_path("MCP_JOBS_ROOT").value_or(c.project_root / "run" / "jobs");
+    c.state_root = env_path("MCP_STATE_ROOT").value_or(c.project_root / "run" / "state");
+    c.state_backend = lower(trim(env_or("MCP_STATE_BACKEND", "legacy")));
+    if (c.state_backend != "legacy" && c.state_backend != "sqlite")
+        throw Error("MCP_STATE_BACKEND must be legacy or sqlite");
     c.mcp_performance_state_path =
         env_path("MCP_PERFORMANCE_STATE_PATH").value_or(c.project_root / "run" / "mcp-performance.json");
     c.oauth_state_file_path =
@@ -449,6 +453,9 @@ Config Config::load(bool read_env_files) {
     c.max_mcp_transfer_chars = std::max<std::size_t>(
         262144,
         character_limit("MAX_MCP_TRANSFER_CHARS", 4000000).value_or(std::numeric_limits<std::size_t>::max()));
+    if (c.state_backend == "sqlite" && (c.job_max_active > 256 || c.job_max_per_task > 256))
+        throw Error("SQLite admission requires MCP_JOB_MAX_ACTIVE_RUNNERS and MCP_JOB_MAX_RUNNERS_PER_TASK "
+                    "at most 256");
     return c;
 }
 std::string Config::server_name() const {

@@ -58,7 +58,9 @@ int run(int argc, char** argv) {
         config->host_exec_enabled = true;
         ShellRequest shell;
         shell.working_dir = root;
-        shell.timeout = Millis(10000);
+        // Hosted Windows images may need a cold CLR/PowerShell startup. Process deadline
+        // enforcement has separate short-deadline tests; this fixture verifies successful routing.
+        shell.timeout = Millis(30000);
         shell.max_capture_chars = 8192;
 #ifdef _WIN32
         config->host_shell = env_or("COMSPEC", "cmd.exe");

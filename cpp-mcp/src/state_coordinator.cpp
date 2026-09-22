@@ -193,6 +193,11 @@ class Coordinator final : public McpBackend {
         if (op == "count")
             return store_->count(json_string(payload, "kind"), optional(payload, "principal"),
                                  optional(payload, "status"));
+        if (op == "count_matching")
+            return store_->count_matching(
+                StateCountQuery{json_string(payload, "kind"), optional(payload, "principal"),
+                                optional(payload, "group"), json_strings(payload, "statuses"),
+                                static_cast<std::size_t>(json_uint(payload, "limit", 256))});
         if (op == "list") {
             StateQuery query{
                 json_string(payload, "kind"), optional(payload, "principal"),
@@ -213,6 +218,15 @@ class Coordinator final : public McpBackend {
                                       {"sequence", event.sequence},
                                       {"data", event.data}});
             return values;
+        }
+        if (op == "import") {
+            if (!payload.at("records").is_array() || payload["records"].size() > 256)
+                throw Error("STATE_BATCH_LIMIT");
+            std::vector<StateRecord> values;
+            for (const auto& value : payload["records"])
+                values.push_back(record(value));
+            store_->import_records(values);
+            return Json{{"imported", true}};
         }
         if (op == "apply") {
             if (!payload.at("mutations").is_array() || !payload.at("events").is_array() ||
@@ -313,14 +327,16 @@ class StateClient final : public StateStore {
         const auto executable = options_.executable.empty() ? executable_path() : options_.executable;
         if (!executable.is_absolute())
             throw Error("STATE_COORDINATOR_EXECUTABLE_MUST_BE_ABSOLUTE");
-        const auto pid = spawn_detached(executable, {"--state-coordinator", path_text(root_)}, root_);
-        const auto instance = process_instance(pid);
+        std::optional<std::uint64_t> instance;
+        const auto pid =
+            spawn_detached(executable, {"--state-coordinator", path_text(root_)}, root_, {}, &instance);
         const auto deadline = Clock::now() + Millis(10000);
         while (Clock::now() < deadline) {
             if (options_.cancel)
                 options_.cancel->check();
             auto candidate = endpoint_at(root_);
-            if (!candidate.is_null() && json_uint(candidate, "pid") == pid && running(candidate)) {
+            if (!candidate.is_null() && json_uint(candidate, "pid") == pid && running(candidate) &&
+                (!instance || json_uint(candidate, "instance") == *instance)) {
                 endpoint_ = std::move(candidate);
                 return endpoint_;
             }
@@ -386,6 +402,17 @@ class StateClient final : public StateStore {
             request["status"] = *status;
         return rpc(request).get<std::uint64_t>();
     }
+    std::uint64_t count_matching(const StateCountQuery& query) const override {
+        Json request{{"op", "count_matching"},
+                     {"kind", query.kind},
+                     {"statuses", query.statuses},
+                     {"limit", query.limit}};
+        if (query.principal)
+            request["principal"] = *query.principal;
+        if (query.group)
+            request["group"] = *query.group;
+        return rpc(request).get<std::uint64_t>();
+    }
     void apply(std::span<const StateMutation> mutations, std::span<const StateEvent> events) override {
         (void)apply_once(uuid(), mutations, events);
     }
@@ -406,6 +433,14 @@ class StateClient final : public StateStore {
                                              {"sequence", event.sequence},
                                              {"data", event.data}});
         return json_bool(rpc(request), "replayed");
+    }
+    void import_records(std::span<const StateRecord> values) override {
+        if (!writable_)
+            throw Error("STATE_WRITER_FENCED");
+        Json request{{"op", "import"}, {"records", Json::array()}};
+        for (const auto& value : values)
+            request["records"].push_back(wire(value));
+        (void)rpc(request);
     }
     std::vector<StateEvent> events(std::string_view run, std::uint64_t after,
                                    std::size_t limit) const override {

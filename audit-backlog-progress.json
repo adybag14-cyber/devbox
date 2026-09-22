@@ -249,11 +249,12 @@
       "status": "in_progress",
       "evidence": [
         "docs/audit-evidence/H08-store-local.json",
-        "docs/audit-evidence/H08-coordinator-local.json"
+        "docs/audit-evidence/H08-coordinator-local.json",
+        "docs/audit-evidence/H08-indexed-integration-local.json"
       ],
       "remaining": [
-        "Integrate the authoritative coordinator with jobs, operation receipts, run events and resource leases.",
-        "Implement and certify one-writer legacy migration, export and recovery."
+        "Complete indexed maintenance and certified export/recovery.",
+        "Integrate run events and resource leases with the later controller/scheduler tickets."
       ]
     },
     {

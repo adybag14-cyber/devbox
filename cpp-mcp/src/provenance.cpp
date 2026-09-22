@@ -1,5 +1,6 @@
 #include "build_identity.hpp"
 #include "devbox/contract.hpp"
+#include "devbox/state_store.hpp"
 namespace devbox {
 std::string build_version() {
     return build_identity::version;
@@ -26,6 +27,8 @@ Json build_snapshot() {
                     {"buildUnixSeconds", build_identity::built},
                     {"compiler", build_identity::compiler},
                     {"implementation", "cpp"},
+                    {"stateSchemaVersion", state_store_schema_version},
+                    {"stateCoordinatorProtocol", 1},
                     {"sanitizers",
 #ifdef DEVBOX_SANITIZERS
                      true

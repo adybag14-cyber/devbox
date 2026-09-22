@@ -32,6 +32,8 @@ struct Config {
     std::string host_search_backend;
     bool host_exec_enabled = false, allow_windows_host_exec_uac = false;
     fs::path execution_slot_root, jobs_root, mcp_performance_state_path;
+    std::string state_backend = "legacy";
+    fs::path state_root;
     std::uint64_t usage_log_max_bytes = 16 * 1024 * 1024;
     std::size_t usage_log_rotations = 3, mcp_json_body_limit_bytes = 8 * 1024 * 1024, oauth_max_clients = 256;
     std::size_t mcp_response_max_bytes = 64 * 1024 * 1024, mcp_response_budget_bytes = 256 * 1024 * 1024,

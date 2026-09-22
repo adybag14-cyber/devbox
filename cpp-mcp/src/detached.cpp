@@ -47,9 +47,11 @@ class ChildReaper {
 } // namespace
 #endif
 std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string>& args, const fs::path& cwd,
-                             const std::optional<Environment>& env) {
+                             const std::optional<Environment>& env, std::optional<std::uint64_t>* instance) {
     if (!env)
-        return spawn_detached(file, args, cwd, worker_environment());
+        return spawn_detached(file, args, cwd, worker_environment(), instance);
+    if (instance)
+        instance->reset();
     for (const auto& argument : args)
         if (argument.find('\0') != std::string::npos)
             throw Error("Detached arguments cannot contain NUL bytes");
@@ -129,6 +131,11 @@ std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string
                         &information))
         throw Error(windows_error());
     NativeHandle process(information.hProcess), thread(information.hThread);
+    if (instance) {
+        FILETIME created{}, exited{}, kernel{}, user{};
+        if (GetProcessTimes(process.get(), &created, &exited, &kernel, &user))
+            *instance = (static_cast<std::uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+    }
     return information.dwProcessId;
 #else
     NativeHandle null(::open("/dev/null", O_RDWR | O_CLOEXEC));
@@ -158,6 +165,8 @@ std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string
     const std::array close_fds{null.get()};
     const auto pid = spawn_posix(file, argv.data(), env ? envp.data() : environ, &cwd,
                                  {null.get(), null.get(), null.get()}, close_fds, false);
+    if (instance)
+        *instance = process_instance(static_cast<std::uint32_t>(pid));
     reaper.add(pid);
     return static_cast<std::uint32_t>(pid);
 #endif

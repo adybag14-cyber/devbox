@@ -2,6 +2,7 @@
 #include "devbox/resource_budget.hpp"
 #include <algorithm>
 #include <array>
+#include <set>
 #include <sqlite3.h>
 #ifdef _WIN32
 #include <aclapi.h>
@@ -17,7 +18,7 @@
 #endif
 namespace devbox {
 namespace {
-constexpr int application_id = 0x44425631, schema_version = 2;
+constexpr int application_id = 0x44425631, schema_version = state_store_schema_version;
 constexpr std::size_t maximum_record = 1024 * 1024;
 void key(std::string_view value, bool empty = false) {
     if ((!empty && value.empty()) || value.size() > 256 || value == "*" || value.find('\0') != value.npos)
@@ -215,6 +216,9 @@ class SqliteStore final : public StateStore {
     SqliteStore(fs::path directory, StateStoreOptions options)
         : directory_(std::move(directory)), transition_hook_(std::move(options.transition_hook)) {
         private_local_directory(directory_, options.writable);
+        // Resolve trusted platform parent aliases (macOS /var -> /private/var) before SQLite's
+        // NOFOLLOW open, while the final private directory itself remains required to be ordinary.
+        directory_ = fs::canonical(directory_);
         if (options.writable)
             writer_ =
                 std::make_unique<FileLock>(directory_ / ".writer.lock", options.writer_wait, Cancel{}, true);
@@ -428,6 +432,48 @@ PRAGMA user_version=2;
         last_query_steps_ = row.steps();
         return result;
     }
+    std::uint64_t count_matching(const StateCountQuery& query) const override {
+        key(query.kind);
+        if (!query.limit || query.limit > 256 || query.statuses.empty() || query.statuses.size() > 16)
+            throw Error("STATE_COUNT_LIMIT");
+        if (query.principal)
+            key(*query.principal);
+        if (query.group)
+            key(*query.group, true);
+        std::lock_guard lock(mutex_);
+        std::uint64_t count = 0;
+        int steps = 0;
+        const std::set<std::string> statuses(query.statuses.begin(), query.statuses.end());
+        for (const auto& status : statuses) {
+            key(status);
+            std::string index = query.principal ? "records_principal" : "records";
+            if (query.group)
+                index += "_group";
+            index += "_status";
+            std::string sql = "SELECT id FROM records INDEXED BY " + index + " WHERE kind=? AND status=?";
+            if (query.principal)
+                sql += " AND principal=?";
+            if (query.group)
+                sql += " AND group_id=?";
+            sql += " LIMIT ?";
+            Statement row(db_, sql);
+            row.bind(1, query.kind);
+            row.bind(2, status);
+            int at = 3;
+            if (query.principal)
+                row.bind(at++, *query.principal);
+            if (query.group)
+                row.bind(at++, *query.group);
+            row.bind(at, query.limit - count);
+            while (row.step())
+                ++count;
+            steps += row.steps();
+            if (count >= query.limit)
+                break;
+        }
+        last_query_steps_ = steps;
+        return count;
+    }
     void apply(std::span<const StateMutation> mutations, std::span<const StateEvent> events) override {
         (void)apply_impl({}, mutations, events);
     }
@@ -552,6 +598,47 @@ PRAGMA user_version=2;
         if (transition_hook_)
             transition_hook_("after_commit");
         return false;
+    }
+    void import_records(std::span<const StateRecord> records) override {
+        if (records.empty() || records.size() > 256)
+            throw Error("STATE_BATCH_LIMIT");
+        std::lock_guard lock(mutex_);
+        writable();
+        sql("BEGIN IMMEDIATE;");
+        ScopeExit rollback([&] { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); });
+        writable();
+        for (const auto& value : records) {
+            for (const auto* field : {&value.kind, &value.id, &value.principal, &value.status})
+                key(*field);
+            key(value.group, true);
+            if (!value.revision || value.revision > max_safe_integer)
+                throw Error("STATE_IMPORT_REVISION");
+            const auto data = value.data.dump();
+            if (data.size() > maximum_record)
+                throw Error("STATE_RECORD_SIZE");
+            Statement prior(
+                db_,
+                "SELECT kind,id,principal,group_id,status,revision,data FROM records WHERE kind=? AND id=?");
+            prior.bind(1, value.kind);
+            prior.bind(2, value.id);
+            if (prior.step()) {
+                const auto previous = record(prior);
+                if (previous.principal != value.principal || previous.group != value.group ||
+                    previous.status != value.status || previous.revision != value.revision ||
+                    canonical_json(previous.data) != canonical_json(value.data))
+                    throw Error("STATE_IMPORT_CONFLICT");
+                continue;
+            }
+            Statement write(db_, "INSERT INTO records VALUES(?,?,?,?,?,?,?)");
+            int at = 1;
+            for (const auto* field : {&value.kind, &value.id, &value.principal, &value.group, &value.status})
+                write.bind(at++, *field);
+            write.bind(6, value.revision);
+            write.bind(7, data);
+            write.step();
+        }
+        sql("COMMIT;");
+        rollback.disarm();
     }
     std::vector<StateEvent> events(std::string_view run, std::uint64_t after,
                                    std::size_t limit) const override {

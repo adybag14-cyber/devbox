@@ -103,6 +103,28 @@ int run(int argc, char** argv) {
         auto config = std::make_shared<Config>(Config::load());
         JobManager manager(config);
         auto& store = manager.store();
+        {
+            std::optional<std::uint64_t> instance;
+            const auto pid = spawn_detached(executable_path(), {"--child", "sleep"}, root, {}, &instance);
+            owned.emplace_back(pid, instance);
+            require(instance.has_value(),
+                    "detached identity is captured before releasing the process object");
+            const std::string delayed = "job-delayed-start-fixture";
+            const auto paths = store.create_job(
+                delayed, Json::object(),
+                Json{{"id", delayed},
+                     {"status", "queued"},
+                     {"createdAtUtc", utc_from_millis(static_cast<std::int64_t>(unix_millis()) - 10000)},
+                     {"runnerPid", nullptr}});
+            write_json_atomic(paths.dir / "runner-owner.json",
+                              Json{{"id", delayed}, {"pid", pid}, {"instance", std::to_string(*instance)}});
+            const auto status = store.get_status(delayed);
+            require(status["status"] == "queued" && status["runnerAlive"] == true,
+                    "a live cold-starting runner without a first heartbeat is not classified as orphaned");
+            terminate_process_tree(pid, instance);
+            require(!process_matches_instance(pid, instance), "owned cold-start fixture stopped");
+            fs::remove_all(paths.dir);
+        }
         const auto track = [&](const Json& value) {
             const auto& summary = value.contains("job") ? value["job"] : value;
             if (summary.contains("runnerPid") && summary["runnerPid"].is_number_unsigned()) {

@@ -1,6 +1,8 @@
 #include "devbox/jobs.hpp"
 #include "jobs_internal.hpp"
 #include <algorithm>
+#include <map>
+#include <set>
 #include <thread>
 #ifndef _WIN32
 #include <signal.h>
@@ -123,6 +125,8 @@ JobPaths JobStore::paths(std::string_view id) const {
             dir / "heartbeat.json"};
 }
 JobPaths JobStore::create_job(std::string_view id, const Json& request, const Json& status) {
+    require_writable_backend();
+    const auto state = index();
     const auto value = paths(id);
     ensure_directory(config_->jobs_root);
     if (!fs::create_directory(value.dir))
@@ -135,6 +139,16 @@ JobPaths JobStore::create_job(std::string_view id, const Json& request, const Js
     write_json_atomic(value.status, status);
     write_file(value.stdout_log, "");
     write_file(value.stderr_log, "");
+    if (state) {
+        const auto agent = request.value("agent", Json::object());
+        StateMutation record{StateRecord{"job", std::string(id), "operator", json_string(agent, "taskId"),
+                                         json_string(status, "status"), 0,
+                                         Json{{"status", status},
+                                              {"agent", agent},
+                                              {"request_sha256", sha256(canonical_json(request).dump())}}},
+                             0};
+        state->apply({&record, 1});
+    }
     {
         std::lock_guard lock(maintenance_->mutex);
         auto position = std::lower_bound(maintenance_->ids.begin(), maintenance_->ids.end(), value.id);
@@ -151,14 +165,59 @@ JobPaths JobStore::create_job(std::string_view id, const Json& request, const Js
     return value;
 }
 Json JobStore::read_request(std::string_view id) const {
-    return read_job_json(paths(id).request);
+    auto request = read_job_json(paths(id).request);
+    if (const auto state = index()) {
+        const auto record = state->get("job", id);
+        if (!record || json_string(record->data, "request_sha256") != sha256(canonical_json(request).dump()))
+            throw Error("JOB_REQUEST_INTEGRITY: retained request no longer matches its admitted identity");
+    }
+    return request;
 }
 Json JobStore::read_status_raw(std::string_view id) const {
+    if (const auto state = index()) {
+        const auto record = state->get("job", id);
+        if (!record || !fs::exists(paths(id).dir))
+            throw Error("JOB_STATE_UNAVAILABLE: result artifacts are missing");
+        return record->data.at("status");
+    }
     return read_job_json(paths(id).status);
 }
 void JobStore::write_status(std::string_view id, const Json& status) const {
+    require_writable_backend();
     const auto path = paths(id);
-    write_json_atomic(path.status, status);
+    Json published = status;
+    if (const auto state = index()) {
+        bool saved = false;
+        for (int attempt = 0; attempt < 8 && !saved; ++attempt) {
+            auto record = state->get("job", id);
+            if (!record)
+                throw Error("JOB_STATE_UNAVAILABLE");
+            const auto old = json_string(record->data.at("status"), "status"),
+                       next = json_string(status, "status");
+            if (terminal_status(old) && old != next &&
+                !(old == "cancelled" && next == "interrupted" &&
+                  !json_bool(status, "workloadTerminationVerified", true)))
+                return; // A late writer cannot resurrect a terminal job.
+            published = record->data.at("status");
+            published.update(status);
+            if (old == "cancel_requested" && !terminal_status(next))
+                published["status"] = "cancel_requested";
+            record->status = json_string(published, "status");
+            record->data["status"] = published;
+            StateMutation change{*record, record->revision};
+            try {
+                state->apply({&change, 1});
+                saved = true;
+            } catch (const Error& error) {
+                if (std::string_view(error.what()) != "STATE_REVISION_CONFLICT")
+                    throw;
+            }
+        }
+        if (!saved)
+            throw Error("JOB_STATE_CONFLICT: concurrent updates exceeded the bounded retry budget");
+        write_json_atomic(path.status, published);
+    } else
+        write_json_atomic(path.status, status);
     bool initialized;
     {
         std::lock_guard lock(maintenance_->mutex);
@@ -178,6 +237,7 @@ void JobStore::write_status(std::string_view id, const Json& status) const {
     }
 }
 void JobStore::write_heartbeat(std::string_view id, const Json& value) const {
+    require_writable_backend();
     write_json_atomic(paths(id).heartbeat, value);
 }
 bool JobStore::cancellation_requested(std::string_view id) const {
@@ -185,12 +245,20 @@ bool JobStore::cancellation_requested(std::string_view id) const {
 }
 Json JobStore::get_status(std::string_view id) const {
     const auto path = paths(id);
-    return reconcile(path, read_job_json(path.status));
+    return reconcile(path, read_status_raw(id));
 }
 Json JobStore::reconcile(const JobPaths& paths, Json value) const {
     if (!value.is_object())
         throw Error("Job status " + path_text(paths.status) + " is not a JSON object.");
     const auto status = json_string(value, "status");
+    if (!pid_field(value, "runnerPid")) {
+        if (const auto owner = read_json_optional(paths.dir / "runner-owner.json", 4096);
+            owner && json_string(*owner, "id") == paths.id && pid_field(*owner, "pid") &&
+            owner->contains("instance") && !(*owner)["instance"].is_null()) {
+            value["runnerPid"] = (*owner)["pid"];
+            value["runnerProcessInstance"] = (*owner)["instance"];
+        }
+    }
     if (terminal_status(status) && status != "cancelled")
         return decorate(std::move(value), paths, false, {});
     if (status == "cancelled" || fs::exists(paths.cancel))
@@ -231,7 +299,7 @@ Json JobStore::reconcile_cancelled(const JobPaths& paths, Json value) const {
             "Local Docker runner stopped; termination of the workload in the shared container is unverified";
         value.erase("terminationPending");
         value.erase("childAlive");
-        write_json_atomic(paths.status, value);
+        write_status(paths.id, value);
         return decorate(std::move(value), paths, false, {});
     }
     if (!pending && json_string(value, "status") == "cancelled")
@@ -250,7 +318,7 @@ Json JobStore::reconcile_cancelled(const JobPaths& paths, Json value) const {
             value["completedAtUtc"] = utc_now();
         value.erase("terminationPending");
         value.erase("childAlive");
-        write_json_atomic(paths.status, value);
+        write_status(paths.id, value);
     }
     return decorate(std::move(value), paths, alive, {});
 }
@@ -294,7 +362,7 @@ Json JobStore::interrupt_orphan(const JobPaths& paths, Json value, const std::op
     if (!value.contains("error"))
         value["error"] = "Detached job runner disappeared before recording a terminal status.";
     value["heartbeatAgeMs"] = age ? Json(age->count()) : Json(nullptr);
-    write_json_atomic(paths.status, value);
+    write_status(paths.id, value);
     return decorate(std::move(value), paths, false, age);
 }
 Json JobStore::wait_status(std::string_view id, Millis wait, bool terminal_only, Millis poll,
@@ -394,6 +462,23 @@ Json JobStore::cancel(std::string_view id) const {
     }
 }
 void JobStore::admit(const std::optional<std::string>& task) const {
+    if (const auto state = index()) {
+        if (!config_->job_max_active || !config_->job_max_per_task)
+            throw Error("JOB_CAPACITY: job admission is disabled");
+        const std::vector<std::string> active{"queued", "starting", "running", "cancel_requested"};
+        StateCountQuery query{"job", {}, {}, active, config_->job_max_active};
+        if (state->count_matching(query) >= config_->job_max_active)
+            throw Error("JOB_CAPACITY: active or queued runner limit reached; retry the same operation after "
+                        "a job completes");
+        if (task) {
+            query.group = task;
+            query.limit = config_->job_max_per_task;
+            if (state->count_matching(query) >= config_->job_max_per_task)
+                throw Error("JOB_CAPACITY: active or queued runner limit reached; retry the same operation "
+                            "after a job completes");
+        }
+        return;
+    }
     const auto deadline = Clock::now() + Millis(5000);
     std::size_t active = 0, task_active = 0;
     for (const auto& id : job_ids(config_->jobs_root)) {
@@ -419,6 +504,54 @@ Json JobStore::list(const std::optional<std::string>& task, const std::vector<st
         throw Error("limit must be between 1 and 100");
     if (task)
         validate_key(*task);
+    if (const auto state = index()) {
+        std::set<std::string> filters(statuses.begin(), statuses.end());
+        if (filters.size() > 16)
+            throw Error("Job status filtering supports at most 16 distinct states");
+        std::vector<std::optional<std::string>> choices;
+        if (filters.empty())
+            choices.push_back({});
+        else
+            for (const auto& status : filters)
+                choices.push_back(status);
+        std::map<std::string, StateRecord> candidates;
+        bool more = false;
+        for (const auto& status : choices) {
+            StateQuery query{"job"};
+            query.group = task;
+            query.status = status;
+            query.after = cursor;
+            query.limit = std::min<std::size_t>(100, limit + 1);
+            auto page = state->list(query);
+            more = more || page.next.has_value();
+            for (auto& value : page.records)
+                candidates.emplace(value.id, std::move(value));
+        }
+        Json result = Json::array();
+        std::string scanned;
+        for (const auto& [id, record] : candidates) {
+            if (result.size() >= limit) {
+                more = true;
+                break;
+            }
+            scanned = id;
+            const auto status = reconcile(paths(id), record.data.at("status"));
+            if (!filters.empty() && !filters.contains(json_string(status, "status")))
+                continue;
+            Json summary{{"id", id}};
+            for (const auto* key :
+                 {"status", "createdAtUtc", "startedAtUtc", "completedAtUtc", "exitCode", "runnerAlive"})
+                if (status.contains(key))
+                    summary[key] = status[key];
+            if (record.data.contains("agent") && !record.data["agent"].empty())
+                summary["agent"] = record.data["agent"];
+            result.push_back(std::move(summary));
+        }
+        return Json{{"jobs", result},
+                    {"next_cursor", more && !scanned.empty() ? Json(scanned) : Json()},
+                    {"order", "job_id"},
+                    {"limit", limit}};
+    }
     const auto deadline = Clock::now() + Millis(5000);
     Json jobs = Json::array();
     Json next = nullptr;

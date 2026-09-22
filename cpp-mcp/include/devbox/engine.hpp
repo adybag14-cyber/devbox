@@ -5,8 +5,8 @@
 #include "docker_files.hpp"
 #include "lifecycle.hpp"
 #include "monitoring.hpp"
-#include "search.hpp"
 #include "research.hpp"
+#include "search.hpp"
 #include "server.hpp"
 namespace devbox {
 class Engine final : public McpBackend, public std::enable_shared_from_this<Engine> {
@@ -34,6 +34,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     HttpServer* server_ = nullptr;
     OperationalMonitor monitoring_;
     std::atomic_bool stopped_{false};
+    std::unique_ptr<FileLock> frontend_lock_;
     fs::path working_dir(const Json& args, bool host) const;
     void require_agent_host() const;
     asio::awaitable<ExecutionLease> acquire(AcquireRequest request, Cancel cancel);

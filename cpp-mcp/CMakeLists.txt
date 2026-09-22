@@ -48,6 +48,7 @@ add_library(devbox_core
   src/scheduler.cpp
   src/job_logs.cpp
   src/jobs.cpp
+  src/indexed_jobs.cpp
   src/detached.cpp
   src/resource_class.cpp
   src/job_manager.cpp
@@ -120,6 +121,10 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-indexed-jobs-tests tests/indexed_jobs_tests.cpp)
+  target_link_libraries(devbox-indexed-jobs-tests PRIVATE devbox_core)
+  add_test(NAME indexed-jobs COMMAND devbox-indexed-jobs-tests)
+  set_tests_properties(indexed-jobs PROPERTIES TIMEOUT 60)
   add_executable(devbox-state-coordinator-tests tests/state_coordinator_tests.cpp)
   target_link_libraries(devbox-state-coordinator-tests PRIVATE devbox_core)
   if(MSVC)

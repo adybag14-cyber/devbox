@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {assertNativeContract,nativeToolCount} from './native-contract.mjs';
+import {stopStateFixture} from './state-fixture.mjs';
 import {spawn} from 'node:child_process';
 import {mkdtemp,readFile,writeFile,rm,mkdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -16,7 +17,7 @@ const root=await mkdtemp(path.join(os.tmpdir(),'devbox-cpp-engine-sdk-'));
 const workspace=path.join(root,'workspace'); await mkdir(workspace);
 const port=await new Promise((resolve,reject)=>{const socket=net.createServer();socket.once('error',reject);socket.listen(0,'127.0.0.1',()=>{const number=socket.address().port;socket.close(()=>resolve(number));});});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const env={...process.env,DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),MCP_AUTH_MODE:'none',PUBLIC_BASE_URL:'',DEVBOX_RUNTIME_MODE:'host',ENABLE_HOST_EXEC:'true',DEVBOX_AUTO_START:'false',HOST_WORKSPACE_PATH:workspace,DEVBOX_WORKSPACE_PATH:workspace,HOST_DEFAULT_WORKDIR:workspace,NODE_EXE:process.execPath,HOST_SHELL:process.platform==='win32'?'cmd.exe':process.env.HOST_SHELL||(process.env.PREFIX?.includes('com.termux/files/usr')?path.join(process.env.PREFIX,'bin/sh'):'/bin/sh'),MCP_JOBS_ROOT:path.join(root,'jobs'),MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),MCP_PERFORMANCE_STATE_PATH:path.join(root,'run','mcp-performance.json'),MAX_COMMAND_OUTPUT_CHARS:'65536',MAX_TEXT_OUTPUT_CHARS:'4000000',MAX_MCP_TRANSFER_CHARS:'4000000',MCP_WAIT_MAX_SECONDS:'85',DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE:'0'};
+const env={...process.env,DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),MCP_AUTH_MODE:'none',PUBLIC_BASE_URL:'',DEVBOX_RUNTIME_MODE:'host',ENABLE_HOST_EXEC:'true',DEVBOX_AUTO_START:'false',HOST_WORKSPACE_PATH:workspace,DEVBOX_WORKSPACE_PATH:workspace,HOST_DEFAULT_WORKDIR:workspace,NODE_EXE:process.execPath,HOST_SHELL:process.platform==='win32'?'cmd.exe':process.env.HOST_SHELL||(process.env.PREFIX?.includes('com.termux/files/usr')?path.join(process.env.PREFIX,'bin/sh'):'/bin/sh'),MCP_JOBS_ROOT:path.join(root,'jobs'),MCP_STATE_ROOT:path.join(root,'run','state'),MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),MCP_PERFORMANCE_STATE_PATH:path.join(root,'run','mcp-performance.json'),MAX_COMMAND_OUTPUT_CHARS:'65536',MAX_TEXT_OUTPUT_CHARS:'4000000',MAX_MCP_TRANSFER_CHARS:'4000000',MCP_WAIT_MAX_SECONDS:'85',DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE:'0'};
 const child=spawn(binary,[],{cwd:repo,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
 let output='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{output=(output+chunk.toString()).slice(-16000);});
 const exited=new Promise((resolve,reject)=>{child.once('exit',resolve);child.once('error',reject);});
@@ -77,5 +78,6 @@ try {
   await client?.close().catch(()=>{});
   if(child.exitCode===null&&child.signalCode===null){child.kill();await Promise.race([exited,delay(10000)]);}
   assert(child.exitCode!==null||child.signalCode!==null,'owned candidate stopped');
+  await stopStateFixture(binary,root);
   await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:200});
 }

@@ -1,0 +1,28 @@
+{
+  "scope": "Indexed job/checkpoint integration and legacy cutover; further export and maintenance refinements pending",
+  "modes": [
+    "legacy",
+    "sqlite"
+  ],
+  "checks": [
+    "original checkpoint revision and hash preserved",
+    "retained operation receipt replay",
+    "new detached indexed jobs",
+    "request content integrity",
+    "active-runner migration refusal",
+    "legacy write fence after cutover",
+    "frontend lifetime migration lock",
+    "launch identity before first heartbeat",
+    "SDK restart/cancellation/quota/CAS in both modes"
+  ],
+  "binary_sha256": "67bcdc069eaca1add06d034e71b5931d5b9e3163d640fb70da86a10ebe21c029",
+  "log_sha256": {
+    "h08-cutover-tests.log": "82d5a9b3829655c484b22c2d73c500ca2b0b33e3d77da9c4ed964295284a642c",
+    "h08-integrated-fixes-tests.log": "3d1483877d0cbcd4f3b9567a12a0795b7bb82d08d221ee2445fd1bcfe67752b9",
+    "indexed-legacy-engine-sdk-smoke.log": "93a3b49fc5b54443c8a3efcf005c094b9714d70fdaabb63a9265666dc81816e0",
+    "indexed-sqlite-engine-sdk-smoke.log": "a9c31b5d10e43f6e8031e3d984b5c4d1cf32ec37b72745fca010273cede2bb33",
+    "indexed-legacy-agent-reliability-smoke.log": "18d1bcd87c6970db301867aefffb535237b42d7c7c70132d63f32dfc1f39a63c",
+    "indexed-sqlite-agent-reliability-smoke.log": "02b06c5c3e681e735524bf43517753fb0814ae0fb100a4e1b500bed3528ac2a5"
+  },
+  "production_migrated": false
+}

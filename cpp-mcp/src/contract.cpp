@@ -294,6 +294,7 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
         names.push_back(tool["name"]);
     return Json{{"contract_version", cpp_contract_version},
                 {"implementation", "cpp"},
+                {"state_backend", config.state_backend},
                 {"schema_sha256", sha256(tools.dump())},
                 {"tools", names},
                 {"tool_manifest", capability_manifest(config)},
