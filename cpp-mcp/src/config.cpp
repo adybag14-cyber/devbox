@@ -395,6 +395,18 @@ Config Config::load(bool read_env_files) {
     ENV_NUMBER(docker_command_timeout_ms, "DOCKER_COMMAND_TIMEOUT_MS", 120000);
     ENV_NUMBER(usage_log_max_bytes, "MCP_USAGE_LOG_MAX_BYTES", 16 * 1024 * 1024);
     ENV_NUMBER(usage_log_rotations, "MCP_USAGE_LOG_ROTATIONS", 3);
+    ENV_NUMBER(mcp_response_max_bytes, "MCP_RESPONSE_MAX_BYTES", 64 * 1024 * 1024);
+    ENV_NUMBER(mcp_response_budget_bytes, "MCP_RESPONSE_BUDGET_BYTES", 256 * 1024 * 1024);
+    ENV_NUMBER(mcp_request_budget_bytes, "MCP_REQUEST_BUDGET_BYTES", 256 * 1024 * 1024);
+    ENV_NUMBER(mcp_write_idle_ms, "MCP_WRITE_IDLE_MS", 15000);
+    ENV_NUMBER(mcp_response_deadline_ms, "MCP_RESPONSE_DEADLINE_MS", 300000);
+    c.mcp_response_max_bytes = std::clamp<std::size_t>(c.mcp_response_max_bytes, 65536, 512 * 1024 * 1024);
+    c.mcp_response_budget_bytes =
+        std::clamp<std::size_t>(c.mcp_response_budget_bytes, 65536, 1024 * 1024 * 1024);
+    c.mcp_request_budget_bytes =
+        std::clamp<std::size_t>(c.mcp_request_budget_bytes, 65536, 1024 * 1024 * 1024);
+    c.mcp_write_idle_ms = std::clamp<std::uint64_t>(c.mcp_write_idle_ms, 100, 60000);
+    c.mcp_response_deadline_ms = std::clamp<std::uint64_t>(c.mcp_response_deadline_ms, 1000, 3600000);
     ENV_NUMBER(oauth_max_clients, "MCP_OAUTH_MAX_CLIENTS", 256);
     c.oauth_max_clients = std::max<std::size_t>(1, c.oauth_max_clients);
     ENV_NUMBER(exec_max_concurrent, "MCP_EXEC_MAX_CONCURRENT", 6);

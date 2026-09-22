@@ -443,7 +443,9 @@ void UsageTelemetry::http(const HttpRequest& request, int status, Millis duratio
                      ? request.path
                      : "unrecognized"},
         {"status_code", disconnected || !status ? Json() : Json(status)},
-        {"outcome", disconnected ? "client_aborted" : "finished"},
+        {"outcome", !request.transport_outcome.empty() ? request.transport_outcome
+                    : disconnected                     ? "client_aborted"
+                                                       : "finished"},
         {"client_aborted", disconnected},
         {"accept", json_string(request.headers, "accept").find("text/event-stream") != std::string::npos
                        ? "sse"

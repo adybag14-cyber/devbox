@@ -30,6 +30,7 @@ struct HttpRequest {
     std::string method, target, path, query, peer;
     std::string usage_id = uuid(), started_at = utc_now();
     std::string connection_created_at, receive_started_at, finished_at;
+    std::string transport_outcome;
     RequestTiming timing;
     Json headers = Json::object();
     std::string body;

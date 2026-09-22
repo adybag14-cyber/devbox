@@ -38,6 +38,7 @@ class HttpServer {
     void stop();
     std::uint16_t port() const;
     std::size_t active_requests() const;
+    Json resource_snapshot() const;
     asio::any_io_executor executor() const;
     Cancel stop_token() const;
 };

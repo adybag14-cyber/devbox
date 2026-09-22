@@ -194,6 +194,7 @@ int run(int argc, char** argv) {
         run_job_request(config, store.paths(id).request);
         require(read_file(root / "counter") == "x", "completed runner is never resurrected");
         ProcessOptions frontend;
+        frontend.allow_durable_children = true;
         frontend.env = worker_environment();
         // The owned frontend fixture needs the explicit configuration established above.
         for (const auto& [key, prior] : original)

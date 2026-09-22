@@ -181,7 +181,8 @@ try {
   assert.ok(!(toolFinish && toolThrow), "disconnect tool call must have exactly one terminal telemetry event");
   if (toolFinish) {
     assert.equal(toolFinish.is_error, true);
-    assert.match(toolFinish.summary || "", /cancel|abort/i);
+    if (toolFinish.context?.trace_schema === 2) assert.equal(toolFinish.outcome, 'cancelled');
+    else assert.match(toolFinish.summary || "", /cancel|abort/i);
   } else {
     assert.match(toolThrow.error || "", /client disconnected before the tool result was delivered|cancel|abort/i);
   }

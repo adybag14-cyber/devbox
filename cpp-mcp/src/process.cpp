@@ -639,6 +639,28 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     NativeHandle job(CreateJobObjectW(nullptr, nullptr));
     if (!job)
         throw Error(windows_error());
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (options.allow_durable_children)
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    if (options.memory_limit_bytes) {
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+        limits.JobMemoryLimit =
+            static_cast<SIZE_T>(std::min<std::uint64_t>(*options.memory_limit_bytes, SIZE_MAX));
+    }
+    if (options.process_limit) {
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        limits.BasicLimitInformation.ActiveProcessLimit = *options.process_limit;
+    }
+    if (options.cpu_limit_ms) {
+        if (*options.cpu_limit_ms > static_cast<std::uint64_t>(INT64_MAX) / 10000)
+            throw Error("CPU time limit exceeds the platform range");
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_TIME;
+        limits.BasicLimitInformation.PerJobUserTimeLimit.QuadPart =
+            static_cast<LONGLONG>(*options.cpu_limit_ms * 10000);
+    }
+    if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+        throw Error("Unable to apply child resource limits: " + windows_error());
     if (cancel)
         cancel->check();
     if (!CreateProcessW(native_program.c_str(), native_command.data(), nullptr, nullptr, TRUE,
@@ -949,6 +971,11 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
 #endif
 ProcessOutput spawn_process(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel) {
+#ifndef _WIN32
+    if (options.memory_limit_bytes || options.cpu_limit_ms || options.process_limit)
+        throw Error("Native Job Object limits are unavailable on this platform; use a qualified isolated "
+                    "worker backend");
+#endif
     if (!options.env) {
         auto isolated = options;
         isolated.env = worker_environment();

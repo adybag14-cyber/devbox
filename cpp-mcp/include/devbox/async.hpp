@@ -1,5 +1,6 @@
 #pragma once
 #include "common.hpp"
+#include "resource_budget.hpp"
 #include <boost/asio.hpp>
 #include <deque>
 #include <future>
@@ -103,7 +104,8 @@ class WorkPool {
             };
             if (!enqueue(std::move(task))) {
                 Result<T> result;
-                result.error = std::make_exception_ptr(Error("Bounded worker queue is full; retry shortly."));
+                result.error = std::make_exception_ptr(
+                    ResourceExhausted("Bounded worker queue is full; retry shortly."));
                 race->complete(std::move(result));
             }
         };
@@ -152,7 +154,8 @@ class WorkPool {
             };
             if (!enqueue(std::move(task))) {
                 Result<T> result;
-                result.error = std::make_exception_ptr(Error("Bounded worker queue is full; retry shortly."));
+                result.error = std::make_exception_ptr(
+                    ResourceExhausted("Bounded worker queue is full; retry shortly."));
                 complete(std::move(result));
             }
         };

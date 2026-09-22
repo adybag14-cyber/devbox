@@ -1,6 +1,7 @@
 #include "devbox/native.hpp"
 #include "devbox/process.hpp"
 #include "devbox/scoped_thread.hpp"
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 #ifdef _WIN32
@@ -18,6 +19,24 @@ void require(bool condition, const char* message) {
 }
 int child(int argc, char** argv) {
     const std::string mode = argc > 2 ? argv[2] : "";
+#ifdef _WIN32
+    if (mode == "abrupt-owner" && argc == 4) {
+        Json owned;
+        ProcessOptions options;
+        options.timeout = Millis(5000);
+        options.on_pid = [&](std::uint32_t pid) {
+            owned = Json{{"pid", pid}, {"instance", *process_instance(pid)}};
+        };
+        options.on_output = [&](OutputStream, std::string_view text) {
+            if (text.find("ready") != text.npos) {
+                write_json_atomic(path_from_utf8(argv[3]), owned);
+                std::_Exit(0);
+            }
+        };
+        spawn_process(path_text(executable_path()), {"--child", "sleep"}, options);
+        return 1;
+    }
+#endif
     if (mode == "echo") {
         std::cout << Json{{"args", std::vector<std::string>(argv + 3, argv + argc)},
                           {"cwd", path_text(fs::current_path())},
@@ -129,6 +148,33 @@ int test_main(int argc, char** argv) {
                     zero.snapshot().truncated,
                 "zero capture bound");
         const auto self = path_text(executable_path());
+#ifdef _WIN32
+        {
+            const auto receipt = root / "orphan-fixture.json";
+            const auto owner =
+                spawn_detached(executable_path(), {"--child", "abrupt-owner", path_text(receipt)}, root);
+            const auto owner_instance = process_instance(owner);
+            std::optional<Json> orphan;
+            ScopeExit cleanup_owner([&] {
+                if (owner_instance && process_matches_instance(owner, owner_instance))
+                    terminate_process_tree(owner, owner_instance);
+                if (orphan)
+                    terminate_process_tree(static_cast<std::uint32_t>(json_uint(*orphan, "pid")),
+                                           json_uint(*orphan, "instance"));
+            });
+            const auto deadline = Clock::now() + Millis(5000);
+            while (!fs::exists(receipt) && Clock::now() < deadline)
+                std::this_thread::sleep_for(Millis(5));
+            require(fs::exists(receipt), "abrupt owner fixture published the exact child identity");
+            orphan = read_json(receipt);
+            const auto pid = static_cast<std::uint32_t>(json_uint(*orphan, "pid"));
+            const auto instance = json_uint(*orphan, "instance");
+            while (process_matches_instance(pid, instance) && Clock::now() < deadline)
+                std::this_thread::sleep_for(Millis(5));
+            require(!process_matches_instance(pid, instance),
+                    "foreground child is terminated when its owner exits abruptly");
+        }
+#endif
         {
             const auto prior = environment("DEVBOX_AUDIT_CANARY");
             const auto prior_token = environment("OPENAI_API_KEY");

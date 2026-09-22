@@ -38,6 +38,11 @@ struct ProcessOptions {
     std::function<void(std::uint32_t)> on_pid;
     // Only shell adapters may use this to supply the Windows shell's native syntax.
     std::optional<std::string> windows_raw_arguments;
+    std::optional<std::uint64_t> memory_limit_bytes, cpu_limit_ms;
+    std::optional<std::uint32_t> process_limit;
+    // Only a trusted frontend supervisor may permit independently owned durable runners.
+    // Generic and autonomous execution keep this false.
+    bool allow_durable_children = false;
 };
 struct ProcessOutput {
     std::string stdout_text, stderr_text;

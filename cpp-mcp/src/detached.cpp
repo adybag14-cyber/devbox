@@ -104,9 +104,27 @@ std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string
     startup.StartupInfo.hStdError = handle;
     startup.lpAttributeList = attributes;
     PROCESS_INFORMATION information{};
+    DWORD ownership_flags = 0;
+    BOOL in_job = FALSE;
+    if (!IsProcessInJob(GetCurrentProcess(), nullptr, &in_job))
+        throw Error(windows_error());
+    if (in_job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        if (!QueryInformationJobObject(nullptr, JobObjectExtendedLimitInformation, &limits, sizeof(limits),
+                                       nullptr))
+            throw Error("Cannot verify independent durable-runner ownership: " + windows_error());
+        const auto flags = limits.BasicLimitInformation.LimitFlags;
+        const bool can_break_away =
+            flags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK);
+        if ((flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) && !can_break_away)
+            throw Error("Durable runners require an independent frontend or an explicitly approved breakaway "
+                        "supervisor");
+        if (can_break_away)
+            ownership_flags = CREATE_BREAKAWAY_FROM_JOB;
+    }
     if (!CreateProcessW(program.c_str(), command.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT |
-                            EXTENDED_STARTUPINFO_PRESENT,
+                        ownership_flags | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+                            CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
                         env ? environment_block.data() : nullptr, cwd.c_str(), &startup.StartupInfo,
                         &information))
         throw Error(windows_error());

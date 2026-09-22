@@ -656,21 +656,32 @@ try {
   const waitFinish = toolUsage.find((event) => event.type === "tool_finish" && event.tool === "devbox_wait");
   assert.ok(waitStart?.invocation_id);
   assert.equal(waitFinish?.invocation_id, waitStart.invocation_id);
-  assert.equal(waitStart.arguments?.reason?.preview, "rust-shadow-smoke");
-  assert.ok(waitStart.context?.request_id !== undefined);
+  const typedTelemetry = capabilities.implementation === 'cpp';
+  if (typedTelemetry) {
+    assert.equal(waitStart.context?.trace_schema, 2);
+    assert.equal(waitStart.arguments?.reason?.redacted, true);
+    assert.equal(waitStart.context?.has_request_id, true);
+    assert(!toolUsageText.includes('rust-shadow-smoke') && !toolUsageText.includes('rust-cancellation-smoke'));
+  } else {
+    assert.equal(waitStart.arguments?.reason?.preview, "rust-shadow-smoke");
+    assert.ok(waitStart.context?.request_id !== undefined);
+  }
   assert.equal(waitFinish.ok, true);
   assert.equal(waitFinish.is_error, false);
   assert.ok(waitFinish.duration_ms >= 0);
-  const cancelStart = toolUsage.find((event) => event.type === "tool_start" && event.tool === "devbox_wait" && event.arguments?.reason?.preview === "rust-cancellation-smoke");
+  const typedCancelFinish = typedTelemetry && toolUsage.find(event => event.type === 'tool_finish' && event.tool === 'devbox_wait' && event.outcome === 'cancelled');
+  const cancelStart = toolUsage.find((event) => event.type === "tool_start" && event.tool === "devbox_wait" &&
+    (typedTelemetry ? event.invocation_id === typedCancelFinish?.invocation_id : event.arguments?.reason?.preview === "rust-cancellation-smoke"));
   const cancelFinish = toolUsage.find((event) => event.type === "tool_finish" && event.invocation_id === cancelStart?.invocation_id);
   assert.ok(cancelStart?.invocation_id, "cancelled wait must reach the Rust tool handler");
   assert.ok(cancelFinish, "cancellation notification must finish the Rust handler");
   assert.equal(cancelFinish.is_error, true);
   assert.ok(cancelFinish.duration_ms < 3_000);
   const processCancelCandidates = toolUsage.filter((event) => event.type === "tool_start" && event.tool === "devbox_run_program");
-  const processCancelEvent = processCancelCandidates.find((event) =>
-    JSON.stringify(event.arguments || {}).includes("setTimeout(() => {}, 10000)"),
-  );
+  const typedProcessFinish = typedTelemetry && toolUsage.find(event => event.type === 'tool_finish' && event.tool === 'devbox_run_program' && event.outcome === 'cancelled');
+  const processCancelEvent = processCancelCandidates.find((event) => typedTelemetry
+    ? event.invocation_id === typedProcessFinish?.invocation_id
+    : JSON.stringify(event.arguments || {}).includes("setTimeout(() => {}, 10000)"));
   const processCancelFinish = toolUsage.find((event) => event.type === "tool_finish" && event.invocation_id === processCancelEvent?.invocation_id);
   assert.ok(processCancelEvent?.invocation_id, "cancelled process must reach Rust tool handler");
   assert.ok(processCancelFinish, "cancelled process must produce a finish telemetry event");
@@ -684,7 +695,10 @@ try {
   assert.ok(rootGet?.request_id);
   assert.equal(rootGet?.client_aborted, false);
   assert.ok(mcpPost?.status_code >= 200 && mcpPost?.status_code < 300);
-  assert.match(mcpPost?.user_agent || "", /modelcontextprotocol|node|undici/i);
+  if (typedTelemetry) {
+    assert(mcpPost?.user_agent_chars > 0);
+    assert.equal(mcpPost?.user_agent, undefined);
+  } else assert.match(mcpPost?.user_agent || "", /modelcontextprotocol|node|undici/i);
 
   console.log(JSON.stringify({
     ok: true,

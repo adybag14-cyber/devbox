@@ -33,6 +33,7 @@ add_custom_target(devbox-build-identity
 add_library(devbox_core
   src/common.cpp
   src/json_output.cpp
+  src/resource_budget.cpp
   src/state_file.cpp
   src/config.cpp
   src/result.cpp
@@ -114,6 +115,13 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-resource-budget-tests tests/resource_budget_tests.cpp)
+  target_link_libraries(devbox-resource-budget-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-resource-budget-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME resource-budget COMMAND devbox-resource-budget-tests)
+  set_tests_properties(resource-budget PROPERTIES TIMEOUT 20)
   add_executable(devbox-security-tests tests/security_tests.cpp)
   target_link_libraries(devbox-security-tests PRIVATE devbox_core)
   add_test(NAME security COMMAND devbox-security-tests)

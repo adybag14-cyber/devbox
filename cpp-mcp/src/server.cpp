@@ -1,5 +1,6 @@
 #include "devbox/server.hpp"
 #include "devbox/native.hpp"
+#include "devbox/resource_budget.hpp"
 #include "devbox/result.hpp"
 #include <array>
 #include <boost/beast.hpp>
@@ -251,10 +252,20 @@ std::optional<HttpReply> validate_protocol_request(const HttpRequest& request, c
     }
     return {};
 }
-Json bounded_json(std::string_view body) {
-    return Json::parse(body, [](int depth, Json::parse_event_t, Json&) {
+Json bounded_json(std::string_view body, const Cancel& cancel = {}) {
+    std::array<std::size_t, 130> keys{};
+    std::size_t nodes = 0;
+    return Json::parse(body, [&](int depth, Json::parse_event_t event, Json&) {
         if (depth > 128)
             throw Error("JSON nesting exceeds the limit");
+        if (cancel)
+            cancel->check();
+        if (++nodes > 131072)
+            throw Error("JSON node count exceeds the limit");
+        if (event == Json::parse_event_t::object_start)
+            keys[depth + 1] = 0;
+        if (event == Json::parse_event_t::key && ++keys[depth] > 4096)
+            throw Error("JSON object width exceeds the limit");
         return true;
     });
 }
@@ -312,6 +323,8 @@ struct HttpServer::Impl : std::enable_shared_from_this<HttpServer::Impl> {
     std::unique_ptr<OAuthService> oauth_service;
     RequestRegistry requests;
     std::unique_ptr<WorkPool> auth_pool;
+    WorkPool codec_pool{2, 16};
+    ByteBudget request_bytes, response_bytes;
     asio::io_context io{http_io_threads};
     Tcp::acceptor listener{io};
     std::optional<asio::executor_work_guard<asio::io_context::executor_type>> work;
@@ -323,7 +336,8 @@ struct HttpServer::Impl : std::enable_shared_from_this<HttpServer::Impl> {
     Cancel shutdown = std::make_shared<Cancellation>();
     std::uint16_t bound_port = 0;
     Impl(std::shared_ptr<const Config> cfg, std::shared_ptr<McpBackend> handler)
-        : config(std::move(cfg)), backend(std::move(handler)), gateway(*config) {
+        : config(std::move(cfg)), backend(std::move(handler)), gateway(*config),
+          request_bytes(config->mcp_request_budget_bytes), response_bytes(config->mcp_response_budget_bytes) {
         if (OAuthService::enabled(*config)) {
             oauth_service = std::make_unique<OAuthService>(*config);
             auth_pool = std::make_unique<WorkPool>(4, 64);
@@ -342,6 +356,8 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     const std::string connection_created_at = utc_from_micros(static_cast<std::int64_t>(unix_micros()));
     Json bridge_headers = Json::object();
     Cancel cancel = std::make_shared<Cancellation>();
+    // Cancelling tool work must still allow its terminal acknowledgement to be written.
+    Cancel wire_cancel = std::make_shared<Cancellation>();
     std::uint64_t sequence, sent_bytes = 0;
     int response_status = 0;
     bool response_started = false, completed = false, disconnected = false;
@@ -353,6 +369,9 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         explicit ReadAhead(asio::any_io_executor executor) : finished(std::move(executor)) {}
     };
     std::shared_ptr<ReadAhead> read_ahead;
+    ByteBudget::Lease request_charge, response_charge;
+    std::optional<Clock::time_point> response_deadline;
+    std::shared_ptr<asio::steady_timer> response_watchdog;
     Clock::time_point started_at = Clock::now();
     Session(std::shared_ptr<Impl> owner, Tcp::socket socket, const Tcp::endpoint& endpoint, std::uint64_t id)
         : server(std::move(owner)), stream(std::move(socket)), peer(endpoint.address().to_string()),
@@ -370,9 +389,59 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         if (dropped && !completed)
             disconnected = true;
         cancel->cancel();
+        wire_cancel->cancel();
         boost::system::error_code ec;
         stream.socket().shutdown(Tcp::socket::shutdown_both, ec);
         stream.socket().close(ec);
+    }
+    void begin_response_budget() {
+        if (!response_deadline) {
+            response_deadline = Clock::now() + Millis(server->config->mcp_response_deadline_ms);
+            response_watchdog =
+                std::make_shared<asio::steady_timer>(stream.get_executor(), *response_deadline);
+            const auto identity = request.usage_id;
+            const auto observed = weak_from_this();
+            response_watchdog->async_wait([observed, identity](boost::system::error_code error) {
+                if (!error)
+                    if (const auto session = observed.lock();
+                        session && !session->completed && session->request.usage_id == identity) {
+                        session->request.transport_outcome = "response_deadline";
+                        session->close(true);
+                    }
+            });
+        }
+    }
+    void arm_write() {
+        begin_response_budget();
+        if (Clock::now() >= *response_deadline) {
+            request.transport_outcome = "response_deadline";
+            close(true);
+            throw Cancelled();
+        }
+        stream.expires_at(
+            std::min(*response_deadline, Clock::now() + Millis(server->config->mcp_write_idle_ms)));
+    }
+    asio::awaitable<std::string> encode(Json value) {
+        const auto charge = json_memory_charge(value, server->config->mcp_response_budget_bytes);
+        if (charge > 16384)
+            response_charge = server->response_bytes.acquire(charge);
+        const auto maximum = server->config->mcp_response_max_bytes;
+        if (charge <= std::min<std::size_t>(65536, maximum)) {
+            wire_cancel->check();
+            co_return json_dump(value, Json::error_handler_t::replace);
+        }
+        begin_response_budget();
+        auto pending = server->codec_pool.run_until(
+            [value = std::make_shared<Json>(std::move(value)), maximum, cancel = wire_cancel,
+             charge = response_charge] { return bounded_json_dump(*value, maximum, cancel); },
+            *response_deadline, wire_cancel);
+        auto result = co_await std::move(pending);
+        if (!result) {
+            request.transport_outcome = "response_deadline";
+            throw ResourceExhausted(
+                "RESPONSE_ENCODING_DEADLINE: result unavailable; do not blindly repeat side effects");
+        }
+        co_return std::move(*result);
     }
     asio::awaitable<void> monitor_disconnect(std::shared_ptr<ReadAhead> state) {
         try {
@@ -416,13 +485,18 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
     }
     asio::awaitable<void> send(HttpReply reply) {
         const auto prepare_start = Clock::now();
+        if (reply.body.size() > server->config->mcp_response_max_bytes)
+            throw ResourceExhausted(
+                "RESPONSE_SIZE_BUDGET: retrieve bounded result pages instead of repeating side effects");
+        if (!response_charge && reply.body.size() > 16384)
+            response_charge = server->response_bytes.acquire(reply.body.size() * 3);
         if (request.method == "POST" && (request.path == "/mcp" || request.path == "/") &&
             reply.status == 200 && reply.body.size() >= 128 * 1024 &&
             json_string(reply.headers, "content-type").starts_with("application/json")) {
             reply.headers["vary"] = "accept-encoding";
             const auto coding = preferred_encoding(json_string(request.headers, "accept-encoding"));
             if (!coding.empty()) {
-                auto compressed = co_await compress_json(reply.body, coding, cancel);
+                auto compressed = co_await compress_json(reply.body, coding, wire_cancel);
                 if (compressed) {
                     reply.body = std::move(*compressed);
                     reply.headers["content-encoding"] = coding;
@@ -456,10 +530,19 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 request.timing.write_us +=
                     std::chrono::duration_cast<Micros>(Clock::now() - write_start).count();
             });
-            sent_bytes +=
-                co_await http::async_write(stream, serializer, asio::redirect_error(asio::use_awaitable, ec));
+            while (!serializer.is_done()) {
+                arm_write();
+                sent_bytes += co_await http::async_write_some(stream, serializer,
+                                                              asio::redirect_error(asio::use_awaitable, ec));
+                if (ec)
+                    break;
+            }
         }
         if (ec) {
+            if (ec == beast::error::timeout)
+                request.transport_outcome = response_deadline && Clock::now() >= *response_deadline
+                                                ? "response_deadline"
+                                                : "write_idle_timeout";
             disconnected = true;
             throw boost::system::system_error(ec);
         }
@@ -470,12 +553,17 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         ScopeExit observe([&] {
             request.timing.write_us += std::chrono::duration_cast<Micros>(Clock::now() - write_start).count();
         });
-        sent_bytes += co_await asio::async_write(stream.socket(), http::make_chunk(asio::buffer(text)),
-                                                 asio::use_awaitable);
+        for (std::size_t offset = 0; offset < text.size();) {
+            const auto count = std::min<std::size_t>(65536, text.size() - offset);
+            arm_write();
+            sent_bytes += co_await asio::async_write(
+                stream, http::make_chunk(asio::buffer(text.data() + offset, count)), asio::use_awaitable);
+            offset += count;
+        }
     }
     asio::awaitable<void> send_rpc(Json value, bool prefer_json = false) {
         const auto prepare_start = Clock::now();
-        auto reply = HttpReply::json(200, value);
+        HttpReply reply{200, "", Json{{"content-type", "application/json"}}};
         if (modern_protocol(request) && value.contains("error")) {
             const auto code = value["error"].value("code", 0);
             if (code == -32601)
@@ -483,6 +571,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             else if (code == -32602 || code == -32021 || code == -32022)
                 reply.status = 400;
         }
+        reply.body = co_await encode(std::move(value));
         if (reply.status == 200 && !prefer_json &&
             json_string(request.headers, "accept").find("text/event-stream") != std::string::npos) {
             reply.body = "event: message\ndata: " + std::move(reply.body) + "\n\n";
@@ -610,6 +699,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                     request.timing.write_us +=
                         std::chrono::duration_cast<Micros>(Clock::now() - write_start).count();
                 });
+                arm_write();
                 sent_bytes += co_await http::async_write_header(stream, serializer, asio::use_awaitable);
             }
             co_await send_chunk(": mcp-request-start\n\n");
@@ -624,16 +714,17 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             response = std::move(completion->response);
             if (disconnected)
                 co_return;
-            co_await send_chunk(
-                "event: message\ndata: " + json_dump(response, Json::error_handler_t::replace) + "\n\n");
+            auto encoded = co_await encode(std::move(response));
+            co_await send_chunk("event: message\ndata: " + std::move(encoded) + "\n\n");
             {
                 const auto write_start = Clock::now();
                 ScopeExit observe([&] {
                     request.timing.write_us +=
                         std::chrono::duration_cast<Micros>(Clock::now() - write_start).count();
                 });
+                arm_write();
                 sent_bytes +=
-                    co_await asio::async_write(stream.socket(), http::make_chunk_last(), asio::use_awaitable);
+                    co_await asio::async_write(stream, http::make_chunk_last(), asio::use_awaitable);
             }
             completed = true;
         } else {
@@ -645,7 +736,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 response = rpc_error(id, -32603, e.what());
             }
             if (!disconnected)
-                co_await send(HttpReply::json(200, response));
+                co_await send_rpc(std::move(response), true);
         }
     }
     asio::awaitable<void> dispatch() {
@@ -777,7 +868,23 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         std::optional<HttpReply> parse_failure;
         const auto parse_start = Clock::now();
         try {
-            body = bounded_json(request.body);
+            if (request.body.size() <= 16384)
+                body = bounded_json(request.body, cancel);
+            else {
+                begin_response_budget();
+                auto pending = server->codec_pool.run_until(
+                    [text = std::make_shared<std::string>(std::move(request.body)), cancel = cancel,
+                     charge = request_charge] { return bounded_json(*text, cancel); },
+                    *response_deadline, cancel);
+                auto parsed = co_await std::move(pending);
+                if (!parsed)
+                    throw ResourceExhausted("REQUEST_PARSING_DEADLINE");
+                body = std::move(*parsed);
+            }
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const ResourceExhausted&) {
+            throw;
         } catch (...) {
             parse_failure.emplace(HttpReply::json(400, rpc_error(nullptr, -32700, "Parse error")));
         }
@@ -858,6 +965,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 request = HttpRequest{};
                 request.peer = peer;
                 cancel = std::make_shared<Cancellation>();
+                wire_cancel = std::make_shared<Cancellation>();
                 request.cancellation = cancel;
                 bridge_headers = Json::object();
             }
@@ -865,6 +973,9 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             response_started = completed = disconnected = keep_alive = false;
             response_status = 0;
             sent_bytes = 0;
+            response_charge.reset();
+            request_charge.reset();
+            response_deadline.reset();
             std::optional<HttpReply> failure;
             try {
                 stream.expires_after(Millis(15000));
@@ -889,7 +1000,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 http::request_parser<http::string_body> parser;
                 parser.header_limit(32768);
                 parser.body_limit(server->config->mcp_json_body_limit_bytes);
-                parser.eager(true);
+                parser.eager(false);
                 // Parse bytes already read before creating another asynchronous
                 // read operation. Consume exactly this message's bytes so any
                 // following pipelined request remains in the bounded buffer.
@@ -897,6 +1008,20 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                 buffer.consume(used);
                 if (ec == http::error::need_more)
                     ec.clear();
+                if (!ec && !parser.is_header_done())
+                    co_await http::async_read_header(stream, buffer, parser,
+                                                     asio::redirect_error(asio::use_awaitable, ec));
+                if (!ec) {
+                    const auto length = parser.content_length().value_or(
+                        parser.chunked() ? server->config->mcp_json_body_limit_bytes : 0);
+                    if (length > 4096) {
+                        if (length > server->config->mcp_request_budget_bytes / 16)
+                            throw ResourceExhausted(
+                                "REQUEST_BYTE_BUDGET: request exceeds available body capacity");
+                        request_charge = server->request_bytes.acquire(static_cast<std::size_t>(length) * 16);
+                    }
+                }
+                parser.eager(true);
                 if (!ec && !parser.is_done())
                     co_await http::async_read(stream, buffer, parser,
                                               asio::redirect_error(asio::use_awaitable, ec));
@@ -928,6 +1053,7 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                         (request.method == "GET" || request.method == "HEAD") &&
                         (request.path == "/healthz" || request.path == "/livez" || request.path == "/readyz");
                     if (!probe) {
+                        begin_response_budget();
                         const auto self = shared_from_this();
                         read_ahead = std::make_shared<ReadAhead>(stream.get_executor());
                         asio::co_spawn(stream.get_executor(), monitor_disconnect(read_ahead),
@@ -935,14 +1061,32 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                     }
                     co_await dispatch();
                 }
+            } catch (const ResourceExhausted& e) {
+                request.transport_outcome = "capacity_rejected";
+                if (!response_started && !disconnected) {
+                    failure.emplace(HttpReply::json(503, Json{{"error", e.what()}}));
+                    failure->headers["retry-after"] = "1";
+                    keep_alive = false;
+                } else
+                    close(true);
             } catch (const Cancelled&) {
                 disconnected = true;
+            } catch (const boost::system::system_error& e) {
+                if (e.code() == beast::error::timeout)
+                    request.transport_outcome = response_deadline && Clock::now() >= *response_deadline
+                                                    ? "response_deadline"
+                                                    : "write_idle_timeout";
+                close(true);
             } catch (const std::exception& e) {
                 if (!response_started && !disconnected)
                     failure.emplace(HttpReply::json(500, Json{{"error", e.what()}}));
             }
             if (read_ahead)
                 co_await stop_read_ahead();
+            if (response_watchdog) {
+                response_watchdog->cancel();
+                response_watchdog.reset();
+            }
             if (failure && !response_started && stream.socket().is_open()) {
                 try {
                     co_await send(std::move(*failure));
@@ -961,6 +1105,9 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
             } catch (...) {
             }
             cancel->cancel();
+            wire_cancel->cancel();
+            request_charge.reset();
+            response_charge.reset();
             if (!completed || !keep_alive || disconnected || server->stopped)
                 break;
         }
@@ -1071,6 +1218,19 @@ std::uint16_t HttpServer::port() const {
 }
 std::size_t HttpServer::active_requests() const {
     return impl_->requests.active_count();
+}
+Json HttpServer::resource_snapshot() const {
+    std::lock_guard lock(impl_->sessions_mutex);
+    return Json{{"request_bytes", impl_->request_bytes.snapshot()},
+                {"response_bytes", impl_->response_bytes.snapshot()},
+                {"connections", impl_->sessions.size()},
+                {"connection_limit", 512},
+                {"reserved_control_request_bytes_per_connection", 4096},
+                {"reserved_control_response_bytes_per_connection", 16384},
+                {"write_idle_ms", impl_->config->mcp_write_idle_ms},
+                {"response_deadline_ms", impl_->config->mcp_response_deadline_ms},
+                {"codec_workers", 2},
+                {"codec_queue_limit", 16}};
 }
 asio::any_io_executor HttpServer::executor() const {
     return impl_->io.get_executor();

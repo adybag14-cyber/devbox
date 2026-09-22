@@ -1,0 +1,38 @@
+{
+  "ticket": "H06",
+  "scope": "Transport containment and Windows process lifetime/resource limits; filesystem worker isolation and full bounded shutdown still pending",
+  "checks": {
+    "slow_readers": true,
+    "inbound_body_budget": true,
+    "bounded_encoding_unicode_parity": true,
+    "control_capacity_under_load": true,
+    "foreground_owner_exit": true,
+    "durable_runner_survival": true,
+    "sdk_disconnect": true,
+    "sdk_full_smoke": true,
+    "legacy_modern_wire_cases": 35
+  },
+  "limits": {
+    "response_bytes": 67108864,
+    "aggregate_response_charge": 268435456,
+    "aggregate_request_charge": 268435456,
+    "write_idle_ms": 15000,
+    "overall_response_ms": 300000,
+    "codec_workers": 2,
+    "codec_queue": 16
+  },
+  "wire": {
+    "ok": true,
+    "total": 35,
+    "differences": []
+  },
+  "evidence_sha256": {
+    "h06-tests-fixed.log": "d23a36472d4202d5e17b852285aee75ae433c56c5ffc6830c3187a5e2f8db480",
+    "h06-inbound-test.log": "3aa5c879d325d9be6d7b1bbd7b88d64b66661058912bdd010ae5c8688011028b",
+    "h06-disconnect-smoke-runner.log": "b1629ba92fb9cc561848ad301e46248ba5b78b5e8d1db331ac3038edf288bd1f",
+    "h06-smoke-runner.log": "0d09daf58f859f42166254b8215c7f9fbc9414567d796cc5ade881a33963377e",
+    "h06-wire-revision-parity.log": "4cb75dad3c86fd2c3c6d395ead06751f989504a0400320b1094cc188b64cf699"
+  },
+  "binary_sha256": "b03f3512c42336527772eebd699f6ffd820f224109cebb7c7e9dfd8c763b7bb7",
+  "deployment": "not deployed"
+}

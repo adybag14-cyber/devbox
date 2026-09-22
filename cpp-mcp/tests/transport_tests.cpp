@@ -101,7 +101,7 @@ struct FixtureBackend : McpBackend {
         auto result =
             with_outcome(result_success("fixture complete", Json{{"name", name}}), ToolOutcome::Cancelled);
         const auto bytes = json_uint(arguments, "reply_bytes");
-        if (bytes && bytes <= 1024 * 1024) {
+        if (bytes && bytes <= 8 * 1024 * 1024) {
             result["structuredContent"]["data"]["payload"] =
                 fixture_payload(bytes, json_string(arguments, "reply_mode"));
         }
@@ -117,7 +117,7 @@ struct FixtureBackend : McpBackend {
         }
         return true;
     }
-    void observe_http(const HttpRequest& request, int, std::uint64_t, Millis duration,
+    void observe_http(const HttpRequest& request, int status, std::uint64_t, Millis duration,
                       bool disconnected) override {
         ++observations;
         if (request.peer != "127.0.0.1")
@@ -129,6 +129,9 @@ struct FixtureBackend : McpBackend {
                 ++invalid_identities;
             http_traces.push_back(
                 Json{{"target", request.target},
+                     {"status", status},
+                     {"outcome", request.transport_outcome},
+                     {"disconnected", disconnected},
                      {"started", request.started_at},
                      {"finished", request.finished_at.empty() ? utc_now() : request.finished_at},
                      {"connection_created", request.connection_created_at},
@@ -185,6 +188,14 @@ int main(int argc, char** argv) {
         config->mcp_json_body_limit_bytes = 4096;
         auto backend = std::make_shared<FixtureBackend>();
         HttpServer server(config, backend);
+        ScopeExit preserve_failure([&] {
+            if (std::uncaught_exceptions()) {
+                std::lock_guard lock(backend->identity_mutex);
+                write_json_atomic(
+                    root / "failure-traces.json",
+                    Json{{"requests", backend->http_traces}, {"resources", server.resource_snapshot()}});
+            }
+        });
         const auto port = server.start();
         const auto base = "http://127.0.0.1:" + std::to_string(port);
         if (argc == 3 && std::string(argv[1]) == "--serve") {
@@ -196,6 +207,84 @@ int main(int argc, char** argv) {
         }
         require(http_request("GET", base + "/healthz").body == "ok", "health probe");
         require(http_request("GET", base + "/readyz").status == 200, "readiness probe");
+        {
+            auto bounded_config = std::make_shared<Config>(*config);
+            bounded_config->mcp_write_idle_ms = 200;
+            bounded_config->mcp_response_deadline_ms = 600;
+            bounded_config->mcp_response_max_bytes = 12 * 1024 * 1024;
+            bounded_config->mcp_response_budget_bytes = 192 * 1024 * 1024;
+            bounded_config->mcp_json_body_limit_bytes = 256 * 1024;
+            bounded_config->mcp_request_budget_bytes = 4 * 1024 * 1024;
+            auto bounded_backend = std::make_shared<FixtureBackend>();
+            HttpServer bounded_server(bounded_config, bounded_backend);
+            const auto bounded_port = bounded_server.start();
+            const auto bounded_base = "http://127.0.0.1:" + std::to_string(bounded_port);
+            asio::io_context clients;
+            std::vector<std::unique_ptr<Tcp::socket>> slow;
+            auto large = call("devbox_wait");
+            large["params"]["arguments"]["reply_bytes"] = 8 * 1024 * 1024;
+            for (int i = 0; i < 4; ++i) {
+                slow.push_back(raw_request(clients, bounded_port, large, headers()));
+                slow.back()->set_option(asio::socket_base::receive_buffer_size(1024));
+            }
+            until(
+                [&] {
+                    return json_uint(bounded_server.resource_snapshot()["response_bytes"], "peak_bytes") > 0;
+                },
+                "large response accounting observed");
+            const auto probe_start = Clock::now();
+            require(http_request("GET", bounded_base + "/readyz", {}, {}, Millis(1500)).status == 200 &&
+                        Clock::now() - probe_start < Millis(1000),
+                    "health service survives unread large responses");
+            until(
+                [&] {
+                    return bounded_server.active_requests() == 0 &&
+                           json_uint(bounded_server.resource_snapshot()["response_bytes"], "used_bytes") == 0;
+                },
+                "slow readers reach a bounded write/deadline terminal state and release bytes");
+            const auto accounting = bounded_server.resource_snapshot()["response_bytes"];
+            require(json_uint(accounting, "peak_bytes") <= bounded_config->mcp_response_budget_bytes &&
+                        json_uint(accounting, "rejected") > 0,
+                    "fanout cannot exceed the aggregate encoded/DOM byte charge");
+            std::vector<std::unique_ptr<Tcp::socket>> uploads;
+            for (int i = 0; i < 3; ++i) {
+                auto socket = std::make_unique<Tcp::socket>(clients);
+                socket->connect({asio::ip::make_address("127.0.0.1"), bounded_port});
+                http::request<http::empty_body> upload{http::verb::post, "/mcp", 11};
+                upload.set(http::field::host, "127.0.0.1");
+                upload.set(http::field::content_type, "application/json");
+                upload.content_length(128 * 1024);
+                http::request_serializer<http::empty_body> serializer(upload);
+                http::write_header(*socket, serializer);
+                uploads.push_back(std::move(socket));
+            }
+            until(
+                [&] {
+                    return json_uint(bounded_server.resource_snapshot()["request_bytes"], "rejected") > 0;
+                },
+                "unfinished request bodies cannot exceed the shared parser byte budget");
+            require(http_request("GET", bounded_base + "/healthz", {}, {}, Millis(1000)).status == 200,
+                    "small control requests retain reserved capacity under input pressure");
+            require(json_uint(bounded_server.resource_snapshot()["request_bytes"], "peak_bytes") <=
+                        bounded_config->mcp_request_budget_bytes,
+                    "inbound memory charge stays bounded before bodies are allocated");
+            uploads.clear();
+            until(
+                [&] {
+                    return json_uint(bounded_server.resource_snapshot()["request_bytes"], "used_bytes") == 0;
+                },
+                "abandoned request bodies release their reservation");
+            const auto entered = bounded_backend->entered.load(),
+                       cancelled = bounded_backend->cancelled.load();
+            auto waiting = raw_request(clients, bounded_port, call("devbox_wait", 5000), headers());
+            until([&] { return bounded_backend->entered > entered; }, "overall deadline fixture entered");
+            until(
+                [&] {
+                    return bounded_backend->cancelled > cancelled && bounded_server.active_requests() == 0;
+                },
+                "overall response deadline cancels work even before the first response byte");
+            bounded_server.stop();
+        }
         {
             asio::io_context client_io;
             Tcp::socket socket(client_io);

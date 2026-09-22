@@ -494,6 +494,8 @@ asio::awaitable<Json> Engine::metadata(const HttpRequest& request) {
         co_return value;
     const auto active_requests = server_ ? server_->active_requests() : 0;
     value["activity"] = usage_.active_counts();
+    if (server_)
+        value["transport_resources"] = server_->resource_snapshot();
     value["activity"]["activeRequests"] = active_requests ? active_requests - 1 : 0;
     value["runtime"] = Json{{"runtimeMode", config_->runtime_name()},
                             {"platform", config_->platform.id},

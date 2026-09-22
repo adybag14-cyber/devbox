@@ -181,8 +181,14 @@
         "A07",
         "A05"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/audit-evidence/H06-transport-local.json"
+      ],
+      "remaining": [
+        "Isolate potentially blocking filesystem operations in owned killable workers.",
+        "Qualify hard shutdown escalation and remaining supported platform limits."
+      ]
     },
     {
       "id": "H07",
