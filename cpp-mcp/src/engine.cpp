@@ -1,6 +1,7 @@
 #include "devbox/engine.hpp"
 #include "devbox/artifacts.hpp"
 #include "devbox/result.hpp"
+#include "devbox/run_service.hpp"
 #include <algorithm>
 namespace devbox {
 namespace {
@@ -43,6 +44,9 @@ void Engine::attach(HttpServer& server) {
     (void)build_snapshot();
     performance_.attach(server.executor(), server.stop_token());
     monitoring_.start();
+    if (config_->state_backend == "sqlite")
+        background_.once("backend-run-recovery", Millis(0),
+                         [this](const Cancel& cancel) { RunService(config_).recover(cancel); });
     if (config_->devbox_auto_start)
         background_.once("runtime-auto-start", Millis(0), [this](const Cancel& cancel) {
             lifecycle_.control(LifecycleAction::start, cancel);
@@ -107,7 +111,29 @@ void Engine::require_agent_host() const {
     if (!config_->host_exec_enabled)
         throw Error("Host execution is disabled");
 }
+asio::awaitable<Json> Engine::call_tool_authenticated(std::string name, Json arguments, Cancel cancel,
+                                                      std::string principal) {
+    if (name != "devbox_agent_run")
+        co_return co_await call_tool(std::move(name), std::move(arguments), std::move(cancel));
+    try {
+        const auto args = contract_.arguments(name, arguments);
+        auto pending = controls_.run(
+            [this, args, principal] {
+                RunService service(config_);
+                const auto result = service.call(principal, args);
+                return result_explicit("Native backend run controller.", std::optional<Json>{result},
+                                       result.dump());
+            },
+            cancel);
+        co_return co_await std::move(pending);
+    } catch (const std::exception& error) {
+        co_return result_error(error.what());
+    }
+}
 asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel cancel) {
+    if (name == "devbox_agent_run")
+        co_return co_await call_tool_authenticated(std::move(name), std::move(arguments), std::move(cancel),
+                                                   "operator");
     if (!cancel)
         cancel = std::make_shared<Cancellation>();
     try {

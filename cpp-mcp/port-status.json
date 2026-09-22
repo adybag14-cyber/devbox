@@ -2,7 +2,7 @@
   "baseline_revision": "cd8803c81ad3a14ec3b3fa2afa0d08256975b1e9",
   "complete": true,
   "production_cutover_allowed": true,
-  "target_tool_count": 51,
+  "target_tool_count": 52,
   "frozen_reference_tool_count": 45,
   "areas": {
     "shared_core": "native C++23 implementation; platform suites are enforced by the C++ native runtime workflow",

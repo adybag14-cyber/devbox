@@ -108,6 +108,15 @@ jobs:
         run: |
           node --input-type=module -e "process.env.MCP_STATE_BACKEND='sqlite'; await import('./cpp-mcp/scripts/engine-sdk-smoke.mjs')"
           node --input-type=module -e "process.env.MCP_STATE_BACKEND='sqlite'; await import('./rust-mcp/scripts/agent-reliability-smoke.mjs')"
+      - name: Windows backend run and actual isolated-effect SDK fixture
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:DEVBOX_ISOLATION_PROBE = (Resolve-Path '.cpp-build/ci/cpp-mcp/Release/devbox-isolation-probe.exe').Path
+          node cpp-mcp/scripts/run-harness-smoke.mjs
+      - name: Linux backend run and actual isolated-effect SDK fixture
+        if: matrix.name == 'Linux GCC' || matrix.name == 'Linux ARM64 GCC'
+        run: sudo env DEVBOX_CPP_BINARY="$DEVBOX_CPP_BINARY" DEVBOX_ISOLATION_PROBE="$PWD/.cpp-build/ci/cpp-mcp/devbox-isolation-probe" "$(command -v node)" cpp-mcp/scripts/run-harness-smoke.mjs
       - name: OAuth, gateway, configuration and disconnect
         run: |
           node rust-mcp/scripts/config-parity-smoke-runner.mjs

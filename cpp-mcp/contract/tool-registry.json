@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": 6,
+  "contract_version": 7,
   "tools": [
     {
       "name": "devbox_capabilities",
@@ -8172,6 +8172,135 @@
             "destructiveHint": true,
             "idempotentHint": true,
             "openWorldHint": false
+          }
+        }
+      }
+    },
+    {
+      "name": "devbox_agent_run",
+      "family": "runs",
+      "scope": "mcp:devbox:exec",
+      "alias_of": null,
+      "broker": "run_controller",
+      "platforms": [
+        "windows",
+        "linux",
+        "macos",
+        "android",
+        "termux"
+      ],
+      "runtime_profiles": [
+        "host"
+      ],
+      "telemetry": {
+        "payloads": false,
+        "safe_fields": [
+          "action"
+        ]
+      },
+      "schemas": {
+        "all": {
+          "name": "devbox_agent_run",
+          "description": "Manage the optional native backend model/tool harness using operator-configured provider profiles and SQLite state. Create uses a stable request_id, goal, provider_id and bounded budget (paid cost defaults to zero). Get/events expose durable progress; artifacts are untrusted evidence. Program proposals await exact grants issued by the operator CLI; approve attaches a pre-existing scoped grant and cannot create authority. Pause/cancel acknowledgement differs from terminal completion. Unknown outcomes require explicit operator reconciliation and are never blindly retried. Existing ChatGPT website orchestration remains available; no Hermes UI is required.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": [
+                  "providers",
+                  "create",
+                  "get",
+                  "events",
+                  "artifact",
+                  "pause",
+                  "resume",
+                  "cancel",
+                  "approve",
+                  "reconcile"
+                ]
+              },
+              "run_id": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "request_id": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "provider_id": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "goal": {
+                "type": "string",
+                "maxLength": 8000
+              },
+              "grant_id": {
+                "type": "string",
+                "maxLength": 80
+              },
+              "resolution": {
+                "type": "string",
+                "enum": [
+                  "abandon",
+                  "discard_model_reply",
+                  "effect_observed"
+                ]
+              },
+              "observed_result": {
+                "type": "object"
+              },
+              "sha256": {
+                "type": "string",
+                "minLength": 64,
+                "maxLength": 64
+              },
+              "after": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "max_rounds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 64
+              },
+              "max_tool_calls": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 128
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 8192,
+                "maximum": 10000000
+              },
+              "max_cost_micro_usd": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000000000000
+              },
+              "timeout_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3600
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "additionalProperties": false
+          },
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true,
+            "idempotentHint": false,
+            "openWorldHint": true
           }
         }
       }

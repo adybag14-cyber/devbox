@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, appendFile, readFile, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
@@ -15,6 +15,14 @@ const configuration = sanitizer ? 'RelWithDebInfo' : 'Release';
 const architecture = process.arch === 'arm64' ? 'arm64' : 'x64';
 const triplet = `${architecture}-${process.platform === 'win32' ? 'windows-static' : process.platform === 'darwin' ? 'osx' : 'linux'}`;
 const env = { ...process.env, VCPKG_MAX_CONCURRENCY: '4' };
+if (process.platform === 'win32') {
+  // Keep durable stress fixtures on the runner's workspace volume, with retained diagnostic
+  // paths, rather than the system user-profile volume. Production paths are unaffected.
+  const fixtureTemp = path.join(repo, '.cpp-build', 'native-temp');
+  await mkdir(fixtureTemp, { recursive: true });
+  env.TEMP = fixtureTemp;
+  env.TMP = fixtureTemp;
+}
 async function run(file, args) {
   await runCheckedProcess(file, args, { cwd: repo, env, stdio: 'inherit', timeoutMs: 90 * 60 * 1000, label: 'C++ native certification' });
 }

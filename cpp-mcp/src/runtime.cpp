@@ -289,6 +289,17 @@ ProcessOutput RuntimeExecutor::powershell(const ShellRequest& request, const Can
     const auto started = Clock::now();
     for (std::size_t i = 0; i < candidates.size(); ++i) {
         auto options = process_options(request);
+#ifdef _WIN32
+        // Supply the configured runtime's own core modules explicitly. An absent PSModulePath
+        // makes legacy PowerShell rediscover every installed/user module on some hosted images;
+        // inheriting an arbitrary caller override would reintroduce loader injection.
+        options.env = worker_environment();
+        if (const auto executable = find_program(candidates[i], &*options.env)) {
+            const auto modules = executable->parent_path() / "Modules";
+            if (fs::is_directory(modules))
+                (*options.env)["PSModulePath"] = path_text(modules);
+        }
+#endif
         options.timeout =
             std::max(Millis(1), request.timeout - std::chrono::duration_cast<Millis>(Clock::now() - started));
         try {

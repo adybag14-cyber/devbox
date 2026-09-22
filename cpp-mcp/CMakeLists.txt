@@ -45,7 +45,11 @@ add_library(devbox_core
   src/storage.cpp
   src/artifacts.cpp
   src/security.cpp
+  src/provider.cpp
+  src/provider_protocol.cpp
   src/grants.cpp
+  src/runs.cpp
+  src/run_service.cpp
   src/isolation.cpp
   src/isolation_linux.cpp
   src/runtime.cpp
@@ -127,6 +131,14 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-runs-tests tests/runs_tests.cpp)
+  target_link_libraries(devbox-runs-tests PRIVATE devbox_core)
+  add_test(NAME runs COMMAND devbox-runs-tests)
+  set_tests_properties(runs PROPERTIES TIMEOUT 60)
+  add_executable(devbox-provider-tests tests/provider_tests.cpp)
+  target_link_libraries(devbox-provider-tests PRIVATE devbox_core)
+  add_test(NAME providers COMMAND devbox-provider-tests)
+  set_tests_properties(providers PROPERTIES TIMEOUT 30)
   add_executable(devbox-grants-tests tests/grants_tests.cpp)
   target_link_libraries(devbox-grants-tests PRIVATE devbox_core)
   add_test(NAME grants COMMAND devbox-grants-tests)

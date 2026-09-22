@@ -56,6 +56,9 @@ Environment runner_environment(const Config& config) {
     return values;
 }
 } // namespace
+Environment background_environment(const Config& config) {
+    return runner_environment(config);
+}
 Json JobManager::shell_request(const ShellRequest& options, std::string_view resource, bool read_only) const {
     return Json{{"id", new_id()},
                 {"mode", "shell"},

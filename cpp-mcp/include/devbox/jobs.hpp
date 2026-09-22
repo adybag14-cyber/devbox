@@ -103,6 +103,8 @@ class JobManager {
     Json submit_research(const Json& plan, const Submission& agent);
 };
 int run_job_request(std::shared_ptr<const Config> config, const fs::path& path);
+// Trusted native supervisors only. Never populated from a model tool's environment fields.
+Environment background_environment(const Config& config);
 Json migrate_legacy_state(std::shared_ptr<const Config> config);
 Json indexed_task_get(const JobStore& jobs, std::string_view id);
 Json indexed_task_put(const JobStore& jobs, std::string_view id, std::uint64_t revision, const Json& state);

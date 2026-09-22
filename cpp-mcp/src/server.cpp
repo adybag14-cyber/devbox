@@ -612,8 +612,14 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                                               Json{{"requiredScope", *scope},
                                                    {"clientId", json_string(*request.oauth, "clientId")}}),
                                  ToolOutcome::PolicyDenied);
-            else
-                result = co_await server->backend->call_tool(name, args, cancel);
+            else {
+                const auto principal =
+                    request.oauth
+                        ? "principal-" + sha256(json_string(*request.oauth, "clientId")).substr(0, 40)
+                        : "operator";
+                auto pending = server->backend->call_tool_authenticated(name, args, cancel, principal);
+                result = co_await std::move(pending);
+            }
             server->backend->tool_finished(invocation, result);
             strip_internal_result_metadata(result);
             if (modern_protocol(request))

@@ -156,11 +156,11 @@
       ],
       "status": "in_progress",
       "evidence": [
-        "docs/audit-evidence/FOUNDATIONS-local.json"
+        "docs/audit-evidence/FOUNDATIONS-local.json",
+        "docs/audit-evidence/H12-H14-harness-local.json"
       ],
       "remaining": [
-        "Wire durable security audit to grant admission and scoped secrets to provider adapters.",
-        "Extend adversarial checks to the new run controller and exports."
+        "Finish export/crash-bundle confidentiality qualification"
       ]
     },
     {
@@ -387,8 +387,14 @@
         "A12",
         "W02"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/H12-H14-harness-local.json",
+        "docs/BACKEND_RUNS.md"
+      ],
+      "remaining": [
+        "Complete hosted qualification and final release gates"
+      ]
     },
     {
       "id": "H13",
@@ -418,8 +424,14 @@
         "A09",
         "A12"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/H12-H14-harness-local.json",
+        "docs/BACKEND_RUNS.md"
+      ],
+      "remaining": [
+        "Complete hosted qualification and final release gates"
+      ]
     },
     {
       "id": "H14",
@@ -449,8 +461,14 @@
         "A05",
         "A12"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/audit-evidence/H12-H14-harness-local.json"
+      ],
+      "remaining": [
+        "Complete paired evaluation report with per-task results and confidence intervals",
+        "Broaden context compaction, cancellation and adversarial corpus"
+      ]
     },
     {
       "id": "H15",

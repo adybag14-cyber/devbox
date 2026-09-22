@@ -17,6 +17,19 @@ template <class F> void rejects(F&& operation, std::string_view part) {
     throw Error("Expected rejection: " + std::string(part));
 }
 int run(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--under-parent-job") {
+        ProcessOptions options;
+        options.timeout = Millis(60000);
+        options.max_capture_chars = 12000;
+        try {
+            const auto result = spawn_process(path_text(executable_path()), {"--nested-suite"}, options);
+            std::cout << result.stdout_text;
+            return result.exit_code;
+        } catch (const ProcessError& error) {
+            std::cerr << error.what() << '\n' << error.stdout_text << '\n' << error.stderr_text << '\n';
+            return 1;
+        }
+    }
     if (argc >= 3 && std::string(argv[1]) == "--child") {
         if (std::string(argv[2]) == "args")
             std::cout << Json(std::vector<std::string>(argv + 3, argv + argc)).dump();

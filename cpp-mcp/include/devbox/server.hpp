@@ -15,6 +15,11 @@ class McpBackend {
         return false;
     }
     virtual asio::awaitable<Json> call_tool(std::string name, Json arguments, Cancel cancel) = 0;
+    virtual asio::awaitable<Json> call_tool_authenticated(std::string name, Json arguments, Cancel cancel,
+                                                          std::string principal) {
+        (void)principal;
+        return call_tool(std::move(name), std::move(arguments), std::move(cancel));
+    }
     virtual asio::awaitable<Json> metadata(const HttpRequest& request) = 0;
     virtual bool ready() const = 0;
     virtual std::string tool_started(const std::string&, const Json&, const Json&) {

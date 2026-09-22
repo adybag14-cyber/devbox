@@ -1,6 +1,7 @@
 #include "devbox/computer_use.hpp"
 #include "devbox/engine.hpp"
 #include "devbox/grants.hpp"
+#include "devbox/run_service.hpp"
 #include "devbox/state_coordinator.hpp"
 #include "server_main.hpp"
 #include <csignal>
@@ -104,7 +105,21 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                 throw Error("--elevated-shell-worker requires one request path");
             return elevated_shell_worker(path_from_utf8(args[1]));
         }
-        auto config = std::make_shared<Config>(Config::load(mode != "--job-runner"));
+        auto config =
+            std::make_shared<Config>(Config::load(mode != "--job-runner" && mode != "--agent-runner"));
+        if (mode == "--agent-runner") {
+            if (args.size() != 3)
+                throw Error("Agent runner requires a principal and run ID");
+            std::signal(SIGINT, signal_handler);
+            std::signal(SIGTERM, signal_handler);
+            RunService service(config);
+#ifdef _WIN32
+            return service.drive(args[1], args[2],
+                                 [] { return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0; });
+#else
+            return service.drive(args[1], args[2], [] { return shutdown_requested != 0; });
+#endif
+        }
         if (mode == "--grant-create-workspace" || mode == "--grant-issue" || mode == "--grant-revoke" ||
             mode == "--grant-inspect" || mode == "--execute-granted") {
             if (args.size() != 2 || config->state_backend != "sqlite")
