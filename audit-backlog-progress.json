@@ -296,7 +296,8 @@
       ],
       "status": "in_progress",
       "evidence": [
-        "Completion/deadline/cancellation arbitration and late-executor-destruction regression passed in async suite."
+        "Completion/deadline/cancellation arbitration and late-executor-destruction regression passed in async suite.",
+        "docs/audit-evidence/H09-notifications-local.json"
       ],
       "remaining": [
         "Fenced coordinator, authenticated scheduler notifications and resource vectors depend on H08."

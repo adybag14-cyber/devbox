@@ -2,6 +2,7 @@
 #include "config.hpp"
 #include "storage.hpp"
 namespace devbox {
+class SchedulerNotifications;
 enum class ResourceClass { watch, light, heavy, io_heavy };
 enum class ExecutionKind { interactive, background };
 ResourceClass resource_class(std::string_view value);
@@ -67,10 +68,12 @@ class ExecutionWaiter {
     // One bounded filesystem pass. Waiting belongs to a caller's coroutine or runner.
     std::optional<ExecutionLease> poll(const Cancel& cancel = {});
     Millis poll_interval() const;
+    Cancel changed_token() const;
 };
 class ExecutionScheduler {
     SchedulerConfig config_;
     std::shared_ptr<SchedulerMetrics> metrics_;
+    std::shared_ptr<SchedulerNotifications> notifications_;
 
   public:
     explicit ExecutionScheduler(SchedulerConfig config);

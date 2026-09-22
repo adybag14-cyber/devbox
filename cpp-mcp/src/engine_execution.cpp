@@ -89,11 +89,19 @@ asio::awaitable<ExecutionLease> Engine::acquire(AcquireRequest request, Cancel c
         cancel);
     auto waiter = co_await std::move(pending);
     for (;;) {
+        auto changed = waiter->changed_token();
         auto attempt = controls_.run([waiter, cancel] { return waiter->poll(cancel); }, cancel);
         auto lease = co_await std::move(attempt);
         if (lease)
             co_return std::move(*lease);
-        co_await async_delay(waiter->poll_interval(), cancel);
+        auto wake = std::make_shared<Cancellation>(cancel);
+        auto subscription = changed->subscribe([wake] { wake->cancel(); });
+        try {
+            co_await async_delay(waiter->poll_interval(), wake);
+        } catch (const Cancelled&) {
+            if (cancel)
+                cancel->check();
+        }
     }
 }
 asio::awaitable<Json> Engine::execute(std::string name, Json args, Cancel cancel) {

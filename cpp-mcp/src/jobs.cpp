@@ -176,6 +176,12 @@ Json JobStore::read_request(std::string_view id) const {
 Json JobStore::read_status_raw(std::string_view id) const {
     if (const auto state = index()) {
         const auto record = state->get("job", id);
+        if (record && json_string(record->data, "artifacts_prune_state") == "pending") {
+            auto result = record->data.at("status");
+            result["artifactsAvailable"] = nullptr;
+            result["artifactCleanup"] = "pending";
+            return result;
+        }
         if (record && json_bool(record->data, "artifacts_pruned")) {
             auto result = record->data.at("status");
             result["artifactsAvailable"] = false;
@@ -404,11 +410,16 @@ Json JobStore::wait_status(std::string_view id, Millis wait, bool terminal_only,
     return current;
 }
 Json JobStore::logs(std::string_view id, std::size_t max_chars) const {
+    const auto status = get_status(id);
+    if (json_string(status, "artifactCleanup") == "pending")
+        throw Error("JOB_ARTIFACT_CLEANUP_PENDING");
+    if (status.contains("artifactsAvailable") && status["artifactsAvailable"] == false)
+        throw Error("JOB_ARTIFACTS_PRUNED");
     const auto path = paths(id);
     const auto bounded = std::clamp<std::size_t>(max_chars, 100, 100000);
     const auto out = read_log_tail(path.stdout_log, bounded, config_->job_log_rotations),
                err = read_log_tail(path.stderr_log, bounded, config_->job_log_rotations);
-    const auto status = get_status(id), out_meta = log_metadata(path.stdout_log, config_->job_log_rotations),
+    const auto out_meta = log_metadata(path.stdout_log, config_->job_log_rotations),
                err_meta = log_metadata(path.stderr_log, config_->job_log_rotations);
     return Json{
         {"id", path.id},

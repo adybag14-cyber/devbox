@@ -85,11 +85,42 @@ void note_deleted(auto& state, const std::set<std::string>& deleted) {
 std::uint64_t directory_bytes(const fs::path& path) {
     std::uint64_t bytes = 0;
     std::size_t entries = 0;
-    for (const auto& entry : fs::directory_iterator(path)) {
-        if (++entries > 1024)
-            throw Error("JOB_DIRECTORY_ENTRY_BUDGET");
-        if (entry.is_regular_file() && !entry.is_symlink())
-            bytes += entry.file_size();
+    std::vector<fs::path> pending{path};
+    while (!pending.empty()) {
+        const auto directory = pending.back();
+        pending.pop_back();
+        for (const auto& entry : fs::directory_iterator(directory)) {
+            if (++entries > 1024)
+                throw Error("JOB_DIRECTORY_ENTRY_BUDGET");
+            const auto status = entry.symlink_status();
+            if (fs::is_symlink(status))
+                throw Error("JOB_DIRECTORY_ALIAS_DENIED");
+#ifdef _WIN32
+            const auto attributes = GetFileAttributesW(entry.path().c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+                throw Error("JOB_DIRECTORY_ALIAS_DENIED");
+#endif
+            const auto relative = entry.path().lexically_relative(path);
+            if (fs::is_directory(status)) {
+                if (relative != fs::path("research") && relative != fs::path("research") / "documents")
+                    throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
+                pending.push_back(entry.path());
+            } else if (fs::is_regular_file(status)) {
+                if (relative.has_parent_path() && relative != fs::path("research") / "ledger.json") {
+                    const auto name = path_text(relative.filename());
+                    const auto stem = name.size() > 6 ? name.substr(1, name.size() - 6) : "";
+                    if (relative.parent_path() != fs::path("research") / "documents" || name.front() != 's' ||
+                        !name.ends_with(".json") || stem.empty() || stem.size() > 3 ||
+                        !std::all_of(stem.begin(), stem.end(), [](char c) { return c >= '0' && c <= '9'; }))
+                        throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
+                }
+                const auto size = entry.file_size();
+                if (size > UINT64_MAX - bytes)
+                    throw Error("JOB_DIRECTORY_SIZE_OVERFLOW");
+                bytes += size;
+            } else
+                throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
+        }
     }
     return bytes;
 }
@@ -99,7 +130,7 @@ std::int64_t completed_time(const Json& status) {
         parsed = parse_utc(json_string(status, "createdAtUtc"));
     return parsed.value_or(0);
 }
-bool remove_job_directory(const fs::path& root, const JobPaths& paths) {
+bool remove_job_directory(const fs::path& root, const JobPaths& paths, bool prior_prune_intent = false) {
     // Deletion authority is a validated direct child of this store, never an alias.
     if (paths.dir.lexically_normal().parent_path() != root.lexically_normal())
         throw Error("Job directory escaped configured root");
@@ -116,8 +147,9 @@ bool remove_job_directory(const fs::path& root, const JobPaths& paths) {
     if (attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT)
         throw Error("Job cleanup rejects reparse points");
 #endif
-    const auto current = read_json(paths.status);
-    if (!terminal_status(json_string(current, "status")))
+    (void)directory_bytes(paths.dir);
+    const auto current = read_json_optional(paths.status);
+    if ((!current && !prior_prune_intent) || (current && !terminal_status(json_string(*current, "status"))))
         return false;
     fs::remove_all(paths.dir);
     return true;
@@ -153,7 +185,7 @@ Json job_filesystem_operation(const Json& args) {
     std::error_code error;
     const auto attributes = fs::symlink_status(path, error);
     if (error == std::errc::no_such_file_or_directory || (!error && !fs::exists(attributes)))
-        return Json{{"exists", false}, {"bytes", 0}, {"deleted", false}};
+        return Json{{"exists", false}, {"bytes", 0}, {"deleted", json_bool(args, "prior_prune_intent")}};
     if (error)
         throw std::system_error(error);
     if (!root.is_absolute() || !fs::is_directory(attributes) || fs::is_symlink(attributes))
@@ -163,28 +195,21 @@ Json job_filesystem_operation(const Json& args) {
     if (native == INVALID_FILE_ATTRIBUTES || native & FILE_ATTRIBUTE_REPARSE_POINT)
         throw Error("JOB_DIRECTORY_ALIAS_DENIED");
 #endif
-    // Bound the enumeration before any recursive removal; this store owns ordinary flat job files.
+    // Only this broker's bounded artifact layout can be reclaimed, including its research ledger/documents.
     const auto before = directory_bytes(path);
-    std::size_t entries = 0;
-    for (const auto& entry : fs::directory_iterator(path)) {
-        if (++entries > 1024 || entry.is_directory() || entry.is_symlink())
-            throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
-#ifdef _WIN32
-        if (GetFileAttributesW(entry.path().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT)
-            throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
-#endif
-    }
-    const auto status = read_json(path / "status.json", 1024 * 1024);
-    const bool terminal = terminal_status(json_string(status, "status"));
-    const bool reclaimable = terminal && json_string(status, "status") != "interrupted" &&
-                             json_bool(status, "workloadTerminationVerified", true) &&
-                             !json_bool(status, "terminationPending");
+    const auto status = read_json_optional(path / "status.json", 1024 * 1024);
+    const bool prior_intent = json_bool(args, "prior_prune_intent");
+    const bool terminal = status ? terminal_status(json_string(*status, "status")) : prior_intent;
+    const bool reclaimable =
+        terminal && (!status || (json_string(*status, "status") != "interrupted" &&
+                                 json_bool(*status, "workloadTerminationVerified", true) &&
+                                 !json_bool(*status, "terminationPending")));
     if (json_bool(args, "remove") && reclaimable) {
         JobPaths paths;
         paths.id = id;
         paths.dir = path;
         paths.status = path / "status.json";
-        const bool removed = remove_job_directory(root, paths);
+        const bool removed = remove_job_directory(root, paths, prior_intent);
         return Json{{"exists", !removed}, {"deleted", removed}, {"bytes", removed ? 0 : before}};
     }
     bool compacted = false;
@@ -246,10 +271,22 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
             const bool expired =
                 config_->job_retention_hours && completed > 0 && now >= completed &&
                 static_cast<std::uint64_t>(now - completed) / 3600000 >= config_->job_retention_hours;
-            const bool remove = terminal && record.status != "interrupted" &&
+            const bool producer_alive =
+                owner_process_alive(Json{{"pid", status.value("runnerPid", Json())},
+                                         {"processInstance", status.value("runnerProcessInstance", Json())}});
+            const bool remove = terminal && !producer_alive && record.status != "interrupted" &&
                                 json_bool(status, "workloadTerminationVerified", true) &&
                                 !json_bool(status, "terminationPending") &&
-                                (expired || (quota && pressure()));
+                                (expired || (quota && pressure()) ||
+                                 json_string(record.data, "artifacts_prune_state") == "pending");
+            if (remove && !json_bool(record.data, "artifacts_pruned") &&
+                json_string(record.data, "artifacts_prune_state") != "pending") {
+                record.data["artifacts_prune_state"] = "pending";
+                const StateMutation intent{record, record.revision};
+                (void)store->apply_once("prune-" + record.id + "-" + std::to_string(record.revision),
+                                        {&intent, 1});
+                ++record.revision;
+            }
             Json observation{{"exists", false}, {"bytes", 0}, {"deleted", false}};
             if (!json_bool(record.data, "artifacts_pruned"))
                 observation =
@@ -257,6 +294,8 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
                                         Json{{"root", path_text(config_->jobs_root)},
                                              {"id", record.id},
                                              {"remove", remove},
+                                             {"prior_prune_intent",
+                                              json_string(record.data, "artifacts_prune_state") == "pending"},
                                              {"compact", terminal && !json_bool(usage.data, "compacted")},
                                              {"log_limit", config_->job_log_max_bytes}},
                                         Millis(5000), cancel);
@@ -279,6 +318,7 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
                 increment(summary, "compactedLogs");
             if (json_bool(observation, "deleted")) {
                 record.data["artifacts_pruned"] = true;
+                record.data["artifacts_prune_state"] = "completed";
                 record.data["artifacts_pruned_at"] = utc_now();
                 mutations.push_back({record, record.revision});
                 increment(summary, "deleted");

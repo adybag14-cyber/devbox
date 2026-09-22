@@ -58,6 +58,7 @@ add_library(devbox_core
   src/isolation_linux.cpp
   src/runtime.cpp
   src/scheduler.cpp
+  src/scheduler_notifications.cpp
   src/job_logs.cpp
   src/jobs.cpp
   src/indexed_jobs.cpp
@@ -136,6 +137,10 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-scheduler-notification-tests tests/scheduler_notification_tests.cpp)
+  target_link_libraries(devbox-scheduler-notification-tests PRIVATE devbox_core)
+  add_test(NAME scheduler-notifications COMMAND devbox-scheduler-notification-tests)
+  set_tests_properties(scheduler-notifications PROPERTIES TIMEOUT 60)
   add_executable(devbox-indexed-maintenance-tests tests/indexed_maintenance_tests.cpp)
   target_link_libraries(devbox-indexed-maintenance-tests PRIVATE devbox_core)
   add_test(NAME indexed-maintenance COMMAND devbox-indexed-maintenance-tests)

@@ -1,4 +1,5 @@
 #include "devbox/scheduler.hpp"
+#include "devbox/scheduler_notifications.hpp"
 #include <algorithm>
 #include <iomanip>
 #include <map>
@@ -434,6 +435,7 @@ fs::path slot_path(const fs::path& root, std::string_view pool, std::size_t inde
 struct ExecutionLease::State {
     std::vector<OwnedFile> owned;
     std::shared_ptr<SchedulerMetrics> metrics;
+    std::shared_ptr<SchedulerNotifications> notifications;
     std::string class_name;
     bool released = false;
     ~State() {
@@ -470,6 +472,7 @@ struct ExecutionLease::State {
         if (!failures.empty())
             throw Error(failures);
         mark_released();
+        notifications->signal();
     }
 };
 ExecutionLease::ExecutionLease() = default;
@@ -492,6 +495,7 @@ Json ExecutionLease::json() const {
 struct ExecutionWaiter::State {
     SchedulerConfig config;
     std::shared_ptr<SchedulerMetrics> metrics;
+    std::shared_ptr<SchedulerNotifications> notifications;
     AcquireRequest request;
     Clock::time_point started;
     Millis timeout;
@@ -499,8 +503,10 @@ struct ExecutionWaiter::State {
     std::optional<OwnedFile> ticket;
     bool pending = true;
     bool finished = false;
-    State(SchedulerConfig cfg, std::shared_ptr<SchedulerMetrics> met, AcquireRequest req)
-        : config(std::move(cfg)), metrics(std::move(met)), request(std::move(req)), started(Clock::now()),
+    State(SchedulerConfig cfg, std::shared_ptr<SchedulerMetrics> met,
+          std::shared_ptr<SchedulerNotifications> notices, AcquireRequest req)
+        : config(std::move(cfg)), metrics(std::move(met)), notifications(std::move(notices)),
+          request(std::move(req)), started(Clock::now()),
           timeout(std::max(request.queue_timeout.value_or(config.queue_timeout), Millis(1))),
           plan(config, request, disk_pressure(config.root)) {
         std::lock_guard lock(metrics->mutex);
@@ -535,6 +541,7 @@ struct ExecutionWaiter::State {
             refresh_head_locked(root, plan.queue_class);
             claim->release();
         }
+        notifications->signal();
     }
     QueueTimeout timeout_error(bool weighted = false) const {
         const auto elapsed = elapsed_ms(started);
@@ -696,12 +703,12 @@ ExecutionWaiter::ExecutionWaiter(ExecutionWaiter&&) noexcept = default;
 ExecutionWaiter& ExecutionWaiter::operator=(ExecutionWaiter&&) noexcept = default;
 Millis ExecutionWaiter::poll_interval() const {
     const auto elapsed = Clock::now() - state_->started;
-    const auto interval = elapsed < Millis(1000)    ? Millis(50)
-                          : elapsed < Millis(5000)  ? Millis(100)
-                          : elapsed < Millis(30000) ? Millis(250)
-                                                    : Millis(500);
+    const auto interval = Millis(500); // periodic reconciliation remains independent of notifications
     return std::max(Millis(1),
                     std::min(interval, state_->timeout - std::chrono::duration_cast<Millis>(elapsed)));
+}
+Cancel ExecutionWaiter::changed_token() const {
+    return state_->notifications->token();
 }
 std::optional<ExecutionLease> ExecutionWaiter::poll(const Cancel& cancel) {
     auto& state = *state_;
@@ -745,6 +752,7 @@ std::optional<ExecutionLease> ExecutionWaiter::poll(const Cancel& cancel) {
         lease.state_ = std::make_unique<ExecutionLease::State>();
         lease.state_->owned = *owned;
         lease.state_->metrics = state.metrics;
+        lease.state_->notifications = state.notifications;
         lease.state_->class_name = resource_name(lease.resource_class);
         {
             auto& metrics = *state.metrics;
@@ -778,20 +786,22 @@ std::optional<ExecutionLease> ExecutionWaiter::poll(const Cancel& cancel) {
     }
 }
 ExecutionScheduler::ExecutionScheduler(SchedulerConfig config)
-    : config_(config.normalized()), metrics_(std::make_shared<SchedulerMetrics>()) {}
+    : config_(config.normalized()), metrics_(std::make_shared<SchedulerMetrics>()),
+      notifications_(scheduler_notifications(config_.root)) {}
 ExecutionWaiter ExecutionScheduler::begin(AcquireRequest request) const {
     ensure_directory(config_.root);
-    return ExecutionWaiter(std::make_unique<ExecutionWaiter::State>(config_, metrics_, std::move(request)));
+    return ExecutionWaiter(
+        std::make_unique<ExecutionWaiter::State>(config_, metrics_, notifications_, std::move(request)));
 }
 ExecutionLease ExecutionScheduler::acquire(AcquireRequest request, const Cancel& cancel) const {
     auto waiter = begin(std::move(request));
     while (true) {
+        auto changed = waiter.changed_token();
         if (auto lease = waiter.poll(cancel))
             return std::move(*lease);
-        if (cancel)
-            cancel->wait_for(waiter.poll_interval());
-        else
-            std::this_thread::sleep_for(waiter.poll_interval());
+        auto wake = std::make_shared<Cancellation>(cancel);
+        auto subscription = changed->subscribe([wake] { wake->cancel(); });
+        (void)wake->wait_for(waiter.poll_interval());
     }
 }
 Json ExecutionScheduler::snapshot() const {
@@ -857,6 +867,7 @@ Json ExecutionScheduler::snapshot() const {
         by_class[name] = count;
     }
     return Json{{"max_concurrent", config_.max_concurrent},
+                {"notifications", notifications_->snapshot()},
                 {"reserved_interactive", config_.reserved_interactive},
                 {"heavy_capacity", config_.heavy_capacity},
                 {"io_heavy_capacity", config_.io_heavy_capacity},
