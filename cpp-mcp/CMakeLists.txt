@@ -11,6 +11,7 @@ find_package(CURL REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(libdeflate CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 set(DEVBOX_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${DEVBOX_GENERATED_DIR}")
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/tool-registry.json" registry_json)
@@ -35,6 +36,7 @@ add_library(devbox_core
   src/json_output.cpp
   src/resource_budget.cpp
   src/state_file.cpp
+  src/state_store.cpp
   src/config.cpp
   src/result.cpp
   src/process.cpp
@@ -90,6 +92,8 @@ target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asi
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:lexbor::lexbor_static>,lexbor::lexbor_static,lexbor::lexbor>)
 target_link_libraries(devbox_core PUBLIC pugixml::pugixml)
+target_link_libraries(devbox_core PUBLIC unofficial::sqlite3::sqlite3)
+install(FILES "${unofficial-sqlite3_DIR}/../sqlite3/copyright" DESTINATION share/devbox RENAME sqlite3.LICENSE.txt)
 target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_NO_DEPRECATED)
 if(DEVBOX_FORCE_FORK_EXEC)
   target_compile_definitions(devbox_core PRIVATE DEVBOX_FORCE_FORK_EXEC=1)
@@ -115,6 +119,13 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-state-store-tests tests/state_store_tests.cpp)
+  target_link_libraries(devbox-state-store-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-state-store-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME state-store COMMAND devbox-state-store-tests)
+  set_tests_properties(state-store PROPERTIES TIMEOUT 180)
   add_executable(devbox-resource-budget-tests tests/resource_budget_tests.cpp)
   target_link_libraries(devbox-resource-budget-tests PRIVATE devbox_core)
   if(MSVC)

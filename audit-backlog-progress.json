@@ -246,8 +246,14 @@
         "A08",
         "A09"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/audit-evidence/H08-store-local.json"
+      ],
+      "remaining": [
+        "Integrate the authoritative coordinator with jobs, operation receipts, run events and resource leases.",
+        "Implement and certify one-writer legacy migration, export and recovery."
+      ]
     },
     {
       "id": "H09",

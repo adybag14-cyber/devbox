@@ -1,0 +1,51 @@
+#pragma once
+#include "storage.hpp"
+namespace devbox {
+struct StateRecord {
+    std::string kind, id, principal, group, status;
+    std::uint64_t revision = 0;
+    Json data = Json::object();
+};
+struct StateMutation {
+    StateRecord record;
+    std::uint64_t expected_revision = 0;
+};
+struct StateEvent {
+    std::string run, type;
+    std::uint64_t sequence = 0;
+    Json data = Json::object();
+};
+struct StateQuery {
+    std::string kind;
+    std::optional<std::string> principal, group, status, after;
+    std::size_t limit = 50;
+};
+struct StatePage {
+    std::vector<StateRecord> records;
+    std::optional<std::string> next;
+};
+struct StateStoreOptions {
+    bool writable = true;
+    Millis writer_wait{1000};
+    std::uint64_t maximum_bytes = 1024ULL * 1024 * 1024;
+    // Native fault injection only. No environment variable or MCP argument exposes this hook.
+    std::function<void(std::string_view)> transition_hook;
+};
+class StateStore {
+  public:
+    virtual ~StateStore() = default;
+    virtual std::optional<StateRecord> get(std::string_view kind, std::string_view id) const = 0;
+    virtual StatePage list(const StateQuery& query) const = 0;
+    virtual std::uint64_t count(std::string_view kind, const std::optional<std::string>& principal = {},
+                                const std::optional<std::string>& status = {}) const = 0;
+    // A single transaction: compare every revision, persist every mutation and append ordered events.
+    // Operation/receipt records are never deleted; uncertain external effects retain their identity.
+    virtual void apply(std::span<const StateMutation> mutations, std::span<const StateEvent> events = {}) = 0;
+    virtual std::vector<StateEvent> events(std::string_view run, std::uint64_t after,
+                                           std::size_t limit) const = 0;
+    virtual std::uint64_t generation() const = 0;
+    virtual void release_writer() = 0;
+    virtual Json diagnostics() const = 0;
+};
+std::shared_ptr<StateStore> open_state_store(const fs::path& directory, StateStoreOptions options = {});
+} // namespace devbox

@@ -41,6 +41,16 @@ int main() {
                     "charge covers encoded output");
         }
         auto cancel = std::make_shared<Cancellation>();
+        Json nested = Json::array();
+        for (int i = 0; i < 500; ++i)
+            nested.push_back("checkpoint");
+        for (int i = 0; i < 60; ++i)
+            nested = Json{{"next", std::move(nested)}};
+        const Json envelope{
+            {"jsonrpc", "2.0"},
+            {"result", {{"structuredContent", {{"data", {{"record", {{"state", nested}}}}}}}}}};
+        require(json_memory_charge(envelope, 1024 * 1024) < 1024 * 1024,
+                "legacy deeply nested checkpoints are not mistaken for byte-budget exhaustion");
         cancel->cancel();
         bool cancelled = false;
         try {

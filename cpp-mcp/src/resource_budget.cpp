@@ -3,7 +3,8 @@
 #include <streambuf>
 namespace devbox {
 std::size_t json_memory_charge(const Json& value, std::size_t limit, unsigned depth) {
-    if (depth > 64 || limit < 128)
+    // The request parser accepts 128 levels; result envelopes add several more.
+    if (depth > 256 || limit < 128)
         return limit + 1;
     std::size_t bytes = 128;
     if (value.is_string() || value.is_binary()) {
