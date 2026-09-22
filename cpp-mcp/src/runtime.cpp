@@ -18,6 +18,16 @@ constexpr auto elevation_message =
     "after repair.";
 std::string quiet_powershell(std::string_view command) {
     return "$ProgressPreference = 'SilentlyContinue'\n$InformationPreference = 'SilentlyContinue'\n" +
+#ifdef _WIN32
+           // Legacy Windows PowerShell can spend tens of seconds in unqualified first-command
+           // discovery on hosted images. Import its built-in utility module by an exact path;
+           // preserve normal module autoloading and the operator's requested command afterward.
+           std::string(
+               "if ($PSVersionTable.PSEdition -eq 'Desktop') { "
+               "Microsoft.PowerShell.Core\\Import-Module -Name "
+               "($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1') "
+               "-ErrorAction Stop }\n") +
+#endif
            std::string(command);
 }
 std::vector<std::string> file_powershell_args(const fs::path& path) {
