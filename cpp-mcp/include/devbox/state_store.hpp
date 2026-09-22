@@ -41,6 +41,10 @@ class StateStore {
     // A single transaction: compare every revision, persist every mutation and append ordered events.
     // Operation/receipt records are never deleted; uncertain external effects retain their identity.
     virtual void apply(std::span<const StateMutation> mutations, std::span<const StateEvent> events = {}) = 0;
+    // Retain a receipt for a critical coordinator request whose acknowledgement can be lost.
+    // This deduplicates the state transaction, not an arbitrary external side effect.
+    virtual bool apply_once(std::string_view batch_id, std::span<const StateMutation> mutations,
+                            std::span<const StateEvent> events = {}) = 0;
     virtual std::vector<StateEvent> events(std::string_view run, std::uint64_t after,
                                            std::size_t limit) const = 0;
     virtual std::uint64_t generation() const = 0;
@@ -48,4 +52,5 @@ class StateStore {
     virtual Json diagnostics() const = 0;
 };
 std::shared_ptr<StateStore> open_state_store(const fs::path& directory, StateStoreOptions options = {});
+void ensure_private_state_directory(const fs::path& directory);
 } // namespace devbox

@@ -1,5 +1,6 @@
 #include "devbox/computer_use.hpp"
 #include "devbox/engine.hpp"
+#include "devbox/state_coordinator.hpp"
 #include "server_main.hpp"
 #include <csignal>
 #include <iostream>
@@ -31,6 +32,20 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
     using namespace devbox;
     try {
         const auto mode = args.empty() ? "" : args.front();
+        if (mode == "--state-coordinator") {
+            if (args.size() != 2)
+                throw Error("--state-coordinator requires a private state directory");
+            std::signal(SIGINT, signal_handler);
+            std::signal(SIGTERM, signal_handler);
+#ifdef _WIN32
+            SetConsoleCtrlHandler(console_handler, TRUE);
+            return run_state_coordinator(path_from_utf8(args[1]), [] {
+                return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0;
+            });
+#else
+            return run_state_coordinator(path_from_utf8(args[1]), [] { return shutdown_requested != 0; });
+#endif
+        }
         if (mode == "--capture-worker")
             return run_capture_worker(std::vector<std::string>(args.begin() + 1, args.end()));
         if (mode == "--computer-use-probe") {

@@ -252,11 +252,12 @@ std::optional<HttpReply> validate_protocol_request(const HttpRequest& request, c
     }
     return {};
 }
-Json bounded_json(std::string_view body, const Cancel& cancel = {}) {
-    std::array<std::size_t, 130> keys{};
+Json bounded_json(std::string_view body, const Cancel& cancel = {}, unsigned maximum_depth = 128) {
+    maximum_depth = std::min(maximum_depth, 256U);
+    std::array<std::size_t, 258> keys{};
     std::size_t nodes = 0;
     return Json::parse(body, [&](int depth, Json::parse_event_t event, Json&) {
-        if (depth > 128)
+        if (depth > static_cast<int>(maximum_depth))
             throw Error("JSON nesting exceeds the limit");
         if (cancel)
             cancel->check();
@@ -869,12 +870,14 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
         const auto parse_start = Clock::now();
         try {
             if (request.body.size() <= 16384)
-                body = bounded_json(request.body, cancel);
+                body = bounded_json(request.body, cancel, server->config->internal_json_depth);
             else {
                 begin_response_budget();
                 auto pending = server->codec_pool.run_until(
                     [text = std::make_shared<std::string>(std::move(request.body)), cancel = cancel,
-                     charge = request_charge] { return bounded_json(*text, cancel); },
+                     charge = request_charge, maximum_depth = server->config->internal_json_depth] {
+                        return bounded_json(*text, cancel, maximum_depth);
+                    },
                     *response_deadline, cancel);
                 auto parsed = co_await std::move(pending);
                 if (!parsed)

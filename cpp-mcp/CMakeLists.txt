@@ -37,6 +37,7 @@ add_library(devbox_core
   src/resource_budget.cpp
   src/state_file.cpp
   src/state_store.cpp
+  src/state_coordinator.cpp
   src/config.cpp
   src/result.cpp
   src/process.cpp
@@ -119,6 +120,13 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-state-coordinator-tests tests/state_coordinator_tests.cpp)
+  target_link_libraries(devbox-state-coordinator-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-state-coordinator-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME state-coordinator COMMAND devbox-state-coordinator-tests)
+  set_tests_properties(state-coordinator PROPERTIES TIMEOUT 60)
   add_executable(devbox-state-store-tests tests/state_store_tests.cpp)
   target_link_libraries(devbox-state-store-tests PRIVATE devbox_core)
   if(MSVC)

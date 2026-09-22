@@ -38,7 +38,7 @@ int run(int argc, char** argv) {
             {"operation", "effect-1", "owner", "run-1", "admitted", 0, Json{{"effect", "not yet confirmed"}}},
             0};
         StateEvent event{"run-1", "operation_admitted", 0, Json{{"operation", "effect-1"}}};
-        store->apply({&record, 1}, {&event, 1});
+        store->apply_once("crash-batch", {&record, 1}, {&event, 1});
         return 1;
     }
     const auto root = fs::temp_directory_path() / path_from_utf8("devbox-state-" + uuid());
@@ -62,7 +62,14 @@ int run(int argc, char** argv) {
         require(blocked, "second authoritative writer cannot enter");
         StateMutation initial{{"run", "run-1", "owner", "task-1", "created", 0, Json{{"checkpoint", 1}}}, 0};
         StateEvent created{"run-1", "created", 0, Json{{"checkpoint", 1}}};
-        store->apply({&initial, 1}, {&created, 1});
+        require(!store->apply_once("initial-batch", {&initial, 1}, {&created, 1}),
+                "first critical batch is applied");
+        require(store->apply_once("initial-batch", {&initial, 1}, {&created, 1}),
+                "lost acknowledgement replays the durable receipt");
+        auto substituted = initial;
+        substituted.record.status = "running";
+        rejects([&] { store->apply_once("initial-batch", {&substituted, 1}, {&created, 1}); },
+                "STATE_BATCH_ID_CONFLICT");
         StateStoreOptions readonly;
         readonly.writable = false;
         auto reader = open_state_store(root / "state", readonly);
@@ -155,8 +162,36 @@ int run(int argc, char** argv) {
                 require(record->status == "admitted",
                         "unconfirmed external outcome is never labelled complete");
                 StateMutation retry{*record, 0};
+                StateEvent event{"run-1", "operation_admitted", 0, Json{{"operation", "effect-1"}}};
+                require(recovered->apply_once("crash-batch", {&retry, 1}, {&event, 1}) &&
+                            recovered->events("run-1", 0, 10).size() == 1,
+                        "lost commit acknowledgement replays without duplicate events after a process crash");
                 rejects([&] { recovered->apply({&retry, 1}); }, "STATE_REVISION_CONFLICT");
             }
+        }
+        const auto old = root / "old-v1";
+        {
+            auto original = open_state_store(old);
+            StateMutation preserved{
+                {"operation", "retained", "owner", "run-old", "uncertain", 0, Json{{"effect", "unknown"}}},
+                0};
+            original->apply({&preserved, 1});
+        }
+        sqlite3* legacy = nullptr;
+        require(sqlite3_open(path_text(old / "metadata.sqlite3").c_str(), &legacy) == SQLITE_OK,
+                "old schema fixture opened");
+        require(sqlite3_exec(
+                    legacy,
+                    "DROP TABLE batches; ALTER TABLE control DROP COLUMN batch_count; PRAGMA user_version=1",
+                    nullptr, nullptr, nullptr) == SQLITE_OK,
+                "old schema fixture created");
+        sqlite3_close(legacy);
+        rejects([&] { (void)open_state_store(old, readonly); }, "STATE_SCHEMA_REQUIRES_MIGRATION");
+        {
+            auto upgraded = open_state_store(old);
+            require(upgraded->diagnostics()["schema_version"] == 2 &&
+                        upgraded->get("operation", "retained")->status == "uncertain",
+                    "one-writer schema upgrade retains uncertain operation identity");
         }
         const auto future = root / "future";
         {

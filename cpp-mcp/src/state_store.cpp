@@ -1,4 +1,5 @@
 #include "devbox/state_store.hpp"
+#include "devbox/resource_budget.hpp"
 #include <algorithm>
 #include <array>
 #include <sqlite3.h>
@@ -16,7 +17,7 @@
 #endif
 namespace devbox {
 namespace {
-constexpr int application_id = 0x44425631, schema_version = 1;
+constexpr int application_id = 0x44425631, schema_version = 2;
 constexpr std::size_t maximum_record = 1024 * 1024;
 void key(std::string_view value, bool empty = false) {
     if ((!empty && value.empty()) || value.size() > 256 || value == "*" || value.find('\0') != value.npos)
@@ -173,6 +174,9 @@ class Statement {
     int steps() const {
         return sqlite3_stmt_status(statement_, SQLITE_STMTSTATUS_VM_STEP, 0);
     }
+    std::size_t bytes(int at) const {
+        return static_cast<std::size_t>(sqlite3_column_bytes(statement_, at));
+    }
 };
 class SqliteStore final : public StateStore {
     fs::path directory_;
@@ -258,7 +262,7 @@ class SqliteStore final : public StateStore {
         sql("PRAGMA foreign_keys=ON; PRAGMA mmap_size=0; PRAGMA cache_size=-8192; PRAGMA temp_store=MEMORY;");
         const auto version = scalar("PRAGMA user_version"), identity = scalar("PRAGMA application_id");
         if ((version == 0 && identity != 0) ||
-            (version != 0 && (version != schema_version || identity != application_id)))
+            (version != 0 && ((version != 1 && version != schema_version) || identity != application_id)))
             throw Error("STATE_SCHEMA_INCOMPATIBLE: downgrade or foreign database refused");
         if (!version) {
             if (!options.writable ||
@@ -267,8 +271,9 @@ class SqliteStore final : public StateStore {
             sql("BEGIN IMMEDIATE;");
             ScopeExit rollback([&] { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); });
             sql(R"SQL(
-CREATE TABLE control(singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL);
-INSERT INTO control VALUES(1,0);
+CREATE TABLE control(singleton INTEGER PRIMARY KEY CHECK(singleton=1),generation INTEGER NOT NULL,batch_count INTEGER NOT NULL DEFAULT 0);
+INSERT INTO control VALUES(1,0,0);
+CREATE TABLE batches(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE records(kind TEXT NOT NULL,id TEXT NOT NULL,principal TEXT NOT NULL,group_id TEXT NOT NULL,status TEXT NOT NULL,revision INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(kind,id)) WITHOUT ROWID;
 CREATE INDEX records_principal ON records(kind,principal,id);
 CREATE INDEX records_group ON records(kind,group_id,id);
@@ -293,8 +298,19 @@ INSERT INTO counts VALUES(new.kind,new.principal,new.status,1) ON CONFLICT DO UP
 END;
 CREATE TABLE events(run_id TEXT NOT NULL,sequence INTEGER NOT NULL,type TEXT NOT NULL,data TEXT NOT NULL,PRIMARY KEY(run_id,sequence)) WITHOUT ROWID;
 PRAGMA application_id=1145198129;
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 )SQL");
+            sql("COMMIT;");
+            rollback.disarm();
+        }
+        if (version == 1) {
+            if (!options.writable)
+                throw Error("STATE_SCHEMA_REQUIRES_MIGRATION");
+            sql("BEGIN IMMEDIATE;");
+            ScopeExit rollback([&] { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); });
+            sql("CREATE TABLE batches(id TEXT PRIMARY KEY,fingerprint TEXT NOT NULL) WITHOUT ROWID; "
+                "ALTER TABLE control ADD COLUMN batch_count INTEGER NOT NULL DEFAULT 0; "
+                "UPDATE control SET generation=generation+1 WHERE singleton=1; PRAGMA user_version=2;");
             sql("COMMIT;");
             rollback.disarm();
         }
@@ -383,11 +399,14 @@ PRAGMA user_version=1;
                 row.bind(at++, *value);
         row.bind(at, query.limit + 1);
         StatePage page;
+        std::size_t page_bytes = 0;
         while (row.step()) {
-            if (page.records.size() == query.limit) {
+            if (page.records.size() == query.limit ||
+                (!page.records.empty() && row.bytes(6) > 4 * 1024 * 1024 - page_bytes)) {
                 page.next = page.records.back().id;
                 break;
             }
+            page_bytes += row.bytes(6);
             page.records.push_back(record(row));
         }
         last_query_steps_ = row.steps();
@@ -410,13 +429,62 @@ PRAGMA user_version=1;
         return result;
     }
     void apply(std::span<const StateMutation> mutations, std::span<const StateEvent> events) override {
+        (void)apply_impl({}, mutations, events);
+    }
+    bool apply_once(std::string_view id, std::span<const StateMutation> mutations,
+                    std::span<const StateEvent> events) override {
+        key(id);
+        return apply_impl(std::string(id), mutations, events);
+    }
+    bool apply_impl(const std::optional<std::string>& batch, std::span<const StateMutation> mutations,
+                    std::span<const StateEvent> events) {
         if (mutations.size() > 256 || events.size() > 256 || (mutations.empty() && events.empty()))
             throw Error("STATE_BATCH_LIMIT");
+        std::string fingerprint;
+        if (batch) {
+            Json intent{{"mutations", Json::array()}, {"events", Json::array()}};
+            std::size_t bytes = 0;
+            for (const auto& change : mutations) {
+                const auto& value = change.record;
+                bytes += value.data.dump().size() + value.kind.size() + value.id.size() +
+                         value.principal.size() + value.group.size() + value.status.size() + 256;
+                if (bytes > 8 * 1024 * 1024)
+                    throw Error("STATE_BATCH_BYTES");
+                intent["mutations"].push_back(Json{{"kind", value.kind},
+                                                   {"id", value.id},
+                                                   {"principal", value.principal},
+                                                   {"group", value.group},
+                                                   {"status", value.status},
+                                                   {"expected_revision", change.expected_revision},
+                                                   {"data", value.data}});
+            }
+            for (const auto& event : events) {
+                bytes += event.data.dump().size() + event.run.size() + event.type.size() + 128;
+                if (bytes > 8 * 1024 * 1024)
+                    throw Error("STATE_BATCH_BYTES");
+                intent["events"].push_back(Json{{"run", event.run},
+                                                {"type", event.type},
+                                                {"sequence", event.sequence},
+                                                {"data", event.data}});
+            }
+            fingerprint = sha256(bounded_json_dump(canonical_json(intent), 8 * 1024 * 1024));
+        }
         std::lock_guard lock(mutex_);
         writable();
         sql("BEGIN IMMEDIATE;");
         ScopeExit rollback([&] { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); });
         writable();
+        if (batch) {
+            Statement receipt(db_, "SELECT fingerprint FROM batches WHERE id=?");
+            receipt.bind(1, *batch);
+            if (receipt.step()) {
+                if (receipt.text(0) != fingerprint)
+                    throw Error("STATE_BATCH_ID_CONFLICT");
+                return true;
+            }
+            if (scalar("SELECT batch_count FROM control WHERE singleton=1") >= 1000000)
+                throw Error("STATE_BATCH_RECEIPT_CAPACITY");
+        }
         for (const auto& change : mutations) {
             const auto& value = change.record;
             for (const auto* field : {&value.kind, &value.id, &value.principal, &value.status})
@@ -427,13 +495,15 @@ PRAGMA user_version=1;
             const auto data = value.data.dump();
             if (data.size() > maximum_record)
                 throw Error("STATE_RECORD_SIZE: store artifacts separately");
-            Statement previous(db_, "SELECT revision FROM records WHERE kind=? AND id=?");
+            Statement previous(db_, "SELECT revision,principal,group_id FROM records WHERE kind=? AND id=?");
             previous.bind(1, value.kind);
             previous.bind(2, value.id);
             const bool exists = previous.step();
             const auto revision = exists ? previous.integer(0) : 0;
             if (revision != change.expected_revision)
                 throw Error("STATE_REVISION_CONFLICT");
+            if (exists && (previous.text(1) != value.principal || previous.text(2) != value.group))
+                throw Error("STATE_OWNERSHIP_CHANGE_DENIED");
             Statement write(db_,
                             "INSERT INTO records VALUES(?,?,?,?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET "
                             "principal=excluded.principal,group_id=excluded.group_id,status=excluded.status,"
@@ -468,12 +538,20 @@ PRAGMA user_version=1;
             if (transition_hook_)
                 transition_hook_("event_written");
         }
+        if (batch) {
+            Statement receipt(db_, "INSERT INTO batches VALUES(?,?)");
+            receipt.bind(1, *batch);
+            receipt.bind(2, fingerprint);
+            receipt.step();
+            sql("UPDATE control SET batch_count=batch_count+1 WHERE singleton=1");
+        }
         if (transition_hook_)
             transition_hook_("before_commit");
         sql("COMMIT;");
         rollback.disarm();
         if (transition_hook_)
             transition_hook_("after_commit");
+        return false;
     }
     std::vector<StateEvent> events(std::string_view run, std::uint64_t after,
                                    std::size_t limit) const override {
@@ -487,8 +565,13 @@ PRAGMA user_version=1;
         row.bind(2, after);
         row.bind(3, limit);
         std::vector<StateEvent> result;
-        while (row.step())
+        std::size_t page_bytes = 0;
+        while (row.step()) {
+            if (!result.empty() && row.bytes(3) > 4 * 1024 * 1024 - page_bytes)
+                break;
+            page_bytes += row.bytes(3);
             result.push_back(StateEvent{row.text(0), row.text(1), row.integer(2), Json::parse(row.text(3))});
+        }
         last_query_steps_ = row.steps();
         return result;
     }
@@ -514,5 +597,8 @@ PRAGMA user_version=1;
 } // namespace
 std::shared_ptr<StateStore> open_state_store(const fs::path& directory, StateStoreOptions options) {
     return std::make_shared<SqliteStore>(directory, options);
+}
+void ensure_private_state_directory(const fs::path& directory) {
+    private_local_directory(directory, true);
 }
 } // namespace devbox

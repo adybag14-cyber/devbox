@@ -248,7 +248,8 @@
       ],
       "status": "in_progress",
       "evidence": [
-        "docs/audit-evidence/H08-store-local.json"
+        "docs/audit-evidence/H08-store-local.json",
+        "docs/audit-evidence/H08-coordinator-local.json"
       ],
       "remaining": [
         "Integrate the authoritative coordinator with jobs, operation receipts, run events and resource leases.",

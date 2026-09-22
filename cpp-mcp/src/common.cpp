@@ -853,7 +853,8 @@ std::optional<fs::path> tls_ca_bundle() {
     return std::nullopt;
 }
 HttpResult http_request(std::string_view method, std::string_view url, std::string_view body,
-                        const Json& headers, Millis timeout, std::size_t max_bytes, const Cancel& cancel) {
+                        const Json& headers, Millis timeout, std::size_t max_bytes, const Cancel& cancel,
+                        bool direct_connection) {
     static const bool initialized = []() {
         if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
             throw Error("HTTP initialization failed");
@@ -878,6 +879,8 @@ HttpResult http_request(std::string_view method, std::string_view url, std::stri
     const std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> header_list(raw_headers,
                                                                                   curl_slist_free_all);
     curl_easy_setopt(handle.get(), CURLOPT_URL, uri.c_str());
+    if (direct_connection)
+        curl_easy_setopt(handle.get(), CURLOPT_PROXY, "");
     curl_easy_setopt(handle.get(), CURLOPT_CUSTOMREQUEST, verb.c_str());
     curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, raw_headers);
     curl_easy_setopt(handle.get(), CURLOPT_NOSIGNAL, 1L);
