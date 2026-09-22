@@ -34,7 +34,15 @@ if (sanitizer) args.push('-DDEVBOX_SANITIZERS=ON', '-DCMAKE_CXX_FLAGS_RELWITHDEB
 await run(process.execPath, ['cpp-mcp/scripts/sync-registry.mjs']);
 await run('cmake', args);
 await run('cmake', ['--build', build, '--config', configuration, '--parallel', '4']);
-await run('ctest', ['--test-dir', build, '-C', configuration, '--output-on-failure']);
+try {
+  await run('ctest', ['--test-dir', build, '-C', configuration, '--output-on-failure']);
+} catch (error) {
+  // Diagnose after the failing test; prewarming legacy PowerShell could hide a cold-start defect.
+  if (process.platform === 'win32') {
+    await run(path.join(build, 'cpp-mcp', configuration, 'devbox-runtime-tests.exe'), ['--powershell-diagnostics']);
+  }
+  throw error;
+}
 await run('cmake', ['--install', build, '--config', configuration, '--prefix', packageRoot]);
 await run(process.execPath, ['cpp-mcp/scripts/record-artifacts.mjs', '--package', packageRoot]);
 const extension = process.platform === 'win32' ? '.exe' : '';

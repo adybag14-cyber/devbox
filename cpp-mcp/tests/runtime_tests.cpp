@@ -17,6 +17,57 @@ template <class F> void rejects(F&& operation, std::string_view part) {
     throw Error("Expected rejection: " + std::string(part));
 }
 int run(int argc, char** argv) {
+#ifdef _WIN32
+    if (argc == 2 && std::string_view(argv[1]) == "--powershell-diagnostics") {
+        for (const auto* program : {"powershell.exe", "pwsh.exe"}) {
+            for (const bool detached : {false, true}) {
+                ProcessOptions options;
+                options.env = worker_environment();
+                options.timeout = Millis(8000);
+                options.max_capture_chars = 1024;
+                options.windows_detached_console = detached;
+                if (const auto exe = find_program(program, &*options.env))
+                    (*options.env)["PSModulePath"] = path_text(exe->parent_path() / "Modules");
+                const auto started = Clock::now();
+                Json report{{"program", program}, {"detached_console", detached}, {"first_byte_ms", nullptr}};
+                NativeHandle child;
+                options.on_pid = [&](std::uint32_t pid) {
+                    report["pid"] = pid;
+                    child.reset(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
+                };
+                options.on_output = [&](OutputStream, std::string_view bytes) {
+                    if (!bytes.empty() && report["first_byte_ms"].is_null())
+                        report["first_byte_ms"] =
+                            std::chrono::duration_cast<Millis>(Clock::now() - started).count();
+                };
+                try {
+                    const auto output =
+                        spawn_process(program,
+                                      encoded_powershell_args("[Console]::Out.WriteLine('CLR-and-command-"
+                                                              "ready'); Write-Output 'pipeline-ready'"),
+                                      options);
+                    report["status"] = output.stdout_text.find("pipeline-ready") != std::string::npos
+                                           ? "completed"
+                                           : "missing_expected_output";
+                    report["stdout"] = output.stdout_text;
+                    report["stderr"] = output.stderr_text;
+                } catch (const ProcessError& error) {
+                    report["status"] = error.timed_out ? "timeout" : "launch_or_exit_error";
+                    report["stdout"] = error.stdout_text;
+                    report["stderr"] = error.stderr_text;
+                }
+                report["elapsed_ms"] = std::chrono::duration_cast<Millis>(Clock::now() - started).count();
+                FILETIME create{}, exit{}, kernel{}, user{};
+                if (child && GetProcessTimes(child.get(), &create, &exit, &kernel, &user))
+                    report["cpu_ms"] = ((std::uint64_t(kernel.dwHighDateTime) << 32) + kernel.dwLowDateTime +
+                                        (std::uint64_t(user.dwHighDateTime) << 32) + user.dwLowDateTime) /
+                                       10000;
+                std::cout << report.dump() << '\n' << std::flush;
+            }
+        }
+        return 0;
+    }
+#endif
     if (argc == 2 && std::string_view(argv[1]) == "--under-parent-job") {
         ProcessOptions options;
         options.timeout = Millis(60000);

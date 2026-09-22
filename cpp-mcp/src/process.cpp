@@ -722,7 +722,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     if (cancel)
         cancel->check();
     if (!CreateProcessW(native_program.c_str(), native_command.data(), nullptr, nullptr, TRUE,
-                        (options.appcontainer_sid ? DETACHED_PROCESS : CREATE_NO_WINDOW) |
+                        (options.appcontainer_sid || options.windows_detached_console ? DETACHED_PROCESS
+                                                                                      : CREATE_NO_WINDOW) |
                             CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT |
                             CREATE_UNICODE_ENVIRONMENT,
                         options.env ? environment_block.data() : nullptr, options.cwd ? cwd.c_str() : nullptr,
