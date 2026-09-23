@@ -108,9 +108,11 @@ int child(int argc, char** argv) {
 }
 int test_main(int argc, char** argv) {
 #ifdef _WIN32
-    _setmode(_fileno(stdin), _O_BINARY);
-    _setmode(_fileno(stdout), _O_BINARY);
-    _setmode(_fileno(stderr), _O_BINARY);
+    if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1 ||
+        _setmode(_fileno(stderr), _O_BINARY) == -1) {
+        std::cerr << "Cannot configure binary fixture standard streams\n";
+        return 2;
+    }
 #endif
     if (argc > 1 && std::string(argv[1]) == "--child")
         return child(argc, argv);

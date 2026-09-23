@@ -56,6 +56,9 @@ jobs:
         run: |
           node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'VCPKG_ROOT=' + require('path').resolve('.cpp-build/vcpkg') + '\n')"
           node -e "const fs=require('fs'),p=require('path').resolve('.cpp-build/vcpkg-cache');fs.mkdirSync(p,{recursive:true});fs.appendFileSync(process.env.GITHUB_ENV,'VCPKG_DEFAULT_BINARY_CACHE='+p+'\n')"
+      - name: Keep all Windows fixtures on the qualification workspace volume
+        if: runner.os == 'Windows'
+        run: node -e "const fs=require('fs'),p=require('path').resolve('.cpp-build/native-temp');fs.mkdirSync(p,{recursive:true});fs.appendFileSync(process.env.GITHUB_ENV,'TEMP='+p+'\nTMP='+p+'\n')"
       - name: Select qualification compiler before cache identity
         if: matrix.sanitizers == '1'
         shell: bash
@@ -384,7 +387,8 @@ jobs:
           DEVBOX_CACHE_CONFIGURATION: RelWithDebInfo
           DEVBOX_CACHE_TRIPLET: ${{ runner.os == 'Windows' && 'x64-windows-static-asan' || 'x64-linux' }}
         run: node cpp-mcp/scripts/toolchain-cache-key.mjs
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: security-dependencies
         with:
           path: .cpp-build/security-cache
           key: cpp-security-${{ matrix.os }}-${{ steps.security-cache-identity.outputs.key }}
@@ -398,9 +402,17 @@ jobs:
             .cpp-build/security/**/Testing/Temporary/
             .cpp-build/security/**/*.sarif
             .cpp-build/security/**/security-result.json
+            .cpp-build/security/**/static-analysis-result.json
             .cpp-build/security/**/crash-*
             .cpp-build/toolchain-identity/identity.json
           if-no-files-found: warn
+
+      - name: Retain completed dependency archives after instrumented verification
+        if: always() && steps.security-dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .cpp-build/security-cache
+          key: cpp-security-${{ matrix.os }}-${{ steps.security-cache-identity.outputs.key }}
 
   package:
     name: C++ verified release packages
