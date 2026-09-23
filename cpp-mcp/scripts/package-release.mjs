@@ -101,7 +101,7 @@ try {
   const inventories=await Promise.all(Object.keys(targets).map(target=>readFile(path.join(output,`dependency-inventory-${target}.json`),'utf8').then(JSON.parse)));
   const vulnerabilities=await vulnerabilityReport(inventories);
   await writeFile(path.join(output,'vulnerability-report.json'),JSON.stringify(vulnerabilities,null,2)+'\n',{flag:'wx'});
-  assert.equal(vulnerabilities.findings.length,0,'Vulnerability findings block promotion; remediate and rerun');
+  assert.equal(vulnerabilities.blockingFindings.length,0,'Affected or unresolved vulnerability findings block promotion; remediate and rerun');
   const receipt={schema:1,sourceSha:expectedSha,sourceTree:expectedTree,workflowRunId:process.env.GITHUB_RUN_ID||null,
     qualification:'complete_required_workflow_dependency_graph',
     requiredJobs:['native','android','termux','distributions','alpine','security'],

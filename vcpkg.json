@@ -5,15 +5,35 @@
   "dependencies": [
     "ada-url",
     "re2",
-    "boost-asio",
+    {
+      "name": "boost-asio",
+      "default-features": false
+    },
     "boost-beast",
     "nlohmann-json",
     "lexbor",
     "pugixml",
     "openssl",
     "zlib",
-    { "name": "sqlite3", "default-features": false },
-    { "name": "libdeflate", "default-features": false, "features": ["compression", "gzip", "zlib"] },
-    { "name": "curl", "default-features": false, "features": ["ssl"] }
+    {
+      "name": "sqlite3",
+      "default-features": false
+    },
+    {
+      "name": "libdeflate",
+      "default-features": false,
+      "features": [
+        "compression",
+        "gzip",
+        "zlib"
+      ]
+    },
+    {
+      "name": "curl",
+      "default-features": false,
+      "features": [
+        "ssl"
+      ]
+    }
   ]
 }

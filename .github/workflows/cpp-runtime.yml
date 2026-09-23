@@ -436,6 +436,16 @@ jobs:
           path: .cpp-build/release-input
       - name: Verify every binary and round-trip every release archive
         run: node cpp-mcp/scripts/package-release.mjs
+      - name: Retain release assurance results even when promotion is blocked
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cpp-release-assurance-report
+          path: |
+            .cpp-build/release-assets/vulnerability-report.json
+            .cpp-build/release-assets/build-provenance.json
+            .cpp-build/release-assets/qualification-receipt.json
+          if-no-files-found: ignore
       - name: Sign exact tested release assets and qualification evidence
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         id: attest-release

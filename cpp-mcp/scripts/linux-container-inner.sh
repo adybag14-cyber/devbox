@@ -38,7 +38,9 @@ if [ "$DEVBOX_DISTRO_FAMILY" = apk ]; then
   # build flags; vcpkg additionally validates every package's content ABI.
   identity_file="$fixture_root/musl-toolchain.txt"
   { c++ --version; c++ -dumpmachine; cmake --version; apk info -v;
-    sha256sum vcpkg.json CMakeLists.txt cpp-mcp/CMakeLists.txt cpp-mcp/scripts/ci-native.mjs;
+    sha256sum vcpkg.json vcpkg-configuration.json CMakeLists.txt cpp-mcp/CMakeLists.txt cpp-mcp/scripts/ci-native.mjs \
+      cpp-mcp/cmake/ports/boost-asio/vcpkg.json cpp-mcp/cmake/ports/boost-asio/portfile.cmake \
+      cpp-mcp/cmake/ports/boost-asio/features.cmake cpp-mcp/cmake/ports/boost-asio/0001-add-options.patch;
     printf 'Release C++23 static-dependencies Ninja\n'; } > "$identity_file"
   cache_key=$(sha256sum "$identity_file" | cut -d ' ' -f1)
   export VCPKG_DEFAULT_BINARY_CACHE="/cache/$cache_key"

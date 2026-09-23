@@ -108,6 +108,8 @@ add_dependencies(devbox_core devbox-build-identity)
 target_include_directories(devbox_core PRIVATE "${DEVBOX_GENERATED_DIR}")
 target_include_directories(devbox_core PRIVATE "${DEVBOX_LEXBOR_INCLUDE_DIR}")
 target_include_directories(devbox_core PUBLIC include "${DEVBOX_GENERATED_DIR}/include")
+target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_DISABLE_BOOST_REGEX
+  BOOST_ASIO_DISABLE_BOOST_DATE_TIME BOOST_ASIO_DISABLE_BOOST_CONTEXT_FIBER)
 target_compile_definitions(devbox_core PRIVATE DEVBOX_ALLOCATOR_SHARDED=$<BOOL:${DEVBOX_ALLOCATOR_SHARDED}>)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl ZLIB::ZLIB Threads::Threads ada::ada re2::re2)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)

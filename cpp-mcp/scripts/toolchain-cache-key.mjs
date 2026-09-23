@@ -35,7 +35,10 @@ const identity={schema:1,compiler,cmake,sdk,platform:process.platform,arch:proce
   triplet:process.env.DEVBOX_CACHE_TRIPLET||`${process.arch==='arm64'?'arm64':'x64'}-${process.platform==='win32'?'windows-static':process.platform==='darwin'?'osx':'linux'}`,
   runtime:abi?'c++_static':process.platform==='win32'?'MultiThreaded':'platform',cxxStandard:23,manifest,securityTriplet,
   buildDefinitions:await Promise.all(['CMakeLists.txt','cpp-mcp/CMakeLists.txt','cpp-mcp/scripts/build-android.mjs',
-    'cpp-mcp/scripts/ci-native.mjs'].map(file=>readFile(path.join(repo,file),'utf8')))};
+    'cpp-mcp/scripts/ci-native.mjs','vcpkg-configuration.json',
+    'cpp-mcp/cmake/ports/boost-asio/vcpkg.json','cpp-mcp/cmake/ports/boost-asio/portfile.cmake',
+    'cpp-mcp/cmake/ports/boost-asio/features.cmake','cpp-mcp/cmake/ports/boost-asio/0001-add-options.patch'
+    ].map(file=>readFile(path.join(repo,file),'utf8')))};
 const bytes=JSON.stringify(identity);const key=createHash('sha256').update(bytes).digest('hex');
 await writeFile(path.join(probe,'identity.json'),JSON.stringify({...identity,key},null,2)+'\n');
 if(process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT,`key=${key}\n`);

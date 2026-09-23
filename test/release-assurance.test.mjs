@@ -53,3 +53,22 @@ test('promotion refuses wrong bytes, missing required gates and signature reject
  }),/signature rejected/u);
  assert.equal(calls.length,1);assert.equal(calls[0].file,'gh');assert(calls[0].args.includes('--source-digest'));
 });
+
+test('Boost component findings require absence evidence on every target and unchanged advisory scope',async()=>{
+ const base={triplet:'fixture',dependencies:[{name:'boost-asio',version:'1.92.0'}],
+  componentPresence:{'boost-graph':{checked:true,packagePresent:false,headersPresent:false,libraryFiles:[]}}};
+ let summary='Stack-overflow in boost::read_graphviz_detail::parser::parse_subgraph';
+ const fetcher=async(url)=>new Response(JSON.stringify(url.endsWith('/querybatch')?
+  {results:[{vulns:[{id:'OSV-2024-112'}]}]}:{id:'OSV-2024-112',summary,modified:'fixture',affected:[{package:{name:'boost',ecosystem:'OSS-Fuzz'}}]}));
+ const clear=await vulnerabilityReport([base],fetcher);
+ assert.deepEqual(clear.findings,['OSV-2024-112']);assert.deepEqual(clear.blockingFindings,[]);
+ assert.equal(clear.dispositions[0].justification,'component_not_present');
+ for(const present of [
+  {...base,componentPresence:undefined},
+  {...base,dependencies:[...base.dependencies,{name:'boost-graph',version:'1.92.0'}]},
+  {...base,componentPresence:{'boost-graph':{checked:true,packagePresent:false,headersPresent:true,libraryFiles:[]}}},
+  {...base,componentPresence:{'boost-graph':{checked:true,packagePresent:false,headersPresent:false,libraryFiles:['lib/libboost_graph.a']}}}
+ ]) assert.deepEqual((await vulnerabilityReport([base,present],fetcher)).blockingFindings,['OSV-2024-112']);
+ summary='Changed advisory scope';
+ assert.deepEqual((await vulnerabilityReport([base],fetcher)).blockingFindings,['OSV-2024-112']);
+});

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {mkdir, readFile, writeFile} from 'node:fs/promises';
+import {mkdir, readFile, writeFile, access, readdir} from 'node:fs/promises';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -56,6 +56,21 @@ export async function collectDependencies({installed, triplet, manifest, output,
     notices.push(`===== ${entry.Package} ${version} (${triplet}) =====\n${notice.trim()}\n`);
   }
   const generatedAt=new Date().toISOString();
+  const componentPresence={};
+  const installedTarget=path.join(installed,triplet);
+  const exists=async file=>{try{await access(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
+  for(const component of ['graph','regex']) {
+    const libraryFiles=[];
+    for(const directory of ['lib','debug/lib','bin','debug/bin']) {
+      let names;try{names=await readdir(path.join(installedTarget,directory));}catch(error){if(error.code==='ENOENT')continue;throw error;}
+      assert(names.length<=16384,'Bounded component library inventory');
+      for(const name of names) if(new RegExp(`^(?:lib)?boost_${component}(?:[^a-z]|$)`,'iu').test(name))libraryFiles.push(`${directory}/${name}`);
+    }
+    componentPresence[`boost-${component}`]={checked:true,
+      packagePresent:inventory.some(item=>item.name===`boost-${component}`),
+      headersPresent:await exists(path.join(installedTarget,'include/boost',component))||await exists(path.join(installedTarget,'include/boost',component+'.hpp')),
+      libraryFiles};
+  }
   const bom={spdxVersion:'SPDX-2.3',dataLicense:'CC0-1.0',SPDXID:'SPDXRef-DOCUMENT',
     name:`devbox-${triplet}`,documentNamespace:`https://github.com/adybag14-cyber/devbox/spdx/${sourceSha}/${triplet}`,
     creationInfo:{created:generatedAt,creators:['Tool: Devbox resolved-vcpkg-assurance']},
@@ -68,7 +83,7 @@ export async function collectDependencies({installed, triplet, manifest, output,
       comment:`Resolved ABI ${item.abi}; notice SHA-256 ${item.noticeSha256}; resolved SPDX SHA-256 ${item.resolvedSpdxSha256}`})),
     relationships:inventory.map((_,i)=>({spdxElementId:'SPDXRef-DOCUMENT',relationshipType:'DESCRIBES',relatedSpdxElement:`SPDXRef-package-${i}`}))};
   const documents={'dependency-inventory.json':JSON.stringify({schema:1,sourceSha,triplet,generatedAt,
-    dependencyBaseline:manifest['builtin-baseline'],scope:'resolved_target_graph_including_build_support',dependencies:inventory},null,2)+'\n',
+    dependencyBaseline:manifest['builtin-baseline'],scope:'resolved_target_graph_including_build_support',componentPresence,dependencies:inventory},null,2)+'\n',
     'sbom.spdx.json':JSON.stringify(bom,null,2)+'\n','THIRD_PARTY_NOTICES.txt':notices.join('\n')};
   const files=[];
   for(const [file,body] of Object.entries(documents)) {
