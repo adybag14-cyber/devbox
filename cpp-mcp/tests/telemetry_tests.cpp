@@ -32,6 +32,11 @@ int main() {
         require(utc_from_micros(1234567) == "1970-01-01T00:00:01.234567Z" &&
                     utc_from_micros(1) == "1970-01-01T00:00:00.000001Z",
                 "microsecond UTC formatting");
+        auto internal = with_child_timing(result_success("fixed"), 12);
+        require(internal["_devboxTelemetryChildWorkMs"] == 12,
+                "typed child wall timing retained for observer");
+        strip_internal_result_metadata(internal);
+        require(internal == result_success("fixed"), "child timing cannot change frozen wire results");
         RequestTiming adjusted;
         const auto monotonic = Clock::now();
         adjusted.begin(monotonic, 10000000);
@@ -137,8 +142,11 @@ int main() {
         const auto id = usage.started("host_exec", Json{{"password", "PASSWORD"}},
                                       Json{{"request_id", 7}, {"client_id", issued_client}});
         require(usage.active_tools().size() == 1, "active invocation registered");
-        usage.finished(id, result_process("done", Json{{"execution", {{"queue_wait_ms", 12}, {"slot", 3}}}},
-                                          "stdout", "stderr", 2, false));
+        usage.finished(id,
+                       with_child_timing(
+                           result_process("done", Json{{"execution", {{"queue_wait_ms", 12}, {"slot", 3}}}},
+                                          "stdout", "stderr", 2, false),
+                           4));
         const auto failure =
             usage.started("devbox_wait", Json{{"reason", "CANARY-SECRET-IN-REASON"}},
                           Json{{"request_id", "CANARY-SECRET-ID"}, {"user_agent", "CANARY-SECRET-UA"}});
@@ -206,6 +214,10 @@ int main() {
                 "canary secrets excluded from arguments, field names, context, summaries and errors before "
                 "enqueue");
         const auto first_finish = Json::parse(split(log, '\n')[1]);
+        require(first_finish["owned_process_wall_us"] == 4000 &&
+                    first_finish["owned_process_timing_resolution_us"] == 1000 &&
+                    first_finish["nonprocess_after_admission_us"] == 0,
+                "child work is separate from admission and negative remainder is clamped");
         require(first_finish["context"]["client_id"] == issued_client,
                 "server-issued OAuth identity remains available for trace correlation");
         for (const auto* outcome : {"cancelled", "timed_out", "policy_denied", "wait_completed"})
@@ -240,7 +252,7 @@ int main() {
         require(reinterpret_cast<std::uintptr_t>(allocation) % 256 == 0, "aligned new alignment");
         ::operator delete(allocation, std::align_val_t(256));
         const auto after = allocator_snapshot();
-        if (json_string(before, "backend") == "cpp-global-new")
+        if (json_string(before, "backend").starts_with("cpp-global-new"))
             require(json_uint(during, "cumulativeAllocatedBytes") >=
                             json_uint(before, "cumulativeAllocatedBytes") + 65536 &&
                         json_uint(after, "cumulativeFreedBytes") >=

@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "ok": true,
+  "build": {
+    "gitSha": "8e43fcc17131841f98c71410bbf1e5be07c9de48",
+    "gitRef": "audit/backend-refinements-20260921",
+    "sourceTree": "8e61f9678e5d230e9f5a4f4a19dabe31a4bb335b",
+    "sourceDirty": true,
+    "sourceFingerprint": "cd044d1d36ff8c61f4582049c494a16af515742e8aa8b3bb27aa86fa4d3da668",
+    "buildUnixSeconds": "1790159733",
+    "compiler": "MSVC 19.51.36257.0",
+    "implementation": "cpp",
+    "contractVersion": 9,
+    "toolCount": 53,
+    "stateSchemaVersion": 2,
+    "stateCoordinatorProtocol": 1,
+    "sanitizers": false,
+    "binarySha256": "6ee78385c322daf6e34fd4e1aad40a80be93e7a20e54c2fa31976ffe46916fbf",
+    "executableName": "devbox-mcp.exe",
+    "deploymentGeneration": null
+  },
+  "binarySha256": "6ee78385c322daf6e34fd4e1aad40a80be93e7a20e54c2fa31976ffe46916fbf",
+  "baselineSha256": "01cd51b8fcd44874b8362949c8e7c7881e802f0de90a7649507feef8e6d52136",
+  "receiptReplayAcrossBinaryUpgrade": true,
+  "admissionDrain": true,
+  "frontendRestart": true,
+  "durableEffects": 2,
+  "migration": {
+    "migrated": true,
+    "replayed": false,
+    "jobs": 2,
+    "operations": 2,
+    "tasks": 1,
+    "generation": 1
+  },
+  "receiptReplayAfterMigration": true,
+  "unsafeLegacyRollbackBlocked": true,
+  "privateSnapshotFenced": true,
+  "knownGoodArtifactRestoredAfterStartupFailure": true,
+  "rollbackScope": "same compatible exact artifact; no state downgrade",
+  "productionRequests": 0,
+  "status": "development_canary_passed_release_artifact_rerun_and_production_promotion_pending"
+}

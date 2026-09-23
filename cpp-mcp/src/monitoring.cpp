@@ -206,8 +206,8 @@ void OperationalMonitor::probe_store() {
             if (slopes.size() >= 4) {
                 std::sort(slopes.begin(), slopes.end());
                 const auto middle = slopes.size() / 2;
-                auto median = slopes.size() % 2 ? slopes[middle]
-                                                : std::trunc((slopes[middle - 1] + slopes[middle]) / 2);
+                auto median = (slopes.size() % 2) ? slopes[middle]
+                                                  : std::trunc((slopes[middle - 1] + slopes[middle]) / 2);
                 median =
                     std::clamp(median, static_cast<long double>(std::numeric_limits<std::int64_t>::min()),
                                static_cast<long double>(std::numeric_limits<std::int64_t>::max()));

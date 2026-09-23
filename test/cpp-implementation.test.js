@@ -137,3 +137,41 @@ test("C++ promotion refuses an executable modified after preflight", async () =>
     await assert.rejects(readFile(spec.candidate.CandidateManifestPath), { code: "ENOENT" });
   } finally { await f.close(); }
 });
+
+test("signed production preflight rejects before candidate execution or fallback build", async () => {
+  const f = await fixture();
+  try {
+    let rebuilt = false, probed = false;
+    const env = { ...process.env, CPP_REQUIRE_QUALIFIED_ARTIFACT: "1" };
+    await assert.rejects(prepareCppImplementation(f.root, { env: { ...env, CPP_REQUIRE_QUALIFIED_ARTIFACT: "treu" }, runProcess: f.runner }), /ambiguous promotion policy/u);
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /QUALIFICATION_RECEIPT/u);
+    env.CPP_QUALIFICATION_RECEIPT = "run/qualification-receipt.json";
+    env.CPP_PROVENANCE_BUNDLE = "run/provenance.sigstore.json";
+    const runner = async (file, args, options) => {
+      if (args[0]?.endsWith("verify-promotion.mjs")) throw new Error("signature rejected");
+      if (args[0] === "--build-info") probed = true;
+      return f.runner(file, args, options);
+    };
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: runner,
+      build: async () => { rebuilt = true; return f.binary; } }), /signature rejected/u);
+    assert.equal(probed, false); assert.equal(rebuilt, false);
+    await assert.rejects(readFile(path.join(f.root, "run/bin/current-cpp.json")), { code: "ENOENT" });
+  } finally { await f.close(); }
+});
+
+test("signed production promotion retains the binding qualification receipt", async () => {
+  const f = await fixture();
+  try {
+    const env = { ...process.env, CPP_REQUIRE_QUALIFIED_ARTIFACT: "true", CPP_MCP_EXE: f.binary,
+      CPP_QUALIFICATION_RECEIPT: "run/qualification-receipt.json", CPP_PROVENANCE_BUNDLE: "run/provenance.sigstore.json" };
+    const qualification = { verified: true, sourceSha: f.source.GitSha, sourceTree: f.source.SourceTree,
+      contractVersion: f.report.contract_version, binarySha256: f.hash, workflowRunId: "controlled-fixture" };
+    const runner = async (file, args, options) => args[0]?.endsWith("verify-promotion.mjs")
+      ? { stdout: JSON.stringify(qualification), exitCode: 0 } : f.runner(file, args, options);
+    const spec = await prepareCppImplementation(f.root, { env, runProcess: runner });
+    assert.equal(spec.candidate.QualificationRequired, true);
+    assert.deepEqual(spec.candidate.ReleaseQualification, qualification);
+    await promoteCppImplementation(spec, 123);
+    assert.deepEqual(JSON.parse(await readFile(spec.candidate.CandidateManifestPath, "utf8")).ReleaseQualification, qualification);
+  } finally { await f.close(); }
+});

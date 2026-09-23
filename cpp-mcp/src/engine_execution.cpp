@@ -21,19 +21,20 @@ Json render_output(std::string summary, const ProcessOutput& output, const Json&
     const auto lines = static_cast<std::size_t>(json_uint(args, "max_output_lines"));
     const auto out = shape_output(output.stdout_text, mode, maximum, lines),
                err = shape_output(output.stderr_text, mode, maximum, lines);
-    return result_process(std::move(summary),
-                          Json{{"execution", execution_data(lease)},
-                               {"output",
-                                {{"mode", mode},
-                                 {"max_chars", maximum},
-                                 {"max_lines", lines},
-                                 {"stdout_original_chars", output.stdout_original_chars},
-                                 {"stderr_original_chars", output.stderr_original_chars},
-                                 {"stdout_capture_truncated", output.stdout_capture_truncated},
-                                 {"stderr_capture_truncated", output.stderr_capture_truncated}}}},
-                          out.text, err.text, output.exit_code, true,
-                          out.truncated || err.truncated || output.stdout_capture_truncated ||
-                              output.stderr_capture_truncated);
+    auto result = result_process(std::move(summary),
+                                 Json{{"execution", execution_data(lease)},
+                                      {"output",
+                                       {{"mode", mode},
+                                        {"max_chars", maximum},
+                                        {"max_lines", lines},
+                                        {"stdout_original_chars", output.stdout_original_chars},
+                                        {"stderr_original_chars", output.stderr_original_chars},
+                                        {"stdout_capture_truncated", output.stdout_capture_truncated},
+                                        {"stderr_capture_truncated", output.stderr_capture_truncated}}}},
+                                 out.text, err.text, output.exit_code, true,
+                                 out.truncated || err.truncated || output.stdout_capture_truncated ||
+                                     output.stderr_capture_truncated);
+    return with_child_timing(std::move(result), output.elapsed_ms);
 }
 } // namespace
 Json render_process_error(const std::exception& error, std::size_t maximum, std::optional<Json> data) {
@@ -42,6 +43,7 @@ Json render_process_error(const std::exception& error, std::size_t maximum, std:
                    err = trim_error(process->stderr_text, maximum);
         auto result = result_process(error.what(), std::move(data), out.first, err.first, process->exit_code,
                                      false, out.second || err.second);
+        result = with_child_timing(std::move(result), process->elapsed_ms);
         if (process->aborted)
             return with_outcome(std::move(result), ToolOutcome::Cancelled);
         if (process->timed_out)

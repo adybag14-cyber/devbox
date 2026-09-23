@@ -30,10 +30,14 @@ test('vulnerability reports preserve findings and explicitly limited coverage',a
  const result=await vulnerabilityReport(inventories,async(url,options)=>{
   assert.equal(url,'https://api.osv.dev/v1/querybatch');assert.equal(options.redirect,'error');
   assert.equal(JSON.parse(options.body).queries[0].package.name,'curl');
-  return {status:200,text:async()=>JSON.stringify({results:[{vulns:[{id:'SYNTHETIC-VULN'}]}]})};
+  return new Response(JSON.stringify({results:[{vulns:[{id:'SYNTHETIC-VULN'}]}]}));
  });
  assert.equal(result.gate,'blocked_findings_require_remediation');assert.deepEqual(result.unmapped,['unmapped-library@1']);
  await assert.rejects(vulnerabilityReport(inventories,async()=>({status:503})),/Vulnerability service/u);
+ await assert.rejects(vulnerabilityReport(inventories,async()=>new Response(JSON.stringify({results:[{error:'query failed'}]}))),/valid result/u);
+ await assert.rejects(vulnerabilityReport(inventories,async()=>new Response(new ReadableStream({
+  pull(controller){controller.enqueue(new Uint8Array(3*1024*1024));}
+ }))),/Bounded OSV result/u);
 });
 test('promotion refuses wrong bytes, missing required gates and signature rejection before execution',async()=>{
  const bytes=Buffer.from('controlled binary fixture');const sourceSha='c'.repeat(40);

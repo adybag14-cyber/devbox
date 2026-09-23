@@ -19,6 +19,7 @@ Json result_image(std::string summary, Json data, std::string base64, std::strin
 // Server-only lifecycle classification. Remove before exposing a result on any wire/model boundary.
 enum class ToolOutcome { Cancelled, TimedOut, PolicyDenied, InvalidArguments, ProcessFailure };
 Json with_outcome(Json result, ToolOutcome outcome);
+Json with_child_timing(Json result, std::uint64_t elapsed_ms);
 std::string result_outcome(const Json& result);
 void strip_internal_result_metadata(Json& result);
 } // namespace devbox

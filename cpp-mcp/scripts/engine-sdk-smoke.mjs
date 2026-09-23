@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {assertNativeContract,nativeToolCount} from './native-contract.mjs';
 import {stopStateFixture} from './state-fixture.mjs';
+import {runCheckedProcess} from '../../src/mcp-implementation.js';
 import {spawn} from 'node:child_process';
 import {mkdtemp,readFile,writeFile,rm,mkdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -92,10 +93,24 @@ try {
   assert.equal(status.performance.process.pid,child.pid,'live serving PID');assert.equal(status.executionStore.ok,true);
   assert.equal(status.activeRequests,0,'cancelled/waited requests released');
   assert.equal((await fetch(`${base}/readyz`)).status,listed.length===nativeToolCount?200:503);
+  const control=async action=>{
+    const response=await runCheckedProcess(binary,['--admission',action],{env,cwd:repo,timeoutMs:10000,label:'Owned fixture admission control'});
+    const generation=JSON.parse(response.stdout).requested.generation;
+    const deadline=Date.now()+5000;
+    for(;;){const state=(await(await fetch(base)).json()).admission;if(state.generation===generation)return state;
+      assert(Date.now()<deadline,'Frontend must acknowledge admission generation');await delay(50);}
+  };
+  assert.equal((await control('drain')).mode,'draining');
+  const denied=await client.callTool({name:'devbox_write_file_atomic',arguments:{path:path.join(workspace,'drain-denied.txt'),content_base64:Buffer.from('never').toString('base64'),expected_file_sha256:'missing'}});
+  assert.equal(denied.isError,true);assert(JSON.stringify(denied).includes('SERVER_DRAINING'));
+  await assert.rejects(readFile(path.join(workspace,'drain-denied.txt')),{code:'ENOENT'});
+  assert.equal(await(await fetch(`${base}/healthz`)).text(),'ok');await invoke('devbox_job_status',{job_id:firstJob.id});
+  assert.equal((await control('resume')).mode,'open');
+  await invoke('devbox_file_state',{path:pathName});
   await client.close();client=undefined;
   await delay(100);
   const usage=await readFile(path.join(root,'run','tool-usage.jsonl'),'utf8');assert(usage.includes('tool_finish'));
-  console.log(JSON.stringify({ok:true,toolCount:listed.length,binarySha256:binaryHash,servingPid:child.pid,sdk:'1.30.0',nativeJob:true,durableRetry:true,byteRoundtrip:true,concurrentPassiveWaits:32,cancellation:true,healthMs},null,2));
+  console.log(JSON.stringify({ok:true,toolCount:listed.length,binarySha256:binaryHash,servingPid:child.pid,sdk:'1.30.0',nativeJob:true,durableRetry:true,byteRoundtrip:true,concurrentPassiveWaits:32,cancellation:true,admissionDrain:true,healthMs},null,2));
 } finally {
   await client?.close().catch(()=>{});
   if(child.exitCode===null&&child.signalCode===null){child.kill();await Promise.race([exited,delay(10000)]);}

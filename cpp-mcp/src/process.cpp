@@ -128,7 +128,7 @@ CaptureResult CaptureAccumulator::snapshot() const {
 CaptureResult read_text_file_bounded(const fs::path& path, std::optional<std::size_t> limit) {
     CaptureAccumulator capture(limit);
     std::ifstream stream(path, std::ios::binary);
-    std::array<char, 16384> buffer{};
+    std::vector<char> buffer(16384);
     while (stream) {
         stream.read(buffer.data(), buffer.size());
         capture.push(std::string_view(buffer.data(), static_cast<std::size_t>(stream.gcount())));
@@ -549,7 +549,7 @@ Pipe empty_input() {
 }
 void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
                     const ProcessOptions& options) {
-    std::array<char, 16384> buffer{};
+    std::vector<char> buffer(16384);
     // Bound each pass so continuously chatty children cannot starve cancellation or stderr.
     for (int pass = 0; pipe && pass < 16; ++pass) {
         DWORD available = 0;
@@ -579,7 +579,7 @@ void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStrea
 }
 RawProcessResult run_native(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
-                            CaptureAccumulator& err) {
+                            CaptureAccumulator& err, bool& process_started) {
     auto stdout_pipe = output_pipe(), stderr_pipe = output_pipe();
     auto stdin_pipe = options.input && !options.input->empty() ? input_pipe() : empty_input();
     const auto resolved = find_program(file, options.env ? &*options.env : nullptr);
@@ -729,6 +729,7 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
                         options.env ? environment_block.data() : nullptr, options.cwd ? cwd.c_str() : nullptr,
                         &startup.StartupInfo, &information))
         throw Error(windows_error());
+    process_started = true;
     NativeHandle process(information.hProcess), thread(information.hThread);
     bool assigned = false;
     ScopeExit terminate_on_error([&] {
@@ -869,7 +870,7 @@ void nonblocking(int fd) {
 }
 void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
                     const ProcessOptions& options) {
-    std::array<char, 16384> buffer{};
+    std::vector<char> buffer(16384);
     for (int pass = 0; pipe && pass < 16; ++pass) {
         const auto count = ::read(pipe.get(), buffer.data(), buffer.size());
         if (!count) {
@@ -891,7 +892,7 @@ void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStrea
 }
 RawProcessResult run_native(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
-                            CaptureAccumulator& err) {
+                            CaptureAccumulator& err, bool& process_started) {
     auto input_pipe = make_pipe(), stdout_pipe = make_pipe(), stderr_pipe = make_pipe();
     const auto checked = [](int result) {
         if (result)
@@ -929,6 +930,7 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     const pid_t child = spawn_posix(
         program, argv.data(), options.env ? envp.data() : environ, options.cwd ? &*options.cwd : nullptr,
         {input_pipe.read.get(), stdout_pipe.write.get(), stderr_pipe.write.get()}, close_fds, true);
+    process_started = true;
     bool reaped = false;
     ScopeExit terminate_on_error([&] {
         if (!reaped) {
@@ -1053,6 +1055,7 @@ ProcessOutput spawn_process(std::string_view file, const std::vector<std::string
     const auto started = Clock::now();
     CaptureAccumulator out(options.max_capture_chars), err(options.max_capture_chars);
     RawProcessResult raw;
+    bool process_started = false;
     std::string launch_failure;
     try {
         check_string(file);
@@ -1060,7 +1063,7 @@ ProcessOutput spawn_process(std::string_view file, const std::vector<std::string
             check_string(arg);
         if (options.windows_raw_arguments)
             check_string(*options.windows_raw_arguments);
-        raw = run_native(file, args, options, cancel, out, err);
+        raw = run_native(file, args, options, cancel, out, err, process_started);
     } catch (const Cancelled& error) {
         raw.aborted = true;
         launch_failure = error.what();
@@ -1087,6 +1090,7 @@ ProcessOutput spawn_process(std::string_view file, const std::vector<std::string
         error.args = args;
         error.aborted = raw.aborted;
         error.timed_out = raw.timed_out;
+        error.process_started = process_started;
         error.elapsed_ms = elapsed(started);
         throw error;
     }

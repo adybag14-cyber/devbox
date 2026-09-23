@@ -327,13 +327,22 @@ int test_main(int argc, char** argv) {
         require(failed, "launch failure classification");
         std::uint32_t child_pid = 0;
         options.on_pid = [&](std::uint32_t pid) { child_pid = pid; };
+        auto never_started = std::make_shared<Cancellation>();
+        never_started->cancel();
+        failed = false;
+        try {
+            spawn_process(self, {"--child", "sleep"}, options, never_started);
+        } catch (const ProcessError& error) {
+            failed = error.aborted && error.process_started == false && !error.exit_code && !error.signal;
+        }
+        require(failed && !child_pid, "pre-launch cancellation has explicit proof that no child started");
         options.timeout = Millis(250);
         failed = false;
         const auto before = Clock::now();
         try {
             spawn_process(self, {"--child", "sleep"}, options);
         } catch (const ProcessError& error) {
-            failed = error.timed_out && !error.aborted;
+            failed = error.timed_out && !error.aborted && error.process_started == true;
         }
         require(failed && child_pid && !process_alive(child_pid) && Clock::now() - before < Millis(4000),
                 "timeout terminates owned child");
@@ -347,7 +356,7 @@ int test_main(int argc, char** argv) {
         try {
             spawn_process(self, {"--child", "sleep"}, options, cancel);
         } catch (const ProcessError& error) {
-            failed = error.aborted && !error.timed_out;
+            failed = error.aborted && !error.timed_out && error.process_started == true;
         }
         require(failed && !process_alive(child_pid), "cancellation terminates owned child");
         std::uint32_t grandchild = 0;
@@ -372,6 +381,32 @@ int test_main(int argc, char** argv) {
         while (process_alive(grandchild) && Clock::now() < deadline)
             std::this_thread::sleep_for(Millis(10));
         require(!process_alive(grandchild), "no live grandchild after cancellation");
+        {
+            ProcessOptions observer;
+            observer.timeout = Millis(3000);
+            std::uint32_t owned_pid = 0;
+            std::optional<std::uint64_t> owned_instance;
+            observer.on_pid = [&](std::uint32_t pid) {
+                owned_pid = pid;
+                owned_instance = process_instance(pid);
+            };
+            observer.on_output = [](OutputStream, std::string_view) {
+                throw Error("controlled observer failure");
+            };
+            bool unknown = false;
+            try {
+                spawn_process(self, {"--child", "sleep"}, observer);
+            } catch (const ProcessError& error) {
+                unknown = error.process_started == true && !error.exit_code && !error.signal;
+            }
+            require(unknown && owned_pid && owned_instance,
+                    "post-launch observer failure retains launch evidence without inventing exit status");
+            const auto until = Clock::now() + Millis(2000);
+            while (process_matches_instance(owned_pid, owned_instance) && Clock::now() < until)
+                std::this_thread::sleep_for(Millis(5));
+            require(!process_matches_instance(owned_pid, owned_instance),
+                    "owned observer-failure child is eventually reaped");
+        }
         std::cout << "PASS launch errors, exit codes, deadlines, cancellation and descendants\n";
         return 0;
     } catch (const std::exception& error) {

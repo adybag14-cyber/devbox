@@ -210,9 +210,9 @@ int run(int argc, char** argv) {
         while (json_string(store.get_status(cancelled_id), "status") != "running" && Clock::now() < deadline)
             std::this_thread::sleep_for(Millis(10));
         const auto cancelled = store.cancel(cancelled_id);
-        require(cancelled["status"] == "cancelled" && cancelled["runnerAlive"] == false &&
-                    !cancelled["completedAtUtc"].is_null(),
-                "verified cancellation acknowledgement");
+        if (!(cancelled["status"] == "cancelled" && cancelled["runnerAlive"] == false &&
+              !cancelled["completedAtUtc"].is_null()))
+            throw Error("verified cancellation acknowledgement: " + cancelled.dump());
         std::cout << "PASS detached execution, receipts, conflicts, logs, failure, timeout and cancellation\n"
                   << std::flush;
         // Restarting a runner on a completed request cannot repeat side effects.

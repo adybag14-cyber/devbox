@@ -61,6 +61,8 @@ struct ProcessError : Error {
     std::string stdout_text, stderr_text, file;
     std::vector<std::string> args;
     bool timed_out = false, aborted = false;
+    // Absent means the adapter cannot establish whether a process started.
+    std::optional<bool> process_started;
     std::uint64_t elapsed_ms = 0;
     using Error::Error;
 };

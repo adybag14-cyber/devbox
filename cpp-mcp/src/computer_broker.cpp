@@ -41,7 +41,7 @@ NativeHandle verify_peer(HANDLE pipe, bool server) {
     NativeHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, pid));
     if (!process || WaitForSingleObject(process.get(), 0) != WAIT_TIMEOUT)
         throw Error("COMPUTER_BROKER_IDENTITY: peer exited");
-    std::array<wchar_t, 32768> path{};
+    std::vector<wchar_t> path(32768);
     DWORD size = static_cast<DWORD>(path.size());
     if (!QueryFullProcessImageNameW(process.get(), 0, path.data(), &size) ||
         _wcsicmp(path.data(), executable_path().c_str()) != 0)

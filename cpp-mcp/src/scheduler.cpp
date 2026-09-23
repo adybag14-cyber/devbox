@@ -1,4 +1,5 @@
 #include "devbox/scheduler.hpp"
+#include "devbox/jobs.hpp"
 #include "devbox/scheduler_notifications.hpp"
 #include <algorithm>
 #include <iomanip>
@@ -32,7 +33,7 @@ std::string execution_name(ExecutionKind value) {
     return value == ExecutionKind::background ? "background" : "interactive";
 }
 SchedulerConfig SchedulerConfig::from(const Config& config) {
-    return {
+    SchedulerConfig result{
         config.execution_slot_root,
         config.exec_max_concurrent,
         config.exec_reserved_interactive,
@@ -44,6 +45,11 @@ SchedulerConfig SchedulerConfig::from(const Config& config) {
         config.exec_io_heavy_weight,
         Millis(config.background_priority_age_ms),
         {config.exec_memory_capacity_bytes, config.exec_gpu_capacity_bytes, config.exec_disk_capacity_bytes}};
+    if (config.state_backend == "sqlite") {
+        const auto jobs = std::make_shared<JobStore>(std::make_shared<Config>(config));
+        result.lease_index = [jobs] { return jobs->index(); };
+    }
+    return result;
 }
 SchedulerConfig SchedulerConfig::normalized() const {
     auto out = *this;
@@ -92,8 +98,11 @@ struct SchedulerMetrics {
         std::uint64_t active = 0, acquired = 0, total_wait = 0, max_wait = 0;
     };
     std::mutex mutex;
+    std::mutex reconcile_mutex;
+    std::optional<std::string> lease_cursor;
     std::uint64_t queued = 0, active = 0, acquired = 0, timed_out = 0, cancelled = 0, total_wait = 0,
                   max_wait = 0;
+    std::uint64_t lease_index_release_failures = 0;
     std::map<std::string, Class> classes;
     Json snapshot() {
         std::lock_guard lock(mutex);
@@ -108,6 +117,7 @@ struct SchedulerMetrics {
                     {"acquired", acquired},
                     {"timed_out", timed_out},
                     {"cancelled", cancelled},
+                    {"lease_index_release_failures", lease_index_release_failures},
                     {"average_queue_wait_ms", acquired ? total_wait / acquired : 0},
                     {"max_queue_wait_ms", max_wait},
                     {"by_resource_class", by_class}};
@@ -434,11 +444,98 @@ fs::path slot_path(const fs::path& root, std::string_view pool, std::size_t inde
          << ".json";
     return root / path_from_utf8(name.str());
 }
+std::string lease_group(const fs::path& root) {
+    return sha256(path_text(fs::canonical(root)));
+}
+void index_leases(const std::shared_ptr<StateStore>& index, std::string_view group,
+                  const std::vector<OwnedFile>& owned, bool releasing, unsigned retries = 2) {
+    if (!index)
+        return;
+    std::vector<StateMutation> updates;
+    for (const auto& file : owned) {
+        const auto name = path_text(file.path.filename());
+        const auto id = std::string(group) + ":" + name;
+        const auto previous = index->get("resource_lease", id);
+        Json value;
+        if (releasing) {
+            // A later owner may already have reused this slot. Its identity and
+            // revision cannot be released by the previous lease's destructor.
+            if (!previous || json_string(previous->data, "token") != file.token)
+                continue;
+            value = previous->data;
+            value["released_at"] = utc_now();
+        } else {
+            const auto owner = inspect(file.path);
+            if (!owner || json_string(*owner, "token") != file.token || !owner_process_alive(*owner))
+                throw Error("RESOURCE_LEASE_IDENTITY_CHANGED");
+            value = *owner;
+            value.erase("label");
+            value["file"] = name;
+            value["authority"] = "file_token_and_process_instance";
+        }
+        updates.push_back({StateRecord{"resource_lease", id, "operator", std::string(group),
+                                       releasing ? "released" : "active", 0, std::move(value)},
+                           previous ? previous->revision : 0});
+    }
+    if (!updates.empty()) {
+        try {
+            index->apply(updates);
+        } catch (const Error& error) {
+            // Only a definite CAS rejection is retried. Lost IPC acknowledgements
+            // remain uncertain; no child effect has been dispatched by this index.
+            if (!retries ||
+                std::string_view(error.what()).find("STATE_REVISION_CONFLICT") == std::string_view::npos)
+                throw;
+            index_leases(index, group, owned, releasing, retries - 1);
+        }
+    }
+}
+Json reconcile_lease_index(const SchedulerConfig& config, SchedulerMetrics& metrics) {
+    if (!config.lease_index)
+        return Json{{"enabled", false}};
+    const auto index = config.lease_index();
+    const auto group = lease_group(config.root);
+    std::lock_guard lock(metrics.reconcile_mutex);
+    StateQuery query;
+    query.kind = "resource_lease";
+    query.group = group;
+    query.status = "active";
+    query.limit = 64;
+    query.after = metrics.lease_cursor;
+    const auto page = index->list(query);
+    std::vector<StateMutation> updates;
+    for (auto record : page.records) {
+        const auto name = json_string(record.data, "file");
+        if (name !=
+            path_text(slot_path(config.root, json_string(record.data, "pool"), json_uint(record.data, "slot"))
+                          .filename()))
+            throw Error("RESOURCE_LEASE_INDEX_PATH_REJECTED");
+        const auto owner = inspect(config.root / path_from_utf8(name));
+        const bool same = owner && json_string(*owner, "token") == json_string(record.data, "token");
+        if (same && owner_process_alive(*owner))
+            continue;
+        const auto revision = record.revision;
+        record.status = "owner_lost_effects_unverified";
+        record.data["reconciled_at"] = utc_now();
+        updates.push_back({std::move(record), revision});
+    }
+    if (!updates.empty())
+        index->apply(updates);
+    metrics.lease_cursor = page.next;
+    return Json{{"enabled", true},
+                {"reconciled_records", page.records.size()},
+                {"page_limit", 64},
+                {"more", page.next.has_value()},
+                {"authority", "file_token_and_process_instance"},
+                {"recovery", "index_does_not_replay_work_or_release_file_owners"}};
+}
 } // namespace
 struct ExecutionLease::State {
     std::vector<OwnedFile> owned;
     std::shared_ptr<SchedulerMetrics> metrics;
     std::shared_ptr<SchedulerNotifications> notifications;
+    std::shared_ptr<StateStore> index;
+    std::string index_group;
     std::string class_name;
     bool released = false;
     ~State() {
@@ -474,6 +571,14 @@ struct ExecutionLease::State {
         }
         if (!failures.empty())
             throw Error(failures);
+        try {
+            index_leases(index, index_group, owned, true);
+        } catch (...) {
+            // The authoritative file release already happened. Preserve the
+            // actual command result and expose pending metadata reconciliation.
+            std::lock_guard lock(metrics->mutex);
+            ++metrics->lease_index_release_failures;
+        }
         mark_released();
         notifications->signal();
     }
@@ -713,6 +818,7 @@ struct ExecutionWaiter::State {
                               {"processInstance", instance_json()},
                               {"kind", execution_name(request.kind)},
                               {"pool", plan.pool},
+                              {"slot", index},
                               {"resourceClass", resource_name(request.resource_class)},
                               {"weight", plan.weight},
                               {"label", request.label},
@@ -806,7 +912,23 @@ std::optional<ExecutionLease> ExecutionWaiter::poll(const Cancel& cancel) {
                 } catch (...) {
                 }
             }
+            state.notifications->signal();
         });
+        // Ordinary foreground CPU slots already have a bounded, atomically
+        // claimed file index. Durable/background work and explicit memory/GPU/
+        // disk reservations additionally require the transactional state index.
+        const bool durable_reservation =
+            state.request.kind == ExecutionKind::background || state.request.resources.any();
+        const auto index =
+            state.config.lease_index && durable_reservation ? state.config.lease_index() : nullptr;
+        const auto group = index ? lease_group(state.config.root) : std::string();
+        index_leases(index, group, *owned, false);
+        // Index RPC/commit time is part of admission. A completed metadata write
+        // cannot turn a cancelled or expired waiter into permission to do work.
+        if (cancel && cancel->cancelled())
+            throw QueueCancelled();
+        if (Clock::now() - state.started >= state.timeout)
+            throw state.timeout_error();
         state.release_ticket();
         ExecutionLease lease;
         lease.kind = state.request.kind;
@@ -821,6 +943,8 @@ std::optional<ExecutionLease> ExecutionWaiter::poll(const Cancel& cancel) {
         lease.state_->owned = *owned;
         lease.state_->metrics = state.metrics;
         lease.state_->notifications = state.notifications;
+        lease.state_->index = index;
+        lease.state_->index_group = group;
         lease.state_->class_name = resource_name(lease.resource_class);
         {
             auto& metrics = *state.metrics;
@@ -934,7 +1058,19 @@ Json ExecutionScheduler::snapshot() const {
         total += count;
         by_class[name] = count;
     }
+    Json index_status;
+    try {
+        index_status = reconcile_lease_index(config_, *metrics_);
+    } catch (...) {
+        index_status = Json{{"enabled", bool(config_.lease_index)},
+                            {"available", false},
+                            {"reconciliation_pending", true},
+                            {"error", "LEASE_INDEX_RECONCILIATION_FAILED"}};
+    }
     return Json{{"max_concurrent", config_.max_concurrent},
+                {"lease_index", index_status},
+                {"lease_index_scope", "durable_background_and_explicit_resource_reservations"},
+                {"foreground_slot_authority", "bounded_atomic_file_index"},
                 {"notifications", notifications_->snapshot()},
                 {"resource_capacity", config_.capacity.json()},
                 {"resource_capacity_policy",

@@ -137,6 +137,7 @@ ProcessError cleaned_error(const ProcessError& original) {
     result.args = original.args;
     result.aborted = original.aborted;
     result.timed_out = original.timed_out;
+    result.process_started = original.process_started;
     result.elapsed_ms = original.elapsed_ms;
     return result;
 }
@@ -550,6 +551,8 @@ ProcessOutput RuntimeExecutor::elevated_shell(const ShellRequest& request, const
         error.aborted = cancelled || json_bool(data, "aborted");
         error.timed_out = timed_out || json_bool(data, "timed_out");
         error.elapsed_ms = output.elapsed_ms;
+        if (data.contains("process_started") && data["process_started"].is_boolean())
+            error.process_started = data["process_started"].get<bool>();
         throw error;
     }
     output.exit_code = data["exit_code"].get<int>();
@@ -614,6 +617,7 @@ int elevated_shell_worker(const fs::path& request_path) {
                       {"exit_code", error.exit_code ? Json(*error.exit_code) : Json(nullptr)},
                       {"timed_out", error.timed_out},
                       {"aborted", error.aborted},
+                      {"process_started", error.process_started ? Json(*error.process_started) : Json()},
                       {"elapsed_ms", error.elapsed_ms}};
     } catch (const std::exception& error) {
         result = Json{{"ok", false}, {"message", error.what()}};

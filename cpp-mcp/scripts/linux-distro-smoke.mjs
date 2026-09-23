@@ -49,7 +49,8 @@ try {
   if (distribution === 'alpine') {
     const destination = path.join(repo, '.cpp-build/musl-package');
     await mkdir(path.join(destination, 'bin'), { recursive: true });
-    for (const file of ['build-manifest.json', 'bin/devbox-mcp', 'bin/devbox-setup', 'bin/devbox-tui'])
+    for (const file of ['build-manifest.json', 'bin/devbox-mcp', 'bin/devbox-setup', 'bin/devbox-tui',
+      'dependency-inventory.json','sbom.spdx.json','THIRD_PARTY_NOTICES.txt'])
       await copyFile(path.join(output, file), path.join(destination, file));
   }
   console.log(JSON.stringify({ ok: true, distribution, imageId: imageInfo.Id, source }));

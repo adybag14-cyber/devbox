@@ -785,7 +785,7 @@ void ensure_private_state_directory(const fs::path& directory) {
 Json export_state_summary(const StateStore& store) {
     Json counts = Json::object();
     for (const auto* kind : {"job", "job_operation", "task", "run", "grant", "grant_operation", "upload",
-                             "upload_chunk", "mcp_task"})
+                             "upload_chunk", "mcp_task", "resource_lease"})
         counts[kind] = store.count(kind);
     const auto diagnostic = store.diagnostics();
     const auto mode = json_string(diagnostic, "journal_mode");

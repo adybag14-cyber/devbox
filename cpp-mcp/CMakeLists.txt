@@ -33,6 +33,7 @@ add_custom_target(devbox-build-identity
   VERBATIM)
 add_library(devbox_core
   src/common.cpp
+  src/admission.cpp
   src/json_output.cpp
   src/resource_budget.cpp
   src/state_file.cpp
@@ -107,6 +108,7 @@ add_dependencies(devbox_core devbox-build-identity)
 target_include_directories(devbox_core PRIVATE "${DEVBOX_GENERATED_DIR}")
 target_include_directories(devbox_core PRIVATE "${DEVBOX_LEXBOR_INCLUDE_DIR}")
 target_include_directories(devbox_core PUBLIC include "${DEVBOX_GENERATED_DIR}/include")
+target_compile_definitions(devbox_core PRIVATE DEVBOX_ALLOCATOR_SHARDED=$<BOOL:${DEVBOX_ALLOCATOR_SHARDED}>)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl ZLIB::ZLIB Threads::Threads ada::ada re2::re2)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:lexbor::lexbor_static>,lexbor::lexbor_static,lexbor::lexbor>)
@@ -131,6 +133,15 @@ target_link_libraries(devbox-mcp PRIVATE devbox_core)
 if(DEVBOX_BUILD_BENCHMARKS)
   add_executable(devbox-component-bench benchmarks/components.cpp)
   target_link_libraries(devbox-component-bench PRIVATE devbox_core)
+  foreach(mode IN ITEMS global sharded)
+    add_executable(devbox-allocator-bench-${mode} benchmarks/allocator.cpp src/allocator.cpp)
+    target_include_directories(devbox-allocator-bench-${mode} PRIVATE include)
+    target_link_libraries(devbox-allocator-bench-${mode} PRIVATE nlohmann_json::nlohmann_json Threads::Threads)
+    target_compile_definitions(devbox-allocator-bench-${mode} PRIVATE DEVBOX_ALLOCATOR_SHARDED=$<STREQUAL:${mode},sharded>)
+    if(WIN32)
+      target_compile_definitions(devbox-allocator-bench-${mode} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
+  endforeach()
 endif()
 if(MSVC)
   target_compile_options(devbox-mcp PRIVATE /utf-8)

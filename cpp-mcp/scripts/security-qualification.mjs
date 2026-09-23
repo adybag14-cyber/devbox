@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {mkdir,writeFile} from 'node:fs/promises';
+import {mkdir,writeFile,readdir,readFile} from 'node:fs/promises';
 import {runCheckedProcess} from '../../src/mcp-implementation.js';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const mode=process.argv[2];assert(['windows-asan-analysis','linux-tsan','linux-fuzz'].includes(mode));
@@ -30,6 +30,28 @@ if(mode==='windows-asan-analysis') {
 }
 await run('cmake',flags);
 await run('cmake',['--build',build,'--config','RelWithDebInfo','--target',...targets,'--parallel','4']);
+if(mode==='windows-asan-analysis') {
+  const files=[];let visited=0;
+  async function visit(root) {
+    for(const item of await readdir(root,{withFileTypes:true})) {
+      assert(++visited<=50000,'Bounded analysis artifact enumeration');
+      const file=path.join(root,item.name);
+      if(item.isDirectory()) await visit(file);
+      else if(item.isFile()&&item.name.endsWith('.sarif')) files.push(file);
+    }
+  }
+  await visit(build);assert(files.length>0,'Static analysis must produce retained SARIF evidence');
+  const findings=[];
+  for(const file of files) {
+    const bytes=await readFile(file);assert(bytes.length<=32*1024*1024,'Bounded analysis file');
+    const sarif=JSON.parse(bytes.toString('utf8').replace(/^\uFEFF/u,''));
+    for(const run of sarif.runs||[]) for(const result of run.results||[])
+      if(result.level!=='note'&&result.kind!=='pass') findings.push({file:path.relative(build,file),
+        ruleId:result.ruleId,level:result.level||'warning',message:result.message});
+  }
+  await writeFile(path.join(build,'static-analysis-result.json'),JSON.stringify({files:files.length,findings},null,2)+'\n');
+  assert.equal(findings.length,0,'Static-analysis findings require correction before qualification');
+}
 if(pattern) await run('ctest',['--test-dir',build,'-C','RelWithDebInfo','-R',pattern,'--output-on-failure']);
 else {
   const corpus=path.join(build,'corpus');await mkdir(corpus,{recursive:true});

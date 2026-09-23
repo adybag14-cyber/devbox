@@ -1,4 +1,5 @@
 #include "devbox/scheduler.hpp"
+#include "devbox/state_store.hpp"
 #include <future>
 #include <iostream>
 #include <thread>
@@ -49,6 +50,80 @@ int run(int argc, char** argv) {
         fs::remove_all(root, ec);
     });
     try {
+        {
+            auto index = open_state_store(root / "deadline-state");
+            SchedulerConfig delayed;
+            delayed.root = root / "delayed-index";
+            delayed.lease_index = [index] {
+                std::this_thread::sleep_for(Millis(20));
+                return index;
+            };
+            ExecutionScheduler scheduler(delayed);
+            auto request = background("metadata deadline");
+            request.queue_timeout = Millis(5);
+            rejects([&] { scheduler.acquire(request); }, "remained saturated");
+            require(!fs::exists(delayed.root / "slot-00.json"),
+                    "expired index admission releases its file claim");
+            auto cancel = std::make_shared<Cancellation>();
+            delayed.lease_index = [index, cancel] {
+                cancel->cancel();
+                return index;
+            };
+            ExecutionScheduler cancelled(delayed);
+            request.queue_timeout = Millis(500);
+            rejects([&] { cancelled.acquire(request, cancel); }, "queue wait cancelled");
+            require(!fs::exists(delayed.root / "slot-00.json"),
+                    "cancel during metadata admission cannot dispatch work");
+        }
+        {
+            auto index = open_state_store(root / "state");
+            SchedulerConfig indexed;
+            indexed.root = root / "indexed-leases";
+            indexed.lease_index = [index] { return index; };
+            ExecutionScheduler scheduler(indexed);
+            auto lease = scheduler.acquire(background("private label is not indexed"));
+            auto records = index->list(StateQuery{"resource_lease"}).records;
+            require(records.size() == 1 && records[0].status == "active" &&
+                        !records[0].data.contains("label"),
+                    "lease admission indexed before return");
+            const auto first = records[0];
+            lease.release();
+            require(index->get("resource_lease", first.id)->status == "released",
+                    "observed file release indexed");
+            auto next = scheduler.acquire(background("replacement"));
+            require(index->count("resource_lease") == 1 &&
+                        index->get("resource_lease", first.id)->data["token"] != first.data["token"],
+                    "fixed slot records remain bounded across reuse");
+            lease.release();
+            require(index->get("resource_lease", first.id)->status == "active",
+                    "stale release cannot change a newer lease");
+            next.release();
+            auto lost = *index->get("resource_lease", first.id);
+            const auto revision = lost.revision;
+            lost.status = "active";
+            StateMutation crash{lost, revision};
+            index->apply({&crash, 1});
+            require(scheduler.snapshot()["lease_index"]["reconciled_records"] == 1 &&
+                        index->get("resource_lease", first.id)->status == "owner_lost_effects_unverified",
+                    "crash reconciliation does not invent effect completion or replay work");
+            auto releasing = scheduler.acquire(background("release acknowledgement loss"));
+            index->release_writer();
+            releasing.release();
+            require(scheduler.snapshot()["local_process"]["lease_index_release_failures"] == 1 &&
+                        scheduler.snapshot()["lease_index"]["reconciliation_pending"] == true,
+                    "observed file release preserves result and exposes missing index acknowledgement");
+            {
+                auto foreground = scheduler.acquire({});
+                require(!foreground.slots.empty(),
+                        "ordinary foreground file index does not need a database transaction");
+            }
+            AcquireRequest resource;
+            resource.resources.memory_bytes = 1;
+            rejects([&] { scheduler.acquire(resource); }, "STATE");
+            rejects([&] { scheduler.acquire(background("fenced writer")); }, "STATE");
+            require(!fs::exists(indexed.root / "slot-00.json"),
+                    "index admission failure releases file reservation before any work");
+        }
         {
             SchedulerConfig bounded;
             // Exercise queue replacement with a final path below MAX_PATH but

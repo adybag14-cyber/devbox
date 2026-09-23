@@ -3,6 +3,7 @@
 #include "storage.hpp"
 namespace devbox {
 class SchedulerNotifications;
+class StateStore;
 enum class ResourceClass { watch, light, heavy, io_heavy };
 enum class ExecutionKind { interactive, background };
 ResourceClass resource_class(std::string_view value);
@@ -24,6 +25,8 @@ struct SchedulerConfig {
     std::size_t heavy_capacity = 4, heavy_weight = 2, io_heavy_capacity = 2, io_heavy_weight = 2;
     Millis background_priority_age{30000};
     ResourceVector capacity;
+    // Lazy: constructing the scheduler never starts a second durable writer.
+    std::function<std::shared_ptr<StateStore>()> lease_index;
     static SchedulerConfig from(const Config& config);
     SchedulerConfig normalized() const;
 };

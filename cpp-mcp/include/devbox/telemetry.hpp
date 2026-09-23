@@ -9,6 +9,7 @@ class JsonLogSink {
     fs::path path_;
     std::uint64_t maximum_;
     std::size_t rotations_;
+    std::string write_buffer_;
 
   public:
     JsonLogSink(fs::path path, std::uint64_t maximum, std::size_t rotations);

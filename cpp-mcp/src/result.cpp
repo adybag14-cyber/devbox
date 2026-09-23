@@ -62,6 +62,11 @@ std::string result_outcome(const Json& result) {
 }
 void strip_internal_result_metadata(Json& result) {
     result.erase("_devboxTelemetryOutcome");
+    result.erase("_devboxTelemetryChildWorkMs");
+}
+Json with_child_timing(Json result, std::uint64_t elapsed_ms) {
+    result["_devboxTelemetryChildWorkMs"] = elapsed_ms;
+    return result;
 }
 Json result_success(std::string summary, std::optional<Json> data, bool compact) {
     auto out = envelope(std::move(summary), true, std::move(data));

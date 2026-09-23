@@ -36,6 +36,8 @@ await run('cmake', args);
 await run('cmake', ['--build', build, '--config', configuration, '--parallel', '4']);
 try {
   await run('ctest', ['--test-dir', build, '-C', configuration, '--output-on-failure']);
+  if(process.platform==='darwin') await run('ctest',['--test-dir',build,'-C',configuration,
+    '-R','^(scheduler|scheduler-notifications)$','--repeat','until-fail:10','--output-on-failure']);
 } catch (error) {
   // Diagnose after the failing test; prewarming legacy PowerShell could hide a cold-start defect.
   if (process.platform === 'win32') {

@@ -300,11 +300,11 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
                                                                                                 : "failed";
         final["exitCode"] = error.exit_code ? Json(*error.exit_code) : Json(nullptr);
         final["error"] = error.what();
-        if ((error.aborted || error.timed_out) && !error.exit_code && !error.signal) {
+        if (!error.exit_code && !error.signal && error.process_started != false) {
             status = "interrupted";
             final["workloadTerminationVerified"] = false;
             final["terminationDetail"] =
-                "Termination was requested but child exit was not observed within the declared grace";
+                "Process may have started but its exit was not observed; reconcile the owned workload";
         }
     } catch (const std::exception& error) {
         status = cancellation->cancelled() || store.cancellation_requested(id) ? "cancelled" : "failed";

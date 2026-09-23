@@ -97,7 +97,8 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
             std::cout << "Devbox C++ MCP " << build_version()
                       << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
-                         "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|"
+                         "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|--admission "
+                         "drain|resume|status|"
                          "--stop-state-coordinator ROOT|--grant-create-workspace ID|--grant-issue JSON|"
                          "--grant-revoke ID|--grant-inspect ID|--execute-granted JSON|--state-export REPORT|"
                          "--private-state-snapshot NEW_DIR --include-private-state|--restore-state-snapshot "
@@ -115,6 +116,12 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
         }
         auto config =
             std::make_shared<Config>(Config::load(mode != "--job-runner" && mode != "--agent-runner"));
+        if (mode == "--admission") {
+            if (args.size() != 2)
+                throw Error("--admission requires drain, resume or status");
+            std::cout << operator_admission(*config, args[1]).dump(2) << '\n';
+            return 0;
+        }
         if (mode == "--agent-runner") {
             if (args.size() != 3)
                 throw Error("Agent runner requires a principal and run ID");

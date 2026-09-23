@@ -3,6 +3,7 @@
 #include "devbox/filesystem_worker.hpp"
 #include "devbox/result.hpp"
 #include "devbox/scheduler.hpp"
+#include "devbox/state_coordinator.hpp"
 #include "devbox/storage.hpp"
 #include "devbox/telemetry.hpp"
 #include <algorithm>
@@ -23,17 +24,53 @@ template <class Operation> void measure(const char* name, std::size_t count, Ope
     std::sort(samples.begin(), samples.end());
     std::cout << Json{{"component", name},
                       {"count", count},
+                      {"warmup", 3},
                       {"p50Ms", samples[count / 2]},
                       {"p95Ms", samples[std::min(count - 1, count * 95 / 100)]},
+                      {"p99Ms", samples[std::min(count - 1, count * 99 / 100)]},
+                      {"sortedSamplesMs", samples},
                       {"observed", observed}}
                      .dump()
               << '\n'
               << std::flush;
 }
-int run(const fs::path& root) {
+int run(const fs::path& root, bool scheduler_only, bool indexed) {
     if (!root.is_absolute() || !fs::create_directory(root))
         throw Error("Supply a new absolute fixture directory under an existing parent");
     std::cout << Json{{"build", build_snapshot()}, {"fixtureRoot", path_text(root)}}.dump() << '\n';
+    if (scheduler_only) {
+        SchedulerConfig config;
+        config.root = root / "scheduler";
+        ScopeExit stop([&] {
+            if (indexed)
+                (void)stop_state_coordinator(root / "state");
+        });
+        if (indexed) {
+            StateClientOptions options;
+            options.executable = executable_path().parent_path() /
+#ifdef _WIN32
+                                 "devbox-mcp.exe";
+#else
+                                 "devbox-mcp";
+#endif
+            const auto index = open_coordinated_state(root / "state", options);
+            config.lease_index = [index] { return index; };
+        }
+        ExecutionScheduler scheduler(config);
+        measure("clock_pair_observer", 1000, [](auto) { return 1; });
+        measure("scheduler_free_acquire_release", 1000, [&](auto) {
+            const auto lease = scheduler.acquire({});
+            return lease.slots.size();
+        });
+        if (indexed)
+            measure("scheduler_durable_acquire_release", 1000, [&](auto) {
+                AcquireRequest request;
+                request.kind = ExecutionKind::background;
+                const auto lease = scheduler.acquire(request);
+                return lease.slots.size();
+            });
+        return 0;
+    }
     const auto source = root / "source.bin", target = root / "atomic.bin";
     const std::string bytes(512 * 1024, 'x');
     write_file(source, bytes);
@@ -166,9 +203,12 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
         return run_filesystem_worker();
     try {
-        if (argc != 2)
-            throw Error("Usage: devbox-component-bench NEW_FIXTURE_DIRECTORY");
-        return run(path_from_utf8(argv[1]));
+        if (argc != 2 && !(argc == 3 && (std::string_view(argv[2]) == "--scheduler-only" ||
+                                         std::string_view(argv[2]) == "--scheduler-indexed")))
+            throw Error(
+                "Usage: devbox-component-bench NEW_FIXTURE_DIRECTORY [--scheduler-only|--scheduler-indexed]");
+        return run(path_from_utf8(argv[1]), argc == 3,
+                   argc == 3 && std::string_view(argv[2]) == "--scheduler-indexed");
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

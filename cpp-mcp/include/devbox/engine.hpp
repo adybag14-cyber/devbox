@@ -1,4 +1,5 @@
 #pragma once
+#include "admission.hpp"
 #include "capture.hpp"
 #include "computer_use.hpp"
 #include "contract.hpp"
@@ -14,6 +15,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     BackgroundTasks background_;
     std::shared_ptr<const Config> config_;
     ToolContract contract_;
+    AdmissionControl admission_;
     std::set<std::string> implemented_;
     Json capabilities_;
     WorkPool commands_, files_{4, 128}, controls_{2, 128}, atomic_{2, 64};

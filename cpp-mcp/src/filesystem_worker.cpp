@@ -1,4 +1,5 @@
 #include "devbox/filesystem_worker.hpp"
+#include "devbox/artifacts.hpp"
 #include "devbox/jobs.hpp"
 #include "devbox/resource_budget.hpp"
 #include "devbox/search.hpp"
@@ -76,6 +77,58 @@ std::optional<std::string> optional_text(const Json& value, const char* key) {
 Json filesystem_operation(std::string_view operation, const Json& args) {
     if (operation == "job_files")
         return job_filesystem_operation(args);
+    if (operation == "artifact_upload") {
+        // The frontend validates its layout and starts the coordinator first.
+        // This killable worker may connect, but cannot create a detached owner.
+        StateClientOptions options;
+        options.start_if_absent = false;
+        auto state = open_coordinated_state(path_from_utf8(json_string(args, "state_root")), options);
+        ArtifactUploads uploads(state, path_from_utf8(json_string(args, "state_root")) / "artifacts",
+                                path_from_utf8(json_string(args, "workspace")));
+        const auto& request = args.at("request");
+        const auto action = json_string(request, "action"), id = json_string(request, "upload_id");
+        if (action == "begin") {
+            if (!request.contains("total_bytes") || !request.contains("path"))
+                throw Error("Upload begin requires path, total_bytes, sha256 and expected_file_sha256");
+            return uploads.begin("operator", id, path_from_utf8(json_string(request, "path")),
+                                 json_uint(request, "total_bytes"), json_string(request, "sha256"),
+                                 json_string(request, "expected_file_sha256"));
+        }
+        if (action == "chunk") {
+            const auto encoded = json_string(request, "content_base64");
+            const auto maximum = json_uint(args, "max_transfer_chars");
+            if (!request.contains("offset_bytes") || encoded.size() > 1398104 ||
+                (maximum && encoded.size() > maximum))
+                throw Error("Upload chunk requires an offset and at most 1 MiB of bytes within the "
+                            "configured transfer limit");
+            const auto bytes = base64_decode(encoded);
+            if (base64_encode(bytes) != encoded)
+                throw Error("content_base64 must be canonical");
+            return uploads.chunk("operator", id, json_uint(request, "offset_bytes"),
+                                 std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
+                                 json_string(request, "sha256"));
+        }
+        if (action == "finalize")
+            return uploads.finalize("operator", id);
+        if (action == "cancel")
+            return uploads.cancel("operator", id);
+        if (action == "status")
+            return uploads.status("operator", id);
+        throw Error("Unknown artifact upload action");
+    }
+    if (operation == "legacy_task") {
+        const auto root = path_from_utf8(json_string(args, "root"));
+        const auto& request = args.at("request");
+        const auto action = json_string(args, "action");
+        if (action == "get")
+            return task_get(root, json_string(request, "task_id"));
+        if (action == "put")
+            return task_put(root, json_string(request, "task_id"), json_uint(request, "expected_revision"),
+                            request.at("state"));
+        if (action == "list")
+            return task_list(root, optional_text(request, "cursor"), json_uint(request, "limit", 50));
+        throw Error("FILESYSTEM_WORKER_TASK_ACTION_INVALID");
+    }
     const auto path = path_from_utf8(json_string(args, "path"));
     if (operation == "path_state")
         return path_state(path);
@@ -137,7 +190,7 @@ Json filesystem_operation(std::string_view operation, const Json& args) {
 int run_filesystem_worker(const FilesystemDispatch& dispatch) {
     try {
         std::string bytes;
-        std::array<char, 16384> buffer{};
+        std::vector<char> buffer(16384);
         while (std::cin) {
             std::cin.read(buffer.data(), buffer.size());
             const auto count = static_cast<std::size_t>(std::cin.gcount());

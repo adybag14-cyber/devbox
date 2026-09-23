@@ -127,8 +127,10 @@ void JsonLogSink::append_batch(std::span<const Json> events) {
             replace_state_file(path_, rotation(1));
         size = 0;
     };
-    std::string pending;
-    pending.reserve(std::min<std::size_t>(events.size() * 512, 65536));
+    auto& pending = write_buffer_;
+    pending.clear();
+    if (pending.capacity() < 65536)
+        pending.reserve(65536);
     auto flush = [&] {
         if (pending.empty())
             return;
@@ -196,8 +198,9 @@ void UsageLogger::enqueue(Json event) {
     wake_.notify_one();
 }
 void UsageLogger::run() {
+    std::vector<Json> events;
+    events.reserve(256);
     for (;;) {
-        std::vector<Json> events;
         std::size_t batch_bytes = 0;
         {
             std::unique_lock lock(mutex_);
@@ -205,10 +208,10 @@ void UsageLogger::run() {
             if (queue_.empty())
                 break;
             if (queue_.size() < 64 && !stopping_)
-                wake_.wait_for(lock, Millis(2), [this] { return stopping_ || queue_.size() >= 64; });
-            // Drain more of an existing backlog per filesystem metadata lookup.
-            // The queue bound, coalescing deadline and checked write flushes
-            // remain unchanged; producers regain space before the batch is sent.
+                wake_.wait_for(lock, Millis(5), [this] { return stopping_ || queue_.size() >= 64; });
+            // Coalesce operational records for at most 5 ms (or 64 arrivals).
+            // Durable security audit writes use a different synchronous path.
+            // Queue and in-flight payloads retain the same hard byte/count caps.
             const auto count = std::min<std::size_t>(256, queue_.size());
             events.reserve(count);
             for (std::size_t i = 0; i < count; ++i) {
@@ -218,6 +221,9 @@ void UsageLogger::run() {
             }
         }
         ScopeExit release_budget([&] {
+            // Payload allocations remain charged until they are actually freed;
+            // only the small, fixed-capacity vector storage survives batches.
+            events.clear();
             std::lock_guard lock(mutex_);
             resident_bytes_ -= batch_bytes;
         });
@@ -240,6 +246,7 @@ Json UsageLogger::snapshot() const {
                 {"capacityEvents", 1024},
                 {"capacityBytes", capacity_bytes_},
                 {"maxEventBytes", max_event_bytes_},
+                {"maximumCoalescingMs", 5},
                 {"queuedAndInflightBytes", resident_bytes_},
                 {"byteAccounting", "conservative_allocation_and_encoding_charge"},
                 {"queuedEvents", queue_.size()}};
@@ -397,6 +404,15 @@ void UsageTelemetry::finished(const std::string& id, const Json& response) {
         const auto queue_us = json_uint(execution, "queue_wait_ms") * 1000;
         event["queue_wait_us"] = queue_us;
         event["post_admission_us"] = total_us > queue_us ? total_us - queue_us : 0;
+    }
+    const auto& process_time = member(response, "_devboxTelemetryChildWorkMs");
+    if (process_time.is_number_unsigned() && process_time.get<std::uint64_t>() <= UINT64_MAX / 1000) {
+        const auto child_us = process_time.get<std::uint64_t>() * 1000;
+        const auto queue_us = json_uint(event, "queue_wait_us");
+        event["owned_process_wall_us"] = child_us;
+        event["owned_process_timing_resolution_us"] = 1000;
+        const auto after_queue = total_us > queue_us ? total_us - queue_us : 0;
+        event["nonprocess_after_admission_us"] = after_queue > child_us ? after_queue - child_us : 0;
     }
     tools_.enqueue(std::move(event));
 }

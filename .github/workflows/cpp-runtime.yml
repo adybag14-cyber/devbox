@@ -221,12 +221,18 @@ jobs:
           echo "ANDROID_NDK_HOME=$android_sdk_root/ndk/29.0.14206865" >> "$GITHUB_ENV"
           mkdir -p .cpp-build/vcpkg-cache
           echo "VCPKG_DEFAULT_BINARY_CACHE=$GITHUB_WORKSPACE/.cpp-build/vcpkg-cache" >> "$GITHUB_ENV"
+      - name: Fingerprint Android compiler and SDK
+        id: android-cache-identity
+        env:
+          DEVBOX_CACHE_ANDROID_ABI: ${{ matrix.abi }}
+          DEVBOX_CACHE_TRIPLET: android-${{ matrix.abi }}-api21
+        run: node cpp-mcp/scripts/toolchain-cache-key.mjs
       - name: Cache pinned Android dependencies
         id: android-dependencies
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cpp-build/vcpkg-cache
-          key: cpp-vcpkg-android-r29-api21-${{ matrix.abi }}-${{ hashFiles('vcpkg.json', 'cpp-mcp/cmake/triplets/*') }}
+          key: cpp-vcpkg-android-${{ matrix.abi }}-${{ steps.android-cache-identity.outputs.key }}-${{ hashFiles('cpp-mcp/cmake/triplets/*') }}
       - name: Build all native components for Android API 21
         run: node cpp-mcp/scripts/build-android.mjs --abi ${{ matrix.abi }}
       - name: Stage Android bundle
@@ -248,7 +254,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cpp-build/vcpkg-cache
-          key: cpp-vcpkg-android-r29-api21-${{ matrix.abi }}-${{ hashFiles('vcpkg.json', 'cpp-mcp/cmake/triplets/*') }}
+          key: cpp-vcpkg-android-${{ matrix.abi }}-${{ steps.android-cache-identity.outputs.key }}-${{ hashFiles('cpp-mcp/cmake/triplets/*') }}
 
   termux:
     name: C++ real Termux x86_64 runtime
@@ -390,6 +396,7 @@ jobs:
           name: cpp-security-${{ matrix.mode }}
           path: |
             .cpp-build/security/**/Testing/Temporary/
+            .cpp-build/security/**/*.sarif
             .cpp-build/security/**/security-result.json
             .cpp-build/security/**/crash-*
             .cpp-build/toolchain-identity/identity.json

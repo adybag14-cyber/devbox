@@ -40,6 +40,8 @@ export async function verifyPromotion({binary,target,receipt:receiptPath,bundle,
   const build=JSON.parse(output.stdout);
   assert.equal(build.binarySha256,sha256);assert.equal(build.gitSha,sourceSha);assert.equal(build.sourceDirty,false);
   assert.equal(build.sourceTree,receipt.sourceTree);assert.equal(build.sanitizers,false);
+  assert.equal(build.stateSchemaVersion,2,'Reviewed durable state schema required; unsafe data-format changes cannot be promoted');
+  assert.equal(build.stateCoordinatorProtocol,1,'Reviewed coordinator protocol required');
   assert.equal(build.contractVersion,contractVersion,'Binary contract version must match the reviewed schema');
   const contract=await runner(path.resolve(binary),['--dump-contract'],{env,cwd:fixture,timeoutMs:10000,label:'Verified candidate schema'});
   const tools=JSON.parse(contract.stdout);
@@ -49,6 +51,7 @@ export async function verifyPromotion({binary,target,receipt:receiptPath,bundle,
   assert.equal(build.toolCount,tools.length);assertCppExtensions(tools);
   assert.deepEqual(tools.map(t=>t.name).sort(),registry.tools.map(t=>t.name).sort(),'Candidate capabilities must match reviewed registry');
   return {verified:true,sourceSha,sourceTree:receipt.sourceTree,binarySha256:sha256,contractVersion,target,
+    stateSchemaVersion:build.stateSchemaVersion,stateCoordinatorProtocol:build.stateCoordinatorProtocol,
     workflowRunId:receipt.workflowRunId,policy:'signed_exact_tested_artifact'};
   } finally {
     assert(path.isAbsolute(fixture)&&path.basename(fixture).startsWith('devbox-promotion-check-'));

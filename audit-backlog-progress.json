@@ -88,8 +88,14 @@
         "A03",
         "A10"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/H03-matched-local.json",
+        "docs/audit-evidence/H03-timing-samples.json"
+      ],
+      "remaining": [
+        "Final candidate profile measurement"
+      ]
     },
     {
       "id": "H04",
@@ -194,11 +200,11 @@
       "status": "in_progress",
       "evidence": [
         "docs/audit-evidence/H06-transport-local.json",
-        "docs/audit-evidence/H06-filesystem-local.json"
+        "docs/audit-evidence/H06-filesystem-local.json",
+        "docs/audit-evidence/H06-H08-integration-local.json"
       ],
       "remaining": [
-        "Isolate potentially blocking filesystem operations in owned killable workers.",
-        "Qualify hard shutdown escalation and remaining supported platform limits."
+        "Final exact-artifact cross-platform and shutdown qualification"
       ]
     },
     {
@@ -265,11 +271,11 @@
         "docs/audit-evidence/H08-coordinator-local.json",
         "docs/audit-evidence/H08-indexed-integration-local.json",
         "docs/audit-evidence/H08-maintenance-local.json",
-        "docs/audit-evidence/H08-snapshot-local.json"
+        "docs/audit-evidence/H08-snapshot-local.json",
+        "docs/audit-evidence/H06-H08-integration-local.json"
       ],
       "remaining": [
-        "Complete indexed maintenance and certified export/recovery.",
-        "Integrate run events and resource leases with the later controller/scheduler tickets."
+        "Final one-writer migration and rollback/recovery certification under H18"
       ]
     },
     {
@@ -301,10 +307,12 @@
       "status": "in_progress",
       "evidence": [
         "Completion/deadline/cancellation arbitration and late-executor-destruction regression passed in async suite.",
-        "docs/audit-evidence/H09-notifications-local.json"
+        "docs/audit-evidence/H09-notifications-local.json",
+        "docs/audit-evidence/H06-H08-integration-local.json",
+        "docs/audit-evidence/H09-indexed-admission-local.json"
       ],
       "remaining": [
-        "Fenced coordinator, authenticated scheduler notifications and resource vectors depend on H08."
+        "Final hosted platform qualification"
       ]
     },
     {
@@ -363,8 +371,14 @@
         "A10",
         "A11"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "implemented_local_verified",
+      "evidence": [
+        "docs/audit-evidence/H11-sharding-decision.json",
+        "docs/audit-evidence/H11-observer-local.json"
+      ],
+      "remaining": [
+        "Final platform and release qualification"
+      ]
     },
     {
       "id": "H12",
@@ -473,8 +487,7 @@
         "docs/audit-evidence/H12-H14-harness-local.json"
       ],
       "remaining": [
-        "Complete paired evaluation report with per-task results and confidence intervals",
-        "Broaden context compaction, cancellation and adversarial corpus"
+        "Final paired ChatGPT website candidate evaluation with per-task outcomes and descriptive confidence intervals"
       ]
     },
     {
@@ -602,8 +615,14 @@
         "A09",
         "A11"
       ],
-      "status": "not_started",
-      "evidence": []
+      "status": "in_progress",
+      "evidence": [
+        "docs/audit-evidence/H18-canary-local.json"
+      ],
+      "remaining": [
+        "Verify signed exact release artifact and repeat canary",
+        "Safe production promotion, compatible rollback record, connector refresh and website-agent replay"
+      ]
     }
   ],
   "scope": {

@@ -1,0 +1,158 @@
+{
+  "schema": 1,
+  "ticket": "H11",
+  "decision": "retain_observer_buffers_and_5ms_operational_batching_keep_global_allocator_default",
+  "samples": 120000,
+  "all_six_pairs_cpu_improved": true,
+  "mean_paired_cpu_reduction_percent": 9.944363748208186,
+  "paired_t95_df5": [
+    6.347400247116498,
+    13.541327249299874
+  ],
+  "pairs": [
+    {
+      "round": 0,
+      "global": {
+        "service_cpu_ms": 5390.625,
+        "p50_ms": 1.4646999999999935,
+        "p95_ms": 2.2364000000002306,
+        "p99_ms": 2.9966000000003987,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "observer": {
+        "service_cpu_ms": 5125,
+        "p50_ms": 1.4972999999999956,
+        "p95_ms": 2.3072000000001935,
+        "p99_ms": 2.9455999999991036,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "cpu_reduction_percent": 4.927536231884058
+    },
+    {
+      "round": 1,
+      "global": {
+        "service_cpu_ms": 5796.875,
+        "p50_ms": 1.5682000000001608,
+        "p95_ms": 2.4407000000001062,
+        "p99_ms": 3.0535999999999603,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "observer": {
+        "service_cpu_ms": 5250,
+        "p50_ms": 1.4639999999999418,
+        "p95_ms": 2.1638000000000375,
+        "p99_ms": 2.8307000000004336,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "cpu_reduction_percent": 9.433962264150944
+    },
+    {
+      "round": 2,
+      "global": {
+        "service_cpu_ms": 5703.125,
+        "p50_ms": 1.5147999999999229,
+        "p95_ms": 2.2696999999998297,
+        "p99_ms": 2.9341000000003987,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "observer": {
+        "service_cpu_ms": 5046.875,
+        "p50_ms": 1.5037999999999556,
+        "p95_ms": 2.2927000000004227,
+        "p99_ms": 3.0033999999996013,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "cpu_reduction_percent": 11.506849315068493
+    },
+    {
+      "round": 3,
+      "global": {
+        "service_cpu_ms": 5343.75,
+        "p50_ms": 1.5104999999998654,
+        "p95_ms": 2.2994000000003325,
+        "p99_ms": 2.96349999999984,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "observer": {
+        "service_cpu_ms": 4593.75,
+        "p50_ms": 1.4617000000007465,
+        "p95_ms": 2.198599999999942,
+        "p99_ms": 2.7823000000007596,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "cpu_reduction_percent": 14.035087719298245
+    },
+    {
+      "round": 4,
+      "global": {
+        "service_cpu_ms": 5234.375,
+        "p50_ms": 1.478399999999965,
+        "p95_ms": 2.244999999999891,
+        "p99_ms": 2.892599999999902,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "observer": {
+        "service_cpu_ms": 4578.125,
+        "p50_ms": 1.5179000000002816,
+        "p95_ms": 2.2700999999999567,
+        "p99_ms": 2.8809000000001106,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "cpu_reduction_percent": 12.537313432835822
+    },
+    {
+      "round": 5,
+      "global": {
+        "service_cpu_ms": 5406.25,
+        "p50_ms": 1.4874999999997272,
+        "p95_ms": 2.260899999999765,
+        "p99_ms": 2.8052000000000135,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "observer": {
+        "service_cpu_ms": 5015.625,
+        "p50_ms": 1.5227999999997337,
+        "p95_ms": 2.3094999999998436,
+        "p99_ms": 2.8954999999998563,
+        "tool_start_count": 10020,
+        "tool_finish_count": 10020
+      },
+      "cpu_reduction_percent": 7.22543352601156
+    }
+  ],
+  "candidate_sha256": "68079ce8447a40b15fc4bbda589be60f6e8e56ca8f13835b956c329dafd782aa",
+  "baseline_sha256": "d39f8bbc25ec6186c2349378c9118df11e848497239f1121a0ecdf94c4b80313",
+  "profile": {
+    "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor          ",
+    "logical_processors": 32,
+    "server_affinity": 65535,
+    "client_affinity": 4294901760,
+    "power": "Power Scheme GUID: 381b4222-f694-41f0-9685-ff5bb260df2e  (Balanced)",
+    "concurrency": 4,
+    "requests_per_instance": 10000,
+    "warmup_per_instance": 20
+  },
+  "semantics": [
+    "No sampling or loss of allocation counters",
+    "All120240 tool start/finish pairs accounted for including warmups",
+    "Exact JSON serialization, event order, rotation and secret-redaction tests passed",
+    "Durable security audit remains synchronous and separate",
+    "Operational batching maximum increases from2ms to5ms and is exposed in diagnostics"
+  ],
+  "limitations": [
+    "Development binaries, not release artifacts",
+    "CPU confidence interval describes six paired runs on this host/workload, not general task latency",
+    "Unpinned sharding experiment was rejected; source default remains global counters"
+  ]
+}

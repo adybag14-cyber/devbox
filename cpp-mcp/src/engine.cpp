@@ -16,7 +16,7 @@ std::optional<std::string> optional_string(const Json& value, const char* key) {
 }
 } // namespace
 Engine::Engine(std::shared_ptr<const Config> config)
-    : config_(std::move(config)), contract_(*config_),
+    : config_(std::move(config)), contract_(*config_), admission_(*config_),
       commands_(std::clamp<std::size_t>(config_->exec_max_concurrent + 1, 2, 16), 128), runtime_(config_),
       scheduler_(SchedulerConfig::from(*config_)), jobs_(config_), docker_files_(config_), search_(config_),
       research_(config_), lifecycle_(config_, background_), github_(config_, runtime_, lifecycle_),
@@ -46,6 +46,8 @@ void Engine::attach(HttpServer& server) {
     (void)build_snapshot();
     performance_.attach(server.executor(), server.stop_token());
     monitoring_.start();
+    background_.periodic("operator-admission", Millis(0), Millis(500),
+                         [this](const Cancel&) { admission_.refresh(); });
     if (config_->state_backend == "sqlite")
         background_.once("backend-run-recovery", Millis(0),
                          [this](const Cancel& cancel) { RunService(config_).recover(cancel); });
@@ -119,6 +121,9 @@ asio::awaitable<Json> Engine::call_tool_authenticated(std::string name, Json arg
         co_return co_await call_tool(std::move(name), std::move(arguments), std::move(cancel));
     try {
         const auto args = contract_.arguments(name, arguments);
+        if (!admission_.permits(name, args))
+            co_return with_outcome(result_error("SERVER_DRAINING: new work is paused by the local operator"),
+                                   ToolOutcome::PolicyDenied);
         auto pending = controls_.run(
             [this, args, principal] {
                 RunService service(config_);
@@ -142,6 +147,9 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         if (!implemented_.contains(name))
             throw Error("Unknown tool: " + name);
         auto args = contract_.arguments(name, arguments);
+        if (!admission_.permits(name, args))
+            co_return with_outcome(result_error("SERVER_DRAINING: new work is paused by the local operator"),
+                                   ToolOutcome::PolicyDenied);
         if (name == "devbox_wsl") {
             std::optional<ExecutionLease> lease;
             if (json_string(args, "action") == "run")
@@ -302,39 +310,14 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
                     if (!jobs_.store().indexed())
                         throw Error("UPLOAD_REQUIRES_INDEXED_STATE: migrate and select the SQLite state "
                                     "backend first");
-                    ArtifactUploads uploads(jobs_.store().index(), config_->state_root / "artifacts",
-                                            config_->devbox_workspace_path);
-                    const auto action = json_string(args, "action"), id = json_string(args, "upload_id");
-                    Json result;
-                    if (action == "begin") {
-                        if (!args.contains("total_bytes") || !args.contains("path"))
-                            throw Error(
-                                "Upload begin requires path, total_bytes, sha256 and expected_file_sha256");
-                        result = uploads.begin("operator", id, path_from_utf8(json_string(args, "path")),
-                                               json_uint(args, "total_bytes"), json_string(args, "sha256"),
-                                               json_string(args, "expected_file_sha256"));
-                    } else if (action == "chunk") {
-                        const auto encoded = json_string(args, "content_base64");
-                        if (!args.contains("offset_bytes") || encoded.size() > 1398104 ||
-                            (config_->max_mcp_transfer_chars &&
-                             encoded.size() > config_->max_mcp_transfer_chars))
-                            throw Error("Upload chunk requires an offset and at most 1 MiB of bytes within "
-                                        "the configured transfer limit");
-                        const auto bytes = base64_decode(encoded);
-                        if (base64_encode(bytes) != encoded)
-                            throw Error("content_base64 must be canonical");
-                        result = uploads.chunk(
-                            "operator", id, json_uint(args, "offset_bytes"),
-                            std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()),
-                            json_string(args, "sha256"));
-                    } else if (action == "finalize")
-                        result = uploads.finalize("operator", id, cancel);
-                    else if (action == "cancel")
-                        result = uploads.cancel("operator", id);
-                    else if (action == "status")
-                        result = uploads.status("operator", id);
-                    else
-                        throw Error("Unknown artifact upload action");
+                    (void)jobs_.store().index(); // Validate layout and start the independent coordinator.
+                    auto result =
+                        isolated_filesystem("artifact_upload",
+                                            Json{{"state_root", path_text(config_->state_root)},
+                                                 {"workspace", path_text(config_->devbox_workspace_path)},
+                                                 {"max_transfer_chars", config_->max_mcp_transfer_chars},
+                                                 {"request", args}},
+                                            Millis(300000), cancel);
                     return result_explicit("Resumable artifact upload.", result, result.dump());
                 },
                 cancel);
@@ -375,22 +358,31 @@ Json Engine::durable(std::string name, const Json& args, const Cancel& cancel) {
     } else if (name.starts_with("devbox_task_")) {
         const auto root = config_->project_root / "run" / "tasks";
         if (name == "devbox_task_get") {
-            value = jobs_.store().indexed() ? indexed_task_get(jobs_.store(), json_string(args, "task_id"))
-                                            : task_get(root, json_string(args, "task_id"));
+            value = jobs_.store().indexed()
+                        ? indexed_task_get(jobs_.store(), json_string(args, "task_id"))
+                        : isolated_filesystem(
+                              "legacy_task",
+                              Json{{"root", path_text(root)}, {"action", "get"}, {"request", args}},
+                              Millis(30000), cancel);
             summary = "Read task checkpoint.";
         } else if (name == "devbox_task_put") {
             jobs_.store().require_writable_backend();
             value = jobs_.store().indexed()
                         ? indexed_task_put(jobs_.store(), json_string(args, "task_id"),
                                            json_uint(args, "expected_revision"), args["state"])
-                        : task_put(root, json_string(args, "task_id"), json_uint(args, "expected_revision"),
-                                   args["state"]);
+                        : isolated_filesystem(
+                              "legacy_task",
+                              Json{{"root", path_text(root)}, {"action", "put"}, {"request", args}},
+                              Millis(30000), cancel);
             summary = "Saved task checkpoint.";
         } else {
             value = jobs_.store().indexed()
                         ? indexed_task_list(jobs_.store(), optional_string(args, "cursor"),
                                             json_uint(args, "limit", 50))
-                        : task_list(root, optional_string(args, "cursor"), json_uint(args, "limit", 50));
+                        : isolated_filesystem(
+                              "legacy_task",
+                              Json{{"root", path_text(root)}, {"action", "list"}, {"request", args}},
+                              Millis(30000), cancel);
             summary = "Listed task checkpoints.";
         }
     } else {
@@ -514,6 +506,7 @@ Json Engine::status(const Cancel& cancel) {
         json_string(health, "diskPressure") == "warning" ? Json::array({"disk-pressure"}) : Json::array();
     data["degradedSubsystems"] = degraded_background(bg);
     data["usageTelemetry"] = usage_.snapshot();
+    data["admission"] = admission_.snapshot();
     const auto active = server_ ? server_->active_requests() : 0;
     data["activeRequestsIncludingCurrent"] = active;
     data["activeRequests"] = active ? active - 1 : 0;
@@ -598,6 +591,7 @@ asio::awaitable<Json> Engine::metadata(const HttpRequest& request) {
         co_return value;
     const auto active_requests = server_ ? server_->active_requests() : 0;
     value["activity"] = usage_.active_counts();
+    value["admission"] = admission_.snapshot();
     if (server_)
         value["transport_resources"] = server_->resource_snapshot();
     value["activity"]["activeRequests"] = active_requests ? active_requests - 1 : 0;
