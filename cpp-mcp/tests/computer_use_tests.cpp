@@ -237,10 +237,41 @@ struct Fixture {
         if (thread.joinable())
             thread.join();
     }
-    std::string text() const {
-        wchar_t buffer[1024]{};
-        GetWindowTextW(edit, buffer, 1024);
-        return narrow(buffer);
+    void expect_edit_focus() const {
+        const auto deadline = Clock::now() + Millis(2000);
+        GUITHREADINFO info{};
+        info.cbSize = sizeof(info);
+        do {
+            require(GetGUIThreadInfo(GetWindowThreadProcessId(window, nullptr), &info) != 0,
+                    "observe owned fixture focus");
+            if (info.hwndFocus == edit)
+                return;
+            std::this_thread::sleep_for(Millis(10));
+        } while (Clock::now() < deadline);
+        throw Error("native click did not focus the owned edit before typing");
+    }
+    void expect_text(std::string_view expected, const std::string& message) const {
+        const auto desired = wide(expected);
+        const auto deadline = Clock::now() + Millis(2000);
+        for (;;) {
+            wchar_t buffer[1024]{};
+            DWORD_PTR copied = 0;
+            require(SendMessageTimeoutW(edit, WM_GETTEXT, std::size(buffer), reinterpret_cast<LPARAM>(buffer),
+                                        SMTO_BLOCK | SMTO_ABORTIFHUNG, 1000, &copied) != 0,
+                    "owned edit observation timed out");
+            const std::wstring actual(buffer);
+            if (actual == desired)
+                return;
+            if (Clock::now() >= deadline) {
+                Json units = Json::array();
+                for (const auto unit : actual)
+                    units.push_back(static_cast<unsigned>(unit));
+                throw Error(message + "; observed UTF-16 units: " + units.dump());
+            }
+            // SendInput acknowledges queued input, not the fixture's later WM_CHAR
+            // processing. Observe the exact result; never resend an input effect.
+            std::this_thread::sleep_for(Millis(10));
+        }
     }
 };
 void native_checks() {
@@ -390,6 +421,7 @@ void native_checks() {
     auto click = position(55, 65);
     click["action"] = "click";
     act(click);
+    fixture.expect_edit_focus();
     rejects(
         [&] {
             computer.perform(Json{{"action", "click"}, {"observation_id", click_id}, {"x", 10}, {"y", 10}},
@@ -397,15 +429,15 @@ void native_checks() {
         },
         "STALE_OBSERVATION");
     act(Json{{"action", "type"}, {"text", "Cua \xce\xa9 \xe4\xb8\xad \xf0\x9f\x98\x80"}});
-    require(fixture.text() == "Cua \xce\xa9 \xe4\xb8\xad \xf0\x9f\x98\x80",
-            "native Unicode input including surrogate pair");
+    fixture.expect_text("Cua \xce\xa9 \xe4\xb8\xad \xf0\x9f\x98\x80",
+                        "native Unicode input including surrogate pair");
     act(Json{{"action", "key"}, {"keys", {"CTRL", "A"}}});
     require(fixture.control_a, "Ctrl+A arrived with the Control modifier held");
     // The classic Win32 EDIT does not implement Ctrl+A; test its supported selection keys.
     act(Json{{"action", "key"}, {"keys", {"HOME"}}});
     act(Json{{"action", "key"}, {"keys", {"SHIFT", "END"}}});
     act(Json{{"action", "key"}, {"keys", {"BACKSPACE"}}});
-    require(fixture.text().empty(), "native chord and key delivery");
+    fixture.expect_text("", "native chord and key delivery");
     auto area = position(350, 180);
     area["action"] = "click";
     act(area);
@@ -537,8 +569,9 @@ void native_checks() {
     auto scaled_click = position(55, 65);
     scaled_click["action"] = "click";
     act(scaled_click);
+    fixture.expect_edit_focus();
     act(Json{{"action", "type"}, {"text", "scaled"}});
-    require(fixture.text() == "scaled", "input coordinates map through screenshot scaling");
+    fixture.expect_text("scaled", "input coordinates map through screenshot scaling");
     auto wrong = id;
     wrong.back() = wrong.back() == '1' ? '2' : '1';
     rejects([&] { computer.perform(Json{{"action", "observe"}, {"window_id", wrong}}, {}); },
