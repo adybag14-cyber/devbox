@@ -25,7 +25,7 @@ export const getRustManifestPath = (root) => path.join(root, "rust-mcp", "Cargo.
 
 export const resolveCargoCommand = (env = process.env) => String(env.CARGO_EXE ?? "").trim() || "cargo";
 
-const appendBounded = (existing, chunk) => `${existing}${chunk}`.slice(-MAX_PREFLIGHT_OUTPUT_CHARS);
+const appendBounded = (existing, chunk, limit) => `${existing}${chunk}`.slice(-limit);
 
 const waitForChildExit = (child, timeoutMs) => {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
@@ -77,9 +77,16 @@ export const runCheckedProcess = (file, args, {
   label = file,
   stdio = ["ignore", "pipe", "pipe"],
   timeoutMs = DEFAULT_PREFLIGHT_TIMEOUT_MS,
+  maxCaptureChars = MAX_PREFLIGHT_OUTPUT_CHARS,
+  rejectOutputOverflow = false,
 } = {}) => new Promise((resolve, reject) => {
+  if (!Number.isSafeInteger(maxCaptureChars) || maxCaptureChars < 1 || maxCaptureChars > 4 * 1024 * 1024) {
+    reject(new Error("Preflight output capacity must be an integer from 1 through 4194304 characters."));
+    return;
+  }
   let stdout = "";
   let stderr = "";
+  let outputOverflow = false;
   let child;
   let settled = false;
   let timedOut = false;
@@ -106,8 +113,8 @@ export const runCheckedProcess = (file, args, {
   }
   child.stdout?.setEncoding("utf8");
   child.stderr?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk) => { stdout = appendBounded(stdout, chunk); });
-  child.stderr?.on("data", (chunk) => { stderr = appendBounded(stderr, chunk); });
+  child.stdout?.on("data", (chunk) => { outputOverflow ||= stdout.length + chunk.length > maxCaptureChars; stdout = appendBounded(stdout, chunk, maxCaptureChars); });
+  child.stderr?.on("data", (chunk) => { outputOverflow ||= stderr.length + chunk.length > maxCaptureChars; stderr = appendBounded(stderr, chunk, maxCaptureChars); });
   child.once("error", (error) => {
     finish(reject, new Error(`${label} could not start: ${error.message}`));
   });
@@ -115,6 +122,10 @@ export const runCheckedProcess = (file, args, {
   // Keep the existing deadline active until both output streams have closed.
   child.once("close", (code, signal) => {
     if (timedOut) return;
+    if (rejectOutputOverflow && outputOverflow) {
+      finish(reject, new Error(`${label} output exceeded its bounded capture capacity.`));
+      return;
+    }
     if (code === 0) {
       finish(resolve, { stdout, stderr, exitCode: 0 });
       return;

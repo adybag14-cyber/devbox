@@ -43,7 +43,8 @@ export async function verifyPromotion({binary,target,receipt:receiptPath,bundle,
   assert.equal(build.stateSchemaVersion,2,'Reviewed durable state schema required; unsafe data-format changes cannot be promoted');
   assert.equal(build.stateCoordinatorProtocol,1,'Reviewed coordinator protocol required');
   assert.equal(build.contractVersion,contractVersion,'Binary contract version must match the reviewed schema');
-  const contract=await runner(path.resolve(binary),['--dump-contract'],{env,cwd:fixture,timeoutMs:10000,label:'Verified candidate schema'});
+  const contract=await runner(path.resolve(binary),['--dump-contract'],{env,cwd:fixture,timeoutMs:10000,
+    maxCaptureChars:2*1024*1024,rejectOutputOverflow:true,label:'Verified candidate schema'});
   const tools=JSON.parse(contract.stdout);
   assert(Array.isArray(tools)&&tools.length>=50,'Complete native contract required');
   const registry=JSON.parse(await readFile(new URL('../contract/tool-registry.json',import.meta.url),'utf8'));
