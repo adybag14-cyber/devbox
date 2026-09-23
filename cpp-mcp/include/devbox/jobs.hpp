@@ -1,6 +1,7 @@
 #pragma once
 #include "runtime.hpp"
 #include "scheduler.hpp"
+#include "state_coordinator.hpp"
 namespace devbox {
 struct JobPaths {
     std::string id;
@@ -8,6 +9,7 @@ struct JobPaths {
 };
 bool terminal_status(std::string_view status);
 std::string validate_job_id(std::string_view value);
+Json job_filesystem_operation(const Json& args);
 std::vector<std::string> job_ids(const fs::path& root, std::size_t maximum = 10000);
 class JobLogPump {
     struct State;
@@ -29,6 +31,9 @@ class JobStore {
     struct Maintenance;
     std::shared_ptr<const Config> config_;
     std::shared_ptr<Maintenance> maintenance_;
+    mutable std::shared_ptr<StateStore> index_;
+    std::shared_ptr<std::mutex> index_mutex_ = std::make_shared<std::mutex>();
+    Json indexed_maintenance(std::size_t maximum, bool quota, const Cancel& cancel);
     Json reconcile(const JobPaths& paths, Json value) const;
     Json reconcile_cancelled(const JobPaths& paths, Json value) const;
     Json interrupt_orphan(const JobPaths& paths, Json value, const std::optional<Json>& heartbeat,
@@ -36,6 +41,14 @@ class JobStore {
 
   public:
     explicit JobStore(std::shared_ptr<const Config> config);
+    bool indexed() const {
+        return config_->state_backend == "sqlite";
+    }
+    void require_writable_backend() const;
+    std::shared_ptr<StateStore> index() const;
+    std::optional<Json> operation_receipt(std::string_view id) const;
+    void write_operation_receipt(std::string_view id, const Json& receipt) const;
+    std::uint64_t operation_count() const;
     const Config& config() const {
         return *config_;
     }
@@ -54,8 +67,8 @@ class JobStore {
     Json list(const std::optional<std::string>& task, const std::vector<std::string>& statuses,
               const std::optional<std::string>& cursor, std::size_t limit) const;
     void admit(const std::optional<std::string>& task = {}) const;
-    Json reconcile_maintenance(std::size_t maximum = 32);
-    Json enforce_store_quota();
+    Json reconcile_maintenance(std::size_t maximum = 32, const Cancel& cancel = {});
+    Json enforce_store_quota(const Cancel& cancel = {});
     Json quota_snapshot() const;
 };
 struct Submission {
@@ -92,4 +105,10 @@ class JobManager {
     Json submit_research(const Json& plan, const Submission& agent);
 };
 int run_job_request(std::shared_ptr<const Config> config, const fs::path& path);
+// Trusted native supervisors only. Never populated from a model tool's environment fields.
+Environment background_environment(const Config& config);
+Json migrate_legacy_state(std::shared_ptr<const Config> config);
+Json indexed_task_get(const JobStore& jobs, std::string_view id);
+Json indexed_task_put(const JobStore& jobs, std::string_view id, std::uint64_t revision, const Json& state);
+Json indexed_task_list(const JobStore& jobs, const std::optional<std::string>& cursor, std::size_t limit);
 } // namespace devbox

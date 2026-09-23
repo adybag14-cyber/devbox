@@ -1,0 +1,43 @@
+{
+  "ticket": "H10",
+  "status": "implemented_local_verified",
+  "source_base": "37942bc21859125c3f4cd81a2bb5f78efcd86055",
+  "binary_sha256": "3ecb5dfa098db00088d89859c6f68f470d053c47a10b4a62077cd399e453361c",
+  "contract_version": 6,
+  "declared_tools": 51,
+  "checks": {
+    "native_ctest": {
+      "passed": 26,
+      "failed": 0,
+      "elapsed_seconds": 27.88,
+      "excluded": "computer-native and computer-broker-native interactive input"
+    },
+    "managed_preflight_tests": 5,
+    "sqlite_mcp_sdk": "passed after final native changes, including artifact action",
+    "legacy_mcp_sdk": "passed before final artifact-only changes; explicit unavailable response",
+    "legacy_contract_profiles": 4
+  },
+  "crash_boundaries": [
+    "chunk_durable",
+    "before_publish",
+    "after_publish",
+    "cancel_after_unacknowledged_chunk"
+  ],
+  "fixtures": [
+    "8 MiB payload in 32 independent chunks, exactly N payload bytes staged, prior chunks not rewritten",
+    "2500-entry directory with independent enumeration and memory budgets",
+    "concurrent duplicate chunks, content conflicts, whole-file hash mismatch, staged-content tampering, hardlink refusal",
+    "destination version CAS, completed receipt preserves later external edit",
+    "workspace boundary, principal isolation, quota admission and cleanup"
+  ],
+  "limits": [
+    "Local incremental build evidence only; clean release artifact and hosted certification remain required",
+    "No throughput or whole-process RSS improvement claimed",
+    "Requires the SQLite state backend and host mode",
+    "CAS does not make arbitrary noncooperating external writers transactional"
+  ],
+  "related_fixes": [
+    "managed launcher version/count gate derives from committed canonical registry",
+    "Windows private-directory validation handles extended DOS volume roots without weakening reparse checks"
+  ]
+}

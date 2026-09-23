@@ -9,7 +9,7 @@ std::uint64_t bounded_timeout(Millis timeout) {
     return static_cast<std::uint64_t>(std::clamp<Millis::rep>(timeout.count(), 1000, 86400000));
 }
 Environment runner_environment(const Config& config) {
-    auto values = current_environment();
+    auto values = config.runtime_mode == RuntimeMode::docker ? docker_environment() : worker_environment();
     const auto set = [&](std::string key, std::string value) {
 #ifdef _WIN32
         std::erase_if(values, [&](const auto& item) { return lower(item.first) == lower(key); });
@@ -17,6 +17,8 @@ Environment runner_environment(const Config& config) {
         values[std::move(key)] = std::move(value);
     };
     set("DEVBOX_PROJECT_ROOT", path_text(config.project_root));
+    if (const auto generation = environment("DEVBOX_DEPLOYMENT_GENERATION"))
+        set("DEVBOX_DEPLOYMENT_GENERATION", *generation);
     set("DEVBOX_RUNTIME_MODE", config.runtime_name());
     set("ENABLE_HOST_EXEC", config.host_exec_enabled ? "true" : "false");
     set("HOST_DEFAULT_WORKDIR", path_text(config.host_default_workdir));
@@ -33,9 +35,15 @@ Environment runner_environment(const Config& config) {
     set("HOST_PROGRAM_ALLOWLIST_REPLACE", "true");
     set("HOST_PROGRAM_ALLOWLIST_EXTRA", "");
     set("MCP_JOBS_ROOT", path_text(config.jobs_root));
+    set("MCP_STATE_BACKEND", config.state_backend);
+    set("MCP_STATE_ROOT",
+        path_text(config.state_root.empty() ? config.project_root / "run" / "state" : config.state_root));
     set("MCP_EXEC_SLOT_ROOT", path_text(config.execution_slot_root));
     set("MCP_BACKGROUND_QUEUE_TIMEOUT_MS", std::to_string(config.background_queue_timeout_ms));
     set("MCP_EXEC_MAX_CONCURRENT", std::to_string(config.exec_max_concurrent));
+    set("MCP_EXEC_MEMORY_CAPACITY_BYTES", std::to_string(config.exec_memory_capacity_bytes));
+    set("MCP_EXEC_GPU_CAPACITY_BYTES", std::to_string(config.exec_gpu_capacity_bytes));
+    set("MCP_EXEC_DISK_CAPACITY_BYTES", std::to_string(config.exec_disk_capacity_bytes));
     set("MCP_EXEC_RESERVED_INTERACTIVE", std::to_string(config.exec_reserved_interactive));
     set("MCP_WATCH_MAX_CONCURRENT", std::to_string(config.watch_max_concurrent));
     set("MCP_EXEC_HEAVY_CAPACITY", std::to_string(config.exec_heavy_capacity));
@@ -51,6 +59,9 @@ Environment runner_environment(const Config& config) {
     return values;
 }
 } // namespace
+Environment background_environment(const Config& config) {
+    return runner_environment(config);
+}
 Json JobManager::shell_request(const ShellRequest& options, std::string_view resource, bool read_only) const {
     return Json{{"id", new_id()},
                 {"mode", "shell"},
@@ -78,6 +89,7 @@ Json JobManager::program_request(const ProgramRequest& options, std::string_view
     return request;
 }
 Json JobManager::start_shell(const ShellRequest& options, std::string_view resource, bool read_only) {
+    store_.require_writable_backend();
     auto request = shell_request(options, resource, read_only);
     ensure_directory(config_->jobs_root);
     FileLock gate(config_->jobs_root / ".submission.lock");
@@ -85,6 +97,7 @@ Json JobManager::start_shell(const ShellRequest& options, std::string_view resou
     return persist_and_spawn(std::move(request), {});
 }
 Json JobManager::start_program(const ProgramRequest& options, std::string_view resource) {
+    store_.require_writable_backend();
     auto request = program_request(options, resource);
     ensure_directory(config_->jobs_root);
     FileLock gate(config_->jobs_root / ".submission.lock");
@@ -108,15 +121,27 @@ Json JobManager::persist_and_spawn(Json request, const std::optional<Submission>
     const auto id = request["id"].get<std::string>();
     const auto paths = store_.create_job(id, request, initial);
     std::uint32_t pid;
+    std::optional<std::uint64_t> instance;
     try {
         pid = spawn_detached(executable_path(), {"--job-runner", path_text(paths.request)},
-                             config_->project_root, runner_environment(*config_));
+                             config_->project_root, runner_environment(*config_), &instance);
     } catch (const std::exception& error) {
         initial["status"] = "failed";
         initial["completedAtUtc"] = utc_now();
         initial["error"] = "Failed to launch detached C++ job runner: " + std::string(error.what());
         store_.write_status(id, initial);
         throw;
+    }
+    // Publish launch identity independently of the runner's mutable status. A cold-starting but
+    // live process must not be called orphaned before it has written its first heartbeat.
+    try {
+        write_json_atomic(paths.dir / "runner-owner.json",
+                          Json{{"id", id},
+                               {"pid", pid},
+                               {"instance", instance ? Json(std::to_string(*instance)) : Json()}});
+    } catch (...) {
+        throw Error("RUNNER_OWNERSHIP_UNCONFIRMED: a process was started; retain the operation identity and "
+                    "inspect its job before retrying");
     }
     return Json{{"id", id},
                 {"status", "queued"},
@@ -146,6 +171,7 @@ Json JobManager::submit_research(const Json& plan, const Submission& agent) {
     return submit(std::move(request), agent);
 }
 Json JobManager::submit(Json request, const Submission& agent) {
+    store_.require_writable_backend();
     validate_key(agent.task_id);
     validate_key(agent.operation_id);
     if (agent.label.size() > 200)
@@ -158,8 +184,7 @@ Json JobManager::submit(Json request, const Submission& agent) {
     const auto fingerprint = sha256(canonical_json(identity).dump());
     ensure_directory(config_->jobs_root);
     FileLock gate(config_->jobs_root / ".submission.lock");
-    const auto receipt_path = config_->jobs_root / ".operations" / path_from_utf8(id + ".json");
-    if (const auto receipt = read_json_optional(receipt_path, 65536)) {
+    if (const auto receipt = store_.operation_receipt(id)) {
         if (json_string(*receipt, "fingerprint") != fingerprint)
             throw Error("OPERATION_CONFLICT: operation ID already belongs to a different request");
         Json status;
@@ -177,25 +202,19 @@ Json JobManager::submit(Json request, const Submission& agent) {
         }
         return Json{{"id", id}, {"replayed", true}, {"agent", agent.json()}, {"job", status}};
     }
-    const auto receipts = config_->jobs_root / ".operations";
-    std::size_t count = 0;
-    if (fs::exists(receipts))
-        for (const auto& entry : fs::directory_iterator(receipts)) {
-            (void)entry;
-            if (++count >= config_->job_max_operations)
-                throw Error("OPERATION_CAPACITY: durable operation receipts are full; archive the task "
-                            "records explicitly before accepting new operation IDs");
-        }
+    if (store_.operation_count() >= config_->job_max_operations)
+        throw Error("OPERATION_CAPACITY: durable operation receipts are full; archive the task records "
+                    "explicitly before accepting new operation IDs");
     store_.admit(agent.task_id);
     Json receipt{{"id", id},
                  {"agent", agent.json()},
                  {"fingerprint", fingerprint},
                  {"submitted", false},
                  {"createdAtUtc", request["createdAtUtc"]}};
-    atomic_write(receipt_path, receipt.dump());
+    store_.write_operation_receipt(id, receipt);
     const auto summary = persist_and_spawn(std::move(request), agent);
     receipt["submitted"] = true;
-    atomic_write(receipt_path, receipt.dump());
+    store_.write_operation_receipt(id, receipt);
     return Json{{"id", id}, {"replayed", false}, {"agent", agent.json()}, {"job", summary}};
 }
 } // namespace devbox

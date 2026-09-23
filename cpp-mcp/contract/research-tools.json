@@ -18,7 +18,10 @@
         },
         "view": {
           "type": "string",
-          "enum": ["evidence", "offers"],
+          "enum": [
+            "evidence",
+            "offers"
+          ],
           "default": "evidence",
           "description": "Use offers for compact live product prices. Keeps exact variant options, payment conditions, currency, stock as reported, missing fields, conflicts and checked_at. Aggregate/from prices are explicitly separate. Use max_age_seconds=0 for a new check."
         },
@@ -73,7 +76,7 @@
   {
     "name": "devbox_web_research",
     "title": "Start native research: 100 sources or Fast 50",
-    "description": "Start a durable, keyless C++23 public-web research job. Standard targets 100 usable unique documents; Fast targets 50. Provide focused query variants and seed URLs, including niche target sites. Discovery modes are best-effort public web search, scholarly Crossref discovery, encyclopedia MediaWiki discovery, or explicit URLs only (none). HTTP successes without usable content, search snippets, duplicates, challenges and blocked sources do not meet coverage. If fewer usable sources exist, return the actual count and shortfall rather than padding. The call returns quickly with job_id. Read devbox_web_evidence, consume all source-ledger pages, inspect supporting documents and cite them before answering. Counts mean retrieved/parsed evidence, not guaranteed truth or model review. Use stable task_id/operation_id for retries; changed input with the same identity conflicts. Research runs in the native MCP job runner, independent of the workload container, with bounded network, disk and time budgets. No API keys, paid services or external LLM are required. Use fresh revalidation for volatile facts. Existing devbox_job_status and devbox_job_cancel supervise the job. Use exact_terms for specific entities; headlines, lead content, tables and scoped metadata are checked, while form/dropdown noise is excluded. Web discovery uses DuckDuckGo HTML and an independent Bing RSS fallback for personal, non-commercial research; provider use notices are retained. Provider challenges/access blocks trigger shared cooldowns across jobs. Job success means the collection finished: inspect discovery.status and completed/failed/unattempted queries as well as source counts. A blocked or incomplete search does not show that products are unavailable. Supply independently discovered primary URLs when providers cannot search, and use a new operation_id for a new freshness check.",
+    "description": "Start a durable, keyless C++23 public-web research job. Standard targets 100 usable unique documents; Fast targets 50. Provide focused query variants and seed URLs, including niche target sites. Discovery modes are best-effort public web search, scholarly Crossref discovery, encyclopedia MediaWiki discovery, or explicit URLs only (none). HTTP successes without usable content, search snippets, duplicates, challenges and blocked sources do not meet coverage. If fewer usable sources exist, return the actual count and shortfall rather than padding. The call returns quickly with job_id. Read devbox_web_evidence, consume all source-ledger pages, inspect supporting documents and cite them before answering. Counts mean retrieved/parsed evidence, not guaranteed truth or model review. Use stable task_id/operation_id for retries; changed input with the same identity conflicts. Research runs in the native MCP job runner, independent of the workload container, with bounded network, disk and time budgets. No API keys, paid services or external LLM are required. Use fresh revalidation for volatile facts. Existing devbox_job_status and devbox_job_cancel supervise the job. Use exact_terms for specific entities; headlines, lead content, tables and scoped metadata are checked, while form/dropdown noise is excluded. Web discovery uses DuckDuckGo HTML and an independent Bing RSS fallback for personal, non-commercial research; provider use notices are retained. Provider challenges/access blocks trigger shared cooldowns across jobs. Job success means the collection finished: inspect discovery.status and completed/failed/unattempted queries as well as source counts. A blocked or incomplete search does not show that products are unavailable. Supply independently discovered primary URLs when providers cannot search, and use a new operation_id for a new freshness check. For precise phone/product questions use product_targets with model AND capacity plus sibling-model exclusions; matches cannot be assembled from unrelated recommendations or different offer names. Source counts are retrieved evidence, not a claim that each price is verified.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -154,6 +157,57 @@
             "maxLength": 200
           },
           "description": "For precise products, chips or named entities, require at least one exact phrase in substantive source evidence. Quoted query phrases are used automatically if omitted. Avoid substituting neighbouring model names."
+        },
+        "primary_domains": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 16,
+          "description": "Optional caller-declared primary-source hostnames to assess evidence coverage; does not restrict retrieval or verify publisher independence."
+        },
+        "product_targets": {
+          "type": "array",
+          "maxItems": 8,
+          "description": "For exact products, each target matches one title or individual offer name: ALL must_include phrases and NO must_exclude phrases. Include model and capacity together; exclude sibling models such as Pro, Plus, Ultra, FE or Edge explicitly. require_offer requires a structured offer, not merely a page title. This does not verify retailer statements or stock.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "must_include": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                },
+                "minItems": 1
+              },
+              "must_exclude": {
+                "type": "array",
+                "maxItems": 8,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120
+                }
+              },
+              "require_offer": {
+                "type": "boolean",
+                "default": false
+              }
+            },
+            "required": [
+              "label",
+              "must_include"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "required": [

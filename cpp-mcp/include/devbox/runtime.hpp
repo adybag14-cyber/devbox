@@ -15,6 +15,8 @@ struct ProgramRequest {
     std::optional<std::size_t> max_capture_chars;
     std::function<void(OutputStream, std::string_view)> on_output;
     std::function<void(std::uint32_t)> on_pid;
+    // Dedicated service brokers only; never populated from tool arguments or persisted jobs.
+    std::optional<Environment> environment;
 };
 struct ShellRequest {
     std::string command;

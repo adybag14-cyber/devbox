@@ -89,6 +89,7 @@ LifecycleService::LifecycleService(std::shared_ptr<const Config> config, Backgro
     if (!docker_)
         docker_ = [config = config_](const auto& args, const Cancel& cancel) {
             ProcessOptions options;
+            options.env = docker_environment();
             options.timeout = Millis(config->docker_command_timeout_ms);
             options.max_capture_chars = 262144;
             return spawn_process("docker", args, options, cancel);

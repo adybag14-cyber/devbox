@@ -2,6 +2,7 @@
 #include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/storage.hpp"
+#include "devbox/web_retailers.hpp"
 #include <algorithm>
 #include <iomanip>
 #include <map>
@@ -73,8 +74,10 @@ Json brief(const Json& document, std::string_view query, std::size_t excerpt_cha
                             "variant_metadata_parse_warning",
                             "encoding_reported",
                             "source_id",
+                            "source_identity_url",
                             "query_term_matches",
                             "matched_exact_terms",
+                            "matched_product_targets",
                             "untrusted_source",
                             "error"})
         if (document.contains(key)) {
@@ -201,6 +204,35 @@ Json validate_plan(const Json& args, std::optional<unsigned short> fixture_loopb
             throw Error("Invalid exact entity term");
     }
     plan["exact_terms"] = exact;
+    auto targets = plan.value("product_targets", Json::array());
+    if (!targets.is_array() || targets.size() > 8)
+        throw Error("At most eight product targets are supported");
+    std::set<std::string> labels;
+    for (auto& target : targets) {
+        if (!target.is_object())
+            throw Error("Product targets must be objects");
+        const auto label = trim(json_string(target, "label"));
+        if (label.empty() || label.size() > 80 || !labels.insert(label).second)
+            throw Error("Invalid or repeated product target label");
+        target["label"] = label;
+        if (target.contains("require_offer") && !target["require_offer"].is_boolean())
+            throw Error("require_offer must be boolean");
+        for (const auto* key : {"must_include", "must_exclude"}) {
+            if (target.contains(key) && !target[key].is_array())
+                throw Error("Product target terms must be arrays");
+            auto terms = json_strings(target, key);
+            if (terms.size() > 8 || (std::string_view(key) == "must_include" && terms.empty()))
+                throw Error("Product target requires 1-8 included terms and at most eight exclusions");
+            for (auto& term : terms) {
+                term = trim(term);
+                if (term.empty() || term.size() > 120)
+                    throw Error("Invalid product target term");
+            }
+            target[key] = terms;
+        }
+    }
+    plan["product_targets"] = targets;
+
     auto urls = json_strings(plan, "urls");
     if (urls.size() > 256)
         throw Error("At most 256 seed URLs are supported");
@@ -211,15 +243,17 @@ Json validate_plan(const Json& args, std::optional<unsigned short> fixture_loopb
             url = normalize_url(url);
     }
     plan["urls"] = urls;
-    auto domains = json_strings(plan, "domains");
-    if (domains.size() > 16)
-        throw Error("At most 16 target domains are supported");
-    for (auto& domain : domains) {
-        if (domain.empty() || domain.find_first_of("/:@?#\\ ") != domain.npos)
-            throw Error("domains must contain host names only");
-        domain = host_of(normalize_url("https://" + domain));
+    for (const auto* field : {"domains", "primary_domains"}) {
+        auto domains = json_strings(plan, field);
+        if (domains.size() > 16)
+            throw Error("At most 16 target domains are supported");
+        for (auto& domain : domains) {
+            if (domain.empty() || domain.find_first_of("/:@?#\\ ") != domain.npos)
+                throw Error("domains must contain host names only");
+            domain = host_of(normalize_url("https://" + domain));
+        }
+        plan[field] = domains;
     }
-    plan["domains"] = domains;
     const auto freshness = json_uint(plan, "max_age_seconds", 0);
     if (freshness > 3600)
         throw Error("max_age_seconds must be 0-3600; use 0 to revalidate current facts");
@@ -294,7 +328,7 @@ struct ResearchService::State {
     std::optional<Json> cached(std::string_view url) const {
         try {
             auto value = read_json_optional(cache / (sha256(url) + ".json"), 512 * 1024);
-            if (value && json_string(*value, "url") == url && json_uint(*value, "cache_version") == 3)
+            if (value && json_string(*value, "url") == url && json_uint(*value, "cache_version") == 4)
                 return value;
         } catch (...) {
         }
@@ -390,7 +424,7 @@ struct ResearchService::State {
                 results[i]["cache_status"] = "network";
                 results[i]["validated_at"] = reply.completed_at;
                 results[i]["validated_unix_ms"] = reply.completed_unix_ms;
-                results[i]["cache_version"] = 3;
+                results[i]["cache_version"] = 4;
             }
             if (json_string(results[i], "status") == "ok") {
                 try {
@@ -522,6 +556,7 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
     const auto words = terms(json_string(plan, "topic") + " " + join(json_strings(plan, "queries"), " "));
     const auto domains = json_strings(plan, "domains");
     const auto exact = json_strings(plan, "exact_terms");
+    const auto product_targets = plan.value("product_targets", Json::array());
     Json ledger{{"version", 1},
                 {"topic", plan["topic"]},
                 {"mode", plan["mode"]},
@@ -541,6 +576,18 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
     ledger["attempted_urls"] = 0;
     ledger["candidate_count"] = 0;
     const auto checkpoint = [&] {
+        ledger["evidence_quality"] =
+            evidence_quality(ledger["sources"], json_strings(plan, "primary_domains"),
+                             ledger.value("discovery", Json::object()));
+        ledger["product_target_source_counts"] = Json::object();
+        for (const auto& target : product_targets)
+            ledger["product_target_source_counts"][json_string(target, "label")] = 0;
+        for (const auto& source : ledger["sources"])
+            for (const auto& target : json_strings(source, "matched_product_targets"))
+                ledger["product_target_source_counts"][target] =
+                    json_uint(ledger["product_target_source_counts"], target) + 1;
+        ledger["product_match_scope"] =
+            product_targets.empty() ? "not_requested" : "title_or_individual_offer_name";
         ledger["updated_at"] = utc_now();
         ledger["decoded_bytes"] = state_->transport.downloaded_bytes();
         ledger["elapsed_ms"] = std::chrono::duration_cast<Millis>(Clock::now() - started).count();
@@ -549,13 +596,14 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
     checkpoint();
     try {
         std::vector<std::string> candidates;
-        std::set<std::string> seen_urls, seen_content, seen_domains;
+        std::set<std::string> seen_urls, seen_content, seen_domains, seen_identities;
         const auto enqueue = [&](const std::string& raw) {
             if (candidates.size() >= 256)
                 return;
             try {
                 auto url = untrack(state_->checked(raw));
-                if (domain_allowed(url, domains) && source_candidate(url) && seen_urls.insert(url).second)
+                if (domain_allowed(url, domains) && source_candidate(url) &&
+                    seen_urls.insert(source_identity_url(url)).second)
                     candidates.push_back(std::move(url));
             } catch (...) {
             }
@@ -569,7 +617,7 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
         ledger["discovery"] = discovery["summary"];
         for (const auto& url : json_strings(discovery, "urls"))
             enqueue(url);
-        const auto initial_urls = seen_urls;
+        const std::set<std::string> initial_urls(candidates.begin(), candidates.end());
         ledger["phase"] = "retrieving";
         ledger["discovered_candidates"] = candidates.size();
         checkpoint();
@@ -602,6 +650,12 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
                 doc["matched_exact_terms"] = exact_term_matches(doc, exact);
                 if (reason == "ok" && !exact.empty() && doc["matched_exact_terms"].empty())
                     reason = "exact_entity_not_found";
+                doc["matched_product_targets"] = match_product_targets(doc, product_targets);
+                if (reason == "ok" && !product_targets.empty() && doc["matched_product_targets"].empty())
+                    reason = "product_target_not_matched";
+                doc["source_identity_url"] = source_identity_url(url);
+                if (reason == "ok" && !seen_identities.insert(json_string(doc, "source_identity_url")).second)
+                    reason = "duplicate_source_identity";
                 if (reason == "ok" && !seen_content.insert(json_string(doc, "content_sha256")).second)
                     reason = "duplicate_content";
                 if (reason != "ok") {
@@ -634,7 +688,9 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
                         const auto linked = json_string(link, "url"), label = json_string(link, "text");
                         if (!domain_allowed(linked, domains) || label.size() < 12)
                             continue;
-                        if (relevance(Json{{"title", label}}, words) > 0)
+                        if (relevance(Json{{"title", label}}, words) > 0 &&
+                            (product_targets.empty() ||
+                             !match_product_targets(Json{{"title", label}}, product_targets, false).empty()))
                             enqueue(linked);
                     }
             }
@@ -783,6 +839,17 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
         } else if (!summary["providers"].empty()) {
             summary["providers"].erase(summary["providers"].end() - 1);
             summary["provider_reports_truncated"] = true;
+        } else if (summary.contains("evidence_quality") &&
+                   summary["evidence_quality"].contains("documents_by_hostname")) {
+            summary["evidence_quality"].erase("documents_by_hostname");
+            summary["evidence_quality"]["hostname_details_omitted"] = true;
+        } else if (summary.contains("evidence_quality") &&
+                   summary["evidence_quality"].contains("missing_declared_primary_domains")) {
+            auto& quality = summary["evidence_quality"];
+            quality["missing_declared_primary_domain_count"] =
+                quality["missing_declared_primary_domains"].size();
+            quality.erase("missing_declared_primary_domains");
+            quality["primary_domain_details_omitted"] = true;
         } else
             break;
     }

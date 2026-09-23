@@ -31,6 +31,43 @@ std::string marker(std::size_t omitted, std::string_view mode) {
     return "\n... " + std::string(mode) + " output omitted " + std::to_string(omitted) + " characters ...\n";
 }
 } // namespace
+Json with_outcome(Json result, ToolOutcome outcome) {
+    const char* name = "process_failure";
+    switch (outcome) {
+    case ToolOutcome::Cancelled:
+        name = "cancelled";
+        break;
+    case ToolOutcome::TimedOut:
+        name = "timed_out";
+        break;
+    case ToolOutcome::PolicyDenied:
+        name = "policy_denied";
+        break;
+    case ToolOutcome::InvalidArguments:
+        name = "invalid_arguments";
+        break;
+    case ToolOutcome::ProcessFailure:
+        break;
+    }
+    result["_devboxTelemetryOutcome"] = name;
+    return result;
+}
+std::string result_outcome(const Json& result) {
+    const auto name = json_string(result, "_devboxTelemetryOutcome");
+    for (const auto allowed :
+         {"cancelled", "timed_out", "policy_denied", "invalid_arguments", "process_failure"})
+        if (name == allowed)
+            return name;
+    return {};
+}
+void strip_internal_result_metadata(Json& result) {
+    result.erase("_devboxTelemetryOutcome");
+    result.erase("_devboxTelemetryChildWorkMs");
+}
+Json with_child_timing(Json result, std::uint64_t elapsed_ms) {
+    result["_devboxTelemetryChildWorkMs"] = elapsed_ms;
+    return result;
+}
 Json result_success(std::string summary, std::optional<Json> data, bool compact) {
     auto out = envelope(std::move(summary), true, std::move(data));
     out["exitCode"] = nullptr;

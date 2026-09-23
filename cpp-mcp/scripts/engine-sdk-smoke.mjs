@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import {assertNativeContract} from './native-contract.mjs';
+import {assertNativeContract,nativeToolCount} from './native-contract.mjs';
+import {stopStateFixture} from './state-fixture.mjs';
+import {runCheckedProcess} from '../../src/mcp-implementation.js';
 import {spawn} from 'node:child_process';
 import {mkdtemp,readFile,writeFile,rm,mkdir} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
@@ -16,7 +18,7 @@ const root=await mkdtemp(path.join(os.tmpdir(),'devbox-cpp-engine-sdk-'));
 const workspace=path.join(root,'workspace'); await mkdir(workspace);
 const port=await new Promise((resolve,reject)=>{const socket=net.createServer();socket.once('error',reject);socket.listen(0,'127.0.0.1',()=>{const number=socket.address().port;socket.close(()=>resolve(number));});});
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const env={...process.env,DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),MCP_AUTH_MODE:'none',PUBLIC_BASE_URL:'',DEVBOX_RUNTIME_MODE:'host',ENABLE_HOST_EXEC:'true',DEVBOX_AUTO_START:'false',HOST_WORKSPACE_PATH:workspace,DEVBOX_WORKSPACE_PATH:workspace,HOST_DEFAULT_WORKDIR:workspace,NODE_EXE:process.execPath,HOST_SHELL:process.platform==='win32'?'cmd.exe':process.env.HOST_SHELL||(process.env.PREFIX?.includes('com.termux/files/usr')?path.join(process.env.PREFIX,'bin/sh'):'/bin/sh'),MCP_JOBS_ROOT:path.join(root,'jobs'),MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),MCP_PERFORMANCE_STATE_PATH:path.join(root,'run','mcp-performance.json'),MAX_COMMAND_OUTPUT_CHARS:'65536',MAX_TEXT_OUTPUT_CHARS:'4000000',MAX_MCP_TRANSFER_CHARS:'4000000',MCP_WAIT_MAX_SECONDS:'85',DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE:'0'};
+const env={...process.env,DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),MCP_AUTH_MODE:'none',PUBLIC_BASE_URL:'',DEVBOX_RUNTIME_MODE:'host',ENABLE_HOST_EXEC:'true',DEVBOX_AUTO_START:'false',HOST_WORKSPACE_PATH:workspace,DEVBOX_WORKSPACE_PATH:workspace,HOST_DEFAULT_WORKDIR:workspace,NODE_EXE:process.execPath,HOST_SHELL:process.platform==='win32'?'cmd.exe':process.env.HOST_SHELL||(process.env.PREFIX?.includes('com.termux/files/usr')?path.join(process.env.PREFIX,'bin/sh'):'/bin/sh'),MCP_JOBS_ROOT:path.join(root,'jobs'),MCP_STATE_ROOT:path.join(root,'run','state'),MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),MCP_PERFORMANCE_STATE_PATH:path.join(root,'run','mcp-performance.json'),MAX_COMMAND_OUTPUT_CHARS:'65536',MAX_TEXT_OUTPUT_CHARS:'4000000',MAX_MCP_TRANSFER_CHARS:'4000000',MCP_WAIT_MAX_SECONDS:'85',DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE:'0'};
 const child=spawn(binary,[],{cwd:repo,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
 let output='';for(const stream of [child.stdout,child.stderr])stream.on('data',chunk=>{output=(output+chunk.toString()).slice(-16000);});
 const exited=new Promise((resolve,reject)=>{child.once('exit',resolve);child.once('error',reject);});
@@ -28,7 +30,7 @@ try {
   client=new Client({name:'cpp-engine-sdk-smoke',version:'1'}, {capabilities:{}});
   await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
   const listed=(await client.listTools()).tools;
-  assert.equal(listed.length,50,'complete implemented tool family');
+  assert.equal(listed.length,nativeToolCount,'complete implemented tool family');
   const invoke=async(name,args={})=>{const result=await client.callTool({name,arguments:args});assert.equal(result.isError,false,JSON.stringify(result));return result.structuredContent;};
   const capabilities=await invoke('devbox_capabilities');
   assertNativeContract(listed,capabilities.data);
@@ -48,6 +50,28 @@ try {
   const bytes=Buffer.from([0,255,1,2,13,10,254]);
   await invoke('devbox_write_large_file',{path:pathName,content_base64:bytes.toString('base64')});
   assert.deepEqual(Buffer.from((await invoke('devbox_read_large_file',{path:pathName})).data.content_base64,'base64'),bytes);
+  const uploadBytes=Buffer.concat([Buffer.alloc(65536,17),Buffer.alloc(65536,203)]);
+  const hash=value=>createHash('sha256').update(value).digest('hex');
+  const upload={upload_id:'sdk_upload'};
+  const begin={...upload,action:'begin',path:'uploaded.bin',total_bytes:uploadBytes.length,sha256:hash(uploadBytes),expected_file_sha256:'missing'};
+  if(capabilities.data.artifact_uploads.supported){
+    await invoke('devbox_artifact_upload',begin);
+    for(const offset of [0,65536]){
+      const chunk=uploadBytes.subarray(offset,offset+65536);
+      const args={...upload,action:'chunk',offset_bytes:offset,content_base64:chunk.toString('base64'),sha256:hash(chunk)};
+      assert.equal((await invoke('devbox_artifact_upload',args)).data.next_offset_bytes,offset+chunk.length);
+      assert.equal((await invoke('devbox_artifact_upload',args)).data.replayed,true);
+    }
+    assert.equal((await invoke('devbox_artifact_upload',{...upload,action:'finalize'})).data.status,'completed');
+    assert.deepEqual(await readFile(path.join(workspace,'uploaded.bin')),uploadBytes);
+    await writeFile(path.join(workspace,'uploaded.bin'),'later-edit');
+    assert.equal((await invoke('devbox_artifact_upload',{...upload,action:'finalize'})).data.replayed,true);
+    assert.equal(await readFile(path.join(workspace,'uploaded.bin'),'utf8'),'later-edit');
+  }else{
+    const unavailable=await client.callTool({name:'devbox_artifact_upload',arguments:begin});
+    assert.equal(unavailable.isError,true,'legacy backend explicitly refuses modern upload admission');
+    assert(JSON.stringify(unavailable).includes('UPLOAD_REQUIRES_INDEXED_STATE'));
+  }
   const first=await invoke('devbox_task_put',{task_id:'sdk_task',expected_revision:0,state:{phase:'integration'}});
   assert.equal(first.data.record.revision,1);
   const script=path.join(workspace,'job.mjs');
@@ -68,14 +92,29 @@ try {
   const status=(await invoke('devbox_status')).data;
   assert.equal(status.performance.process.pid,child.pid,'live serving PID');assert.equal(status.executionStore.ok,true);
   assert.equal(status.activeRequests,0,'cancelled/waited requests released');
-  assert.equal((await fetch(`${base}/readyz`)).status,listed.length===50?200:503);
+  assert.equal((await fetch(`${base}/readyz`)).status,listed.length===nativeToolCount?200:503);
+  const control=async action=>{
+    const response=await runCheckedProcess(binary,['--admission',action],{env,cwd:repo,timeoutMs:10000,label:'Owned fixture admission control'});
+    const generation=JSON.parse(response.stdout).requested.generation;
+    const deadline=Date.now()+5000;
+    for(;;){const state=(await(await fetch(base)).json()).admission;if(state.generation===generation)return state;
+      assert(Date.now()<deadline,'Frontend must acknowledge admission generation');await delay(50);}
+  };
+  assert.equal((await control('drain')).mode,'draining');
+  const denied=await client.callTool({name:'devbox_write_file_atomic',arguments:{path:path.join(workspace,'drain-denied.txt'),content_base64:Buffer.from('never').toString('base64'),expected_file_sha256:'missing'}});
+  assert.equal(denied.isError,true);assert(JSON.stringify(denied).includes('SERVER_DRAINING'));
+  await assert.rejects(readFile(path.join(workspace,'drain-denied.txt')),{code:'ENOENT'});
+  assert.equal(await(await fetch(`${base}/healthz`)).text(),'ok');await invoke('devbox_job_status',{job_id:firstJob.id});
+  assert.equal((await control('resume')).mode,'open');
+  await invoke('devbox_file_state',{path:pathName});
   await client.close();client=undefined;
   await delay(100);
   const usage=await readFile(path.join(root,'run','tool-usage.jsonl'),'utf8');assert(usage.includes('tool_finish'));
-  console.log(JSON.stringify({ok:true,toolCount:listed.length,binarySha256:binaryHash,servingPid:child.pid,sdk:'1.30.0',nativeJob:true,durableRetry:true,byteRoundtrip:true,concurrentPassiveWaits:32,cancellation:true,healthMs},null,2));
+  console.log(JSON.stringify({ok:true,toolCount:listed.length,binarySha256:binaryHash,servingPid:child.pid,sdk:'1.30.0',nativeJob:true,durableRetry:true,byteRoundtrip:true,concurrentPassiveWaits:32,cancellation:true,admissionDrain:true,healthMs},null,2));
 } finally {
   await client?.close().catch(()=>{});
   if(child.exitCode===null&&child.signalCode===null){child.kill();await Promise.race([exited,delay(10000)]);}
   assert(child.exitCode!==null||child.signalCode!==null,'owned candidate stopped');
+  await stopStateFixture(binary,root);
   await rm(root,{recursive:true,force:true,maxRetries:20,retryDelay:200});
 }

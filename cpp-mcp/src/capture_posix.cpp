@@ -16,6 +16,10 @@ namespace devbox {
 namespace {
 ProcessOutput command(std::string_view program, std::vector<std::string> args, const Cancel& cancel) {
     ProcessOptions options;
+    options.env = worker_environment();
+    for (const auto* key : {"DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR"})
+        if (const auto value = environment(key))
+            (*options.env)[key] = *value;
     options.timeout = Millis(20000);
     options.max_capture_chars = 128000;
     return spawn_process(program, args, options, cancel);

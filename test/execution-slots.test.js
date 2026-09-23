@@ -143,6 +143,29 @@ test("background execution times out rather than consuming the reserved slot", a
   }
 });
 
+test("queue-head admission deadline retains the public queue-timeout classification", async () => {
+  const { acquireExecutionSlot, ExecutionQueueTimeoutError, getExecutionSlotSnapshot, testSlotRoot } = await importIsolatedSlots();
+  const queue = path.join(testSlotRoot, "queue");
+  await mkdir(queue);
+  await writeFile(path.join(queue, ".execution-background-head.lock"), JSON.stringify({
+    token: "owned-held-head", pid: process.pid, processInstance: await currentProcessInstance(),
+    class: "execution-background", acquiredAtUtc: new Date().toISOString(),
+  }));
+  try {
+    await assert.rejects(acquireExecutionSlot({ kind: "background", queueTimeoutMs: 30 }), error => {
+      assert(error instanceof ExecutionQueueTimeoutError);
+      assert.match(error.message, /Execution queue remained saturated/u);
+      assert.equal(error.data.phase, "queue-head");
+      return true;
+    });
+    const snapshot = await getExecutionSlotSnapshot();
+    assert.equal(snapshot.local_process.queued, 0);
+  } finally {
+    assert(path.isAbsolute(testSlotRoot) && path.basename(testSlotRoot).startsWith("devbox-exec-slots-test-"));
+    await rm(testSlotRoot, { recursive: true, force: true });
+  }
+});
+
 
 
 

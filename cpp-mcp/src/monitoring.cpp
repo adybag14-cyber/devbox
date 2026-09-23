@@ -143,10 +143,12 @@ void OperationalMonitor::start() {
     background_.periodic("scheduler-snapshot", Millis(25), Millis(1000),
                          [this](const Cancel&) { scheduler_iteration(); });
     background_.periodic("job-maintenance", Millis(17000), Millis(60000),
-                         [this](const Cancel&) { job_iteration(false); });
+                         [this](const Cancel& cancel) { job_iteration(false, cancel); });
     background_.adaptive("job-quota", Millis(0),
-                         [this, first = std::make_shared<std::atomic_bool>(true)](const Cancel&) {
-                             job_iteration(true);
+                         [this, first = std::make_shared<std::atomic_bool>(true)](const Cancel& cancel) {
+                             job_iteration(true, cancel);
+                             if (json_bool(jobs_.quota_snapshot(), "quotaCyclePending"))
+                                 return Millis(100);
                              return first->exchange(false) ? Millis(37000) : Millis(60000);
                          });
     background_.periodic("incident-monitor", Millis(7000), Millis(10000),
@@ -204,8 +206,8 @@ void OperationalMonitor::probe_store() {
             if (slopes.size() >= 4) {
                 std::sort(slopes.begin(), slopes.end());
                 const auto middle = slopes.size() / 2;
-                auto median = slopes.size() % 2 ? slopes[middle]
-                                                : std::trunc((slopes[middle - 1] + slopes[middle]) / 2);
+                auto median = (slopes.size() % 2) ? slopes[middle]
+                                                  : std::trunc((slopes[middle - 1] + slopes[middle]) / 2);
                 median =
                     std::clamp(median, static_cast<long double>(std::numeric_limits<std::int64_t>::min()),
                                static_cast<long double>(std::numeric_limits<std::int64_t>::max()));
@@ -277,12 +279,13 @@ void OperationalMonitor::scheduler_iteration() {
         throw;
     }
 }
-void OperationalMonitor::job_iteration(bool quota) {
+void OperationalMonitor::job_iteration(bool quota, const Cancel& cancel) {
     const auto start = Clock::now();
     Json value{{"sampledAtUtc", utc_now()}};
     std::optional<std::string> failure;
     try {
-        value["summary"] = quota ? jobs_.enforce_store_quota() : jobs_.reconcile_maintenance(100);
+        value["summary"] =
+            quota ? jobs_.enforce_store_quota(cancel) : jobs_.reconcile_maintenance(100, cancel);
     } catch (const std::exception& e) {
         failure = e.what();
         value["error"] = *failure;

@@ -249,6 +249,30 @@ asio::awaitable<void> exercise(WorkPool& pool, const std::shared_ptr<std::string
 } // namespace
 int main() {
     try {
+        {
+            WorkPool late(1, 4);
+            auto released = std::make_shared<std::atomic_bool>(false);
+            {
+                asio::io_context disposable;
+                auto pending = late.run_until(
+                    [released] {
+                        std::this_thread::sleep_for(Millis(150));
+                        *released = true;
+                        return 42;
+                    },
+                    Clock::now() + Millis(20));
+                auto result = asio::co_spawn(disposable, std::move(pending), asio::use_future);
+                disposable.run();
+                if (result.get())
+                    throw Error("Deadline fixture unexpectedly completed");
+            }
+            // The I/O context is already destroyed when the late worker finishes.
+            const auto deadline = Clock::now() + Millis(2000);
+            while (!*released && Clock::now() < deadline)
+                std::this_thread::sleep_for(Millis(5));
+            if (!*released)
+                throw Error("Late worker fixture did not release");
+        }
         cancellation_subscriptions();
         event_driven_delays();
         scoped_thread_lifetime();

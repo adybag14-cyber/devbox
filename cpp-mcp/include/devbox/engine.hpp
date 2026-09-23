@@ -1,12 +1,13 @@
 #pragma once
+#include "admission.hpp"
 #include "capture.hpp"
 #include "computer_use.hpp"
 #include "contract.hpp"
 #include "docker_files.hpp"
 #include "lifecycle.hpp"
 #include "monitoring.hpp"
-#include "search.hpp"
 #include "research.hpp"
+#include "search.hpp"
 #include "server.hpp"
 namespace devbox {
 class Engine final : public McpBackend, public std::enable_shared_from_this<Engine> {
@@ -14,6 +15,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     BackgroundTasks background_;
     std::shared_ptr<const Config> config_;
     ToolContract contract_;
+    AdmissionControl admission_;
     std::set<std::string> implemented_;
     Json capabilities_;
     WorkPool commands_, files_{4, 128}, controls_{2, 128}, atomic_{2, 64};
@@ -34,6 +36,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     HttpServer* server_ = nullptr;
     OperationalMonitor monitoring_;
     std::atomic_bool stopped_{false};
+    std::unique_ptr<FileLock> frontend_lock_;
     fs::path working_dir(const Json& args, bool host) const;
     void require_agent_host() const;
     asio::awaitable<ExecutionLease> acquire(AcquireRequest request, Cancel cancel);
@@ -43,7 +46,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     asio::awaitable<Json> wait_file(Json args, Cancel cancel);
     asio::awaitable<Json> wait_job(Json args, Cancel cancel);
     Json files(std::string name, const Json& args, const Cancel& cancel);
-    Json durable(std::string name, const Json& args);
+    Json durable(std::string name, const Json& args, const Cancel& cancel);
     Json detached(std::string name, const Json& args);
     Json status(const Cancel& cancel);
     Json host_status() const;
@@ -61,6 +64,12 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     }
     Json parity_report() const;
     asio::awaitable<Json> call_tool(std::string name, Json arguments, Cancel cancel) override;
+    asio::awaitable<Json> call_tool_authenticated(std::string name, Json arguments, Cancel cancel,
+                                                  std::string principal) override;
+    Json extension_capabilities() const override;
+    bool handles_method(std::string_view method) const override;
+    asio::awaitable<Json> call_method(std::string method, Json params, Cancel cancel,
+                                      std::string principal) override;
     asio::awaitable<Json> metadata(const HttpRequest& request) override;
     bool ready() const override;
     std::string tool_started(const std::string& name, const Json& args, const Json& context) override;

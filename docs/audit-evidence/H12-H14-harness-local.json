@@ -1,0 +1,72 @@
+{
+  "tickets": [
+    "H12",
+    "H13",
+    "H14"
+  ],
+  "status": "implemented_local_with_remaining_qualification",
+  "source_base": "f90cf628576f37fceed080d6750133090796f2d3",
+  "windows_binary_sha256": "cde7a01896a0c8a2955517611373a0c5a631bdcbf3a15018cca9528020b87eb9",
+  "linux_binary_sha256": "633d2eca5ba3f3fce462985cbdf586e2e93724c0d4b3bb560f43794c06636543",
+  "contract_version": 7,
+  "tools": 52,
+  "tests": {
+    "windows_native": {
+      "passed": 30,
+      "failed": 0,
+      "elapsed_seconds": 28.78,
+      "excluded": "two interactive CUA suites"
+    },
+    "windows_sdk_run_harness": {
+      "model_requests": 2,
+      "actual_isolated_effects": 1,
+      "frontend_restart": true,
+      "operator_grant": true,
+      "completed_create_replay": true,
+      "paid_requests": 0
+    },
+    "linux_sdk_run_harness": {
+      "model_requests": 2,
+      "actual_isolated_effects": 1,
+      "frontend_restart": true,
+      "operator_grant": true,
+      "completed_create_replay": true,
+      "paid_requests": 0
+    },
+    "legacy_contract_profiles": 4,
+    "sqlite_engine_sdk": "passed, 52 tools",
+    "real_process_crash_boundaries": [
+      "model_returned",
+      "tool_returned",
+      "tool_in_effect"
+    ]
+  },
+  "provider_checks": [
+    "Responses and local Chat Completions formats",
+    "fragmented streaming calls and incomplete-call rejection",
+    "native output cannot become a system role",
+    "usage, context/token/cost/VRAM/byte/deadline bounds",
+    "explicit rate limits without automatic generation retry",
+    "retrieve without a generation POST",
+    "local cancellation versus confirmed background cancellation",
+    "scoped private credentials and credential-echo suppression"
+  ],
+  "controller_checks": [
+    "idempotent run create",
+    "exact operator grant required before effect",
+    "completed effect receipt replay",
+    "unknown outcomes pause without retry",
+    "cross-principal and cross-run artifact isolation",
+    "control updates survive an active model callback",
+    "loop and cost circuit breakers",
+    "tool output retains an untrusted role"
+  ],
+  "limitations": [
+    "Recorded/mock model outputs, not a live model task-quality score",
+    "No paid provider calls",
+    "Development snapshots, not promoted artifacts",
+    "Latest startup recovery change rerun on Windows; full hosted and Linux final snapshot qualification pending",
+    "Paired evaluation report and remaining audit tickets still outstanding"
+  ],
+  "integration_fix": "GCC12 private coordinator regression resolved by avoiding an unnecessary coroutine wrapper and materializing the authenticated dispatch awaitable before suspension"
+}

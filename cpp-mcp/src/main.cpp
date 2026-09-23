@@ -1,5 +1,9 @@
 #include "devbox/computer_use.hpp"
 #include "devbox/engine.hpp"
+#include "devbox/filesystem_worker.hpp"
+#include "devbox/grants.hpp"
+#include "devbox/run_service.hpp"
+#include "devbox/state_coordinator.hpp"
 #include "server_main.hpp"
 #include <csignal>
 #include <iostream>
@@ -29,8 +33,44 @@ BOOL WINAPI console_handler(DWORD event) {
 } // namespace
 int devbox::run_mcp(const std::vector<std::string>& args) {
     using namespace devbox;
+#ifdef _WIN32
+    // A headless service and its owned workers report launch/crash errors through the protocol.
+    // Windows critical-error dialogs must not hold a failed worker open on the user's desktop.
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+#endif
     try {
         const auto mode = args.empty() ? "" : args.front();
+        if (mode == "--filesystem-worker") {
+            if (args.size() != 1)
+                throw Error("Filesystem worker accepts its bounded request on stdin only");
+            return run_filesystem_worker();
+        }
+        if (mode == "--linux-isolation-worker") {
+            if (args.size() != 2)
+                throw Error("Isolated worker requires a private request file");
+            return run_linux_isolation_worker(path_from_utf8(args[1]));
+        }
+        if (mode == "--stop-state-coordinator") {
+            if (args.size() != 2)
+                throw Error("--stop-state-coordinator requires a private state directory");
+            if (!stop_state_coordinator(path_from_utf8(args[1])))
+                throw Error("STATE_COORDINATOR_STOP_UNCONFIRMED");
+            return 0;
+        }
+        if (mode == "--state-coordinator") {
+            if (args.size() != 2)
+                throw Error("--state-coordinator requires a private state directory");
+            std::signal(SIGINT, signal_handler);
+            std::signal(SIGTERM, signal_handler);
+#ifdef _WIN32
+            SetConsoleCtrlHandler(console_handler, TRUE);
+            return run_state_coordinator(path_from_utf8(args[1]), [] {
+                return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0;
+            });
+#else
+            return run_state_coordinator(path_from_utf8(args[1]), [] { return shutdown_requested != 0; });
+#endif
+        }
         if (mode == "--capture-worker")
             return run_capture_worker(std::vector<std::string>(args.begin() + 1, args.end()));
         if (mode == "--computer-use-probe") {
@@ -57,7 +97,12 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
             std::cout << "Devbox C++ MCP " << build_version()
                       << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
-                         "--computer-use-broker PIPE|--computer-use-probe PIPE]\n";
+                         "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|--admission "
+                         "drain|resume|status|"
+                         "--stop-state-coordinator ROOT|--grant-create-workspace ID|--grant-issue JSON|"
+                         "--grant-revoke ID|--grant-inspect ID|--execute-granted JSON|--state-export REPORT|"
+                         "--private-state-snapshot NEW_DIR --include-private-state|--restore-state-snapshot "
+                         "SNAPSHOT NEW_DIR]\n";
             return 0;
         }
         if (mode == "--build-info") {
@@ -69,7 +114,99 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                 throw Error("--elevated-shell-worker requires one request path");
             return elevated_shell_worker(path_from_utf8(args[1]));
         }
-        auto config = std::make_shared<Config>(Config::load());
+        auto config =
+            std::make_shared<Config>(Config::load(mode != "--job-runner" && mode != "--agent-runner"));
+        if (mode == "--admission") {
+            if (args.size() != 2)
+                throw Error("--admission requires drain, resume or status");
+            std::cout << operator_admission(*config, args[1]).dump(2) << '\n';
+            return 0;
+        }
+        if (mode == "--agent-runner") {
+            if (args.size() != 3)
+                throw Error("Agent runner requires a principal and run ID");
+            std::signal(SIGINT, signal_handler);
+            std::signal(SIGTERM, signal_handler);
+            RunService service(config);
+#ifdef _WIN32
+            return service.drive(args[1], args[2],
+                                 [] { return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0; });
+#else
+            return service.drive(args[1], args[2], [] { return shutdown_requested != 0; });
+#endif
+        }
+        if (mode == "--grant-create-workspace" || mode == "--grant-issue" || mode == "--grant-revoke" ||
+            mode == "--grant-inspect" || mode == "--execute-granted") {
+            if (args.size() != 2 || config->state_backend != "sqlite")
+                throw Error("Grant administration requires one operand and MCP_STATE_BACKEND=sqlite");
+            JobStore jobs(config);
+            auto state = jobs.index();
+            const auto private_root = config->state_root / "isolated";
+            ensure_private_state_directory(private_root);
+            if (mode == "--grant-create-workspace") {
+                validate_key(args[1]);
+                const auto workspace = private_root / args[1];
+                ensure_private_state_directory(workspace);
+                std::cout << Json{{"workspace", path_text(fs::canonical(workspace))}}.dump() << '\n';
+                return 0;
+            }
+            GrantAuthority authority(state, config->state_root / "grants");
+            if (mode == "--grant-issue")
+                std::cout << Json{{"grant_id", authority.issue(grant_definition(
+                                                   read_json(path_from_utf8(args[1]), 65536)))}}
+                                 .dump()
+                          << '\n';
+            else if (mode == "--grant-revoke") {
+                authority.revoke(args[1]);
+                std::cout << authority.inspect(args[1]).dump() << '\n';
+            } else if (mode == "--grant-inspect")
+                std::cout << authority.inspect(args[1]).dump() << '\n';
+            else {
+                if (config->runtime_mode != RuntimeMode::host || !config->host_exec_enabled)
+                    throw Error("Granted program execution requires the enabled host runtime");
+                const auto request = read_json(path_from_utf8(args[1]), 65536);
+                std::cout << execute_granted_program(
+                                 authority, private_root, json_string(request, "grant_id"),
+                                 {json_string(request, "principal"), json_string(request, "run"),
+                                  json_string(request, "operation")},
+                                 request.at("arguments"))
+                                 .dump()
+                          << '\n';
+            }
+            return 0;
+        }
+        if (mode == "--migrate-state") {
+            if (args.size() != 1)
+                throw Error("--migrate-state does not accept request payloads");
+            std::cout << migrate_legacy_state(config).dump(2) << '\n';
+            return 0;
+        }
+        if (mode == "--restore-state-snapshot") {
+            if (args.size() != 3)
+                throw Error("Restore requires snapshot and new destination directories");
+            std::cout << restore_state_snapshot(path_from_utf8(args[1]), path_from_utf8(args[2])).dump(2)
+                      << '\n';
+            return 0;
+        }
+        if (mode == "--state-export" || mode == "--private-state-snapshot") {
+            if (config->state_backend != "sqlite")
+                throw Error("State export requires the SQLite backend");
+            if ((mode == "--state-export" && args.size() != 2) ||
+                (mode == "--private-state-snapshot" &&
+                 (args.size() != 3 || args[2] != "--include-private-state")))
+                throw Error("Private snapshots require an explicit --include-private-state flag; default "
+                            "exports omit payloads");
+            StateStoreOptions options;
+            options.writable = false;
+            auto state = open_state_store(config->state_root, options);
+            const auto destination = path_from_utf8(args[1]);
+            const auto report = mode == "--state-export" ? export_state_summary(*state)
+                                                         : state->private_snapshot(destination);
+            if (mode == "--state-export")
+                atomic_write(destination, report.dump(2) + '\n', false, true, Preconditions{"missing", {}});
+            std::cout << report.dump(2) << '\n';
+            return 0;
+        }
         if (mode == "--job-runner") {
             if (args.size() != 2)
                 throw Error("--job-runner requires exactly one request.json path");

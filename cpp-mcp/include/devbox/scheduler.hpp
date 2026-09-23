@@ -2,17 +2,31 @@
 #include "config.hpp"
 #include "storage.hpp"
 namespace devbox {
+class SchedulerNotifications;
+class StateStore;
 enum class ResourceClass { watch, light, heavy, io_heavy };
 enum class ExecutionKind { interactive, background };
 ResourceClass resource_class(std::string_view value);
 std::string resource_name(ResourceClass value);
 std::string execution_name(ExecutionKind value);
+struct ResourceVector {
+    std::uint64_t memory_bytes = 0, gpu_bytes = 0, disk_bytes = 0;
+    bool any() const {
+        return memory_bytes || gpu_bytes || disk_bytes;
+    }
+    Json json() const {
+        return Json{{"memory_bytes", memory_bytes}, {"gpu_bytes", gpu_bytes}, {"disk_bytes", disk_bytes}};
+    }
+};
 struct SchedulerConfig {
     fs::path root;
     std::size_t max_concurrent = 6, reserved_interactive = 1, watch_max_concurrent = 4;
     Millis queue_timeout{15000};
     std::size_t heavy_capacity = 4, heavy_weight = 2, io_heavy_capacity = 2, io_heavy_weight = 2;
     Millis background_priority_age{30000};
+    ResourceVector capacity;
+    // Lazy: constructing the scheduler never starts a second durable writer.
+    std::function<std::shared_ptr<StateStore>()> lease_index;
     static SchedulerConfig from(const Config& config);
     SchedulerConfig normalized() const;
 };
@@ -22,6 +36,7 @@ struct AcquireRequest {
     std::size_t weight = 1;
     std::string label;
     std::optional<Millis> queue_timeout;
+    ResourceVector resources;
 };
 struct QueueTimeout : Error {
     Json details;
@@ -49,6 +64,7 @@ class ExecutionLease {
     std::string pool;
     std::size_t weight = 1;
     std::uint64_t queue_wait_ms = 0;
+    ResourceVector resources;
     void release();
     Json json() const;
 };
@@ -67,10 +83,12 @@ class ExecutionWaiter {
     // One bounded filesystem pass. Waiting belongs to a caller's coroutine or runner.
     std::optional<ExecutionLease> poll(const Cancel& cancel = {});
     Millis poll_interval() const;
+    Cancel changed_token() const;
 };
 class ExecutionScheduler {
     SchedulerConfig config_;
     std::shared_ptr<SchedulerMetrics> metrics_;
+    std::shared_ptr<SchedulerNotifications> notifications_;
 
   public:
     explicit ExecutionScheduler(SchedulerConfig config);

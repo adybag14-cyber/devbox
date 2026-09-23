@@ -1,0 +1,66 @@
+{
+  "ticket": "H08",
+  "scope": "Native StateStore primitive; existing jobs/receipts and coordinator integration remain pending",
+  "sqlite": "3.53.4",
+  "records": 100000,
+  "filtered_page_vm_steps": 731,
+  "unqualified_planner_vm_steps": 64678,
+  "checks": [
+    "one writer",
+    "read-only WAL readers",
+    "revision CAS rollback",
+    "generation fencing",
+    "retained operation identity after lost acknowledgement",
+    "four crash boundaries",
+    "incompatible schema refusal"
+  ],
+  "build_sha256": "99cfce1566b175167103427e1b23e7c4df15da77e6c8344b5629f76287269710",
+  "test_sha256": "4f36f8e22bf68c2634605c7fc15cc022e65ec547d5388d462921673190e32742",
+  "legacy_nested_sdk": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "complete native tool contract, capability hash and heavy capacity five",
+        "ok": true,
+        "durationMs": 79
+      },
+      {
+        "name": "atomic overwrite, conflict, append and replay",
+        "ok": true,
+        "durationMs": 28
+      },
+      {
+        "name": "concurrent duplicate submission executes once and survives retention",
+        "ok": true,
+        "durationMs": 271
+      },
+      {
+        "name": "global and per-task runner admission plus pagination",
+        "ok": true,
+        "durationMs": 100
+      },
+      {
+        "name": "task CAS and reconnect recover work without resubmission",
+        "ok": true,
+        "durationMs": 238
+      },
+      {
+        "name": "cancellation confirms both runner and child stopped",
+        "ok": true,
+        "durationMs": 184
+      },
+      {
+        "name": "nested task checkpoints retain bounded compact output",
+        "ok": true,
+        "durationMs": 7
+      },
+      {
+        "name": "native cold capture works through successive Rust server starts",
+        "ok": true,
+        "durationMs": 483
+      }
+    ],
+    "root": "C:\\Users\\adyba\\AppData\\Local\\Temp\\devbox-agent-reliability-uJlRtu"
+  },
+  "production_state_migrated": false
+}

@@ -1,0 +1,80 @@
+{
+  "ticket": "H09",
+  "status": "partial_local_verified",
+  "date": "2026-09-22",
+  "implementation": "Same-process cancellation subscriptions and native filesystem notifications over an owner-only notification directory; every wake rechecks actual queue, lease token, owner and capacity. Periodic 500ms reconciliation retained.",
+  "qualification": {
+    "host": "Ryzen 9 7950X3D, 16 cores/32 logical processors, Balanced power plan",
+    "windows": {
+      "samples": 1000,
+      "p50_ms": 2.4,
+      "p95_ms": 2.79,
+      "p99_ms": 3.274,
+      "max_ms": 4.155,
+      "metric": "held_lease_release_to_cross_process_grant",
+      "notifications": {
+        "available": true,
+        "notices": 4000,
+        "failures": 0,
+        "authority": "owner_only_local_directory",
+        "reconciliation_required": true
+      }
+    },
+    "linux_wsl": {
+      "samples": 1000,
+      "p50_ms": 0.389,
+      "p95_ms": 0.446,
+      "p99_ms": 0.586,
+      "max_ms": 0.67,
+      "metric": "held_lease_release_to_cross_process_grant",
+      "notifications": {
+        "available": true,
+        "notices": 4956,
+        "failures": 0,
+        "authority": "owner_only_local_directory",
+        "reconciliation_required": true
+      }
+    },
+    "runs": "Sequential platform runs; no local build was running during measurement",
+    "criterion": "held-lease release to cross-process grant p95 below 20 ms",
+    "result": "passed on both platforms"
+  },
+  "validation": {
+    "windows": [
+      "scheduler",
+      "scheduler-notifications",
+      "indexed-maintenance",
+      "jobs",
+      "SQLite SDK"
+    ],
+    "linux": [
+      "scheduler",
+      "scheduler-notifications",
+      "indexed-maintenance",
+      "jobs",
+      "engine",
+      "SQLite SDK"
+    ]
+  },
+  "limitations": [
+    "Development build measurement, not final release certification",
+    "Free-capacity fast-path comparison and wider benchmark uncertainty remain under H03/H11",
+    "Native macOS implementation requires hosted qualification",
+    "Notifications carry no grant authority; protected filesystem access authenticates the channel boundary",
+    "Durable indexed lease projection/integration remains outstanding"
+  ],
+  "resource_vectors": {
+    "capacities": [
+      "MCP_EXEC_MEMORY_CAPACITY_BYTES",
+      "MCP_EXEC_GPU_CAPACITY_BYTES",
+      "MCP_EXEC_DISK_CAPACITY_BYTES"
+    ],
+    "policy": "Declared reservations, charged once per weighted lease across execution and watch pools. Zero disables that aggregate dimension; these are not measurements of OS usage. Existing process sandbox limits remain separate.",
+    "adapters": [
+      "isolated backend program memory reservation",
+      "configured local-provider GPU reservation requiring explicit global GPU capacity",
+      "research runner memory and disk reservation"
+    ],
+    "tests": "Memory/GPU/disk contention, shared pool accounting, weighted single charge, release and impossible-request refusal passed on Windows and Linux. Backend run + actual isolated effect + Tasks SDK passed on both platforms."
+  }
+}

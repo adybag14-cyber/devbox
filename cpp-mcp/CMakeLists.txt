@@ -11,23 +11,20 @@ find_package(CURL REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(libdeflate CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 set(DEVBOX_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${DEVBOX_GENERATED_DIR}")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json" reference_hex HEX)
-string(REGEX REPLACE "(..)" "0x\\1," reference_bytes "${reference_hex}")
-file(WRITE "${DEVBOX_GENERATED_DIR}/reference_contract.hpp.tmp" "inline constexpr unsigned char embedded_contract[] = {${reference_bytes}};\n")
-file(COPY_FILE "${DEVBOX_GENERATED_DIR}/reference_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/reference_contract.hpp" ONLY_IF_DIFFERENT)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/reference-tools.json")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/computer-tools.json" computer_hex HEX)
-string(REGEX REPLACE "(..)" "0x\\1," computer_bytes "${computer_hex}")
-file(WRITE "${DEVBOX_GENERATED_DIR}/computer_contract.hpp.tmp" "inline constexpr unsigned char embedded_computer_contract[] = {${computer_bytes}};\n")
-file(COPY_FILE "${DEVBOX_GENERATED_DIR}/computer_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/computer_contract.hpp" ONLY_IF_DIFFERENT)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/computer-tools.json")
-file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/research-tools.json" research_hex HEX)
-string(REGEX REPLACE "(..)" "0x\\1," research_bytes "${research_hex}")
-file(WRITE "${DEVBOX_GENERATED_DIR}/research_contract.hpp.tmp" "inline constexpr unsigned char embedded_research_contract[] = {${research_bytes}};\n")
-file(COPY_FILE "${DEVBOX_GENERATED_DIR}/research_contract.hpp.tmp" "${DEVBOX_GENERATED_DIR}/research_contract.hpp" ONLY_IF_DIFFERENT)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/research-tools.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/tool-registry.json" registry_json)
+string(JSON registry_count LENGTH "${registry_json}" tools)
+string(JSON registry_version GET "${registry_json}" contract_version)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/tool-registry.json" registry_hex HEX)
+string(REGEX REPLACE "(..)" "0x\\1," registry_bytes "${registry_hex}")
+file(WRITE "${DEVBOX_GENERATED_DIR}/tool_registry.hpp.tmp" "inline constexpr unsigned char embedded_tool_registry[] = {${registry_bytes}};\n")
+file(COPY_FILE "${DEVBOX_GENERATED_DIR}/tool_registry.hpp.tmp" "${DEVBOX_GENERATED_DIR}/tool_registry.hpp" ONLY_IF_DIFFERENT)
+file(MAKE_DIRECTORY "${DEVBOX_GENERATED_DIR}/include/devbox")
+file(WRITE "${DEVBOX_GENERATED_DIR}/registry_counts.hpp.tmp" "#pragma once\n#include <cstddef>\nnamespace devbox { inline constexpr std::size_t cpp_tool_count = ${registry_count}; inline constexpr unsigned cpp_contract_version = ${registry_version}; }\n")
+file(COPY_FILE "${DEVBOX_GENERATED_DIR}/registry_counts.hpp.tmp" "${DEVBOX_GENERATED_DIR}/include/devbox/registry_counts.hpp" ONLY_IF_DIFFERENT)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/contract/tool-registry.json")
 add_custom_target(devbox-build-identity
   COMMAND "${CMAKE_COMMAND}" "-DSOURCE_ROOT=${PROJECT_SOURCE_DIR}" "-DOUTPUT_DIR=${DEVBOX_GENERATED_DIR}"
     "-DCOMPILER=${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}" "-DVERSION=${PROJECT_VERSION}"
@@ -36,17 +33,37 @@ add_custom_target(devbox-build-identity
   VERBATIM)
 add_library(devbox_core
   src/common.cpp
+  src/admission.cpp
   src/json_output.cpp
+  src/resource_budget.cpp
   src/state_file.cpp
+  src/state_store.cpp
+  src/state_coordinator.cpp
   src/config.cpp
   src/result.cpp
   src/process.cpp
   src/posix_process.cpp
   src/storage.cpp
+  src/filesystem_worker.cpp
+  src/wsl.cpp
+  src/child_reaper.cpp
+  src/artifacts.cpp
+  src/security.cpp
+  src/provider.cpp
+  src/provider_protocol.cpp
+  src/grants.cpp
+  src/runs.cpp
+  src/run_service.cpp
+  src/tasks.cpp
+  src/engine_extensions.cpp
+  src/isolation.cpp
+  src/isolation_linux.cpp
   src/runtime.cpp
   src/scheduler.cpp
+  src/scheduler_notifications.cpp
   src/job_logs.cpp
   src/jobs.cpp
+  src/indexed_jobs.cpp
   src/detached.cpp
   src/resource_class.cpp
   src/job_manager.cpp
@@ -63,8 +80,11 @@ add_library(devbox_core
   src/search.cpp
   src/web_transport.cpp
   src/web_document.cpp
+  src/web_retailers.cpp
   src/web_offers.cpp
   src/web_discovery.cpp
+  src/web_policy.cpp
+  src/web_providers.cpp
   src/research.cpp
   src/host_inspect.cpp
   src/usage.cpp
@@ -87,20 +107,43 @@ add_library(devbox_core
 add_dependencies(devbox_core devbox-build-identity)
 target_include_directories(devbox_core PRIVATE "${DEVBOX_GENERATED_DIR}")
 target_include_directories(devbox_core PRIVATE "${DEVBOX_LEXBOR_INCLUDE_DIR}")
-target_include_directories(devbox_core PUBLIC include)
+target_include_directories(devbox_core PUBLIC include "${DEVBOX_GENERATED_DIR}/include")
+target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_DISABLE_BOOST_REGEX
+  BOOST_ASIO_DISABLE_BOOST_DATE_TIME BOOST_ASIO_DISABLE_BOOST_CONTEXT_FIBER)
+target_compile_definitions(devbox_core PRIVATE DEVBOX_ALLOCATOR_SHARDED=$<BOOL:${DEVBOX_ALLOCATOR_SHARDED}>)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl ZLIB::ZLIB Threads::Threads ada::ada re2::re2)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:lexbor::lexbor_static>,lexbor::lexbor_static,lexbor::lexbor>)
 target_link_libraries(devbox_core PUBLIC pugixml::pugixml)
+target_link_libraries(devbox_core PUBLIC unofficial::sqlite3::sqlite3)
+install(FILES "${unofficial-sqlite3_DIR}/../sqlite3/copyright" DESTINATION share/devbox RENAME sqlite3.LICENSE.txt)
 target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_NO_DEPRECATED)
 if(DEVBOX_FORCE_FORK_EXEC)
   target_compile_definitions(devbox_core PRIVATE DEVBOX_FORCE_FORK_EXEC=1)
 endif()
 add_executable(devbox-mcp src/main.cpp)
+if(DEVBOX_FUZZING)
+  if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR NOT DEVBOX_SANITIZERS)
+    message(FATAL_ERROR "Parser fuzzing requires Clang and DEVBOX_SANITIZERS")
+  endif()
+  add_executable(devbox-fuzz-parsers tests/fuzz_parsers.cpp)
+  target_link_libraries(devbox-fuzz-parsers PRIVATE devbox_core)
+  target_compile_options(devbox-fuzz-parsers PRIVATE -fsanitize=fuzzer)
+  target_link_options(devbox-fuzz-parsers PRIVATE -fsanitize=fuzzer)
+endif()
 target_link_libraries(devbox-mcp PRIVATE devbox_core)
 if(DEVBOX_BUILD_BENCHMARKS)
   add_executable(devbox-component-bench benchmarks/components.cpp)
   target_link_libraries(devbox-component-bench PRIVATE devbox_core)
+  foreach(mode IN ITEMS global sharded)
+    add_executable(devbox-allocator-bench-${mode} benchmarks/allocator.cpp src/allocator.cpp)
+    target_include_directories(devbox-allocator-bench-${mode} PRIVATE include)
+    target_link_libraries(devbox-allocator-bench-${mode} PRIVATE nlohmann_json::nlohmann_json Threads::Threads)
+    target_compile_definitions(devbox-allocator-bench-${mode} PRIVATE DEVBOX_ALLOCATOR_SHARDED=$<STREQUAL:${mode},sharded>)
+    if(WIN32)
+      target_compile_definitions(devbox-allocator-bench-${mode} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    endif()
+  endforeach()
 endif()
 if(MSVC)
   target_compile_options(devbox-mcp PRIVATE /utf-8)
@@ -108,7 +151,7 @@ endif()
 if(WIN32)
   target_link_libraries(devbox-mcp PRIVATE synchronization)
   target_compile_definitions(devbox_core PUBLIC NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
-  target_link_libraries(devbox_core PUBLIC ws2_32 bcrypt crypt32 advapi32 psapi userenv shell32 ole32 windowscodecs gdi32 dwmapi shcore)
+  target_link_libraries(devbox_core PUBLIC ws2_32 bcrypt crypt32 advapi32 psapi userenv shell32 ole32 windowscodecs gdi32 dwmapi shcore OneCoreUAP)
 endif()
 if(APPLE)
   target_link_libraries(devbox_core PUBLIC "-framework ApplicationServices")
@@ -117,6 +160,92 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-wsl-tests tests/wsl_tests.cpp)
+  target_link_libraries(devbox-wsl-tests PRIVATE devbox_core)
+  add_test(NAME wsl-contract COMMAND devbox-wsl-tests)
+  set_tests_properties(wsl-contract PROPERTIES TIMEOUT 45)
+  add_executable(devbox-state-snapshot-tests tests/state_snapshot_tests.cpp)
+  target_link_libraries(devbox-state-snapshot-tests PRIVATE devbox_core)
+  add_test(NAME state-snapshot COMMAND devbox-state-snapshot-tests)
+  set_tests_properties(state-snapshot PROPERTIES TIMEOUT 60)
+  add_executable(devbox-scheduler-notification-tests tests/scheduler_notification_tests.cpp)
+  target_link_libraries(devbox-scheduler-notification-tests PRIVATE devbox_core)
+  add_test(NAME scheduler-notifications COMMAND devbox-scheduler-notification-tests)
+  set_tests_properties(scheduler-notifications PROPERTIES TIMEOUT 60)
+  add_executable(devbox-indexed-maintenance-tests tests/indexed_maintenance_tests.cpp)
+  target_link_libraries(devbox-indexed-maintenance-tests PRIVATE devbox_core)
+  add_test(NAME indexed-maintenance COMMAND devbox-indexed-maintenance-tests)
+  set_tests_properties(indexed-maintenance PROPERTIES TIMEOUT 60)
+  add_executable(devbox-filesystem-worker-tests tests/filesystem_worker_tests.cpp)
+  target_link_libraries(devbox-filesystem-worker-tests PRIVATE devbox_core)
+  add_test(NAME filesystem-worker COMMAND devbox-filesystem-worker-tests)
+  set_tests_properties(filesystem-worker PROPERTIES TIMEOUT 20)
+  add_executable(devbox-runs-tests tests/runs_tests.cpp)
+  target_link_libraries(devbox-runs-tests PRIVATE devbox_core)
+  add_test(NAME runs COMMAND devbox-runs-tests)
+  set_tests_properties(runs PROPERTIES TIMEOUT 60)
+  add_executable(devbox-provider-tests tests/provider_tests.cpp)
+  target_link_libraries(devbox-provider-tests PRIVATE devbox_core)
+  add_test(NAME providers COMMAND devbox-provider-tests)
+  set_tests_properties(providers PROPERTIES TIMEOUT 30)
+  add_executable(devbox-grants-tests tests/grants_tests.cpp)
+  target_link_libraries(devbox-grants-tests PRIVATE devbox_core)
+  add_test(NAME grants COMMAND devbox-grants-tests)
+  set_tests_properties(grants PROPERTIES TIMEOUT 30)
+  add_executable(devbox-isolation-probe tests/isolation_probe.cpp)
+  if(DEVBOX_SANITIZERS AND NOT MSVC)
+    # The broker stays instrumented. The tiny OS-policy probe must fit the worker's
+    # address-space limit instead of reserving an ASan shadow mapping of the host.
+    target_compile_options(devbox-isolation-probe PRIVATE -fno-sanitize=all)
+    target_link_options(devbox-isolation-probe PRIVATE -fno-sanitize=all)
+  endif()
+  if(WIN32)
+    target_link_libraries(devbox-isolation-probe PRIVATE advapi32 ws2_32)
+    target_compile_definitions(devbox-isolation-probe PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A00)
+  endif()
+  add_executable(devbox-isolation-tests tests/isolation_tests.cpp)
+  target_link_libraries(devbox-isolation-tests PRIVATE devbox_core)
+  add_dependencies(devbox-isolation-tests devbox-isolation-probe)
+  add_test(NAME isolation COMMAND devbox-isolation-tests)
+  set_tests_properties(isolation PROPERTIES TIMEOUT 60 SKIP_RETURN_CODE 77)
+  add_executable(devbox-artifacts-tests tests/artifacts_tests.cpp)
+  target_link_libraries(devbox-artifacts-tests PRIVATE devbox_core)
+  add_test(NAME artifacts COMMAND devbox-artifacts-tests)
+  set_tests_properties(artifacts PROPERTIES TIMEOUT 120)
+  add_executable(devbox-indexed-jobs-tests tests/indexed_jobs_tests.cpp)
+  target_link_libraries(devbox-indexed-jobs-tests PRIVATE devbox_core)
+  add_test(NAME indexed-jobs COMMAND devbox-indexed-jobs-tests)
+  set_tests_properties(indexed-jobs PROPERTIES TIMEOUT 60)
+  add_executable(devbox-state-coordinator-tests tests/state_coordinator_tests.cpp)
+  target_link_libraries(devbox-state-coordinator-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-state-coordinator-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME state-coordinator COMMAND devbox-state-coordinator-tests)
+  set_tests_properties(state-coordinator PROPERTIES TIMEOUT 60)
+  add_executable(devbox-state-store-tests tests/state_store_tests.cpp)
+  target_link_libraries(devbox-state-store-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-state-store-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME state-store COMMAND devbox-state-store-tests)
+  set_tests_properties(state-store PROPERTIES TIMEOUT 180)
+  if(WIN32)
+    # Hosted FULL/WAL seeding was observed progressing through 80k rows at 167s.
+    # Keep all 100k records and query-step limits; allow disk-dependent fixture setup to finish.
+    set_tests_properties(state-store PROPERTIES TIMEOUT 360)
+  endif()
+  add_executable(devbox-resource-budget-tests tests/resource_budget_tests.cpp)
+  target_link_libraries(devbox-resource-budget-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-resource-budget-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME resource-budget COMMAND devbox-resource-budget-tests)
+  set_tests_properties(resource-budget PROPERTIES TIMEOUT 20)
+  add_executable(devbox-security-tests tests/security_tests.cpp)
+  target_link_libraries(devbox-security-tests PRIVATE devbox_core)
+  add_test(NAME security COMMAND devbox-security-tests)
+  set_tests_properties(security PROPERTIES TIMEOUT 30)
   add_executable(devbox-web-offer-tests tests/web_offer_tests.cpp)
   target_link_libraries(devbox-web-offer-tests PRIVATE devbox_core)
   if(MSVC)
@@ -228,7 +357,8 @@ if(DEVBOX_BUILD_TESTS)
     endif()
     add_test(NAME shutdown-terminate COMMAND devbox-shutdown-tests terminate)
     add_test(NAME shutdown-interrupt COMMAND devbox-shutdown-tests interrupt)
-    set_tests_properties(shutdown-terminate shutdown-interrupt PROPERTIES TIMEOUT 20)
+    add_test(NAME shutdown-stuck-filesystem COMMAND devbox-shutdown-tests stuck)
+    set_tests_properties(shutdown-terminate shutdown-interrupt shutdown-stuck-filesystem PROPERTIES TIMEOUT 20)
   endif()
   add_executable(devbox-lifecycle-tests tests/lifecycle_tests.cpp)
   target_link_libraries(devbox-lifecycle-tests PRIVATE devbox_core)

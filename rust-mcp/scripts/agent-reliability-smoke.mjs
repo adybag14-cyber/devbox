@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {assertNativeContract} from '../../cpp-mcp/scripts/native-contract.mjs';
+import {stopStateFixture} from '../../cpp-mcp/scripts/state-fixture.mjs';
 import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import net from 'node:net';
@@ -20,7 +21,7 @@ const sha=bytes=>createHash('sha256').update(bytes).digest('hex');
 const b64=text=>Buffer.from(text).toString('base64');
 const outcomes=[]; const ownedJobs=new Set();
 let server,client,exited,logs='';
-const env={...process.env,DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),MCP_AUTH_MODE:'none',PUBLIC_BASE_URL:'',DEVBOX_RUNTIME_MODE:'host',ENABLE_HOST_EXEC:'true',NODE_EXE:process.execPath,HOST_WORKSPACE_PATH:root,HOST_DEFAULT_WORKDIR:root,DEVBOX_WORKSPACE_PATH:root,MCP_JOBS_ROOT:path.join(root,'jobs'),MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),MCP_JOB_MAX_ACTIVE_RUNNERS:'2',MCP_JOB_MAX_RUNNERS_PER_TASK:'1',MCP_EXEC_HEAVY_CAPACITY:'5',MCP_JOB_LOG_MAX_BYTES:'4096',MCP_JOB_LOG_ROTATIONS:'2'};
+const env={...process.env,DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),MCP_AUTH_MODE:'none',PUBLIC_BASE_URL:'',DEVBOX_RUNTIME_MODE:'host',ENABLE_HOST_EXEC:'true',NODE_EXE:process.execPath,HOST_WORKSPACE_PATH:root,HOST_DEFAULT_WORKDIR:root,DEVBOX_WORKSPACE_PATH:root,MCP_JOBS_ROOT:path.join(root,'jobs'),MCP_STATE_ROOT:path.join(root,'run','state'),MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),MCP_JOB_MAX_ACTIVE_RUNNERS:'2',MCP_JOB_MAX_RUNNERS_PER_TASK:'1',MCP_EXEC_HEAVY_CAPACITY:'5',MCP_JOB_LOG_MAX_BYTES:'4096',MCP_JOB_LOG_ROTATIONS:'2'};
 async function start(){
   server=spawn(binary,[],{cwd:repo,env,stdio:['ignore','pipe','pipe'],windowsHide:true});
   exited=new Promise((resolve,reject)=>{server.once('error',reject);server.once('exit',resolve);});
@@ -132,6 +133,7 @@ try{
 finally{
   if(client)for(const id of ownedJobs){await call('devbox_job_cancel',{job_id:id}).catch(()=>{});}
   await stop();
+  await stopStateFixture(binary,root);
   if(process.env.DEVBOX_AGENT_EVIDENCE_DIR){await writeFile(path.join(process.env.DEVBOX_AGENT_EVIDENCE_DIR,'agent-smoke.json'),JSON.stringify({ok:!process.exitCode,checks:outcomes,root},null,2));}
   else await rm(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
 }

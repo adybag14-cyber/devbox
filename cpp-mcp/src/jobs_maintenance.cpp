@@ -1,3 +1,4 @@
+#include "devbox/filesystem_worker.hpp"
 #include "jobs_internal.hpp"
 #include <algorithm>
 #include <fstream>
@@ -83,9 +84,44 @@ void note_deleted(auto& state, const std::set<std::string>& deleted) {
 }
 std::uint64_t directory_bytes(const fs::path& path) {
     std::uint64_t bytes = 0;
-    for (const auto& entry : fs::directory_iterator(path))
-        if (entry.is_regular_file() && !entry.is_symlink())
-            bytes += entry.file_size();
+    std::size_t entries = 0;
+    std::vector<fs::path> pending{path};
+    while (!pending.empty()) {
+        const auto directory = pending.back();
+        pending.pop_back();
+        for (const auto& entry : fs::directory_iterator(directory)) {
+            if (++entries > 1024)
+                throw Error("JOB_DIRECTORY_ENTRY_BUDGET");
+            const auto status = entry.symlink_status();
+            if (fs::is_symlink(status))
+                throw Error("JOB_DIRECTORY_ALIAS_DENIED");
+#ifdef _WIN32
+            const auto attributes = GetFileAttributesW(entry.path().c_str());
+            if (attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT)
+                throw Error("JOB_DIRECTORY_ALIAS_DENIED");
+#endif
+            const auto relative = entry.path().lexically_relative(path);
+            if (fs::is_directory(status)) {
+                if (relative != fs::path("research") && relative != fs::path("research") / "documents")
+                    throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
+                pending.push_back(entry.path());
+            } else if (fs::is_regular_file(status)) {
+                if (relative.has_parent_path() && relative != fs::path("research") / "ledger.json") {
+                    const auto name = path_text(relative.filename());
+                    const auto stem = name.size() > 6 ? name.substr(1, name.size() - 6) : "";
+                    if (relative.parent_path() != fs::path("research") / "documents" || name.front() != 's' ||
+                        !name.ends_with(".json") || stem.empty() || stem.size() > 3 ||
+                        !std::all_of(stem.begin(), stem.end(), [](char c) { return c >= '0' && c <= '9'; }))
+                        throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
+                }
+                const auto size = entry.file_size();
+                if (size > UINT64_MAX - bytes)
+                    throw Error("JOB_DIRECTORY_SIZE_OVERFLOW");
+                bytes += size;
+            } else
+                throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
+        }
+    }
     return bytes;
 }
 std::int64_t completed_time(const Json& status) {
@@ -94,7 +130,7 @@ std::int64_t completed_time(const Json& status) {
         parsed = parse_utc(json_string(status, "createdAtUtc"));
     return parsed.value_or(0);
 }
-bool remove_job_directory(const fs::path& root, const JobPaths& paths) {
+bool remove_job_directory(const fs::path& root, const JobPaths& paths, bool prior_prune_intent = false) {
     // Deletion authority is a validated direct child of this store, never an alias.
     if (paths.dir.lexically_normal().parent_path() != root.lexically_normal())
         throw Error("Job directory escaped configured root");
@@ -111,8 +147,9 @@ bool remove_job_directory(const fs::path& root, const JobPaths& paths) {
     if (attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT)
         throw Error("Job cleanup rejects reparse points");
 #endif
-    const auto current = read_json(paths.status);
-    if (!terminal_status(json_string(current, "status")))
+    (void)directory_bytes(paths.dir);
+    const auto current = read_json_optional(paths.status);
+    if ((!current && !prior_prune_intent) || (current && !terminal_status(json_string(*current, "status"))))
         return false;
     fs::remove_all(paths.dir);
     return true;
@@ -141,11 +178,205 @@ bool compact_log(const fs::path& path, std::uint64_t maximum) {
     return true;
 }
 } // namespace
+Json job_filesystem_operation(const Json& args) {
+    const auto root = path_from_utf8(json_string(args, "root"));
+    const auto id = validate_job_id(json_string(args, "id"));
+    const auto path = root / path_from_utf8(id);
+    std::error_code error;
+    const auto attributes = fs::symlink_status(path, error);
+    if (error == std::errc::no_such_file_or_directory || (!error && !fs::exists(attributes)))
+        return Json{{"exists", false}, {"bytes", 0}, {"deleted", json_bool(args, "prior_prune_intent")}};
+    if (error)
+        throw std::system_error(error);
+    if (!root.is_absolute() || !fs::is_directory(attributes) || fs::is_symlink(attributes))
+        throw Error("JOB_DIRECTORY_ALIAS_DENIED");
+#ifdef _WIN32
+    const auto native = GetFileAttributesW(path.c_str());
+    if (native == INVALID_FILE_ATTRIBUTES || native & FILE_ATTRIBUTE_REPARSE_POINT)
+        throw Error("JOB_DIRECTORY_ALIAS_DENIED");
+#endif
+    // Only this broker's bounded artifact layout can be reclaimed, including its research ledger/documents.
+    const auto before = directory_bytes(path);
+    const auto status = read_json_optional(path / "status.json", 1024 * 1024);
+    const bool prior_intent = json_bool(args, "prior_prune_intent");
+    const bool terminal = status ? terminal_status(json_string(*status, "status")) : prior_intent;
+    const bool reclaimable =
+        terminal && (!status || (json_string(*status, "status") != "interrupted" &&
+                                 json_bool(*status, "workloadTerminationVerified", true) &&
+                                 !json_bool(*status, "terminationPending")));
+    if (json_bool(args, "remove") && reclaimable) {
+        JobPaths paths;
+        paths.id = id;
+        paths.dir = path;
+        paths.status = path / "status.json";
+        const bool removed = remove_job_directory(root, paths, prior_intent);
+        return Json{{"exists", !removed}, {"deleted", removed}, {"bytes", removed ? 0 : before}};
+    }
+    bool compacted = false;
+    if (terminal && json_bool(args, "compact")) {
+        const auto limit = std::clamp<std::uint64_t>(json_uint(args, "log_limit", 33554432), 4096, 67108864);
+        const bool out = compact_log(path / "stdout.log", limit);
+        const bool err = compact_log(path / "stderr.log", limit);
+        compacted = out || err;
+    }
+    return Json{{"exists", true},
+                {"deleted", false},
+                {"bytes", compacted ? directory_bytes(path) : before},
+                {"compacted", compacted}};
+}
+
+Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel& cancel) {
+    auto store = index();
+    const auto state_root =
+        config_->state_root.empty() ? config_->project_root / "run" / "state" : config_->state_root;
+    FileLock gate(state_root / ".maintenance.lock", Millis(5000), cancel, true);
+    auto meter =
+        store->get("maintenance", "job-usage")
+            .value_or(StateRecord{"maintenance", "job-usage", "operator", "", "partial", 0, Json::object()});
+    const auto cursor = json_string(meter.data, "after");
+    const auto page = store->list(StateQuery{"job",
+                                             "operator",
+                                             {},
+                                             {},
+                                             cursor.empty() ? std::nullopt : std::optional(cursor),
+                                             std::clamp<std::size_t>(maximum, 1, 64)});
+    auto bytes = json_uint(meter.data, "bytes"), retained = json_uint(meter.data, "terminal_retained");
+    auto summary = empty_summary();
+    std::vector<StateMutation> mutations;
+    const auto pressure = [&] {
+        return (config_->job_store_max_bytes && bytes > config_->job_store_max_bytes) ||
+               (config_->job_store_max_terminal_jobs && retained > config_->job_store_max_terminal_jobs);
+    };
+    const bool was_pressure = pressure();
+    mutations.reserve(page.records.size() * 2 + 1);
+    for (auto record : page.records) {
+        const auto before_bytes = bytes, before_retained = retained;
+        const auto before_mutations = mutations.size();
+        if (cancel)
+            cancel->check();
+        try {
+            if (!terminal_status(record.status) || record.status == "cancelled") {
+                (void)get_status(record.id);
+                record = *store->get("job", record.id);
+            }
+            const auto status = record.data.at("status");
+            const bool terminal = terminal_status(record.status);
+            increment(summary, terminal ? "terminal" : "active");
+            auto usage = store->get("job_usage", record.id)
+                             .value_or(StateRecord{"job_usage", record.id, "operator", "", "unknown", 0,
+                                                   Json::object()});
+            const auto old_bytes = json_uint(usage.data, "bytes");
+            const auto completed = completed_time(status);
+            const auto now = static_cast<std::int64_t>(unix_millis());
+            const bool expired =
+                config_->job_retention_hours && completed > 0 && now >= completed &&
+                static_cast<std::uint64_t>(now - completed) / 3600000 >= config_->job_retention_hours;
+            const bool producer_alive =
+                owner_process_alive(Json{{"pid", status.value("runnerPid", Json())},
+                                         {"processInstance", status.value("runnerProcessInstance", Json())}});
+            const bool remove = terminal && !producer_alive && record.status != "interrupted" &&
+                                json_bool(status, "workloadTerminationVerified", true) &&
+                                !json_bool(status, "terminationPending") &&
+                                (expired || (quota && pressure()) ||
+                                 json_string(record.data, "artifacts_prune_state") == "pending");
+            if (remove && !json_bool(record.data, "artifacts_pruned") &&
+                json_string(record.data, "artifacts_prune_state") != "pending") {
+                record.data["artifacts_prune_state"] = "pending";
+                const StateMutation intent{record, record.revision};
+                (void)store->apply_once("prune-" + record.id + "-" + std::to_string(record.revision),
+                                        {&intent, 1});
+                ++record.revision;
+            }
+            Json observation{{"exists", false}, {"bytes", 0}, {"deleted", false}};
+            if (!json_bool(record.data, "artifacts_pruned"))
+                observation =
+                    isolated_filesystem("job_files",
+                                        Json{{"root", path_text(config_->jobs_root)},
+                                             {"id", record.id},
+                                             {"remove", remove},
+                                             {"prior_prune_intent",
+                                              json_string(record.data, "artifacts_prune_state") == "pending"},
+                                             {"compact", terminal && !json_bool(usage.data, "compacted")},
+                                             {"log_limit", config_->job_log_max_bytes}},
+                                        Millis(5000), cancel);
+            const auto observed = json_uint(observation, "bytes");
+            if (old_bytes > bytes || observed > UINT64_MAX - (bytes - old_bytes))
+                throw Error("JOB_USAGE_ACCOUNTING_INTEGRITY");
+            bytes = bytes - old_bytes + observed;
+            if (usage.status == "retained_terminal") {
+                if (!retained)
+                    throw Error("JOB_USAGE_ACCOUNTING_INTEGRITY");
+                --retained;
+            }
+            usage.status =
+                json_bool(observation, "exists") ? (terminal ? "retained_terminal" : "active") : "absent";
+            if (usage.status == "retained_terminal")
+                ++retained;
+            usage.data = Json{{"bytes", observed}, {"checked_at", utc_now()}, {"compacted", terminal}};
+            mutations.push_back({usage, usage.revision});
+            if (json_bool(observation, "compacted"))
+                increment(summary, "compactedLogs");
+            if (json_bool(observation, "deleted")) {
+                record.data["artifacts_pruned"] = true;
+                record.data["artifacts_prune_state"] = "completed";
+                record.data["artifacts_pruned_at"] = utc_now();
+                mutations.push_back({record, record.revision});
+                increment(summary, "deleted");
+                if (quota && !expired)
+                    increment(summary, "quotaDeleted");
+            }
+            increment(summary, "maintained");
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const Error& error) {
+            if (std::string_view(error.what()).starts_with("JOB_USAGE_ACCOUNTING_"))
+                throw;
+            bytes = before_bytes;
+            retained = before_retained;
+            mutations.resize(before_mutations);
+            increment(summary, "errors");
+        }
+    }
+    // One transaction commits both each sampled charge and its aggregate/cursor. Lost acknowledgements
+    // cannot count a charge twice; a new pass reloads the committed revisions before doing more work.
+    meter.data["bytes"] = bytes;
+    meter.data["terminal_retained"] = retained;
+    meter.data["after"] = page.next.value_or("");
+    meter.data["checked_at"] = utc_now();
+    meter.data["cycles"] = json_uint(meter.data, "cycles") + (page.next ? 0 : 1);
+    meter.data["cycle_errors"] =
+        (cursor.empty() ? 0 : json_uint(meter.data, "cycle_errors")) + json_uint(summary, "errors");
+    meter.status = page.next || json_uint(meter.data, "cycle_errors") ? "partial" : "sampled";
+    mutations.push_back({meter, meter.revision});
+    store->apply(mutations);
+    {
+        std::lock_guard lock(maintenance_->mutex);
+        maintenance_->store_bytes = bytes;
+        maintenance_->terminal_retained = retained;
+        maintenance_->quota_pressure = pressure();
+        maintenance_->quota_cycle_pending =
+            page.next.has_value() || (pressure() && json_uint(summary, "deleted") > 0);
+        maintenance_->quota_checked = Clock::now();
+        maintenance_->quota_checked_utc = json_string(meter.data, "checked_at");
+    }
+    summary["scanned"] = page.records.size();
+    summary["quotaScanned"] = page.records.size();
+    summary["batchLimited"] = page.next.has_value();
+    summary["cycleCompleted"] = !page.next;
+    summary["maintenanceCycle"] = meter.data["cycles"];
+    summary["accounting"] = "persistent_incremental_samples";
+    summary["accountingComplete"] = meter.status == "sampled";
+    summary["pressureAtEntry"] = was_pressure;
+    summary["reclaimOrder"] = "eligible_terminal_jobs_in_index_page_order";
+    summary.update(quota_snapshot());
+    return summary;
+}
 Json JobStore::quota_snapshot() const {
     std::lock_guard lock(maintenance_->mutex);
     Json value{{"storeBytes", maintenance_->store_bytes},
                {"terminalRetained", maintenance_->terminal_retained},
-               {"quotaPressure", maintenance_->quota_pressure}};
+               {"quotaPressure", maintenance_->quota_pressure},
+               {"quotaCyclePending", maintenance_->quota_cycle_pending}};
     if (maintenance_->quota_checked) {
         value["quotaCheckedAtUtc"] = maintenance_->quota_checked_utc;
         value["quotaAgeMs"] =
@@ -153,7 +384,9 @@ Json JobStore::quota_snapshot() const {
     }
     return value;
 }
-Json JobStore::reconcile_maintenance(std::size_t maximum) {
+Json JobStore::reconcile_maintenance(std::size_t maximum, const Cancel& cancel) {
+    if (indexed())
+        return indexed_maintenance(maximum, false, cancel);
     ensure_directory(config_->jobs_root);
     ensure_index(*maintenance_, config_->jobs_root);
     auto summary = empty_summary();
@@ -228,7 +461,9 @@ Json JobStore::reconcile_maintenance(std::size_t maximum) {
     summary.update(quota_snapshot());
     return summary;
 }
-Json JobStore::enforce_store_quota() {
+Json JobStore::enforce_store_quota(const Cancel& cancel) {
+    if (indexed())
+        return indexed_maintenance(64, true, cancel);
     ensure_directory(config_->jobs_root);
     ensure_index(*maintenance_, config_->jobs_root);
     auto summary = empty_summary();

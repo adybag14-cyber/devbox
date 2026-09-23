@@ -1,0 +1,101 @@
+{
+  "schema": 1,
+  "ticket": "H11",
+  "decision": "sharded_counter_default_rejected_pending_more_consistent_service_evidence",
+  "service_samples": 120000,
+  "service_workload": "fixed capabilities RPC through identical local proxy, concurrency4,10000requests/instance,6alternatingpairs",
+  "pairs": [
+    {
+      "round": 0,
+      "global": {
+        "cpu_ms": 7421.875,
+        "wall_ms": 4299.8131,
+        "samples": 10000
+      },
+      "sharded": {
+        "cpu_ms": 6546.875,
+        "wall_ms": 4142.4205999999995,
+        "samples": 10000
+      },
+      "cpu_reduction_percent": 11.789473684210526
+    },
+    {
+      "round": 1,
+      "global": {
+        "cpu_ms": 7218.75,
+        "wall_ms": 4289.5896999999995,
+        "samples": 10000
+      },
+      "sharded": {
+        "cpu_ms": 6515.625,
+        "wall_ms": 4204.967500000001,
+        "samples": 10000
+      },
+      "cpu_reduction_percent": 9.740259740259742
+    },
+    {
+      "round": 2,
+      "global": {
+        "cpu_ms": 6812.5,
+        "wall_ms": 4255.1266,
+        "samples": 10000
+      },
+      "sharded": {
+        "cpu_ms": 6453.125,
+        "wall_ms": 4245.7357999999995,
+        "samples": 10000
+      },
+      "cpu_reduction_percent": 5.275229357798166
+    },
+    {
+      "round": 3,
+      "global": {
+        "cpu_ms": 6718.75,
+        "wall_ms": 4421.7561,
+        "samples": 10000
+      },
+      "sharded": {
+        "cpu_ms": 6437.5,
+        "wall_ms": 4230.4212,
+        "samples": 10000
+      },
+      "cpu_reduction_percent": 4.186046511627907
+    },
+    {
+      "round": 4,
+      "global": {
+        "cpu_ms": 6953.125,
+        "wall_ms": 4381.2654,
+        "samples": 10000
+      },
+      "sharded": {
+        "cpu_ms": 7046.875,
+        "wall_ms": 4534.8999,
+        "samples": 10000
+      },
+      "cpu_reduction_percent": -1.348314606741573
+    },
+    {
+      "round": 5,
+      "global": {
+        "cpu_ms": 7265.625,
+        "wall_ms": 4431.6767,
+        "samples": 10000
+      },
+      "sharded": {
+        "cpu_ms": 7640.625,
+        "wall_ms": 4397.166200000001,
+        "samples": 10000
+      },
+      "cpu_reduction_percent": -5.161290322580645
+    }
+  ],
+  "paired_cpu_percent_mean": 4.080234060762353,
+  "descriptive_t95_df5": [
+    -2.6859813168038205,
+    10.846449438328527
+  ],
+  "baseline_sha256": "d39f8bbc25ec6186c2349378c9118df11e848497239f1121a0ecdf94c4b80313",
+  "candidate_sha256": "fe70cd245e990fb269e36e653b5ed08032f62ce5f6557445ee44d8d6965883cf",
+  "reason": "Two of six service pairs regressed and the paired confidence interval includes zero, despite a consistent allocation-heavy microbenchmark gain. Prototype remains opt-in; production default retains global counters."
+}

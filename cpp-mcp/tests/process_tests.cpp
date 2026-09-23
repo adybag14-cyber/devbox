@@ -1,6 +1,8 @@
 #include "devbox/native.hpp"
+#include "devbox/posix_process.hpp"
 #include "devbox/process.hpp"
 #include "devbox/scoped_thread.hpp"
+#include <cstdlib>
 #include <iostream>
 #include <thread>
 #ifdef _WIN32
@@ -18,11 +20,31 @@ void require(bool condition, const char* message) {
 }
 int child(int argc, char** argv) {
     const std::string mode = argc > 2 ? argv[2] : "";
+#ifdef _WIN32
+    if (mode == "abrupt-owner" && argc == 4) {
+        Json owned;
+        ProcessOptions options;
+        options.timeout = Millis(5000);
+        options.on_pid = [&](std::uint32_t pid) {
+            owned = Json{{"pid", pid}, {"instance", *process_instance(pid)}};
+        };
+        options.on_output = [&](OutputStream, std::string_view text) {
+            if (text.find("ready") != text.npos) {
+                write_json_atomic(path_from_utf8(argv[3]), owned);
+                std::_Exit(0);
+            }
+        };
+        spawn_process(path_text(executable_path()), {"--child", "sleep"}, options);
+        return 1;
+    }
+#endif
     if (mode == "echo") {
         std::cout << Json{{"args", std::vector<std::string>(argv + 3, argv + argc)},
                           {"cwd", path_text(fs::current_path())},
                           {"environment", env_or("DEVBOX_PROCESS_TEST", "missing")}}
                          .dump();
+    } else if (mode == "environment") {
+        std::cout << Json(current_environment()).dump();
     } else if (mode == "pipes") {
         const std::string block(8192, 'o');
         for (int i = 0; i < 128; ++i) {
@@ -86,9 +108,11 @@ int child(int argc, char** argv) {
 }
 int test_main(int argc, char** argv) {
 #ifdef _WIN32
-    _setmode(_fileno(stdin), _O_BINARY);
-    _setmode(_fileno(stdout), _O_BINARY);
-    _setmode(_fileno(stderr), _O_BINARY);
+    if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1 ||
+        _setmode(_fileno(stderr), _O_BINARY) == -1) {
+        std::cerr << "Cannot configure binary fixture standard streams\n";
+        return 2;
+    }
 #endif
     if (argc > 1 && std::string(argv[1]) == "--child")
         return child(argc, argv);
@@ -99,6 +123,49 @@ int test_main(int argc, char** argv) {
         fs::remove_all(root, ec);
     });
     try {
+#ifndef _WIN32
+        {
+            std::vector<std::size_t> slots;
+            ScopeExit release([&] {
+                for (const auto slot : slots)
+                    release_posix_reap_slot(slot);
+            });
+            for (int i = 0; i < 4096; ++i)
+                slots.push_back(reserve_posix_reap_slot());
+            bool full = false;
+            try {
+                (void)reserve_posix_reap_slot();
+            } catch (const Error&) {
+                full = true;
+            }
+            require(full, "bounded reaper admission refuses before an untrackable child is launched");
+        }
+        {
+            const auto slot = reserve_posix_reap_slot();
+            ScopeExit release([&] { release_posix_reap_slot(slot); });
+            const auto pid = ::fork();
+            require(pid >= 0, "reaper fixture fork");
+            if (pid == 0) {
+                const timespec delay{0, 60000000};
+                ::nanosleep(&delay, nullptr);
+                ::_exit(0);
+            }
+            defer_posix_reap(slot, pid);
+            release.disarm();
+            const auto deadline = Clock::now() + Millis(2000);
+            bool reaped = false;
+            while (Clock::now() < deadline) {
+                siginfo_t observed{};
+                if (::waitid(P_PID, static_cast<id_t>(pid), &observed, WEXITED | WNOHANG | WNOWAIT) < 0 &&
+                    errno == ECHILD) {
+                    reaped = true;
+                    break;
+                }
+                std::this_thread::sleep_for(Millis(5));
+            }
+            require(reaped, "deferred child collected without a blocking shutdown waitpid");
+        }
+#endif
         for (const auto input : {std::optional<std::string>(), std::optional<std::string>("")}) {
             ProcessOptions options;
             options.input = input;
@@ -127,6 +194,58 @@ int test_main(int argc, char** argv) {
                     zero.snapshot().truncated,
                 "zero capture bound");
         const auto self = path_text(executable_path());
+#ifdef _WIN32
+        {
+            const auto receipt = root / "orphan-fixture.json";
+            const auto owner =
+                spawn_detached(executable_path(), {"--child", "abrupt-owner", path_text(receipt)}, root);
+            const auto owner_instance = process_instance(owner);
+            std::optional<Json> orphan;
+            ScopeExit cleanup_owner([&] {
+                if (owner_instance && process_matches_instance(owner, owner_instance))
+                    terminate_process_tree(owner, owner_instance);
+                if (orphan)
+                    terminate_process_tree(static_cast<std::uint32_t>(json_uint(*orphan, "pid")),
+                                           json_uint(*orphan, "instance"));
+            });
+            const auto deadline = Clock::now() + Millis(5000);
+            while (!fs::exists(receipt) && Clock::now() < deadline)
+                std::this_thread::sleep_for(Millis(5));
+            require(fs::exists(receipt), "abrupt owner fixture published the exact child identity");
+            orphan = read_json(receipt);
+            const auto pid = static_cast<std::uint32_t>(json_uint(*orphan, "pid"));
+            const auto instance = json_uint(*orphan, "instance");
+            while (process_matches_instance(pid, instance) && Clock::now() < deadline)
+                std::this_thread::sleep_for(Millis(5));
+            require(!process_matches_instance(pid, instance),
+                    "foreground child is terminated when its owner exits abruptly");
+        }
+#endif
+        {
+            const auto prior = environment("DEVBOX_AUDIT_CANARY");
+            const auto prior_token = environment("OPENAI_API_KEY");
+            const auto prior_identity = environment("USERNAME");
+            ScopeExit restore([&] {
+                set_environment("DEVBOX_AUDIT_CANARY", prior);
+                set_environment("OPENAI_API_KEY", prior_token);
+                set_environment("USERNAME", prior_identity);
+            });
+            set_environment("DEVBOX_AUDIT_CANARY", "SYNTHETIC-CREDENTIAL-NEVER-INHERIT");
+            set_environment("OPENAI_API_KEY", "SYNTHETIC-PROVIDER-KEY-NEVER-INHERIT");
+            set_environment("USERNAME", "devbox-public-runtime-identity");
+            const auto child_env = spawn_process(self, {"--child", "environment"}).stdout_text;
+            require(child_env.find("SYNTHETIC-") == std::string::npos &&
+                        child_env.find("DEVBOX_AUDIT_CANARY") == std::string::npos,
+                    "generic child environments exclude arbitrary and known credential variables");
+            require(child_env.find("devbox-public-runtime-identity") != std::string::npos,
+                    "standard nonsecret runtime identity remains available without inheriting credentials");
+            ProcessOptions granted;
+            granted.env = worker_environment();
+            (*granted.env)["DEVBOX_EXPLICIT_GRANT_FIXTURE"] = "explicitly-authorized-fixture";
+            require(spawn_process(self, {"--child", "environment"}, granted)
+                            .stdout_text.find("explicitly-authorized-fixture") != std::string::npos,
+                    "dedicated callers can explicitly supply a scoped environment");
+        }
         require(!process_alive(0) && !process_instance(0), "PID zero exclusion");
         const auto identity = process_instance(process_id());
         require(identity && process_matches_instance(process_id(), identity) &&
@@ -210,13 +329,22 @@ int test_main(int argc, char** argv) {
         require(failed, "launch failure classification");
         std::uint32_t child_pid = 0;
         options.on_pid = [&](std::uint32_t pid) { child_pid = pid; };
+        auto never_started = std::make_shared<Cancellation>();
+        never_started->cancel();
+        failed = false;
+        try {
+            spawn_process(self, {"--child", "sleep"}, options, never_started);
+        } catch (const ProcessError& error) {
+            failed = error.aborted && error.process_started == false && !error.exit_code && !error.signal;
+        }
+        require(failed && !child_pid, "pre-launch cancellation has explicit proof that no child started");
         options.timeout = Millis(250);
         failed = false;
         const auto before = Clock::now();
         try {
             spawn_process(self, {"--child", "sleep"}, options);
         } catch (const ProcessError& error) {
-            failed = error.timed_out && !error.aborted;
+            failed = error.timed_out && !error.aborted && error.process_started == true;
         }
         require(failed && child_pid && !process_alive(child_pid) && Clock::now() - before < Millis(4000),
                 "timeout terminates owned child");
@@ -230,7 +358,7 @@ int test_main(int argc, char** argv) {
         try {
             spawn_process(self, {"--child", "sleep"}, options, cancel);
         } catch (const ProcessError& error) {
-            failed = error.aborted && !error.timed_out;
+            failed = error.aborted && !error.timed_out && error.process_started == true;
         }
         require(failed && !process_alive(child_pid), "cancellation terminates owned child");
         std::uint32_t grandchild = 0;
@@ -255,6 +383,32 @@ int test_main(int argc, char** argv) {
         while (process_alive(grandchild) && Clock::now() < deadline)
             std::this_thread::sleep_for(Millis(10));
         require(!process_alive(grandchild), "no live grandchild after cancellation");
+        {
+            ProcessOptions observer;
+            observer.timeout = Millis(3000);
+            std::uint32_t owned_pid = 0;
+            std::optional<std::uint64_t> owned_instance;
+            observer.on_pid = [&](std::uint32_t pid) {
+                owned_pid = pid;
+                owned_instance = process_instance(pid);
+            };
+            observer.on_output = [](OutputStream, std::string_view) {
+                throw Error("controlled observer failure");
+            };
+            bool unknown = false;
+            try {
+                spawn_process(self, {"--child", "sleep"}, observer);
+            } catch (const ProcessError& error) {
+                unknown = error.process_started == true && !error.exit_code && !error.signal;
+            }
+            require(unknown && owned_pid && owned_instance,
+                    "post-launch observer failure retains launch evidence without inventing exit status");
+            const auto until = Clock::now() + Millis(2000);
+            while (process_matches_instance(owned_pid, owned_instance) && Clock::now() < until)
+                std::this_thread::sleep_for(Millis(5));
+            require(!process_matches_instance(owned_pid, owned_instance),
+                    "owned observer-failure child is eventually reaped");
+        }
         std::cout << "PASS launch errors, exit codes, deadlines, cancellation and descendants\n";
         return 0;
     } catch (const std::exception& error) {

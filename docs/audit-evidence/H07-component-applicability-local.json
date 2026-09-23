@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "ticket": "H07",
+  "status": "local_component_absence_verified_full_release_matrix_pending",
+  "blocked_release_run": "35857659344",
+  "findings": [
+    "OSV-2024-112",
+    "OSV-2024-914"
+  ],
+  "reduction": "Pinned upstream Boost.Asio recipe with empty optional default-feature set; source archive/patch unchanged. Explicit C++ definitions disable regex, legacy date-time and stackful context-fiber support.",
+  "actual_minimal_graph_target_packages": 32,
+  "componentPresence": {
+    "boost-graph": {
+      "checked": true,
+      "packagePresent": false,
+      "headersPresent": false,
+      "libraryFiles": []
+    },
+    "boost-regex": {
+      "checked": true,
+      "packagePresent": false,
+      "headersPresent": false,
+      "libraryFiles": []
+    }
+  },
+  "dispositions": [
+    {
+      "id": "OSV-2024-112",
+      "status": "not_affected",
+      "blocking": false,
+      "justification": "component_not_present",
+      "component": "boost-graph",
+      "advisory": "https://api.osv.dev/v1/vulns/OSV-2024-112",
+      "advisorySha256": "5dd3844129ae52c1e26daf4c845b6d4f9741ff2f7b402484ba6fa5e705dbf6d9",
+      "advisoryModified": "2026-09-22T14:28:35.112608Z",
+      "evidence": [
+        {
+          "triplet": "x64-windows-static",
+          "componentPresence": {
+            "checked": true,
+            "packagePresent": false,
+            "headersPresent": false,
+            "libraryFiles": []
+          }
+        }
+      ]
+    },
+    {
+      "id": "OSV-2024-914",
+      "status": "not_affected",
+      "blocking": false,
+      "justification": "component_not_present",
+      "component": "boost-regex",
+      "advisory": "https://api.osv.dev/v1/vulns/OSV-2024-914",
+      "advisorySha256": "478f955df4d06c0b71fb60a9f9236b9535ae3c060139999619f907ad20ce2a4a",
+      "advisoryModified": "2026-09-22T14:31:40.138253Z",
+      "evidence": [
+        {
+          "triplet": "x64-windows-static",
+          "componentPresence": {
+            "checked": true,
+            "packagePresent": false,
+            "headersPresent": false,
+            "libraryFiles": []
+          }
+        }
+      ]
+    }
+  ],
+  "checks": [
+    "Fresh minimal Boost graph installed",
+    "C++23 Asio coroutine + steady timer and Beast probe passed with no optional legacy feature macros",
+    "Full Windows runtime built with disabled legacy features",
+    "Windows async, runtime, transport CTests3/3passed",
+    "Release-assurance4/4tests passed including missing/present/mixed-target/changed-scope blocking"
+  ],
+  "limitations": [
+    "Module fixture validates actual reduced dependency contents, not the full multi-platform release",
+    "Every target must independently produce matching absence evidence during hosted qualification",
+    "Raw findings remain in the published report; affected or unresolved findings remain blocking"
+  ]
+}

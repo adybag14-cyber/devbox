@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
+import {vulnerabilityReport} from './vulnerability-report.mjs';
 
 assert.equal(process.platform, 'linux', 'Assemble release artifacts on the isolated Linux packaging runner');
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -74,10 +75,19 @@ try {
       await copyFile(standalone, path.join(bundle, binary.name + extension));
       await chmod(path.join(bundle, binary.name + extension), 0o755);
     }
+    assert.equal(manifest.assurance?.schema,1,'Resolved dependency assurance is mandatory');
+    assert.deepEqual(manifest.assurance.files.map(x=>x.file).sort(),['THIRD_PARTY_NOTICES.txt','dependency-inventory.json','sbom.spdx.json'].sort());
+    for(const item of manifest.assurance.files) {
+      const bytes=await readFile(path.join(source,item.file));
+      assert.equal(bytes.length,item.bytes); assert.equal(digest(bytes),item.sha256);
+      await writeFile(path.join(bundle,item.file),bytes,{flag:'wx'});
+      const sidecar=item.file==='sbom.spdx.json'?`sbom-${target}.spdx.json`:item.file==='THIRD_PARTY_NOTICES.txt'?`THIRD_PARTY_NOTICES-${target}.txt`:`dependency-inventory-${target}.json`;
+      await writeFile(path.join(output,sidecar),bytes,{flag:'wx'});
+    }
     await writeFile(path.join(bundle, 'build-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
     await writeFile(path.join(bundle, licenseName), license);
     const archive = path.join(output, `devbox-${target}.${extension ? 'zip' : 'tar.gz'}`);
-    const names = [...manifest.binaries.map(binary => binary.name + extension), 'build-manifest.json', licenseName];
+    const names = [...manifest.binaries.map(binary => binary.name + extension), 'build-manifest.json', licenseName, ...manifest.assurance.files.map(x=>x.file)];
     if (extension) await run('zip', ['-j', archive, ...names.map(name => path.join(bundle, name))]);
     else await run('tar', ['-czf', archive, '-C', bundle, ...names]);
     const extracted = path.join(scratch, `${target}-extracted`); await mkdir(extracted);
@@ -88,10 +98,20 @@ try {
   }
   await writeFile(path.join(output, 'build-provenance.json'), `${JSON.stringify({ schema: 1, implementation: 'cpp',
     gitSha: expectedSha, sourceTree: expectedTree, version, dependencyBaseline: baseline, targets: manifests }, null, 2)}\n`);
+  const inventories=await Promise.all(Object.keys(targets).map(target=>readFile(path.join(output,`dependency-inventory-${target}.json`),'utf8').then(JSON.parse)));
+  const vulnerabilities=await vulnerabilityReport(inventories);
+  await writeFile(path.join(output,'vulnerability-report.json'),JSON.stringify(vulnerabilities,null,2)+'\n',{flag:'wx'});
+  assert.equal(vulnerabilities.blockingFindings.length,0,'Affected or unresolved vulnerability findings block promotion; remediate and rerun');
+  const receipt={schema:1,sourceSha:expectedSha,sourceTree:expectedTree,workflowRunId:process.env.GITHUB_RUN_ID||null,
+    qualification:'complete_required_workflow_dependency_graph',
+    requiredJobs:['native','android','termux','distributions','alpine','security'],
+    targets:manifests.map(m=>({target:m.target,binaries:m.binaries,assurance:m.assurance})),
+    promotionRequires:'verified GitHub workflow attestation and matching source/schema/binary digest'};
+  await writeFile(path.join(output,'qualification-receipt.json'),JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
   const names = (await readdir(output)).sort();
   await writeFile(path.join(output, 'SHA256SUMS'), (await Promise.all(names.map(async name =>
     `${digest(await readFile(path.join(output, name)))}  ${name}\n`))).join(''));
-  assert.equal(names.length, 42, 'Ten targets require 30 binaries, ten archives, provenance and dependency notice');
+  assert.equal(names.length, Object.keys(targets).length * 7 + 4, 'Every target requires binaries, archive, resolved dependency sidecars and global qualification evidence');
   console.log(JSON.stringify({ ok: true, source: expectedSha, version, targets: Object.keys(targets), verifiedFiles: names.length, output }));
 } finally {
   await rm(scratch, { recursive: true, force: true });

@@ -14,7 +14,10 @@ const fixture = async () => {
   await git("config", "user.name", "Devbox C++ fixture");
   await git("config", "user.email", "fixture@example.invalid");
   await writeFile(path.join(root, ".gitignore"), "run/\nbin/native/\n.cpp-build/\n");
-  await git("add", ".gitignore");
+  const registry = { contract_version: 19, tools: Array.from({ length: 52 }, (_, i) => ({ name: `fixture_${i}` })) };
+  await mkdir(path.join(root, "cpp-mcp", "contract"), { recursive: true });
+  await writeFile(path.join(root, "cpp-mcp", "contract", "tool-registry.json"), JSON.stringify(registry));
+  await git("add", ".gitignore", "cpp-mcp/contract/tool-registry.json");
   await git("commit", "--quiet", "-m", "Fixture source");
   const source = await readCppSourceIdentity(root, { runProcess: runCheckedProcess });
   const binary = getCppMcpBinaryPath(root);
@@ -23,7 +26,7 @@ const fixture = async () => {
   if (process.platform !== "win32") await chmod(binary, 0o755);
   const hash = createHash("sha256").update(await readFile(binary)).digest("hex");
   const info = { implementation: "cpp", sanitizers: false, sourceDirty: false, gitSha: source.GitSha, sourceTree: source.SourceTree, sourceFingerprint: "a".repeat(64), binarySha256: hash };
-  const report = { implementation: "cpp", contract_version: 4, complete: true, cutover_allowed: true, implemented_tools: 50, target_tools: 50 };
+  const report = { implementation: "cpp", contract_version: registry.contract_version, complete: true, cutover_allowed: true, implemented_tools: registry.tools.length, target_tools: registry.tools.length };
   const calls = [];
   const runner = async (file, args, options) => {
     calls.push({ file, args });
@@ -79,6 +82,21 @@ test("uncertified C++ replacement preserves the existing promotion manifest", as
   } finally { await f.close(); }
 });
 
+test("C++ preflight derives version and inventory from the committed canonical registry", async () => {
+  const f = await fixture();
+  try {
+    const env = { ...process.env, CPP_MCP_EXE: f.binary };
+    f.report.contract_version -= 1;
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /incomplete or uncertified/u);
+    f.report.contract_version += 1;
+    f.report.target_tools -= 1;
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /incomplete or uncertified/u);
+    f.report.target_tools += 1;
+    f.report.implemented_tools -= 1;
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /incomplete or uncertified/u);
+  } finally { await f.close(); }
+});
+
 test("C++ preflight rejects dirty source, mismatched hashes, and a source change during validation", async () => {
   const f = await fixture();
   try {
@@ -118,4 +136,80 @@ test("C++ promotion refuses an executable modified after preflight", async () =>
     await assert.rejects(promoteCppImplementation(spec, 1), /changed before promotion/u);
     await assert.rejects(readFile(spec.candidate.CandidateManifestPath), { code: "ENOENT" });
   } finally { await f.close(); }
+});
+
+test("signed production preflight rejects before candidate execution or fallback build", async () => {
+  const f = await fixture();
+  try {
+    let rebuilt = false, probed = false;
+    const env = { ...process.env, CPP_REQUIRE_QUALIFIED_ARTIFACT: "1" };
+    await assert.rejects(prepareCppImplementation(f.root, { env: { ...env, CPP_REQUIRE_QUALIFIED_ARTIFACT: "treu" }, runProcess: f.runner }), /ambiguous promotion policy/u);
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: f.runner }), /QUALIFICATION_RECEIPT/u);
+    env.CPP_QUALIFICATION_RECEIPT = "run/qualification-receipt.json";
+    env.CPP_PROVENANCE_BUNDLE = "run/provenance.sigstore.json";
+    const runner = async (file, args, options) => {
+      if (args[0]?.endsWith("verify-promotion.mjs")) throw new Error("signature rejected");
+      if (args[0] === "--build-info") probed = true;
+      return f.runner(file, args, options);
+    };
+    await assert.rejects(prepareCppImplementation(f.root, { env, runProcess: runner,
+      build: async () => { rebuilt = true; return f.binary; } }), /signature rejected/u);
+    assert.equal(probed, false); assert.equal(rebuilt, false);
+    await assert.rejects(readFile(path.join(f.root, "run/bin/current-cpp.json")), { code: "ENOENT" });
+  } finally { await f.close(); }
+});
+
+test("signed production promotion retains the binding qualification receipt", async () => {
+  const f = await fixture();
+  try {
+    const env = { ...process.env, CPP_REQUIRE_QUALIFIED_ARTIFACT: "true", CPP_MCP_EXE: f.binary,
+      CPP_QUALIFICATION_RECEIPT: "run/qualification-receipt.json", CPP_PROVENANCE_BUNDLE: "run/provenance.sigstore.json" };
+    const qualification = { verified: true, sourceSha: f.source.GitSha, sourceTree: f.source.SourceTree,
+      contractVersion: f.report.contract_version, binarySha256: f.hash, workflowRunId: "controlled-fixture" };
+    const runner = async (file, args, options) => args[0]?.endsWith("verify-promotion.mjs")
+      ? { stdout: JSON.stringify(qualification), exitCode: 0 } : f.runner(file, args, options);
+    const spec = await prepareCppImplementation(f.root, { env, runProcess: runner });
+    assert.equal(spec.candidate.QualificationRequired, true);
+    assert.deepEqual(spec.candidate.ReleaseQualification, qualification);
+    await promoteCppImplementation(spec, 123);
+    assert.deepEqual(JSON.parse(await readFile(spec.candidate.CandidateManifestPath, "utf8")).ReleaseQualification, qualification);
+  } finally { await f.close(); }
+});
+
+test("Windows managed startup persists qualified and development promotion records", { skip: process.platform !== "win32" }, async () => {
+  // Execute only the real launcher's manifest block with a harmless JSON sink.
+  // Never dot-source the startup script: that would control the live service.
+  const source = await readFile(new URL("../scripts/Start-ChatGptDevboxMcp.ps1", import.meta.url), "utf8");
+  const begin = source.indexOf("    $promotionManifest = @{");
+  const end = source.indexOf("    # Keep the current candidate", begin);
+  assert(begin >= 0 && end > begin, "Managed promotion block is present");
+  const qualification = { verified: true, sourceSha: "a".repeat(40), sourceTree: "b".repeat(40),
+    binarySha256: "c".repeat(64), contractVersion: 9, stateSchemaVersion: 2,
+    stateCoordinatorProtocol: 1, workflowRunId: "fixture-only" };
+  for (const qualified of [true, false]) {
+    const candidate = { GitSha: qualification.sourceSha, SourceTree: qualification.sourceTree,
+      SourceDirty: false, Sha256: qualification.binarySha256, Generation: "fixture-generation",
+      FilePath: "C:\\fixture-only\\candidate.exe",
+      ...(qualified ? { QualificationRequired: true, ReleaseQualification: qualification } : {}) };
+    const script = `$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
+$launchSpec = '${JSON.stringify(candidate)}' | ConvertFrom-Json
+$manifestPath='fixture-only.json'
+$startedAtUtc=$promotedAtUtc=$firstPromotedAtUtc='2026-09-23T00:00:00Z'
+function Write-JsonStateFile { param($Path,$Value) $Value | ConvertTo-Json -Depth 8 -Compress }
+${source.slice(begin, end)}`;
+    const result = await runCheckedProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64")], { label: "Isolated managed promotion record" });
+    const manifest = JSON.parse(result.stdout);
+    assert.equal(manifest.Sha256, candidate.Sha256);
+    assert.equal(manifest.SourceDirty, false);
+    assert.equal(manifest.FirstPromotedAtUtc, "2026-09-23T00:00:00Z");
+    if (qualified) {
+      assert.equal(manifest.QualificationRequired, true);
+      assert.deepEqual(manifest.ReleaseQualification, qualification);
+    } else {
+      assert.equal(Object.hasOwn(manifest, "QualificationRequired"), false);
+      assert.equal(Object.hasOwn(manifest, "ReleaseQualification"), false);
+    }
+  }
 });

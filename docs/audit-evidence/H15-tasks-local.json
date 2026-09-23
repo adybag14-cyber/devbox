@@ -1,0 +1,24 @@
+{
+  "ticket": "H15",
+  "status": "implemented_local_verified",
+  "source_base": "92da91e53c3a47136329c389de0bd337eac2d033",
+  "specification": "https://github.com/modelcontextprotocol/ext-tasks/blob/main/specification/2026-07-28/tasks.md",
+  "windows_binary_sha256": "237f2fb0718694ab993a4c77637ca92b43d23bfe0e6a644492a6990234ee31d2",
+  "linux_binary_sha256": "dbc45d43f64280eea280e444d7c852bb8cdf9e0b06f2ffb1c090709f13aaaeec",
+  "checks": [
+    "per-request opt-in and missing-capability error",
+    "legacy tool result preserved",
+    "durable principal-bound task mapping for runs/jobs",
+    "input-required grant attachment, unknown input ignored and fulfilled input replay ignored",
+    "frontend restart and reconnect",
+    "terminal snapshot immutability",
+    "cancel acknowledgement separate from terminal state",
+    "versioned instructions and run-owned artifact resource",
+    "Windows transport regression passed"
+  ],
+  "limits": [
+    "Polling implemented; no notification subscription support claimed",
+    "Hosted qualification pending",
+    "No Hermes UI or paid model request"
+  ]
+}

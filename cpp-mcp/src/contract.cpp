@@ -1,9 +1,11 @@
 #include "devbox/contract.hpp"
-#include "computer_contract.hpp"
-#include "reference_contract.hpp"
-#include "research_contract.hpp"
+#include "devbox/isolation.hpp"
+#include "devbox/research.hpp"
+#include "devbox/wsl.hpp"
+#include "tool_registry.hpp"
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <re2/re2.h>
 namespace devbox {
 namespace {
@@ -182,25 +184,49 @@ void validate(const Json& value, const Json& schema, const Json& root, const std
     }
 }
 } // namespace
+const Json& tool_registry() {
+    static const Json registry = Json::parse(std::string_view(
+        reinterpret_cast<const char*>(embedded_tool_registry), sizeof(embedded_tool_registry)));
+    return registry;
+}
+const Json& tool_policy(std::string_view name) {
+    static const auto index = [] {
+        std::map<std::string, const Json*, std::less<>> value;
+        for (const auto& entry : tool_registry()["tools"])
+            value.emplace(json_string(entry, "name"), &entry);
+        return value;
+    }();
+    static const Json absent;
+    const auto found = index.find(name);
+    return found == index.end() ? absent : *found->second;
+}
+Json capability_manifest(const Config& config) {
+    Json result = Json::array();
+    for (const auto& entry : tool_registry()["tools"]) {
+        Json capability;
+        for (const auto* key : {"name", "scope", "alias_of", "broker", "platforms", "runtime_profiles"})
+            capability[key] = entry[key];
+        const auto platforms = json_strings(entry, "platforms");
+        const auto profiles = json_strings(entry, "runtime_profiles");
+        const bool supported =
+            std::find(platforms.begin(), platforms.end(), config.platform.id) != platforms.end() &&
+            std::find(profiles.begin(), profiles.end(), config.runtime_name()) != profiles.end();
+        capability["support_state"] =
+            !supported ? "unsupported"
+            : (json_string(entry, "scope") == "mcp:host:exec" && !config.host_exec_enabled)
+                ? "permission_denied"
+                : "available";
+        capability["readonly_hint_is_sandbox"] = false;
+        result.push_back(std::move(capability));
+    }
+    return result;
+}
 ToolContract::ToolContract(const Config& config) {
-    const auto profile = config.runtime_name();
-    auto reference = Json::parse(
-        std::string_view(reinterpret_cast<const char*>(embedded_contract), sizeof(embedded_contract)),
-        [&profile](int depth, Json::parse_event_t event, Json& value) {
-            // Both profiles remain in the frozen input. Discard the inactive
-            // profile while parsing instead of allocating its unused schema DOM.
-            return event != Json::parse_event_t::key || depth != 2 ||
-                   value.get_ref<const std::string&>() == profile;
-        });
-    tools_ = std::move(reference["profiles"][profile]);
-    const auto computer = Json::parse(std::string_view(
-        reinterpret_cast<const char*>(embedded_computer_contract), sizeof(embedded_computer_contract)));
-    for (const auto& tool : computer)
-        tools_.push_back(tool);
-    const auto research = Json::parse(std::string_view(
-        reinterpret_cast<const char*>(embedded_research_contract), sizeof(embedded_research_contract)));
-    for (const auto& tool : research)
-        tools_.push_back(tool);
+    tools_ = Json::array();
+    for (const auto& entry : tool_registry()["tools"]) {
+        const auto& schemas = entry["schemas"];
+        tools_.push_back(schemas.contains("all") ? schemas["all"] : schemas[config.runtime_name()]);
+    }
     for (auto& tool : tools_) {
         const auto name = json_string(tool, "name");
         for (const auto* field : {"description", "title"})
@@ -216,10 +242,11 @@ ToolContract::ToolContract(const Config& config) {
             set("content_base64", "maxLength",
                 std::min<std::uint64_t>(config.max_mcp_transfer_chars, max_safe_integer));
         else {
-            set("working_dir", "default",
-                path_text(name.starts_with("host_") || name.starts_with("windows_host_")
-                              ? config.host_default_workdir
-                              : config.devbox_workspace_path));
+            if (name != "devbox_wsl")
+                set("working_dir", "default",
+                    path_text(name.starts_with("host_") || name.starts_with("windows_host_")
+                                  ? config.host_default_workdir
+                                  : config.devbox_workspace_path));
             set("user", "default", config.devbox_default_user);
             if (name == "devbox_list_files" || name == "devbox_search_files")
                 set("path", "default", path_text(config.devbox_workspace_path));
@@ -271,14 +298,50 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
         names.push_back(tool["name"]);
     return Json{{"contract_version", cpp_contract_version},
                 {"implementation", "cpp"},
+                {"state_backend", config.state_backend},
+                {"backend_runs",
+                 {{"supported", config.state_backend == "sqlite"},
+                  {"operator_provider_configuration_required", true},
+                  {"model_cannot_issue_grants", true},
+                  {"paid_cost_default_micro_usd", 0},
+                  {"unknown_outcomes_require_reconciliation", true}}},
                 {"schema_sha256", sha256(tools.dump())},
                 {"tools", names},
+                {"tool_manifest", capability_manifest(config)},
+                {"execution_profiles",
+                 {{"existing_tools", "trusted_operator"},
+                  {"trusted_operator_uses_host_account", true},
+                  {"read_only_hints_are_os_sandbox", false},
+                  {"autonomous_requires_scoped_grant", true},
+                  {"autonomous_worker", isolation_capabilities()}}},
+                {"artifact_uploads",
+                 {{"supported", config.state_backend == "sqlite" &&
+                                    config.runtime_mode == RuntimeMode::host && config.host_exec_enabled},
+                  {"requires_state_backend", "sqlite"},
+                  {"max_chunk_bytes", 1048576},
+                  {"max_file_bytes", 1073741824},
+                  {"max_active_uploads", 16},
+                  {"reserved_bytes_limit", 2147483648ULL},
+                  {"workspace_only", true},
+                  {"chunk_replay_safe", true},
+                  {"final_publish_cas", true}}},
                 {"resource_classes", {"auto", "watch", "light", "heavy", "io-heavy"}},
+                {"wsl", wsl_capabilities(config)},
+                {"platform_availability",
+                 {{"native_host_execution", config.host_exec_enabled ? "available" : "permission_denied"},
+                  {"desktop_input", !config.platform.is_windows ? "unsupported"
+                                    : !config.host_exec_enabled ? "permission_denied"
+                                                                : "permission_probe_on_use"},
+                  {"scoped_program", isolation_capabilities()},
+                  {"mobile_device_lifecycle", "not_qualified_on_physical_device"}}},
                 {"web_research",
                  {{"supported", true},
                   {"keyless", true},
                   {"product_offer_view", true},
                   {"variant_options_preserved", true},
+                  {"product_targets", true},
+                  {"retailer_identity_deduplication", true},
+                  {"upstream_cache_age_explicit", true},
                   {"standard_source_target", 100},
                   {"fast_source_target", 50},
                   {"max_concurrent_transfers", 4},
@@ -286,6 +349,9 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                   {"partial_coverage_explicit", true},
                   {"query_coverage_explicit", true},
                   {"shared_provider_cooldown", true},
+                  {"http_date_retry_after", true},
+                  {"evidence_quality", true},
+                  {"provider_catalog", web::discovery_provider_catalog()},
                   {"web_discovery_providers", {"duckduckgo_html", "bing_rss"}},
                   {"bing_rss_use", "personal_noncommercial"},
                   {"source_content_untrusted", true}}},
@@ -301,9 +367,19 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                   {"max_key_sequence_duration_ms", 5000},
                   {"coordinate_space", "returned_image_pixels"}}},
                 {"limits",
-                 {{"execution", config.exec_max_concurrent},
+                 {{"response_max_bytes", config.mcp_response_max_bytes},
+                  {"response_budget_bytes", config.mcp_response_budget_bytes},
+                  {"request_budget_bytes", config.mcp_request_budget_bytes},
+                  {"json_object_fields", 4096},
+                  {"json_nodes", 131072},
+                  {"json_depth", 128},
+                  {"execution", config.exec_max_concurrent},
                   {"reserved_interactive", config.exec_reserved_interactive},
                   {"heavy_capacity", config.exec_heavy_capacity},
+                  {"memory_reservation_capacity_bytes", config.exec_memory_capacity_bytes},
+                  {"gpu_reservation_capacity_bytes", config.exec_gpu_capacity_bytes},
+                  {"disk_reservation_capacity_bytes", config.exec_disk_capacity_bytes},
+                  {"resource_reservation_scope", "declared_requests_only; zero_capacity_disables_dimension"},
                   {"watch_capacity", config.watch_max_concurrent},
                   {"active_runners", config.job_max_active},
                   {"runners_per_task", config.job_max_per_task},

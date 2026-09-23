@@ -1,3 +1,4 @@
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/jobs.hpp"
 #include <future>
 #include <iostream>
@@ -18,8 +19,10 @@ template <class F> void rejects(F&& operation, std::string_view part) {
     throw Error("Expected rejection: " + std::string(part));
 }
 int run(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
+        return run_filesystem_worker();
     if (argc == 3 && std::string(argv[1]) == "--job-runner")
-        return run_job_request(std::make_shared<Config>(Config::load()), path_from_utf8(argv[2]));
+        return run_job_request(std::make_shared<Config>(Config::load(false)), path_from_utf8(argv[2]));
     if (argc >= 3 && std::string(argv[1]) == "--child") {
         const std::string mode = argv[2];
         if (mode == "count" && argc == 4) {
@@ -103,6 +106,28 @@ int run(int argc, char** argv) {
         auto config = std::make_shared<Config>(Config::load());
         JobManager manager(config);
         auto& store = manager.store();
+        {
+            std::optional<std::uint64_t> instance;
+            const auto pid = spawn_detached(executable_path(), {"--child", "sleep"}, root, {}, &instance);
+            owned.emplace_back(pid, instance);
+            require(instance.has_value(),
+                    "detached identity is captured before releasing the process object");
+            const std::string delayed = "job-delayed-start-fixture";
+            const auto paths = store.create_job(
+                delayed, Json::object(),
+                Json{{"id", delayed},
+                     {"status", "queued"},
+                     {"createdAtUtc", utc_from_millis(static_cast<std::int64_t>(unix_millis()) - 10000)},
+                     {"runnerPid", nullptr}});
+            write_json_atomic(paths.dir / "runner-owner.json",
+                              Json{{"id", delayed}, {"pid", pid}, {"instance", std::to_string(*instance)}});
+            const auto status = store.get_status(delayed);
+            require(status["status"] == "queued" && status["runnerAlive"] == true,
+                    "a live cold-starting runner without a first heartbeat is not classified as orphaned");
+            terminate_process_tree(pid, instance);
+            require(!process_matches_instance(pid, instance), "owned cold-start fixture stopped");
+            fs::remove_all(paths.dir);
+        }
         const auto track = [&](const Json& value) {
             const auto& summary = value.contains("job") ? value["job"] : value;
             if (summary.contains("runnerPid") && summary["runnerPid"].is_number_unsigned()) {
@@ -185,16 +210,23 @@ int run(int argc, char** argv) {
         while (json_string(store.get_status(cancelled_id), "status") != "running" && Clock::now() < deadline)
             std::this_thread::sleep_for(Millis(10));
         const auto cancelled = store.cancel(cancelled_id);
-        require(cancelled["status"] == "cancelled" && cancelled["runnerAlive"] == false &&
-                    !cancelled["completedAtUtc"].is_null(),
-                "verified cancellation acknowledgement");
+        if (!(cancelled["status"] == "cancelled" && cancelled["runnerAlive"] == false &&
+              !cancelled["completedAtUtc"].is_null()))
+            throw Error("verified cancellation acknowledgement: " + cancelled.dump());
         std::cout << "PASS detached execution, receipts, conflicts, logs, failure, timeout and cancellation\n"
                   << std::flush;
         // Restarting a runner on a completed request cannot repeat side effects.
         run_job_request(config, store.paths(id).request);
         require(read_file(root / "counter") == "x", "completed runner is never resurrected");
+        ProcessOptions frontend;
+        frontend.allow_durable_children = true;
+        frontend.env = worker_environment();
+        // The owned frontend fixture needs the explicit configuration established above.
+        for (const auto& [key, prior] : original)
+            if (const auto value = environment(key))
+                (*frontend.env)[key] = *value;
         const auto launch = spawn_process(path_text(executable_path()),
-                                          {"--launch-and-exit", path_text(root / "parent-marker")});
+                                          {"--launch-and-exit", path_text(root / "parent-marker")}, frontend);
         const auto surviving = Json::parse(launch.stdout_text);
         track(surviving);
         require(finish(surviving["id"].get<std::string>())["status"] == "succeeded" &&

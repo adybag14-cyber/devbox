@@ -1,7 +1,7 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/native.hpp"
 #include "devbox/posix_process.hpp"
 #include "devbox/process.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <algorithm>
 #include <thread>
 #ifndef _WIN32
@@ -12,42 +12,12 @@
 extern char** environ;
 #endif
 namespace devbox {
-#ifndef _WIN32
-namespace {
-class ChildReaper {
-    std::mutex mutex_;
-    std::condition_variable wake_;
-    std::vector<pid_t> children_;
-    ScopedThread thread_;
-
-  public:
-    ChildReaper()
-        : thread_([this](ThreadStopToken stop) {
-              std::unique_lock lock(mutex_);
-              while (!stop.stop_requested()) {
-                  std::erase_if(children_, [](pid_t pid) {
-                      int status = 0;
-                      const auto result = ::waitpid(pid, &status, WNOHANG);
-                      return result == pid || (result < 0 && errno == ECHILD);
-                  });
-                  wake_.wait_for(lock, Millis(100));
-              }
-          }) {}
-    ~ChildReaper() {
-        thread_.request_stop();
-        wake_.notify_all();
-        thread_.join();
-    }
-    void add(pid_t pid) {
-        std::lock_guard lock(mutex_);
-        children_.push_back(pid);
-        wake_.notify_one();
-    }
-};
-} // namespace
-#endif
 std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string>& args, const fs::path& cwd,
-                             const std::optional<Environment>& env) {
+                             const std::optional<Environment>& env, std::optional<std::uint64_t>* instance) {
+    if (!env)
+        return spawn_detached(file, args, cwd, worker_environment(), instance);
+    if (instance)
+        instance->reset();
     for (const auto& argument : args)
         if (argument.find('\0') != std::string::npos)
             throw Error("Detached arguments cannot contain NUL bytes");
@@ -102,13 +72,36 @@ std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string
     startup.StartupInfo.hStdError = handle;
     startup.lpAttributeList = attributes;
     PROCESS_INFORMATION information{};
+    DWORD ownership_flags = 0;
+    BOOL in_job = FALSE;
+    if (!IsProcessInJob(GetCurrentProcess(), nullptr, &in_job))
+        throw Error(windows_error());
+    if (in_job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+        if (!QueryInformationJobObject(nullptr, JobObjectExtendedLimitInformation, &limits, sizeof(limits),
+                                       nullptr))
+            throw Error("Cannot verify independent durable-runner ownership: " + windows_error());
+        const auto flags = limits.BasicLimitInformation.LimitFlags;
+        const bool can_break_away =
+            flags & (JOB_OBJECT_LIMIT_BREAKAWAY_OK | JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK);
+        if ((flags & JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE) && !can_break_away)
+            throw Error("Durable runners require an independent frontend or an explicitly approved breakaway "
+                        "supervisor");
+        if (can_break_away)
+            ownership_flags = CREATE_BREAKAWAY_FROM_JOB;
+    }
     if (!CreateProcessW(program.c_str(), command.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT |
-                            EXTENDED_STARTUPINFO_PRESENT,
+                        ownership_flags | CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+                            CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
                         env ? environment_block.data() : nullptr, cwd.c_str(), &startup.StartupInfo,
                         &information))
         throw Error(windows_error());
     NativeHandle process(information.hProcess), thread(information.hThread);
+    if (instance) {
+        FILETIME created{}, exited{}, kernel{}, user{};
+        if (GetProcessTimes(process.get(), &created, &exited, &kernel, &user))
+            *instance = (static_cast<std::uint64_t>(created.dwHighDateTime) << 32) | created.dwLowDateTime;
+    }
     return information.dwProcessId;
 #else
     NativeHandle null(::open("/dev/null", O_RDWR | O_CLOEXEC));
@@ -134,11 +127,15 @@ std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string
         envp.push_back(nullptr);
     }
     // Initialize the reaper before spawning so an allocation failure cannot lose a child.
-    static ChildReaper reaper;
+    const auto reap_slot = reserve_posix_reap_slot();
+    ScopeExit release_slot([&] { release_posix_reap_slot(reap_slot); });
     const std::array close_fds{null.get()};
     const auto pid = spawn_posix(file, argv.data(), env ? envp.data() : environ, &cwd,
                                  {null.get(), null.get(), null.get()}, close_fds, false);
-    reaper.add(pid);
+    defer_posix_reap(reap_slot, pid);
+    release_slot.disarm();
+    if (instance)
+        *instance = process_instance(static_cast<std::uint32_t>(pid));
     return static_cast<std::uint32_t>(pid);
 #endif
 }

@@ -21,27 +21,35 @@ Json render_output(std::string summary, const ProcessOutput& output, const Json&
     const auto lines = static_cast<std::size_t>(json_uint(args, "max_output_lines"));
     const auto out = shape_output(output.stdout_text, mode, maximum, lines),
                err = shape_output(output.stderr_text, mode, maximum, lines);
-    return result_process(std::move(summary),
-                          Json{{"execution", execution_data(lease)},
-                               {"output",
-                                {{"mode", mode},
-                                 {"max_chars", maximum},
-                                 {"max_lines", lines},
-                                 {"stdout_original_chars", output.stdout_original_chars},
-                                 {"stderr_original_chars", output.stderr_original_chars},
-                                 {"stdout_capture_truncated", output.stdout_capture_truncated},
-                                 {"stderr_capture_truncated", output.stderr_capture_truncated}}}},
-                          out.text, err.text, output.exit_code, true,
-                          out.truncated || err.truncated || output.stdout_capture_truncated ||
-                              output.stderr_capture_truncated);
+    auto result = result_process(std::move(summary),
+                                 Json{{"execution", execution_data(lease)},
+                                      {"output",
+                                       {{"mode", mode},
+                                        {"max_chars", maximum},
+                                        {"max_lines", lines},
+                                        {"stdout_original_chars", output.stdout_original_chars},
+                                        {"stderr_original_chars", output.stderr_original_chars},
+                                        {"stdout_capture_truncated", output.stdout_capture_truncated},
+                                        {"stderr_capture_truncated", output.stderr_capture_truncated}}}},
+                                 out.text, err.text, output.exit_code, true,
+                                 out.truncated || err.truncated || output.stdout_capture_truncated ||
+                                     output.stderr_capture_truncated);
+    return with_child_timing(std::move(result), output.elapsed_ms);
 }
 } // namespace
 Json render_process_error(const std::exception& error, std::size_t maximum, std::optional<Json> data) {
     if (const auto* process = dynamic_cast<const ProcessError*>(&error)) {
         const auto out = trim_error(process->stdout_text, maximum),
                    err = trim_error(process->stderr_text, maximum);
-        return result_process(error.what(), std::move(data), out.first, err.first, process->exit_code, false,
-                              out.second || err.second);
+        auto result = result_process(error.what(), std::move(data), out.first, err.first, process->exit_code,
+                                     false, out.second || err.second);
+        result = with_child_timing(std::move(result), process->elapsed_ms);
+        if (process->aborted)
+            return with_outcome(std::move(result), ToolOutcome::Cancelled);
+        if (process->timed_out)
+            return with_outcome(std::move(result), ToolOutcome::TimedOut);
+        return process->exit_code ? std::move(result)
+                                  : with_outcome(std::move(result), ToolOutcome::ProcessFailure);
     }
     if (dynamic_cast<const ElevationRequired*>(&error)) {
         if (!data)
@@ -56,9 +64,12 @@ Json render_process_error(const std::exception& error, std::size_t maximum, std:
               "Do not start MCP from a normal (non-admin) terminal if you want silent elevated host_exec.",
               "Set ALLOW_WINDOWS_HOST_EXEC_UAC=true only if you intentionally want per-command UAC "
               "prompts."}}};
-        return result_process(error.what(), std::move(data), "", "", 740, false);
+        return with_outcome(result_process(error.what(), std::move(data), "", "", 740, false),
+                            ToolOutcome::PolicyDenied);
     }
-    return result_process(error.what(), std::move(data), "", "", std::nullopt, false);
+    return with_outcome(result_process(error.what(), std::move(data), "", "", std::nullopt, false),
+                        dynamic_cast<const Cancelled*>(&error) ? ToolOutcome::Cancelled
+                                                               : ToolOutcome::ProcessFailure);
 }
 Json render_file_output(std::string summary, const ProcessOutput& output, std::size_t maximum) {
     const auto out = shape_output(output.stdout_text, "tail", maximum),
@@ -80,11 +91,19 @@ asio::awaitable<ExecutionLease> Engine::acquire(AcquireRequest request, Cancel c
         cancel);
     auto waiter = co_await std::move(pending);
     for (;;) {
+        auto changed = waiter->changed_token();
         auto attempt = controls_.run([waiter, cancel] { return waiter->poll(cancel); }, cancel);
         auto lease = co_await std::move(attempt);
         if (lease)
             co_return std::move(*lease);
-        co_await async_delay(waiter->poll_interval(), cancel);
+        auto wake = std::make_shared<Cancellation>(cancel);
+        auto subscription = changed->subscribe([wake] { wake->cancel(); });
+        try {
+            co_await async_delay(waiter->poll_interval(), wake);
+        } catch (const Cancelled&) {
+            if (cancel)
+                cancel->check();
+        }
     }
 }
 asio::awaitable<Json> Engine::execute(std::string name, Json args, Cancel cancel) {

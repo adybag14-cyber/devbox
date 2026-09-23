@@ -1,5 +1,6 @@
 #include "devbox/native.hpp"
 #include "devbox/research.hpp"
+#include "devbox/web_retailers.hpp"
 #include <algorithm>
 #include <charconv>
 #include <map>
@@ -279,6 +280,7 @@ struct Extractor {
                 row["conflicts"].push_back("price_currency_disagrees");
         }
         enrich(row);
+        annotate_offer_consistency(row);
         // Duplicate references to one offer do not make additional evidence.
         auto fingerprint = row;
         fingerprint.erase("schema_path");
@@ -351,6 +353,21 @@ Json offer_view(const Json& document, std::size_t offset, std::size_t limit) {
                 {"offers_truncated", json_bool(document, "offers_truncated")},
                 {"checked_at", json_string(document, "validated_at", json_string(document, "retrieved_at"))},
                 {"price_evidence", "none"}};
+    const auto age_text = json_string(document, "http_age");
+    std::uint64_t age = 0;
+    const auto parsed_age = std::from_chars(age_text.data(), age_text.data() + age_text.size(), age);
+    const bool has_age = !age_text.empty() && parsed_age.ec == std::errc{} &&
+                         parsed_age.ptr == age_text.data() + age_text.size();
+    const auto cache = json_string(document, "cache_status");
+    result["freshness"] = Json{{"cache_status", cache},
+                               {"body_retrieved_at", json_string(document, "retrieved_at")},
+                               {"validated_at", json_string(document, "validated_at")},
+                               {"upstream_age_seconds_reported", has_age ? Json(age) : Json(nullptr)},
+                               {"assessment", has_age && age > 0       ? "upstream_cached_body"
+                                              : cache == "fresh_cache" ? "local_cached_body"
+                                              : cache == "revalidated" ? "conditional_revalidation"
+                                              : cache == "network"     ? "network_body_observed"
+                                                                       : "not_classified"}};
     if (!document.contains("offers") || !document["offers"].is_array() ||
         (json_string(document, "status") != "ok" && json_string(document, "status") != "insufficient_text"))
         return result;

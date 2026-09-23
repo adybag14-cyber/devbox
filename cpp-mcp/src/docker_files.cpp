@@ -53,6 +53,7 @@ ProcessOutput DockerFiles::python(std::string_view script, std::vector<std::stri
                                    config_->devbox_container_name, "python3", "-c", std::string(script)});
     command.insert(command.end(), args.begin(), args.end());
     ProcessOptions options;
+    options.env = docker_environment();
     options.timeout = timeout;
     options.input = std::move(input);
     options.max_capture_chars =

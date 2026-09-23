@@ -16,4 +16,10 @@ Json result_process(std::string summary, std::optional<Json> data, std::string o
                     std::optional<int> code, bool success, bool truncated = false);
 Json result_explicit(std::string summary, std::optional<Json> data, std::string text);
 Json result_image(std::string summary, Json data, std::string base64, std::string mime);
+// Server-only lifecycle classification. Remove before exposing a result on any wire/model boundary.
+enum class ToolOutcome { Cancelled, TimedOut, PolicyDenied, InvalidArguments, ProcessFailure };
+Json with_outcome(Json result, ToolOutcome outcome);
+Json with_child_timing(Json result, std::uint64_t elapsed_ms);
+std::string result_outcome(const Json& result);
+void strip_internal_result_metadata(Json& result);
 } // namespace devbox

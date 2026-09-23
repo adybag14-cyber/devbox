@@ -34,7 +34,17 @@ if [ "$DEVBOX_DISTRO_FAMILY" = apk ]; then
   git -C .cpp-build/vcpkg fetch --depth 1 https://github.com/microsoft/vcpkg.git "$baseline"
   git -C .cpp-build/vcpkg checkout -q --detach FETCH_HEAD
   export VCPKG_FORCE_SYSTEM_BINARIES=1
-  export VCPKG_DEFAULT_BINARY_CACHE=/cache
+  # Namespace restored archives by the actual musl compiler, SDK packages and
+  # build flags; vcpkg additionally validates every package's content ABI.
+  identity_file="$fixture_root/musl-toolchain.txt"
+  { c++ --version; c++ -dumpmachine; cmake --version; apk info -v;
+    sha256sum vcpkg.json vcpkg-configuration.json CMakeLists.txt cpp-mcp/CMakeLists.txt cpp-mcp/scripts/ci-native.mjs \
+      cpp-mcp/cmake/ports/boost-asio/vcpkg.json cpp-mcp/cmake/ports/boost-asio/portfile.cmake \
+      cpp-mcp/cmake/ports/boost-asio/features.cmake cpp-mcp/cmake/ports/boost-asio/0001-add-options.patch;
+    printf 'Release C++23 static-dependencies Ninja\n'; } > "$identity_file"
+  cache_key=$(sha256sum "$identity_file" | cut -d ' ' -f1)
+  export VCPKG_DEFAULT_BINARY_CACHE="/cache/$cache_key"
+  mkdir -p "$VCPKG_DEFAULT_BINARY_CACHE"
   export VCPKG_ROOT="$PWD/.cpp-build/vcpkg"
   export CMAKE_GENERATOR=Ninja
   sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -musl -disableMetrics
@@ -74,5 +84,7 @@ if [ "$DEVBOX_DISTRO_FAMILY" = apk ]; then
   mkdir -p /output/bin
   cp .cpp-build/package/bin/* /output/bin/
   cp .cpp-build/package/build-manifest.json /output/
+  cp .cpp-build/package/dependency-inventory.json .cpp-build/package/sbom.spdx.json \
+    .cpp-build/package/THIRD_PARTY_NOTICES.txt /output/
 fi
 printf 'Native C++ distro installer and MCP checks passed.\n'

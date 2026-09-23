@@ -1,6 +1,6 @@
-#include "devbox/scoped_thread.hpp"
 #include "devbox/runtime.hpp"
 #include "devbox/native.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <algorithm>
 #include <future>
 #include <regex>
@@ -18,6 +18,16 @@ constexpr auto elevation_message =
     "after repair.";
 std::string quiet_powershell(std::string_view command) {
     return "$ProgressPreference = 'SilentlyContinue'\n$InformationPreference = 'SilentlyContinue'\n" +
+#ifdef _WIN32
+           // Legacy Windows PowerShell can spend tens of seconds in unqualified first-command
+           // discovery on hosted images. Import its built-in utility module by an exact path;
+           // preserve normal module autoloading and the operator's requested command afterward.
+           std::string(
+               "if ($PSVersionTable.PSEdition -eq 'Desktop') { "
+               "Microsoft.PowerShell.Core\\Import-Module -Name "
+               "($PSHOME + '\\Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1') "
+               "-ErrorAction Stop }\n") +
+#endif
            std::string(command);
 }
 std::vector<std::string> file_powershell_args(const fs::path& path) {
@@ -30,6 +40,7 @@ ProcessOptions process_options(const ProgramRequest& request) {
     options.timeout = request.timeout;
     options.max_capture_chars = request.max_capture_chars;
     options.input = request.input;
+    options.env = request.environment;
     options.on_output = request.on_output;
     options.on_pid = request.on_pid;
     return options;
@@ -126,6 +137,7 @@ ProcessError cleaned_error(const ProcessError& original) {
     result.args = original.args;
     result.aborted = original.aborted;
     result.timed_out = original.timed_out;
+    result.process_started = original.process_started;
     result.elapsed_ms = original.elapsed_ms;
     return result;
 }
@@ -252,6 +264,7 @@ ProcessOutput RuntimeExecutor::run_program(ProgramRequest request, const Cancel&
     args.insert(args.end(), request.args.begin(), request.args.end());
     auto options = process_options(request);
     options.cwd.reset();
+    options.env = docker_environment();
     return spawn_process("docker", args, options, cancel);
 }
 ProcessOutput RuntimeExecutor::run_host_program_only(ProgramRequest request, const Cancel& cancel) const {
@@ -287,6 +300,17 @@ ProcessOutput RuntimeExecutor::powershell(const ShellRequest& request, const Can
     const auto started = Clock::now();
     for (std::size_t i = 0; i < candidates.size(); ++i) {
         auto options = process_options(request);
+#ifdef _WIN32
+        // Supply the configured runtime's own core modules explicitly. An absent PSModulePath
+        // makes legacy PowerShell rediscover every installed/user module on some hosted images;
+        // inheriting an arbitrary caller override would reintroduce loader injection.
+        options.env = worker_environment();
+        if (const auto executable = find_program(candidates[i], &*options.env)) {
+            const auto modules = executable->parent_path() / "Modules";
+            if (fs::is_directory(modules))
+                (*options.env)["PSModulePath"] = path_text(modules);
+        }
+#endif
         options.timeout =
             std::max(Millis(1), request.timeout - std::chrono::duration_cast<Millis>(Clock::now() - started));
         try {
@@ -342,6 +366,7 @@ ProcessOutput RuntimeExecutor::run_shell(const ShellRequest& request, const Canc
                              "-lc", request.command});
     auto options = process_options(request);
     options.cwd.reset();
+    options.env = docker_environment();
     return spawn_process("docker", args, options, cancel);
 }
 ProcessOutput RuntimeExecutor::run_host_shell_only(const ShellRequest& request, const Cancel& cancel) const {
@@ -384,6 +409,7 @@ std::vector<std::string> RuntimeExecutor::get_versions(bool force, const Cancel&
             "python3 --version && printf 'git='; git --version && printf 'rg='; rg --version | head -n 1";
         ProcessOptions options;
         options.timeout = Millis(20000);
+        options.env = docker_environment();
         options.max_capture_chars = 32768;
         auto output = spawn_process("docker",
                                     {"exec", "-w", path_text(config_->devbox_workspace_path),
@@ -525,6 +551,8 @@ ProcessOutput RuntimeExecutor::elevated_shell(const ShellRequest& request, const
         error.aborted = cancelled || json_bool(data, "aborted");
         error.timed_out = timed_out || json_bool(data, "timed_out");
         error.elapsed_ms = output.elapsed_ms;
+        if (data.contains("process_started") && data["process_started"].is_boolean())
+            error.process_started = data["process_started"].get<bool>();
         throw error;
     }
     output.exit_code = data["exit_code"].get<int>();
@@ -589,6 +617,7 @@ int elevated_shell_worker(const fs::path& request_path) {
                       {"exit_code", error.exit_code ? Json(*error.exit_code) : Json(nullptr)},
                       {"timed_out", error.timed_out},
                       {"aborted", error.aborted},
+                      {"process_started", error.process_started ? Json(*error.process_started) : Json()},
                       {"elapsed_ms", error.elapsed_ms}};
     } catch (const std::exception& error) {
         result = Json{{"ok", false}, {"message", error.what()}};

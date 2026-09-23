@@ -66,6 +66,13 @@ export const prepareCppImplementation = async (root, {
   root = path.resolve(root);
   if (typeof runProcess !== "function") throw new Error("C++ preparation requires a bounded process runner.");
   const source = await readCppSourceIdentity(root, { env, runProcess });
+  const registry = JSON.parse(await readFile(path.join(root, "cpp-mcp", "contract", "tool-registry.json"), "utf8"));
+  if (!Number.isSafeInteger(registry.contract_version) || registry.contract_version < 1
+      || !Array.isArray(registry.tools) || registry.tools.length < 1
+      || registry.tools.some(tool => typeof tool.name !== "string")
+      || new Set(registry.tools.map(tool => tool.name)).size !== registry.tools.length) {
+    throw new Error("Invalid canonical C++ capability registry. The existing MCP was not stopped.");
+  }
   const versioned = path.join(root, "run", "bin");
   const currentManifest = path.join(versioned, "current-cpp.json");
   const candidates = [];
@@ -81,16 +88,41 @@ export const prepareCppImplementation = async (root, {
     candidates.push(getCppMcpBinaryPath(root, platform));
   }
   const childEnv = { ...env, DEVBOX_PROJECT_ROOT: root, DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE: "1" };
+  const proofMode = String(env.CPP_REQUIRE_QUALIFIED_ARTIFACT ?? "").trim();
+  if (!/^(?:|0|1|false|true|no|yes|off|on)$/iu.test(proofMode)) throw new Error("Invalid CPP_REQUIRE_QUALIFIED_ARTIFACT boolean; refusing an ambiguous promotion policy.");
+  const proofRequired = /^(?:1|true|yes|on)$/iu.test(proofMode);
+  const receipt = String(env.CPP_QUALIFICATION_RECEIPT ?? "").trim();
+  const bundle = String(env.CPP_PROVENANCE_BUNDLE ?? "").trim();
+  if (proofRequired && (!receipt || !bundle)) {
+    throw new Error("Signed C++ qualification requires CPP_QUALIFICATION_RECEIPT and CPP_PROVENANCE_BUNDLE. The existing MCP was not stopped.");
+  }
   const inspect = async (file) => {
+    let qualification;
+    if (proofRequired) {
+      const arch = process.arch === "arm64" ? "aarch64" : process.arch === "x64" ? "x86_64" : process.arch;
+      const os = platform === "win32" ? "windows" : platform === "darwin" ? "macos" : platform;
+      const target = String(env.CPP_QUALIFIED_TARGET ?? `${os}-${arch}`);
+      // The verifier authenticates the executable and receipt before it executes
+      // a candidate. This subprocess avoids a circular runtime-module import.
+      qualification = JSON.parse((await run(runProcess, process.execPath,
+        [path.join(root, "cpp-mcp", "scripts", "verify-promotion.mjs"), file, target,
+          path.resolve(root, receipt), path.resolve(root, bundle), source.GitSha, String(registry.contract_version)],
+        root, childEnv, "Signed C++ release qualification", 120000)).stdout);
+      if (qualification.verified !== true || qualification.sourceSha !== source.GitSha
+          || qualification.sourceTree !== source.SourceTree || qualification.contractVersion !== registry.contract_version
+          || qualification.binarySha256 !== await digest(file)) {
+        throw new Error("Signed C++ qualification result does not bind this source and executable.");
+      }
+    }
     const info = JSON.parse((await run(runProcess, file, ["--build-info"], root, childEnv, "C++ candidate provenance")).stdout);
     if (info.sanitizers === true) throw new Error("Instrumented C++ test builds cannot replace a managed runtime. The existing MCP was not stopped.");
     const hash = await digest(file);
     if (!matchesCppSource(info, source) || info.binarySha256 !== hash) throw new Error("C++ candidate provenance did not match the committed checkout and executable hash.");
     const report = JSON.parse((await run(runProcess, file, ["--parity-report"], root, childEnv, "C++ completion gate")).stdout);
-    if (report.implementation !== "cpp" || report.contract_version !== 4 || report.complete !== true || report.cutover_allowed !== true || report.implemented_tools !== 50 || report.target_tools !== 50) {
+    if (report.implementation !== "cpp" || report.contract_version !== registry.contract_version || report.complete !== true || report.cutover_allowed !== true || report.implemented_tools !== registry.tools.length || report.target_tools !== registry.tools.length) {
       throw new Error("C++ replacement is incomplete or uncertified. The existing MCP was not stopped.");
     }
-    return { info, hash };
+    return { info, hash, qualification };
   };
   let selected, inspected, lastError;
   for (const file of candidates) {
@@ -99,6 +131,7 @@ export const prepareCppImplementation = async (root, {
     catch (error) { lastError = error; if (explicit || /incomplete or uncertified/u.test(error.message)) throw error; }
   }
   if (!selected) {
+    if (proofRequired) throw lastError ?? new Error("No signed qualified C++ candidate is available; automatic source builds are disabled for this production profile.");
     if (explicit) throw lastError ?? new Error(`Configured CPP_MCP_EXE does not exist: ${explicit}`);
     selected = await build(root, { env, platform, runProcess });
     inspected = await inspect(selected);
@@ -128,6 +161,7 @@ export const prepareCppImplementation = async (root, {
     Implementation: "cpp", FilePath: file, ArgumentList: [], Generation: generation,
     ...source, SourceFingerprint: inspected.info.sourceFingerprint, Sha256: inspected.hash,
     CandidateManifestPath: currentManifest, Reused: reused,
+    ...(proofRequired ? { QualificationRequired: true, ReleaseQualification: inspected.qualification } : {}),
   };
   return { implementation: "cpp", file, args: [], env: { ...childEnv, DEVBOX_DEPLOYMENT_GENERATION: generation }, candidate };
 };

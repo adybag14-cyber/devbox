@@ -1,70 +1,11 @@
 #include "devbox/engine.hpp"
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/result.hpp"
 #ifndef _WIN32
 #include <cerrno>
 #include <sys/stat.h>
 #endif
 namespace devbox {
-namespace {
-Json path_state(const fs::path& path) {
-    Json result;
-    std::uint64_t size = 0;
-    double millis = 0;
-    bool valid_time = false, file = false, directory = false;
-#ifdef _WIN32
-    NativeHandle handle(CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES,
-                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                                    OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
-    if (!handle) {
-        const auto code = GetLastError();
-        if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND)
-            return Json{{"exists", false}};
-        if (code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION)
-            return Json{{"exists", nullptr}, {"transientError", "EPERM"}};
-        throw Error(windows_error(code));
-    }
-    BY_HANDLE_FILE_INFORMATION info{};
-    if (!GetFileInformationByHandle(handle.get(), &info))
-        throw Error(windows_error());
-    directory = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-    file = !directory;
-    size = (std::uint64_t(info.nFileSizeHigh) << 32) | info.nFileSizeLow;
-    const auto ticks =
-        (std::uint64_t(info.ftLastWriteTime.dwHighDateTime) << 32) | info.ftLastWriteTime.dwLowDateTime;
-    if (ticks >= 116444736000000000ULL) {
-        millis = static_cast<double>(ticks - 116444736000000000ULL) / 10000.0;
-        valid_time = true;
-    }
-#else
-    struct stat info{};
-    if (::stat(path.c_str(), &info) != 0) {
-        if (errno == ENOENT || errno == ENOTDIR)
-            return Json{{"exists", false}};
-        if (errno == EACCES || errno == EPERM)
-            return Json{{"exists", nullptr}, {"transientError", "EPERM"}};
-        throw Error(std::error_code(errno, std::generic_category()).message());
-    }
-    directory = S_ISDIR(info.st_mode);
-    file = S_ISREG(info.st_mode);
-    size = static_cast<std::uint64_t>(info.st_size);
-#ifdef __APPLE__
-    const auto stamp = info.st_mtimespec;
-#else
-    const auto stamp = info.st_mtim;
-#endif
-    if (stamp.tv_sec >= 0) {
-        millis = static_cast<double>(stamp.tv_sec) * 1000.0 + static_cast<double>(stamp.tv_nsec) / 1000000.0;
-        valid_time = true;
-    }
-#endif
-    result = Json{{"exists", true}, {"isFile", file}, {"isDirectory", directory}, {"size", size}};
-    if (valid_time) {
-        result["mtimeMs"] = millis;
-        result["mtimeUtc"] = utc_from_millis(static_cast<std::int64_t>(millis));
-    }
-    return result;
-}
-} // namespace
 asio::awaitable<Json> Engine::wait_file(Json args, Cancel cancel) {
     if (config_->runtime_mode == RuntimeMode::docker)
         co_return result_error(
@@ -75,10 +16,24 @@ asio::awaitable<Json> Engine::wait_file(Json args, Cancel cancel) {
                deadline =
                    start + Millis(static_cast<Millis::rep>(json_number(args, "timeout_seconds", 60) * 1000));
     std::optional<Clock::time_point> stable;
+    Json state = Json::object();
     try {
         for (;;) {
-            auto pending = files_.run([path] { return path_state(path); }, cancel);
-            auto state = co_await std::move(pending);
+            if (Clock::now() < deadline || state.empty()) {
+                try {
+                    auto pending = files_.run(
+                        [path, cancel, deadline] {
+                            return isolated_filesystem("path_state", Json{{"path", path_text(path)}},
+                                                       std::max(Millis(1), std::chrono::duration_cast<Millis>(
+                                                                               deadline - Clock::now())),
+                                                       cancel);
+                        },
+                        cancel);
+                    state = co_await std::move(pending);
+                } catch (const FilesystemDeadline&) {
+                    state = Json{{"exists", nullptr}, {"observationUnavailable", true}};
+                }
+            }
             const bool condition =
                 json_bool(args, "should_exist", true)
                     ? json_bool(state, "exists") && json_uint(state, "size") >= json_uint(args, "min_bytes")

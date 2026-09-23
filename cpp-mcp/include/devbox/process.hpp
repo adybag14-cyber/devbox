@@ -38,6 +38,15 @@ struct ProcessOptions {
     std::function<void(std::uint32_t)> on_pid;
     // Only shell adapters may use this to supply the Windows shell's native syntax.
     std::optional<std::string> windows_raw_arguments;
+    std::optional<std::uint64_t> memory_limit_bytes, cpu_limit_ms;
+    std::optional<std::uint32_t> process_limit;
+    // Only a trusted frontend supervisor may permit independently owned durable runners.
+    // Generic and autonomous execution keep this false.
+    bool allow_durable_children = false;
+    // Native adapter/qualification choice only, never populated from a model argument.
+    bool windows_detached_console = false;
+    // Broker-only Windows LPAC identity. No generic tool argument can set this attribute.
+    std::optional<std::string> appcontainer_sid;
 };
 struct ProcessOutput {
     std::string stdout_text, stderr_text;
@@ -52,10 +61,16 @@ struct ProcessError : Error {
     std::string stdout_text, stderr_text, file;
     std::vector<std::string> args;
     bool timed_out = false, aborted = false;
+    // Absent means the adapter cannot establish whether a process started.
+    std::optional<bool> process_started;
     std::uint64_t elapsed_ms = 0;
     using Error::Error;
 };
 Environment current_environment();
+// Explicit base environment for children. Credentials and loader/interpreter injection variables
+// never cross this boundary unless a dedicated broker supplies an explicit ProcessOptions::env.
+Environment worker_environment();
+Environment docker_environment();
 std::optional<fs::path> find_program(std::string_view program, const Environment* env = nullptr);
 std::string quote_windows_argument(std::string_view value);
 bool is_administrator();
@@ -68,7 +83,8 @@ bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expe
 ProcessOutput spawn_process(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options = {}, const Cancel& cancel = {});
 std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string>& args, const fs::path& cwd,
-                             const std::optional<Environment>& env = {});
+                             const std::optional<Environment>& env = {},
+                             std::optional<std::uint64_t>* instance = nullptr);
 std::string summarize_process_failure(std::string_view file, int code, std::string_view stdout_text,
                                       std::string_view stderr_text);
 CaptureResult read_text_file_bounded(const fs::path& path, std::optional<std::size_t> limit);

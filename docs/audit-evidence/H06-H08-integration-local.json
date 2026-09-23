@@ -1,0 +1,37 @@
+{
+  "tickets": [
+    "H06",
+    "H08",
+    "H09"
+  ],
+  "date": "2026-09-23",
+  "status": "windows_local_verified_linux_and_release_pending",
+  "binary_sha256": "9c70198910ba018fb8d84b9ce38a6a9a99533622563ecac836f58f2f69de4f74",
+  "changes": [
+    "Artifact begin/chunk/status/cancel/finalize and legacy task file operations use the owned killable filesystem worker. The upload worker can connect to an existing coordinator, but cannot spawn one.",
+    "Resource lease metadata is indexed by fixed scheduler root and slot, with CAS revisions, token identity, and a bounded 64-record reconciliation page. File claims remain the single admission authority. Lost owners have unverified effects; the index never replays work.",
+    "Short scheduler replacement basenames preserve valid Windows paths.",
+    "Replace 16 KiB reader buffers and 64 KiB peer path stack allocation with owned heap buffers; clarify the median conditional found by MSVC static analysis."
+  ],
+  "checks": [
+    "Windows scheduler, filesystem-worker, core, process CTests passed",
+    "Windows engine SDK passed both legacy and SQLite: 53 tools, upload replay, byte roundtrip, job receipt replay, 32 passive waits and cancellation",
+    "Windows run harness passed 2 recorded model requests, 1 real LPAC effect, frontend restart and completed receipt replay"
+  ],
+  "limits": [
+    "Development build, not promotable",
+    "Remaining H03/H11 and final platform qualification are tracked separately",
+    "No kernel-uninterruptible driver certification or automatic snapshot reactivation claim",
+    "Production unchanged"
+  ],
+  "followup": {
+    "process_started": "Native errors distinguish pre-launch cancellation from started/unobserved work. A post-launch output-observer exception remains interrupted with unverified termination.",
+    "checks": [
+      "Windows and Linux focused lifecycle suites8/8 each",
+      "Actual pre-cancelled spawn creates no PID",
+      "Post-launch observer failure retains launch evidence and eventually reaps the exact owned child",
+      "Four frozen legacy schema profiles preserve all45 original schemas, with53 total tools"
+    ],
+    "full_local_matrix": "Windows35/36 andLinux32/33 first combined run; Windowsresearch ledger hit25s under concurrent100k-state I/O, thenpassed13.2s alone; Linuxcancellation race investigated andfixed, process/jobs regressionspass. Exactsource hostedgates stillrequired."
+  }
+}

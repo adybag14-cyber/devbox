@@ -34,6 +34,18 @@ class FileLock {
 FileState file_state(const fs::path& path);
 WriteReceipt atomic_write(const fs::path& path, std::string_view payload, bool append = false,
                           bool create_dirs = true, const Preconditions& expected = {});
+struct ArtifactChunk {
+    fs::path path;
+    std::uint64_t bytes = 0;
+    std::string sha256;
+};
+// Reads each immutable chunk once into a bounded buffer, verifies chunk and whole hashes,
+// then performs one atomic replacement guarded by the same lock as ordinary atomic writes.
+WriteReceipt publish_chunks(const fs::path& destination, const fs::path& private_staging_file,
+                            std::span<const ArtifactChunk> chunks, std::uint64_t bytes,
+                            std::string_view whole_sha256, std::string_view expected_sha256,
+                            const Cancel& cancel = {},
+                            const std::function<void(std::string_view)>& transition_hook = {});
 std::size_t atomic_lock_stripe(const fs::path& resolved);
 fs::path canonical_target(const fs::path& path);
 std::string read_text(const fs::path& path, std::size_t max_bytes);
@@ -46,6 +58,8 @@ struct ListOptions {
     std::size_t max_depth = 4, max_entries = 1000;
     Millis timeout{30000};
     std::vector<std::string> exclude_directories;
+    // Independent bounds on enumeration work and buffered path/text payloads, including vector slack.
+    std::size_t max_enumerated_entries = 16384, memory_budget_bytes = 4 * 1024 * 1024;
 };
 ProcessOutput list_files(const ListOptions& options, const Cancel& cancel = {});
 void validate_key(std::string_view value);

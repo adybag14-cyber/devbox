@@ -56,14 +56,34 @@ jobs:
         run: |
           node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'VCPKG_ROOT=' + require('path').resolve('.cpp-build/vcpkg') + '\n')"
           node -e "const fs=require('fs'),p=require('path').resolve('.cpp-build/vcpkg-cache');fs.mkdirSync(p,{recursive:true});fs.appendFileSync(process.env.GITHUB_ENV,'VCPKG_DEFAULT_BINARY_CACHE='+p+'\n')"
+      - name: Keep all Windows fixtures on the qualification workspace volume
+        if: runner.os == 'Windows'
+        run: node -e "const fs=require('fs'),p=require('path').resolve('.cpp-build/native-temp');fs.mkdirSync(p,{recursive:true});fs.appendFileSync(process.env.GITHUB_ENV,'TEMP='+p+'\nTMP='+p+'\n')"
+      - name: Select qualification compiler before cache identity
+        if: matrix.sanitizers == '1'
+        shell: bash
+        run: |
+          echo 'CC=clang' >> "$GITHUB_ENV"
+          echo 'CXX=clang++' >> "$GITHUB_ENV"
+      - name: Fingerprint exact compiler, SDK, triplet and dependency flags
+        id: native-cache-identity
+        env:
+          DEVBOX_CACHE_INSTRUMENTATION: ${{ matrix.sanitizers }}
+          DEVBOX_CACHE_CONFIGURATION: ${{ matrix.sanitizers == '1' && 'RelWithDebInfo' || 'Release' }}
+        run: node cpp-mcp/scripts/toolchain-cache-key.mjs
       - name: Cache pinned native dependencies
         id: native-dependencies
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cpp-build/vcpkg-cache
-          key: cpp-vcpkg-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.sanitizers }}-${{ hashFiles('vcpkg.json') }}
+          key: cpp-vcpkg-${{ matrix.os }}-${{ runner.arch }}-${{ steps.native-cache-identity.outputs.key }}
       - name: Install SDK and launcher test dependencies
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install native Linux isolation dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends bubblewrap
       - name: Select Clang sanitizer compiler
         if: matrix.sanitizers == '1'
         shell: bash
@@ -76,6 +96,9 @@ jobs:
         run: node cpp-mcp/scripts/ci-native.mjs
       - name: Fresh packaged installer and TUI discovery
         run: node cpp-bootstrap/scripts/fresh-install.mjs
+      - name: Require actual Linux namespace and syscall isolation
+        if: matrix.name == 'Linux GCC' || matrix.name == 'Linux ARM64 GCC'
+        run: sudo env DEVBOX_REQUIRE_LINUX_ISOLATION=1 ctest --test-dir .cpp-build/ci -R '^isolation$' --output-on-failure
       - name: Verified POSIX and Termux download flows
         if: runner.os != 'Windows'
         run: node cpp-bootstrap/scripts/download-install.mjs
@@ -96,6 +119,20 @@ jobs:
         run: |
           node cpp-mcp/scripts/engine-sdk-smoke.mjs
           node rust-mcp/scripts/agent-reliability-smoke.mjs
+      - name: Indexed state and independent coordinator SDK profile
+        run: |
+          node --input-type=module -e "process.env.MCP_STATE_BACKEND='sqlite'; await import('./cpp-mcp/scripts/engine-sdk-smoke.mjs')"
+          node --input-type=module -e "process.env.MCP_STATE_BACKEND='sqlite'; await import('./rust-mcp/scripts/agent-reliability-smoke.mjs')"
+      - name: Windows backend run and actual isolated-effect SDK fixture
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:DEVBOX_ISOLATION_PROBE = (Resolve-Path '.cpp-build/ci/cpp-mcp/Release/devbox-isolation-probe.exe').Path
+          $env:DEVBOX_TEST_TASKS = '1'
+          node cpp-mcp/scripts/run-harness-smoke.mjs
+      - name: Linux backend run and actual isolated-effect SDK fixture
+        if: matrix.name == 'Linux GCC' || matrix.name == 'Linux ARM64 GCC'
+        run: sudo env DEVBOX_TEST_TASKS=1 DEVBOX_CPP_BINARY="$DEVBOX_CPP_BINARY" DEVBOX_ISOLATION_PROBE="$PWD/.cpp-build/ci/cpp-mcp/devbox-isolation-probe" "$(command -v node)" cpp-mcp/scripts/run-harness-smoke.mjs
       - name: OAuth, gateway, configuration and disconnect
         run: |
           node rust-mcp/scripts/config-parity-smoke-runner.mjs
@@ -154,7 +191,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cpp-build/vcpkg-cache
-          key: cpp-vcpkg-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.sanitizers }}-${{ hashFiles('vcpkg.json') }}
+          key: cpp-vcpkg-${{ matrix.os }}-${{ runner.arch }}-${{ steps.native-cache-identity.outputs.key }}
 
   android:
     name: C++ Android API 21 ${{ matrix.abi }}
@@ -187,12 +224,18 @@ jobs:
           echo "ANDROID_NDK_HOME=$android_sdk_root/ndk/29.0.14206865" >> "$GITHUB_ENV"
           mkdir -p .cpp-build/vcpkg-cache
           echo "VCPKG_DEFAULT_BINARY_CACHE=$GITHUB_WORKSPACE/.cpp-build/vcpkg-cache" >> "$GITHUB_ENV"
+      - name: Fingerprint Android compiler and SDK
+        id: android-cache-identity
+        env:
+          DEVBOX_CACHE_ANDROID_ABI: ${{ matrix.abi }}
+          DEVBOX_CACHE_TRIPLET: android-${{ matrix.abi }}-api21
+        run: node cpp-mcp/scripts/toolchain-cache-key.mjs
       - name: Cache pinned Android dependencies
         id: android-dependencies
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cpp-build/vcpkg-cache
-          key: cpp-vcpkg-android-r29-api21-${{ matrix.abi }}-${{ hashFiles('vcpkg.json', 'cpp-mcp/cmake/triplets/*') }}
+          key: cpp-vcpkg-android-${{ matrix.abi }}-${{ steps.android-cache-identity.outputs.key }}-${{ hashFiles('cpp-mcp/cmake/triplets/*') }}
       - name: Build all native components for Android API 21
         run: node cpp-mcp/scripts/build-android.mjs --abi ${{ matrix.abi }}
       - name: Stage Android bundle
@@ -214,7 +257,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: .cpp-build/vcpkg-cache
-          key: cpp-vcpkg-android-r29-api21-${{ matrix.abi }}-${{ hashFiles('vcpkg.json', 'cpp-mcp/cmake/triplets/*') }}
+          key: cpp-vcpkg-android-${{ matrix.abi }}-${{ steps.android-cache-identity.outputs.key }}-${{ hashFiles('cpp-mcp/cmake/triplets/*') }}
 
   termux:
     name: C++ real Termux x86_64 runtime
@@ -294,9 +337,90 @@ jobs:
           path: .cpp-build/alpine-cache
           key: cpp-vcpkg-alpine-3.23-${{ hashFiles('vcpkg.json') }}
 
+  security:
+    name: C++ security ${{ matrix.mode }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {mode: windows-asan-analysis, os: windows-2025}
+          - {mode: linux-tsan, os: ubuntu-24.04}
+          - {mode: linux-fuzz, os: ubuntu-24.04}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: microsoft/vcpkg
+          ref: 04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4
+          path: .cpp-build/vcpkg
+          persist-credentials: false
+      - name: Bootstrap Windows tools
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./.cpp-build/vcpkg/bootstrap-vcpkg.bat -disableMetrics
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $toolset = (Get-Content "$installation/VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt" -Raw).Trim()
+          "$installation/VC/Tools/MSVC/$toolset/bin/Hostx64/x64" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Bootstrap Linux tools
+        if: runner.os == 'Linux'
+        run: |
+          sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+          echo 'CC=clang' >> "$GITHUB_ENV"
+          echo 'CXX=clang++' >> "$GITHUB_ENV"
+      - name: Configure private dependency locations
+        shell: bash
+        run: |
+          node -e "const fs=require('fs'),p=require('path');fs.mkdirSync('.cpp-build/security-cache',{recursive:true});fs.appendFileSync(process.env.GITHUB_ENV,'VCPKG_ROOT='+p.resolve('.cpp-build/vcpkg')+'\nVCPKG_DEFAULT_BINARY_CACHE='+p.resolve('.cpp-build/security-cache')+'\n')"
+      - name: Fingerprint security toolchain
+        id: security-cache-identity
+        env:
+          DEVBOX_CACHE_INSTRUMENTATION: ${{ matrix.mode }}
+          DEVBOX_CACHE_CONFIGURATION: RelWithDebInfo
+          DEVBOX_CACHE_TRIPLET: ${{ runner.os == 'Windows' && 'x64-windows-static-asan' || 'x64-linux' }}
+        run: node cpp-mcp/scripts/toolchain-cache-key.mjs
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        id: security-dependencies
+        with:
+          path: .cpp-build/security-cache
+          key: cpp-security-${{ matrix.os }}-${{ steps.security-cache-identity.outputs.key }}
+      - name: Instrumented native qualification
+        run: node cpp-mcp/scripts/security-qualification.mjs '${{ matrix.mode }}'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: cpp-security-${{ matrix.mode }}
+          path: |
+            .cpp-build/security/**/Testing/Temporary/
+            .cpp-build/security/**/*.sarif
+            .cpp-build/security/**/security-result.json
+            .cpp-build/security/**/static-analysis-result.json
+            .cpp-build/security/**/crash-*
+            .cpp-build/toolchain-identity/identity.json
+          if-no-files-found: warn
+
+      - name: Retain completed dependency archives after instrumented verification
+        if: always() && steps.security-dependencies.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: .cpp-build/security-cache
+          key: cpp-security-${{ matrix.os }}-${{ steps.security-cache-identity.outputs.key }}
+
   package:
     name: C++ verified release packages
-    needs: [native, android, termux, distributions, alpine]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    needs: [native, android, termux, distributions, alpine, security]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -312,6 +436,27 @@ jobs:
           path: .cpp-build/release-input
       - name: Verify every binary and round-trip every release archive
         run: node cpp-mcp/scripts/package-release.mjs
+      - name: Retain release assurance results even when promotion is blocked
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: cpp-release-assurance-report
+          path: |
+            .cpp-build/release-assets/vulnerability-report.json
+            .cpp-build/release-assets/build-provenance.json
+            .cpp-build/release-assets/qualification-receipt.json
+          if-no-files-found: ignore
+      - name: Sign exact tested release assets and qualification evidence
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        id: attest-release
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: '.cpp-build/release-assets/*'
+      - name: Retain the offline verification bundle
+        if: steps.attest-release.outcome == 'success'
+        env:
+          BUNDLE_PATH: ${{ steps.attest-release.outputs.bundle-path }}
+        run: cp "$BUNDLE_PATH" .cpp-build/release-assets/provenance.sigstore.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: cpp-release-assets

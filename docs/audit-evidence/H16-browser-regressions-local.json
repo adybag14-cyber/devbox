@@ -1,0 +1,59 @@
+{
+  "ticket": "H16",
+  "date": "2026-09-22",
+  "status": "implemented_local_verified_not_deployed",
+  "contract_version": 8,
+  "tool_count": 52,
+  "baseline": {
+    "client": "signed-in ChatGPT website, 6 Pro, Devbox Hermes plugin",
+    "tasks": {
+      "serving_identity": "pass",
+      "exact_file_edit_and_untrusted_source": "pass_independently_verified",
+      "live_phone_research": "partial"
+    },
+    "native_attempts": 64,
+    "usable_source_entries": 21,
+    "distinct_consulted_with_followups_agent_report": 23,
+    "verified_live_offer_sources_agent_report": 2,
+    "target": 50,
+    "stop_reason": "time_budget"
+  },
+  "fixes": [
+    "Amazon ASIN identity deduplicates alternative URL paths without changing the requested URL",
+    "Bounded inert buybox JSON adapter requires price and condition agreement between independent blocks before emitting an offer",
+    "Missing stock stays unknown; used/new evidence and discount/base prices cannot be mixed",
+    "Explicit upstream HTTP Age classification in offer view",
+    "Colour mismatch and repeated URL-segment warnings",
+    "Optional product_targets require all model/capacity phrases within one title or individual offer name, with explicit sibling-model exclusions",
+    "Product filters prune irrelevant link expansion and count per-target sources in the ledger",
+    "Cache extraction version 4 avoids reusing older parsed records"
+  ],
+  "validation": {
+    "windows": [
+      "web-offers",
+      "web-research",
+      "engine",
+      "SQLite SDK",
+      "four frozen schema profiles"
+    ],
+    "linux": [
+      "web-offers",
+      "web-research",
+      "engine",
+      "SQLite SDK"
+    ],
+    "frozen_baseline_cache_replays": 3,
+    "replay_outcome": "Two distinct requested ASINs produce exact recorded GBP price, condition and availability; repeated URL forms map to one identity",
+    "ledger_filter_fixture": "one matching offer-bearing document admitted; unrelated document excluded"
+  },
+  "development_binary_sha256": {
+    "windows": "3a1695ddef74df99cedf221c13c01327d6d4bd5a85933baba6a490114acb0c77",
+    "linux": "cbfdd9c1d993d51dd53d45a4a0f9f210cf86aed41d15ba29abbab9d0c2538ea3"
+  },
+  "limits": [
+    "Frozen evidence replay is not a new live-price check",
+    "Product filters are caller-declared and source identity matching does not prove retailer accuracy, stock, or publisher independence",
+    "Candidate ChatGPT website replay and hosted gates still pending",
+    "No production deployment"
+  ]
+}

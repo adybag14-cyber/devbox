@@ -1,0 +1,30 @@
+{
+  "ticket": "H16",
+  "status": "implemented_local_verified",
+  "source_base": "3227ef5817eebb6c2d3e938f12d26b489af47418",
+  "binary_sha256": "668aa4e020402054038f1984f06d3cef02c3ad2e2fb62f03e06339f1493b70b6",
+  "implementation": "C++23 native provider adapters, shared Retry-After policy and evidence quality summaries",
+  "checks": {
+    "web_research": "passed 12.35 seconds after final pagination adjustment",
+    "web_offers": "passed",
+    "indexed_jobs": "passed",
+    "legacy_contract_profiles": 4,
+    "sdk_smoke": "passed on preceding build before pagination-only adjustment"
+  },
+  "fixtures": [
+    "numeric, IMF-fixdate, RFC850 and asctime Retry-After including overflow/past/invalid",
+    "HTTP-date origin cooldown suppresses later network attempts",
+    "shared provider cooldown, fallback, challenge and failed-query distinctions",
+    "100 and 50 actually retrieved documents; hashes and check times preserved",
+    "100 pages from one hostname do not imply independent publishers",
+    "caller-declared primary source targets and missing evidence",
+    "failed fresh price check returns no cached offer",
+    "private addresses, redirects, bytes, deadlines, cancellation and TLS policy retained"
+  ],
+  "limits": [
+    "No claims of exhaustive provider coverage, independent publishers or verified factual agreement",
+    "No new live external provider probe performed in this qualification",
+    "Hosted cross-platform result pending"
+  ],
+  "related_fix": "Canonical state layout identity matches detached Config::load path resolution on macOS; Windows regression passed, hosted macOS pending"
+}

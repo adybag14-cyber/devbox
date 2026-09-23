@@ -1,10 +1,6 @@
 #include "devbox/research.hpp"
 #include "devbox/storage.hpp"
 #include <algorithm>
-#include <array>
-#include <curl/curl.h>
-#include <pugixml.hpp>
-#include <re2/re2.h>
 #include <set>
 #include <thread>
 
@@ -12,9 +8,6 @@ namespace devbox::web {
 namespace {
 constexpr std::uint64_t minimum_interval_ms = 1000;
 constexpr std::uint64_t challenge_cooldown_ms = 15 * 60 * 1000;
-constexpr std::string_view bing_notice =
-    "Bing RSS is provided for personal, non-commercial aggregation. Preserve attribution; "
-    "other uses require Microsoft's permission. This public interface is not a guaranteed search API.";
 
 std::uint64_t unix_ms() {
     return static_cast<std::uint64_t>(
@@ -31,25 +24,7 @@ void pause(Millis duration, const Cancel& cancel) {
         std::this_thread::sleep_for(duration);
 }
 std::uint64_t retry_after_ms(const Transfer& response) {
-    const auto value = trim(json_string(response.headers, "retry-after"));
-    if (value.empty())
-        return 0;
-    std::uint64_t seconds = 0;
-    if (std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= '0' && c <= '9'; })) {
-        try {
-            seconds = std::stoull(value);
-        } catch (...) {
-            return 0;
-        }
-    } else {
-        const auto date = curl_getdate(value.c_str(), nullptr);
-        const auto now = unix_ms() / 1000;
-        if (date < 0 || static_cast<std::uint64_t>(date) <= now)
-            return 0;
-        seconds = static_cast<std::uint64_t>(date) - now;
-    }
-    // Even absurdly distant Retry-After values remain a skip, never an early retry.
-    return seconds > (UINT64_MAX - unix_ms()) / 1000 ? UINT64_MAX - unix_ms() : seconds * 1000;
+    return retry_after_millis(json_string(response.headers, "retry-after")).value_or(0);
 }
 class ProviderHealth {
     fs::path root_;
@@ -109,6 +84,19 @@ class ProviderHealth {
             pause(Millis(static_cast<Millis::rep>(wait_ms)), cancel);
         }
     }
+    void completed(const std::string& provider, Clock::time_point deadline) {
+        FileLock lock(root_ / ".health.lock",
+                      std::max(Millis(1), std::min(remaining(deadline), Millis(1000))), {}, true);
+        auto state = read();
+        auto& entry = state["providers"][provider];
+        if (!entry.is_object())
+            throw Error("Invalid search-provider health entry");
+        const auto now = unix_ms();
+        // Reserving before a slow durable health write can otherwise bunch actual network starts.
+        // Completion is a conservative observable boundary shared by subsequent jobs/processes.
+        entry["next_request_ms"] = std::max(json_uint(entry, "next_request_ms"), now + minimum_interval_ms);
+        write_json_atomic(root_ / "health.json", state);
+    }
     void failed(const std::string& provider, std::string_view reason, const Transfer& response,
                 Clock::time_point deadline, const Cancel& cancel) {
         std::uint64_t delay = reason == "challenge_required" || reason == "access_blocked"
@@ -134,15 +122,7 @@ std::string endpoint(const std::string& provider, const std::string& query, cons
     if (limits.fixture_loopback_port)
         return "http://127.0.0.1:" + std::to_string(*limits.fixture_loopback_port) + "/search/" + provider +
                "?q=" + url_encode(query);
-    if (provider == "duckduckgo_html")
-        return "https://html.duckduckgo.com/html/?q=" + url_encode(query);
-    if (provider == "bing_rss")
-        return "https://www.bing.com/search?format=rss&q=" + url_encode(query);
-    if (provider == "crossref")
-        return "https://api.crossref.org/works?rows=100&select=DOI,title,URL,resource,published&query=" +
-               url_encode(query);
-    return "https://en.wikipedia.org/w/api.php?action=query&list=search&srlimit=100&format=json&srsearch=" +
-           url_encode(query);
+    return discovery_provider(provider).endpoint(query);
 }
 bool blocked(std::string_view status) {
     return status == "challenge_required" || status == "access_blocked" || status == "rate_limited";
@@ -151,7 +131,11 @@ bool blocked(std::string_view status) {
 
 Json parse_search_response(std::string_view provider, const Transfer& response,
                            std::optional<unsigned short> fixture_loopback_port) {
+    const auto& adapter = discovery_provider(provider);
     Json result{{"status", "unavailable"}, {"urls", Json::array()}, {"results", 0}};
+    result["coverage"] = adapter.coverage;
+    result["terms_url"] = adapter.terms_url;
+    result["use_notice"] = adapter.use_notice;
     if (response.error == "WEB_BYTE_BUDGET" || response.error == "WEB_DEADLINE") {
         result["status"] = "budget_exhausted";
         result["error"] = response.error;
@@ -187,61 +171,9 @@ Json parse_search_response(std::string_view provider, const Transfer& response,
         }
     };
     try {
-        if (provider == "duckduckgo_html") {
-            const auto document = extract_document(response);
-            if (json_string(document, "status") == "challenge_required") {
-                result["status"] = "challenge_required";
-                result["error"] = "Search provider requires human verification; automatic requests stopped";
-                return result;
-            }
-            for (const auto& link : document.value("links", Json::array())) {
-                static const RE2 result_class("(?:^|\\s)result__a(?:$|\\s)");
-                if (!RE2::PartialMatch(json_string(link, "class"), result_class))
-                    continue;
-                auto target = json_string(link, "url");
-                const auto parameters = query_parameters(Url::parse(target).query);
-                if (parameters.contains("uddg"))
-                    target = json_string(parameters, "uddg");
-                add(target);
-            }
-            if (result["urls"].empty() && !json_bool(document, "search_no_results"))
-                throw Error("Search HTML did not contain recognized result or no-result markup");
-        } else if (provider == "bing_rss") {
-            pugi::xml_document document;
-            const auto parsed = document.load_buffer(response.body.data(), response.body.size(),
-                                                     pugi::parse_default | pugi::parse_doctype);
-            if (!parsed)
-                throw Error("Malformed search RSS");
-            for (const auto& node : document.children())
-                if (node.type() == pugi::node_doctype)
-                    throw Error("Search RSS document types are not supported");
-            const auto channel = document.child("rss").child("channel");
-            if (!channel)
-                throw Error("Search response did not contain an RSS channel");
-            for (const auto& item : channel.children("item"))
-                add(trim(item.child_value("link")));
-            // Feed descriptions and pubDate are search metadata, never fetched source evidence.
-            result["use_notice"] = bing_notice;
-        } else {
-            const auto data = Json::parse(response.body, [](int depth, Json::parse_event_t, Json&) {
-                if (depth > 64)
-                    throw Error("WEB_JSON_DEPTH");
-                return true;
-            });
-            if (provider == "crossref") {
-                for (const auto& item : data.at("message").at("items")) {
-                    auto url = json_string(item, "URL");
-                    if (item.contains("resource") && item["resource"].contains("primary"))
-                        url = json_string(item["resource"]["primary"], "URL", url);
-                    add(url);
-                }
-            } else if (provider == "mediawiki") {
-                for (const auto& item : data.at("query").at("search"))
-                    add("https://en.wikipedia.org/wiki/" +
-                        url_encode(replace_all(json_string(item, "title"), " ", "_")));
-            } else
-                throw Error("Unknown search provider");
-        }
+        adapter.extract(response, add, result);
+        if (json_string(result, "status") == "challenge_required")
+            return result;
         result["results"] = result["urls"].size();
         if (result["urls"].empty() && json_uint(result, "invalid_results"))
             throw Error("Search results contained no valid public-web URLs");
@@ -292,9 +224,13 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
         for (std::size_t choice = 0; choice < providers.size(); ++choice) {
             const auto& provider = providers[choice];
             Json report{{"query_index", index}, {"query", query}, {"provider", provider}, {"results", 0}};
-            if (provider == "bing_rss")
-                report["use_notice"] = bing_notice;
+            const auto& adapter = discovery_provider(provider);
+            report["coverage"] = adapter.coverage;
+            report["terms_url"] = adapter.terms_url;
+            report["use_notice"] = adapter.use_notice;
             try {
+                FileLock provider_request(health_root / ("." + provider + ".request.lock"),
+                                          std::max(Millis(1), remaining(deadline)), cancel, true);
                 const auto reservation = health.reserve(provider, deadline, cancel);
                 if (json_string(reservation, "status") != "ready") {
                     report.update(reservation);
@@ -308,6 +244,7 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
                 const auto url = endpoint(provider, query, limits);
                 const auto responses = transport.get({Request{url, Json::object()}}, deadline, cancel);
                 const auto& response = responses.front();
+                health.completed(provider, deadline);
                 if (cancel)
                     cancel->check();
                 auto parsed = parse_search_response(provider, response, limits.fixture_loopback_port);
@@ -363,7 +300,7 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
     summary["queries_unattempted"] = queries.size() - attempted;
     summary["fallback_queries"] = fallback;
     if (fallback)
-        summary["provider_use_notice"] = bing_notice;
+        summary["provider_use_notice"] = discovery_provider("bing_rss").use_notice;
     if (completed < queries.size()) {
         summary["status"] = completed ? "partial"
                             : exhausted || Clock::now() >= deadline || transport.byte_budget_exhausted()

@@ -1,0 +1,378 @@
+{
+  "schema": 1,
+  "ticket": "H03",
+  "status": "matched_local_and_tunnel_complete",
+  "profile": "Windows C++23 development runtime; independent synthetic fixtures",
+  "observations": 24000,
+  "binary_sha256": "9c70198910ba018fb8d84b9ce38a6a9a99533622563ecac836f58f2f69de4f74",
+  "concurrency": 4,
+  "results": [
+    {
+      "route": "localhost",
+      "class": "health",
+      "observations": 3000,
+      "runs": [
+        {
+          "round": 0,
+          "p50_ms": 1.1777000000001863,
+          "p95_ms": 2.1828999999997905,
+          "p99_ms": 2.7818999999999505,
+          "service_cpu_ms": 203.125,
+          "wall_ms": 336.60410000000047
+        },
+        {
+          "round": 1,
+          "p50_ms": 1.0111000000033528,
+          "p95_ms": 1.269799999994575,
+          "p99_ms": 1.6490999999950873,
+          "service_cpu_ms": 171.875,
+          "wall_ms": 261.2262999999948
+        },
+        {
+          "round": 2,
+          "p50_ms": 0.9815999999991618,
+          "p95_ms": 1.285600000002887,
+          "p99_ms": 1.5825999999942724,
+          "service_cpu_ms": 203.125,
+          "wall_ms": 254.8189999999886
+        }
+      ],
+      "uncertainty": {
+        "p50_ms": {
+          "minimum_across_runs": 0.9815999999991618,
+          "maximum_across_runs": 1.1777000000001863
+        },
+        "p95_ms": {
+          "minimum_across_runs": 1.269799999994575,
+          "maximum_across_runs": 2.1828999999997905
+        },
+        "p99_ms": {
+          "minimum_across_runs": 1.5825999999942724,
+          "maximum_across_runs": 2.7818999999999505
+        }
+      }
+    },
+    {
+      "route": "localhost",
+      "class": "capabilities",
+      "observations": 3000,
+      "runs": [
+        {
+          "round": 0,
+          "p50_ms": 2.1406000000006316,
+          "p95_ms": 2.7426999999988766,
+          "p99_ms": 3.294400000000678,
+          "service_cpu_ms": 812.5,
+          "wall_ms": 544.8513000000003
+        },
+        {
+          "round": 1,
+          "p50_ms": 1.9060999999928754,
+          "p95_ms": 2.608600000006845,
+          "p99_ms": 3.881200000003446,
+          "service_cpu_ms": 765.625,
+          "wall_ms": 500.11909999999625
+        },
+        {
+          "round": 2,
+          "p50_ms": 1.9633000000030734,
+          "p95_ms": 2.6749999999883585,
+          "p99_ms": 3.6931000000040513,
+          "service_cpu_ms": 656.25,
+          "wall_ms": 509.9953000000096
+        }
+      ],
+      "uncertainty": {
+        "p50_ms": {
+          "minimum_across_runs": 1.9060999999928754,
+          "maximum_across_runs": 2.1406000000006316
+        },
+        "p95_ms": {
+          "minimum_across_runs": 2.608600000006845,
+          "maximum_across_runs": 2.7426999999988766
+        },
+        "p99_ms": {
+          "minimum_across_runs": 3.294400000000678,
+          "maximum_across_runs": 3.881200000003446
+        }
+      }
+    },
+    {
+      "route": "localhost",
+      "class": "read4k",
+      "observations": 3000,
+      "runs": [
+        {
+          "round": 0,
+          "p50_ms": 28.00590000000011,
+          "p95_ms": 31.304299999999785,
+          "p99_ms": 32.54239999999845,
+          "service_cpu_ms": 3328.125,
+          "wall_ms": 6983.869000000001
+        },
+        {
+          "round": 1,
+          "p50_ms": 27.929999999993015,
+          "p95_ms": 31.042400000005728,
+          "p99_ms": 32.218699999997625,
+          "service_cpu_ms": 4265.625,
+          "wall_ms": 6917.151799999992
+        },
+        {
+          "round": 2,
+          "p50_ms": 27.74179999998887,
+          "p95_ms": 31.46359999998822,
+          "p99_ms": 33.717499999998836,
+          "service_cpu_ms": 3093.75,
+          "wall_ms": 6948.216399999976
+        }
+      ],
+      "uncertainty": {
+        "p50_ms": {
+          "minimum_across_runs": 27.74179999998887,
+          "maximum_across_runs": 28.00590000000011
+        },
+        "p95_ms": {
+          "minimum_across_runs": 31.042400000005728,
+          "maximum_across_runs": 31.46359999998822
+        },
+        "p99_ms": {
+          "minimum_across_runs": 32.218699999997625,
+          "maximum_across_runs": 33.717499999998836
+        }
+      }
+    },
+    {
+      "route": "localhost",
+      "class": "child",
+      "observations": 3000,
+      "runs": [
+        {
+          "round": 0,
+          "p50_ms": 53.46649999999863,
+          "p95_ms": 76.52760000000126,
+          "p99_ms": 97.84820000000036,
+          "service_cpu_ms": 8171.875,
+          "wall_ms": 14034.5631
+        },
+        {
+          "round": 1,
+          "p50_ms": 51.07949999999255,
+          "p95_ms": 75.76960000002873,
+          "p99_ms": 99.37340000001132,
+          "service_cpu_ms": 7453.125,
+          "wall_ms": 13751.756899999978
+        },
+        {
+          "round": 2,
+          "p50_ms": 53.563899999979185,
+          "p95_ms": 96.2157999999763,
+          "p99_ms": 122.67820000002393,
+          "service_cpu_ms": 7859.375,
+          "wall_ms": 15206.471099999995
+        }
+      ],
+      "uncertainty": {
+        "p50_ms": {
+          "minimum_across_runs": 51.07949999999255,
+          "maximum_across_runs": 53.563899999979185
+        },
+        "p95_ms": {
+          "minimum_across_runs": 75.76960000002873,
+          "maximum_across_runs": 96.2157999999763
+        },
+        "p99_ms": {
+          "minimum_across_runs": 97.84820000000036,
+          "maximum_across_runs": 122.67820000002393
+        }
+      }
+    },
+    {
+      "route": "tunnel",
+      "class": "health",
+      "observations": 3000,
+      "runs": [
+        {
+          "round": 0,
+          "p50_ms": 22.757799999999406,
+          "p95_ms": 29.834600000001956,
+          "p99_ms": 41.92199999999866,
+          "service_cpu_ms": 390.625,
+          "wall_ms": 5727.631999999998
+        },
+        {
+          "round": 1,
+          "p50_ms": 18.5737999999983,
+          "p95_ms": 28.417400000005728,
+          "p99_ms": 35.941600000005565,
+          "service_cpu_ms": 359.375,
+          "wall_ms": 5150.118199999997
+        },
+        {
+          "round": 2,
+          "p50_ms": 18.98560000001453,
+          "p95_ms": 27.943799999979092,
+          "p99_ms": 33.522999999986496,
+          "service_cpu_ms": 468.75,
+          "wall_ms": 5142.9699000000255
+        }
+      ],
+      "uncertainty": {
+        "p50_ms": {
+          "minimum_across_runs": 18.5737999999983,
+          "maximum_across_runs": 22.757799999999406
+        },
+        "p95_ms": {
+          "minimum_across_runs": 27.943799999979092,
+          "maximum_across_runs": 29.834600000001956
+        },
+        "p99_ms": {
+          "minimum_across_runs": 33.522999999986496,
+          "maximum_across_runs": 41.92199999999866
+        }
+      }
+    },
+    {
+      "route": "tunnel",
+      "class": "capabilities",
+      "observations": 3000,
+      "runs": [
+        {
+          "round": 0,
+          "p50_ms": 20.517800000001444,
+          "p95_ms": 29.36869999999908,
+          "p99_ms": 40.53570000000036,
+          "service_cpu_ms": 1343.75,
+          "wall_ms": 5617.2109000000055
+        },
+        {
+          "round": 1,
+          "p50_ms": 18.469499999991967,
+          "p95_ms": 27.278999999994994,
+          "p99_ms": 34.21099999999569,
+          "service_cpu_ms": 937.5,
+          "wall_ms": 5040.4735999999975
+        },
+        {
+          "round": 2,
+          "p50_ms": 20.27369999999064,
+          "p95_ms": 29.589500000001863,
+          "p99_ms": 35.095000000001164,
+          "service_cpu_ms": 1171.875,
+          "wall_ms": 5489.781099999993
+        }
+      ],
+      "uncertainty": {
+        "p50_ms": {
+          "minimum_across_runs": 18.469499999991967,
+          "maximum_across_runs": 20.517800000001444
+        },
+        "p95_ms": {
+          "minimum_across_runs": 27.278999999994994,
+          "maximum_across_runs": 29.589500000001863
+        },
+        "p99_ms": {
+          "minimum_across_runs": 34.21099999999569,
+          "maximum_across_runs": 40.53570000000036
+        }
+      }
+    },
+    {
+      "route": "tunnel",
+      "class": "read4k",
+      "observations": 3000,
+      "runs": [
+        {
+          "round": 0,
+          "p50_ms": 45.20440000000235,
+          "p95_ms": 55.922200000000885,
+          "p99_ms": 65.8715000000011,
+          "service_cpu_ms": 3453.125,
+          "wall_ms": 11552.388500000001
+        },
+        {
+          "round": 1,
+          "p50_ms": 43.81520000001183,
+          "p95_ms": 56.03209999999672,
+          "p99_ms": 69.40370000000985,
+          "service_cpu_ms": 3109.375,
+          "wall_ms": 11299.2261
+        },
+        {
+          "round": 2,
+          "p50_ms": 43.70350000000326,
+          "p95_ms": 51.567600000009406,
+          "p99_ms": 55.79329999999027,
+          "service_cpu_ms": 3296.875,
+          "wall_ms": 11225.335599999991
+        }
+      ],
+      "uncertainty": {
+        "p50_ms": {
+          "minimum_across_runs": 43.70350000000326,
+          "maximum_across_runs": 45.20440000000235
+        },
+        "p95_ms": {
+          "minimum_across_runs": 51.567600000009406,
+          "maximum_across_runs": 56.03209999999672
+        },
+        "p99_ms": {
+          "minimum_across_runs": 55.79329999999027,
+          "maximum_across_runs": 69.40370000000985
+        }
+      }
+    },
+    {
+      "route": "tunnel",
+      "class": "child",
+      "observations": 3000,
+      "runs": [
+        {
+          "round": 0,
+          "p50_ms": 65.7846000000136,
+          "p95_ms": 82.03130000000237,
+          "p99_ms": 100.17740000000049,
+          "service_cpu_ms": 6640.625,
+          "wall_ms": 16994.56820000001
+        },
+        {
+          "round": 1,
+          "p50_ms": 66.6085000000021,
+          "p95_ms": 84.42699999999604,
+          "p99_ms": 104.65210000000661,
+          "service_cpu_ms": 6609.375,
+          "wall_ms": 17065.9023
+        },
+        {
+          "round": 2,
+          "p50_ms": 65.49749999999767,
+          "p95_ms": 84.39879999999539,
+          "p99_ms": 104.15970000001835,
+          "service_cpu_ms": 6093.75,
+          "wall_ms": 16895.4081
+        }
+      ],
+      "uncertainty": {
+        "p50_ms": {
+          "minimum_across_runs": 65.49749999999767,
+          "maximum_across_runs": 66.6085000000021
+        },
+        "p95_ms": {
+          "minimum_across_runs": 82.03130000000237,
+          "maximum_across_runs": 84.42699999999604
+        },
+        "p99_ms": {
+          "minimum_across_runs": 100.17740000000049,
+          "maximum_across_runs": 104.65210000000661
+        }
+      }
+    }
+  ],
+  "limitations": [
+    "Three runs per class/path, 1000 observations per run; between-run ranges are descriptive uncertainty, not a general-population confidence bound.",
+    "Each path uses the same fixed allowlisted proxy. This includes proxy overhead.",
+    "Temporary hostname used the explicit Cloudflare public resolver because the host resolver returned NXDOMAIN. TLS verification was preserved.",
+    "Children perform no external effects; production traffic zero.",
+    "Release artifact performance remains independently qualified."
+  ]
+}

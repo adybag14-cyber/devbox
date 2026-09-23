@@ -1,4 +1,5 @@
 #include "devbox/research.hpp"
+#include "devbox/web_retailers.hpp"
 #include <iostream>
 
 using namespace devbox;
@@ -31,6 +32,11 @@ Json product() {
 }
 int main(int argc, char** argv) {
     try {
+        if (argc == 3 && std::string_view(argv[1]) == "--cached-document") {
+            const auto document = read_json(path_from_utf8(argv[2]), 512 * 1024);
+            std::cout << web::retailer_offer_records(document).dump(2) << '\n';
+            return 0;
+        }
         if (argc == 3) {
             // Local replay only: retain the real public URL for exact variant joins.
             web::Transfer response;
@@ -41,6 +47,90 @@ int main(int argc, char** argv) {
             const auto result = web::extract_document(response);
             std::cout << web::offer_view(result, 0, 64).dump(2) << '\n';
             return 0;
+        }
+        {
+            const auto primary =
+                Json{{"desktop_buybox_group_1", Json::array({Json{{"priceAmount", 529.0},
+                                                                  {"buyingOptionType", "NEW"},
+                                                                  {"aapiBuyingOptionIndex", 0}}})}};
+            auto companion = Json{{"0",
+                                   {{"price", {{"amount", 529.0}, {"currencyCode", "GBP"}}},
+                                    {"isAvailable", true},
+                                    {"encryptedMerchantId", "MERCHANT12345"},
+                                    {"buyingOptionType", "NEW"}}}};
+            Json document{{"url", "https://www.amazon.co.uk/Example-phone/dp/B0DVC8TJQ1/ref=abc?tag=x"},
+                          {"title", "Samsung Galaxy S25 256GB Navy"},
+                          {"text", primary.dump() + " Purchase options and add-ons " + companion.dump() +
+                                       " Credit offer 509.00"}};
+            const auto offers = web::retailer_offer_records(document);
+            require(offers.size() == 1 && offers[0]["price"] == "529.00" && offers[0]["currency"] == "GBP" &&
+                        offers[0]["itemCondition"] == "NewCondition" &&
+                        offers[0]["availability"] == "InStock" && offers[0]["asin"] == "B0DVC8TJQ1",
+                    "matched buybox JSON extracts one exact new offer without credit discount");
+            companion["0"]["price"]["amount"] = 509.0;
+            document["text"] = primary.dump() + " " + companion.dump();
+            require(web::retailer_offer_records(document).empty(),
+                    "disagreeing price blocks never combine into an offer");
+            companion["0"]["price"]["amount"] = 529.0;
+            companion["0"]["buyingOptionType"] = "USED";
+            document["text"] = primary.dump() + " " + companion.dump();
+            require(web::retailer_offer_records(document).empty(),
+                    "new and used option evidence cannot be mixed");
+            companion["0"]["buyingOptionType"] = "NEW";
+            auto primary_currency = primary;
+            primary_currency["desktop_buybox_group_1"][0]["currencySymbol"] = "\xc2\xa3";
+            companion["0"]["price"]["currencyCode"] = "USD";
+            document["text"] = primary_currency.dump() + " " + companion.dump();
+            require(web::retailer_offer_records(document).empty(),
+                    "price blocks with different currencies cannot be combined");
+            companion["0"]["price"]["currencyCode"] = "GBP";
+            companion["0"].erase("isAvailable");
+            document["text"] = primary.dump() + " " + companion.dump();
+            require(!web::retailer_offer_records(document)[0].contains("availability"),
+                    "missing stock stays unknown");
+            document["url"] = "https://amazon.co.uk.attacker.example/dp/B0DVC8TJQ1";
+            require(web::retailer_offer_records(document).empty(),
+                    "retailer-specific extraction has exact host scope");
+            require(
+                web::source_identity_url("https://amazon.co.uk/Example-phone/dp/B0DVC8TJQ1/ref=abc?tag=x") ==
+                        web::source_identity_url("https://www.amazon.co.uk/dp/B0DVC8TJQ1") &&
+                    web::source_identity_url("https://www.amazon.co.uk/dp/B0DVC8TJQ2") !=
+                        web::source_identity_url("https://www.amazon.co.uk/dp/B0DVC8TJQ1"),
+                "one ASIN has one source identity, distinct variants keep their identity");
+            auto conflicting = product();
+            conflicting["name"] = "Samsung Galaxy S25 Blueblack 256GB";
+            conflicting["color"] = "Navy";
+            const auto rows = web::offer_view(extract(ld(conflicting)));
+            require(rows["offers"][0]["assessment"] == "conflicting_source_data",
+                    "inconsistent product-name colour is explicit");
+            auto cached = extract(ld(product()));
+            cached["cache_status"] = "network";
+            cached["http_age"] = "41590";
+            require(web::offer_view(cached)["freshness"]["assessment"] == "upstream_cached_body",
+                    "network transfer does not silently imply an uncached origin price");
+            Json targets = Json::array(
+                {Json{{"label", "s25-256"},
+                      {"must_include", {"Galaxy S25", "256GB"}},
+                      {"must_exclude", {"S25 FE", "S25 Edge", "S25 Ultra", "S25 Plus", "S25+"}}}});
+            require(web::match_product_targets(Json{{"title", "Samsung Galaxy S25 256 GB Navy"}}, targets)
+                            .size() == 1,
+                    "model and capacity match together with normalized unit spacing");
+            for (const auto* name :
+                 {"Samsung Galaxy S25 FE 256GB", "Samsung Galaxy S25+ 256GB", "Galaxy S25 128GB"})
+                require(
+                    web::match_product_targets(Json{{"title", name}, {"text", "Galaxy S25 256GB"}}, targets)
+                        .empty(),
+                    "wrong models and capacities cannot borrow matching recommendations from the body");
+            require(web::match_product_targets(
+                        Json{{"title", "Products"},
+                             {"offers", Json::array({Json{{"product_name", "Galaxy S25 128GB"}},
+                                                     Json{{"product_name", "Galaxy S26 256GB"}}})}},
+                        targets)
+                        .empty(),
+                    "terms from different offers cannot be combined");
+            targets[0]["require_offer"] = true;
+            require(web::match_product_targets(Json{{"title", "Galaxy S25 256GB"}}, targets).empty(),
+                    "structured-offer requirement is explicit");
         }
         auto p = product();
         const auto exact = web::offer_view(extract(ld(p)));

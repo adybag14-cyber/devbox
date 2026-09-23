@@ -373,12 +373,11 @@ std::vector<Transfer> Transport::get(const std::vector<Request>& requests, Clock
             }
             if (status == 429 || status == 503) {
                 const auto retry = header(item->response.headers, "retry-after");
-                long seconds = 60;
-                try {
-                    seconds = std::clamp(std::stol(retry), 1L, 3600L);
-                } catch (...) {
-                }
-                backoff[item->origin] = Clock::now() + std::chrono::seconds(seconds);
+                const auto delay = std::max<std::uint64_t>(1000, retry_after_millis(retry).value_or(60000));
+                const auto now = Clock::now();
+                const auto room = std::chrono::duration_cast<Millis>(Clock::time_point::max() - now).count();
+                backoff[item->origin] = delay >= static_cast<std::uint64_t>(room) ? Clock::time_point::max()
+                                                                                  : now + Millis(delay);
             }
             const bool transient =
                 transfer_code == CURLE_COULDNT_RESOLVE_HOST || transfer_code == CURLE_COULDNT_CONNECT ||

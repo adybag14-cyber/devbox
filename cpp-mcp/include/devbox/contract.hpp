@@ -1,9 +1,11 @@
 #pragma once
 #include "config.hpp"
+#include "devbox/registry_counts.hpp"
 #include <set>
 namespace devbox {
-inline constexpr std::size_t cpp_tool_count = 50;
-inline constexpr unsigned cpp_contract_version = 4;
+const Json& tool_registry();
+const Json& tool_policy(std::string_view name);
+Json capability_manifest(const Config& config);
 Json build_snapshot();
 std::string build_version();
 class ParameterError : public Error {

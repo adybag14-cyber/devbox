@@ -1,0 +1,17 @@
+{
+  "scope": "State coordinator primitive and IPC; job/checkpoint integration is next",
+  "schema_version": 2,
+  "checks": [
+    "HKDF-SHA256/AES-256-GCM payload protection",
+    "domain-separated HMAC request and response proof",
+    "bounded replay cache",
+    "ambient proxy bypass",
+    "single writer across concurrent clients",
+    "frontend-exit survival",
+    "restart fencing and durable receipt replay",
+    "v1-to-v2 migration preserving uncertain operation identity"
+  ],
+  "tests": "Test project C:/Users/adyba/devbox-audit-implementation-20260921/.cpp-build/windows\n    Start 1: state-coordinator\n1/2 Test #1: state-coordinator ................   Passed    0.29 sec\n    Start 2: state-store\n2/2 Test #2: state-store ......................   Passed   13.69 sec\n\n100% tests passed, 0 tests failed out of 2\n\nTotal Test time (real) =  13.99 sec\n",
+  "build_log_sha256": "a93056b70c9ecedb5f3b4e4347d1bef95980aac945de50d0228d5269a3a3698e",
+  "production_activation": false
+}

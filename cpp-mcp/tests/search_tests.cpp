@@ -18,6 +18,9 @@ std::set<std::string> lines(const std::string& value) {
     return std::set<std::string>(rows.begin(), rows.end());
 }
 int main() {
+#ifdef _WIN32
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
+#endif
     const auto root = fs::temp_directory_path() / ("devbox-cpp-search-" + uuid());
     try {
         fs::create_directories(root / "nested");
@@ -163,7 +166,8 @@ int main() {
         require(path_text(resolve_windows_host_path("one/../two.txt", path_from_utf8("C:\\base"))) ==
                     "C:\\base\\two.txt",
                 "Windows host path normalization");
-        require(path_text(resolve_windows_host_path("\\root.txt", path_from_utf8("C:\\base"))) == "\\root.txt",
+        require(path_text(resolve_windows_host_path("\\root.txt", path_from_utf8("C:\\base"))) ==
+                    "\\root.txt",
                 "rooted Windows host path contract");
         bool rejected = false;
         try {
@@ -175,6 +179,16 @@ int main() {
 #ifdef _WIN32
         write_file(root / "valid.ps1", "Write-Output 'valid'\n");
         inspection.path = "valid.ps1";
+        const auto parser = config->power_shell_exe, fallback = config->power_shell_fallback_exe;
+        config->power_shell_exe = config->power_shell_fallback_exe = "missing-devbox-parser-fixture.exe";
+        inspected = inspect_host_file(*config, runtime, inspection);
+        require(inspected["powershell_syntax"]["parse_ok"].is_null() &&
+                    inspected["syntax_invalid"].is_null() &&
+                    inspected["syntax_check_status"] == "unavailable" && inspected["repair_hints"].empty(),
+                "parser infrastructure failure cannot classify a valid source as syntax-invalid");
+        config->power_shell_exe = parser;
+        config->power_shell_fallback_exe = fallback;
+        std::cout << "[search] PowerShell parser qualification\n" << std::flush;
         inspected = inspect_host_file(*config, runtime, inspection);
         require(inspected["powershell_syntax"]["parse_ok"] == true, inspected.dump().c_str());
         write_file(root / "broken.ps1", "function Broken {\n");

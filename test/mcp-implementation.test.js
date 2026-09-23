@@ -26,6 +26,17 @@ test("MCP implementation defaults to C++ and retains explicit legacy selections"
   );
 });
 
+test("schema preflight captures bounded full JSON and rejects overflow", async () => {
+  const result = await runCheckedProcess(process.execPath, ['-e', "process.stdout.write(JSON.stringify({schema:'x'.repeat(65536)}))"], {
+    maxCaptureChars: 128 * 1024, rejectOutputOverflow: true, timeoutMs: 10000,
+  });
+  assert.equal(JSON.parse(result.stdout).schema.length, 65536);
+  await assert.rejects(runCheckedProcess(process.execPath, ['-e', "process.stdout.write('x'.repeat(20000))"], {
+    maxCaptureChars: 12000, rejectOutputOverflow: true, timeoutMs: 10000,
+  }), /bounded capture capacity/u);
+  await assert.rejects(runCheckedProcess('must-not-execute', [], { maxCaptureChars: Infinity }), /capacity must be/u);
+});
+
 test("Rust launch spec uses release binary and pins the project root", () => {
   const root = path.resolve("/tmp/devbox-cutover");
   const env = { PATH: "test" };

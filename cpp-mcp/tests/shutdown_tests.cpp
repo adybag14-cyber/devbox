@@ -1,10 +1,22 @@
 #include "../src/server_main.hpp"
 #include "devbox/engine.hpp"
+#include "devbox/filesystem_worker.hpp"
 #include <csignal>
 #include <future>
 #include <iostream>
 using namespace devbox;
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
+        return run_filesystem_worker([](std::string_view op, const Json& args) {
+            const auto path = path_from_utf8(json_string(args, "path"));
+            if (path.filename() == "stuck-owner.json") {
+                const auto pid = process_id();
+                write_json_atomic(path, Json{{"pid", pid}, {"instance", *process_instance(pid)}});
+                for (;;)
+                    std::this_thread::sleep_for(Millis(1000));
+            }
+            return filesystem_operation(op, args);
+        });
     const auto root = fs::temp_directory_path() / path_from_utf8("devbox-shutdown-" + uuid());
     try {
         fs::create_directory(root);
@@ -35,7 +47,10 @@ int main(int argc, char** argv) {
               std::pair{"DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE", "1"}})
             set_environment(name, value);
         const auto signal = argc == 2 && std::string_view(argv[1]) == "interrupt" ? SIGINT : SIGTERM;
-        auto stop = std::async(std::launch::async, [base, signal] {
+        const bool stuck = argc == 2 && std::string_view(argv[1]) == "stuck";
+        const auto receipt = root / "stuck-owner.json";
+        std::future<void> request;
+        auto stop = std::async(std::launch::async, [base, signal, stuck, receipt, &request] {
             bool ready = false;
             const auto deadline = Clock::now() + Millis(10000);
             while (!ready && Clock::now() < deadline) {
@@ -47,6 +62,28 @@ int main(int argc, char** argv) {
                 if (!ready)
                     std::this_thread::sleep_for(Millis(10));
             }
+            if (stuck && ready) {
+                request = std::async(std::launch::async, [base, receipt] {
+                    try {
+                        (void)http_request(
+                            "POST", base,
+                            Json{{"jsonrpc", "2.0"},
+                                 {"id", "stuck"},
+                                 {"method", "tools/call"},
+                                 {"params",
+                                  {{"name", "devbox_read_file"},
+                                   {"arguments", {{"path", path_text(receipt)}}}}}}
+                                .dump(),
+                            Json{{"accept", "application/json"}, {"content-type", "application/json"}},
+                            Millis(5000));
+                    } catch (...) {
+                    }
+                });
+                const auto worker_deadline = Clock::now() + Millis(3000);
+                while (!fs::exists(receipt) && Clock::now() < worker_deadline)
+                    std::this_thread::sleep_for(Millis(5));
+                ready = fs::exists(receipt);
+            }
             // raise targets this test process. It exercises the real signal
             // handler, main wait, server stop, background joins and log drain.
             const auto started = Clock::now();
@@ -57,6 +94,13 @@ int main(int argc, char** argv) {
         const auto [ready, raised, stopped_at] = stop.get();
         if (!ready || raised != 0 || exit != 0 || Clock::now() - stopped_at > Millis(3000))
             throw Error("Real runtime failed readiness or prompt graceful signal shutdown");
+        if (request.valid())
+            request.get();
+        if (stuck) {
+            const auto owner = read_json(receipt);
+            if (process_matches_instance(json_uint(owner, "pid"), json_uint(owner, "instance")))
+                throw Error("Frontend returned before terminating its stuck filesystem worker");
+        }
         std::cout << "Real runtime signal shutdown completed and joined its workers\n";
         return 0;
     } catch (const std::exception& error) {

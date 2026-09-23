@@ -20,6 +20,7 @@ using Json = nlohmann::ordered_json;
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 using Millis = std::chrono::milliseconds;
+using Micros = std::chrono::microseconds;
 constexpr std::uint64_t max_safe_integer = 9007199254740991ULL;
 struct Error : std::runtime_error {
     using std::runtime_error::runtime_error;
@@ -78,8 +79,10 @@ std::string env_or(std::string_view name, std::string_view fallback);
 bool env_bool(std::string_view name, bool fallback);
 std::uint64_t env_uint(std::string_view name, std::uint64_t fallback);
 std::uint64_t unix_millis();
+std::uint64_t unix_micros();
 std::string utc_now();
 std::string utc_from_millis(std::int64_t milliseconds);
+std::string utc_from_micros(std::int64_t microseconds);
 std::optional<std::int64_t> parse_utc(std::string_view value);
 std::string uuid();
 std::vector<std::uint8_t> random_bytes(std::size_t size);
@@ -133,5 +136,6 @@ struct HttpResult {
 std::optional<fs::path> tls_ca_bundle();
 HttpResult http_request(std::string_view method, std::string_view url, std::string_view body = {},
                         const Json& headers = Json::object(), Millis timeout = Millis(10000),
-                        std::size_t max_bytes = 256 * 1024, const Cancel& cancel = {});
+                        std::size_t max_bytes = 256 * 1024, const Cancel& cancel = {},
+                        bool direct_connection = false);
 } // namespace devbox

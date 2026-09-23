@@ -289,10 +289,11 @@ fs::path discover_project_root() {
     }
     throw Error("could not discover Devbox project root; set DEVBOX_PROJECT_ROOT");
 }
-Config Config::load() {
+Config Config::load(bool read_env_files) {
     Config c;
     c.project_root = discover_project_root();
-    load_env_layers(c.project_root);
+    if (read_env_files)
+        load_env_layers(c.project_root);
     c.platform = Platform::detect();
     const auto runtime = lower(trim(env_or("DEVBOX_RUNTIME_MODE", "")));
     if (runtime == "docker" || ((runtime.empty() || runtime == "auto") && c.platform.is_windows))
@@ -371,6 +372,10 @@ Config Config::load() {
     c.execution_slot_root =
         env_path("MCP_EXEC_SLOT_ROOT").value_or(c.project_root / "run" / "execution-slots");
     c.jobs_root = env_path("MCP_JOBS_ROOT").value_or(c.project_root / "run" / "jobs");
+    c.state_root = env_path("MCP_STATE_ROOT").value_or(c.project_root / "run" / "state");
+    c.state_backend = lower(trim(env_or("MCP_STATE_BACKEND", "legacy")));
+    if (c.state_backend != "legacy" && c.state_backend != "sqlite")
+        throw Error("MCP_STATE_BACKEND must be legacy or sqlite");
     c.mcp_performance_state_path =
         env_path("MCP_PERFORMANCE_STATE_PATH").value_or(c.project_root / "run" / "mcp-performance.json");
     c.oauth_state_file_path =
@@ -394,9 +399,24 @@ Config Config::load() {
     ENV_NUMBER(docker_command_timeout_ms, "DOCKER_COMMAND_TIMEOUT_MS", 120000);
     ENV_NUMBER(usage_log_max_bytes, "MCP_USAGE_LOG_MAX_BYTES", 16 * 1024 * 1024);
     ENV_NUMBER(usage_log_rotations, "MCP_USAGE_LOG_ROTATIONS", 3);
+    ENV_NUMBER(mcp_response_max_bytes, "MCP_RESPONSE_MAX_BYTES", 64 * 1024 * 1024);
+    ENV_NUMBER(mcp_response_budget_bytes, "MCP_RESPONSE_BUDGET_BYTES", 256 * 1024 * 1024);
+    ENV_NUMBER(mcp_request_budget_bytes, "MCP_REQUEST_BUDGET_BYTES", 256 * 1024 * 1024);
+    ENV_NUMBER(mcp_write_idle_ms, "MCP_WRITE_IDLE_MS", 15000);
+    ENV_NUMBER(mcp_response_deadline_ms, "MCP_RESPONSE_DEADLINE_MS", 300000);
+    c.mcp_response_max_bytes = std::clamp<std::size_t>(c.mcp_response_max_bytes, 65536, 512 * 1024 * 1024);
+    c.mcp_response_budget_bytes =
+        std::clamp<std::size_t>(c.mcp_response_budget_bytes, 65536, 1024 * 1024 * 1024);
+    c.mcp_request_budget_bytes =
+        std::clamp<std::size_t>(c.mcp_request_budget_bytes, 65536, 1024 * 1024 * 1024);
+    c.mcp_write_idle_ms = std::clamp<std::uint64_t>(c.mcp_write_idle_ms, 100, 60000);
+    c.mcp_response_deadline_ms = std::clamp<std::uint64_t>(c.mcp_response_deadline_ms, 1000, 3600000);
     ENV_NUMBER(oauth_max_clients, "MCP_OAUTH_MAX_CLIENTS", 256);
     c.oauth_max_clients = std::max<std::size_t>(1, c.oauth_max_clients);
     ENV_NUMBER(exec_max_concurrent, "MCP_EXEC_MAX_CONCURRENT", 6);
+    ENV_NUMBER(exec_memory_capacity_bytes, "MCP_EXEC_MEMORY_CAPACITY_BYTES", 0);
+    ENV_NUMBER(exec_gpu_capacity_bytes, "MCP_EXEC_GPU_CAPACITY_BYTES", 0);
+    ENV_NUMBER(exec_disk_capacity_bytes, "MCP_EXEC_DISK_CAPACITY_BYTES", 0);
     ENV_NUMBER(exec_reserved_interactive, "MCP_EXEC_RESERVED_INTERACTIVE", 1);
     ENV_NUMBER(exec_queue_timeout_ms, "MCP_EXEC_QUEUE_TIMEOUT_MS", 15000);
     ENV_NUMBER(background_queue_timeout_ms, "MCP_BACKGROUND_QUEUE_TIMEOUT_MS", 300000);
@@ -436,6 +456,9 @@ Config Config::load() {
     c.max_mcp_transfer_chars = std::max<std::size_t>(
         262144,
         character_limit("MAX_MCP_TRANSFER_CHARS", 4000000).value_or(std::numeric_limits<std::size_t>::max()));
+    if (c.state_backend == "sqlite" && (c.job_max_active > 256 || c.job_max_per_task > 256))
+        throw Error("SQLite admission requires MCP_JOB_MAX_ACTIVE_RUNNERS and MCP_JOB_MAX_RUNNERS_PER_TASK "
+                    "at most 256");
     return c;
 }
 std::string Config::server_name() const {

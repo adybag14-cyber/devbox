@@ -9,6 +9,7 @@ class JsonLogSink {
     fs::path path_;
     std::uint64_t maximum_;
     std::size_t rotations_;
+    std::string write_buffer_;
 
   public:
     JsonLogSink(fs::path path, std::uint64_t maximum, std::size_t rotations);
@@ -21,7 +22,9 @@ class UsageLogger {
     std::string name_;
     mutable std::mutex mutex_;
     std::condition_variable wake_;
-    std::deque<Json> queue_;
+    std::deque<std::pair<Json, std::size_t>> queue_;
+    std::size_t resident_bytes_ = 0;
+    static constexpr std::size_t capacity_bytes_ = 4 * 1024 * 1024, max_event_bytes_ = 64 * 1024;
     std::thread thread_;
     bool stopping_ = false;
     std::atomic<std::uint64_t> enqueued_{0}, dropped_{0}, failures_{0};
@@ -35,7 +38,7 @@ class UsageLogger {
     void stop();
     Json snapshot() const;
 };
-Json summarize_arguments(const Json& arguments);
+Json summarize_arguments(const Json& arguments, std::string_view tool = {});
 class UsageTelemetry {
     struct Invocation {
         std::string id, tool, started_at;
@@ -44,6 +47,7 @@ class UsageTelemetry {
         Json event(std::string type) const;
     };
     UsageLogger tools_, http_;
+    const Json build_;
     mutable std::mutex mutex_;
     std::map<std::string, Invocation> active_;
     std::optional<Invocation> remove(const std::string& id);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, appendFile, readFile, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
@@ -15,6 +15,14 @@ const configuration = sanitizer ? 'RelWithDebInfo' : 'Release';
 const architecture = process.arch === 'arm64' ? 'arm64' : 'x64';
 const triplet = `${architecture}-${process.platform === 'win32' ? 'windows-static' : process.platform === 'darwin' ? 'osx' : 'linux'}`;
 const env = { ...process.env, VCPKG_MAX_CONCURRENCY: '4' };
+if (process.platform === 'win32') {
+  // Keep durable stress fixtures on the runner's workspace volume, with retained diagnostic
+  // paths, rather than the system user-profile volume. Production paths are unaffected.
+  const fixtureTemp = path.join(repo, '.cpp-build', 'native-temp');
+  await mkdir(fixtureTemp, { recursive: true });
+  env.TEMP = fixtureTemp;
+  env.TMP = fixtureTemp;
+}
 async function run(file, args) {
   await runCheckedProcess(file, args, { cwd: repo, env, stdio: 'inherit', timeoutMs: 90 * 60 * 1000, label: 'C++ native certification' });
 }
@@ -23,9 +31,22 @@ const args = ['-S', repo, '-B', build, `-DCMAKE_BUILD_TYPE=${configuration}`,
   `-DCMAKE_TOOLCHAIN_FILE=${path.join(vcpkg, 'scripts/buildsystems/vcpkg.cmake')}`,
   `-DVCPKG_TARGET_TRIPLET=${triplet}`, `-DVCPKG_INSTALLED_DIR=${path.join(repo, '.cpp-build/vcpkg_installed')}`];
 if (sanitizer) args.push('-DDEVBOX_SANITIZERS=ON', '-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O1 -g -DNDEBUG');
+await run(process.execPath, ['cpp-mcp/scripts/sync-registry.mjs']);
 await run('cmake', args);
 await run('cmake', ['--build', build, '--config', configuration, '--parallel', '4']);
-await run('ctest', ['--test-dir', build, '-C', configuration, '--output-on-failure']);
+try {
+  await run('ctest', ['--test-dir', build, '-C', configuration, '--output-on-failure']);
+  if(process.platform==='darwin') await run('ctest',['--test-dir',build,'-C',configuration,
+    '-R','^(scheduler|scheduler-notifications)$','--repeat','until-fail:10','--output-on-failure']);
+  if(process.platform==='win32') await run('ctest',['--test-dir',build,'-C',configuration,
+    '-R','^computer-(native|broker-native)$','--repeat','until-fail:5','--output-on-failure']);
+} catch (error) {
+  // Diagnose after the failing test; prewarming legacy PowerShell could hide a cold-start defect.
+  if (process.platform === 'win32') {
+    await run(path.join(build, 'cpp-mcp', configuration, 'devbox-runtime-tests.exe'), ['--powershell-diagnostics']);
+  }
+  throw error;
+}
 await run('cmake', ['--install', build, '--config', configuration, '--prefix', packageRoot]);
 await run(process.execPath, ['cpp-mcp/scripts/record-artifacts.mjs', '--package', packageRoot]);
 const extension = process.platform === 'win32' ? '.exe' : '';

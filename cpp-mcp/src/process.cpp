@@ -9,6 +9,7 @@
 #include <sstream>
 #include <thread>
 #ifdef _WIN32
+#include <sddl.h>
 #include <tlhelp32.h>
 #else
 #include <fcntl.h>
@@ -127,7 +128,7 @@ CaptureResult CaptureAccumulator::snapshot() const {
 CaptureResult read_text_file_bounded(const fs::path& path, std::optional<std::size_t> limit) {
     CaptureAccumulator capture(limit);
     std::ifstream stream(path, std::ios::binary);
-    std::array<char, 16384> buffer{};
+    std::vector<char> buffer(16384);
     while (stream) {
         stream.read(buffer.data(), buffer.size());
         capture.push(std::string_view(buffer.data(), static_cast<std::size_t>(stream.gcount())));
@@ -195,6 +196,69 @@ Environment current_environment() {
             result[line.substr(0, equal)] = line.substr(equal + 1);
     }
 #endif
+    return result;
+}
+Environment worker_environment() {
+    static const std::vector<std::string> allowed{"PATH",
+                                                  "PATHEXT",
+                                                  "SYSTEMROOT",
+                                                  "WINDIR",
+                                                  "SYSTEMDRIVE",
+                                                  "COMSPEC",
+                                                  "OS",
+                                                  "TEMP",
+                                                  "TMP",
+                                                  "TMPDIR",
+                                                  "HOME",
+                                                  "USERPROFILE",
+                                                  "USERNAME",
+                                                  "USERDOMAIN",
+                                                  "COMPUTERNAME",
+                                                  "ALLUSERSPROFILE",
+                                                  "USER",
+                                                  "LOGNAME",
+                                                  "HOMEDRIVE",
+                                                  "HOMEPATH",
+                                                  "APPDATA",
+                                                  "LOCALAPPDATA",
+                                                  "PROGRAMDATA",
+                                                  "PROGRAMFILES",
+                                                  "PROGRAMFILES(X86)",
+                                                  "COMMONPROGRAMFILES",
+                                                  "COMMONPROGRAMFILES(X86)",
+                                                  "PROCESSOR_ARCHITECTURE",
+                                                  "NUMBER_OF_PROCESSORS",
+                                                  "LANG",
+                                                  "LC_ALL",
+                                                  "LC_CTYPE",
+                                                  "TZ",
+                                                  "TERM",
+                                                  "COLORTERM",
+                                                  "PREFIX",
+                                                  "ANDROID_ROOT",
+                                                  "ANDROID_DATA",
+                                                  "TERMUX_VERSION",
+                                                  "CURL_CA_BUNDLE",
+                                                  "SSL_CERT_FILE"};
+    Environment result;
+    for (const auto& [key, value] : current_environment()) {
+        auto normalized = key;
+#ifdef _WIN32
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+#endif
+        if (std::find(allowed.begin(), allowed.end(), normalized) != allowed.end())
+            result[key] = value;
+    }
+    return result;
+}
+Environment docker_environment() {
+    auto result = worker_environment();
+    // Only the Docker service broker delegates these credential/configuration references.
+    for (const auto* key :
+         {"DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"})
+        if (const auto value = environment(key))
+            result[key] = *value;
     return result;
 }
 std::optional<fs::path> find_program(std::string_view program, const Environment* env) {
@@ -485,7 +549,7 @@ Pipe empty_input() {
 }
 void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
                     const ProcessOptions& options) {
-    std::array<char, 16384> buffer{};
+    std::vector<char> buffer(16384);
     // Bound each pass so continuously chatty children cannot starve cancellation or stderr.
     for (int pass = 0; pipe && pass < 16; ++pass) {
         DWORD available = 0;
@@ -515,7 +579,7 @@ void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStrea
 }
 RawProcessResult run_native(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
-                            CaptureAccumulator& err) {
+                            CaptureAccumulator& err, bool& process_started) {
     auto stdout_pipe = output_pipe(), stderr_pipe = output_pipe();
     auto stdin_pipe = options.input && !options.input->empty() ? input_pipe() : empty_input();
     const auto resolved = find_program(file, options.env ? &*options.env : nullptr);
@@ -559,17 +623,68 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
         if (entries.empty())
             environment_block.push_back(L'\0');
     }
+    const DWORD attribute_count = options.appcontainer_sid ? 5 : 1;
     SIZE_T attribute_bytes = 0;
-    InitializeProcThreadAttributeList(nullptr, 1, 0, &attribute_bytes);
+    InitializeProcThreadAttributeList(nullptr, attribute_count, 0, &attribute_bytes);
     std::vector<unsigned char> attribute_storage(attribute_bytes);
     auto attributes = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_storage.data());
-    if (!InitializeProcThreadAttributeList(attributes, 1, 0, &attribute_bytes))
+    if (!InitializeProcThreadAttributeList(attributes, attribute_count, 0, &attribute_bytes))
         throw Error(windows_error());
     ScopeExit free_attributes([&] { DeleteProcThreadAttributeList(attributes); });
     HANDLE handles[]{stdin_pipe.child.get(), stdout_pipe.child.get(), stderr_pipe.child.get()};
     if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles, sizeof(handles),
                                    nullptr, nullptr))
         throw Error(windows_error());
+    PSID app_sid = nullptr;
+    ScopeExit free_sid([&] {
+        if (app_sid)
+            LocalFree(app_sid);
+    });
+    SECURITY_CAPABILITIES security{};
+    PSID* capability_groups = nullptr;
+    PSID* capability_sids = nullptr;
+    DWORD capability_group_count = 0, capability_count = 0;
+    SID_AND_ATTRIBUTES registry_read{};
+    ScopeExit free_capabilities([&] {
+        for (DWORD i = 0; i < capability_group_count; ++i)
+            LocalFree(capability_groups[i]);
+        for (DWORD i = 0; i < capability_count; ++i)
+            LocalFree(capability_sids[i]);
+        if (capability_groups)
+            LocalFree(capability_groups);
+        if (capability_sids)
+            LocalFree(capability_sids);
+    });
+    DWORD packages_policy = PROCESS_CREATION_ALL_APPLICATION_PACKAGES_OPT_OUT;
+    DWORD child_policy = PROCESS_CREATION_CHILD_PROCESS_RESTRICTED;
+    DWORD64 mitigation = PROCESS_CREATION_MITIGATION_POLICY_WIN32K_SYSTEM_CALL_DISABLE_ALWAYS_ON |
+                         PROCESS_CREATION_MITIGATION_POLICY_EXTENSION_POINT_DISABLE_ALWAYS_ON;
+    if (options.appcontainer_sid) {
+        if (options.allow_durable_children || !options.env || !options.cwd || options.process_limit != 1)
+            throw Error("LPAC_REQUIRES_BOUNDED_BROKER_PROFILE");
+        if (!ConvertStringSidToSidW(wide(*options.appcontainer_sid).c_str(), &app_sid))
+            throw Error("LPAC_INVALID_IDENTITY");
+        security.AppContainerSid = app_sid;
+        // LPAC needs the explicit read-only registry capability for normal Windows DLL
+        // initialization. Access still requires matching capability ACLs; no network, COM,
+        // identity-service or credential capability is granted.
+        if (!DeriveCapabilitySidsFromName(L"registryRead", &capability_groups, &capability_group_count,
+                                          &capability_sids, &capability_count) ||
+            capability_count != 1)
+            throw Error("LPAC_REGISTRY_CAPABILITY_UNAVAILABLE");
+        registry_read = {capability_sids[0], SE_GROUP_ENABLED};
+        security.Capabilities = &registry_read;
+        security.CapabilityCount = 1;
+        if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_SECURITY_CAPABILITIES, &security,
+                                       sizeof(security), nullptr, nullptr) ||
+            !UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_ALL_APPLICATION_PACKAGES_POLICY,
+                                       &packages_policy, sizeof(packages_policy), nullptr, nullptr) ||
+            !UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_CHILD_PROCESS_POLICY,
+                                       &child_policy, sizeof(child_policy), nullptr, nullptr) ||
+            !UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY, &mitigation,
+                                       sizeof(mitigation), nullptr, nullptr))
+            throw Error("LPAC_ATTRIBUTES_UNAVAILABLE: " + windows_error());
+    }
     STARTUPINFOEXW startup{};
     startup.StartupInfo.cb = sizeof(startup);
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -582,21 +697,47 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     NativeHandle job(CreateJobObjectW(nullptr, nullptr));
     if (!job)
         throw Error(windows_error());
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (options.allow_durable_children)
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    if (options.memory_limit_bytes) {
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+        limits.JobMemoryLimit =
+            static_cast<SIZE_T>(std::min<std::uint64_t>(*options.memory_limit_bytes, SIZE_MAX));
+    }
+    if (options.process_limit) {
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        limits.BasicLimitInformation.ActiveProcessLimit = *options.process_limit;
+    }
+    if (options.cpu_limit_ms) {
+        if (*options.cpu_limit_ms > static_cast<std::uint64_t>(INT64_MAX) / 10000)
+            throw Error("CPU time limit exceeds the platform range");
+        limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_TIME;
+        limits.BasicLimitInformation.PerJobUserTimeLimit.QuadPart =
+            static_cast<LONGLONG>(*options.cpu_limit_ms * 10000);
+    }
+    if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation, &limits, sizeof(limits)))
+        throw Error("Unable to apply child resource limits: " + windows_error());
     if (cancel)
         cancel->check();
     if (!CreateProcessW(native_program.c_str(), native_command.data(), nullptr, nullptr, TRUE,
-                        CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED |
-                            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+                        (options.appcontainer_sid || options.windows_detached_console ? DETACHED_PROCESS
+                                                                                      : CREATE_NO_WINDOW) |
+                            CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT |
+                            CREATE_UNICODE_ENVIRONMENT,
                         options.env ? environment_block.data() : nullptr, options.cwd ? cwd.c_str() : nullptr,
                         &startup.StartupInfo, &information))
         throw Error(windows_error());
+    process_started = true;
     NativeHandle process(information.hProcess), thread(information.hThread);
     bool assigned = false;
     ScopeExit terminate_on_error([&] {
         if (assigned)
             TerminateJobObject(job.get(), 1);
         TerminateProcess(process.get(), 1);
-        WaitForSingleObject(process.get(), 3000);
+        WaitForSingleObject(process.get(), static_cast<DWORD>(std::clamp(options.termination_grace.count(),
+                                                                         Millis::rep(0), Millis::rep(3000))));
     });
     if (!AssignProcessToJobObject(job.get(), process.get()))
         throw Error("Unable to contain child process: " + windows_error());
@@ -697,7 +838,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     }
     if (!exited) {
         TerminateJobObject(job.get(), 1);
-        WaitForSingleObject(process.get(), 3000);
+        // The declared termination grace was already spent in the loop. Do not silently add 3s.
+        WaitForSingleObject(process.get(), 0);
     }
     terminate_on_error.disarm();
     return result;
@@ -728,7 +870,7 @@ void nonblocking(int fd) {
 }
 void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
                     const ProcessOptions& options) {
-    std::array<char, 16384> buffer{};
+    std::vector<char> buffer(16384);
     for (int pass = 0; pipe && pass < 16; ++pass) {
         const auto count = ::read(pipe.get(), buffer.data(), buffer.size());
         if (!count) {
@@ -750,7 +892,7 @@ void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStrea
 }
 RawProcessResult run_native(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
-                            CaptureAccumulator& err) {
+                            CaptureAccumulator& err, bool& process_started) {
     auto input_pipe = make_pipe(), stdout_pipe = make_pipe(), stderr_pipe = make_pipe();
     const auto checked = [](int result) {
         if (result)
@@ -783,15 +925,21 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     const auto started = Clock::now();
     const std::array close_fds{input_pipe.read.get(),   input_pipe.write.get(), stdout_pipe.read.get(),
                                stdout_pipe.write.get(), stderr_pipe.read.get(), stderr_pipe.write.get()};
+    const auto reap_slot = reserve_posix_reap_slot();
+    ScopeExit release_slot([&] { release_posix_reap_slot(reap_slot); });
     const pid_t child = spawn_posix(
         program, argv.data(), options.env ? envp.data() : environ, options.cwd ? &*options.cwd : nullptr,
         {input_pipe.read.get(), stdout_pipe.write.get(), stderr_pipe.write.get()}, close_fds, true);
+    process_started = true;
     bool reaped = false;
     ScopeExit terminate_on_error([&] {
         if (!reaped) {
             ::kill(-child, SIGKILL);
             int status;
-            while (::waitpid(child, &status, 0) < 0 && errno == EINTR) {
+            const auto observed = ::waitpid(child, &status, WNOHANG);
+            if (observed != child && !(observed < 0 && errno == ECHILD)) {
+                defer_posix_reap(reap_slot, child);
+                release_slot.disarm();
             }
         }
     });
@@ -868,7 +1016,7 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
             ::kill(-child, SIGTERM);
             forced = now;
         }
-        if (forced && !killed && now - *forced >= Millis(250)) {
+        if (forced && !killed && now - *forced >= std::min(Millis(250), options.termination_grace)) {
             ::kill(-child, SIGKILL);
             killed = true;
         }
@@ -877,7 +1025,7 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
                 ::kill(-child, SIGKILL);
             break;
         }
-        if (forced && !exited && now - *forced >= options.termination_grace + Millis(250))
+        if (forced && !exited && now - *forced >= options.termination_grace)
             break;
         pollfd descriptors[]{{stdout_pipe.read.get(), POLLIN, 0},
                              {stderr_pipe.read.get(), POLLIN, 0},
@@ -892,9 +1040,22 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
 #endif
 ProcessOutput spawn_process(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel) {
+#ifndef _WIN32
+    if (options.appcontainer_sid)
+        throw Error("LPAC_UNSUPPORTED: Windows token isolation is unavailable on this platform");
+    if (options.memory_limit_bytes || options.cpu_limit_ms || options.process_limit)
+        throw Error("Native Job Object limits are unavailable on this platform; use a qualified isolated "
+                    "worker backend");
+#endif
+    if (!options.env) {
+        auto isolated = options;
+        isolated.env = worker_environment();
+        return spawn_process(file, args, isolated, cancel);
+    }
     const auto started = Clock::now();
     CaptureAccumulator out(options.max_capture_chars), err(options.max_capture_chars);
     RawProcessResult raw;
+    bool process_started = false;
     std::string launch_failure;
     try {
         check_string(file);
@@ -902,7 +1063,7 @@ ProcessOutput spawn_process(std::string_view file, const std::vector<std::string
             check_string(arg);
         if (options.windows_raw_arguments)
             check_string(*options.windows_raw_arguments);
-        raw = run_native(file, args, options, cancel, out, err);
+        raw = run_native(file, args, options, cancel, out, err, process_started);
     } catch (const Cancelled& error) {
         raw.aborted = true;
         launch_failure = error.what();
@@ -929,6 +1090,7 @@ ProcessOutput spawn_process(std::string_view file, const std::vector<std::string
         error.args = args;
         error.aborted = raw.aborted;
         error.timed_out = raw.timed_out;
+        error.process_started = process_started;
         error.elapsed_ms = elapsed(started);
         throw error;
     }

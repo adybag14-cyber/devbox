@@ -149,9 +149,12 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
     if (timeout_ms > static_cast<std::uint64_t>(INT64_MAX))
         throw Error("Job timeout exceeds the supported range");
     JobStore store(config);
+    store.require_writable_backend();
     const auto paths = store.paths(id);
     if (canonical_target(paths.request) != canonical_target(request_path))
         throw Error("C++ job request path does not match configured job root path.");
+    if (store.indexed() && canonical_json(store.read_request(id)) != canonical_json(request))
+        throw Error("JOB_REQUEST_INTEGRITY: admitted request changed before execution");
     // An exclusive runner lock prevents a second CLI invocation from running the same request.
     FileLock runner_lock(paths.dir / ".runner.lock", Millis(1));
     const auto initial = store.read_status_raw(id);
@@ -204,8 +207,11 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
                                      Millis(1), scheduler_config.queue_timeout -
                                                     Millis(static_cast<Millis::rep>(research_wait_ms))))
                                : std::nullopt;
-        lease = scheduler.acquire(
-            {ExecutionKind::background, resource, weight, "devbox_job:" + id, remaining_queue}, cancellation);
+        AcquireRequest admission{ExecutionKind::background, resource, weight, "devbox_job:" + id,
+                                 remaining_queue};
+        if (mode == "research")
+            admission.resources = {256ULL * 1024 * 1024, 0, 64ULL * 1024 * 1024};
+        lease = scheduler.acquire(admission, cancellation);
         lease->queue_wait_ms += research_wait_ms;
     } catch (const std::exception& error) {
         auto final = queued_status(request, queued);
@@ -294,6 +300,12 @@ int run_job_request(std::shared_ptr<const Config> config, const fs::path& reques
                                                                                                 : "failed";
         final["exitCode"] = error.exit_code ? Json(*error.exit_code) : Json(nullptr);
         final["error"] = error.what();
+        if (!error.exit_code && !error.signal && error.process_started != false) {
+            status = "interrupted";
+            final["workloadTerminationVerified"] = false;
+            final["terminationDetail"] =
+                "Process may have started but its exit was not observed; reconcile the owned workload";
+        }
     } catch (const std::exception& error) {
         status = cancellation->cancelled() || store.cancellation_requested(id) ? "cancelled" : "failed";
         final["error"] = error.what();

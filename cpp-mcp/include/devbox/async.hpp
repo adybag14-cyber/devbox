@@ -1,5 +1,6 @@
 #pragma once
 #include "common.hpp"
+#include "resource_budget.hpp"
 #include <boost/asio.hpp>
 #include <deque>
 #include <future>
@@ -31,41 +32,93 @@ class WorkPool {
     run_until_owned(std::shared_ptr<Fn> work, Clock::time_point deadline, Cancel cancel) {
         using T = std::conditional_t<std::is_void_v<std::invoke_result_t<Fn>>, std::monostate,
                                      std::invoke_result_t<Fn>>;
-        auto promise = std::make_shared<std::promise<T>>();
-        auto future = promise->get_future();
-        // This completion has no executor or coroutine reference. A slow OS
-        // filesystem operation may finish after the caller's deadline safely.
-        auto task = [promise, work, deadline, cancel] {
-            try {
-                if (cancel)
-                    cancel->check();
-                if (Clock::now() >= deadline)
-                    throw Error("Worker operation expired before leaving its bounded queue");
-                if constexpr (std::is_void_v<std::invoke_result_t<Fn>>) {
-                    (*work)();
-                    promise->set_value(std::monostate{});
-                } else
-                    promise->set_value((*work)());
-            } catch (...) {
-                promise->set_exception(std::current_exception());
-            }
-        };
-        if (!enqueue(std::move(task)))
-            throw Error("Bounded worker queue is full; retry shortly.");
-        while (future.wait_for(Millis(0)) != std::future_status::ready) {
-            if (cancel)
-                cancel->check();
-            const auto now = Clock::now();
-            if (now >= deadline)
-                co_return std::nullopt;
-            co_await async_delay(std::min(Millis(10), std::chrono::duration_cast<Millis>(deadline - now)),
-                                 cancel);
-        }
         if (cancel)
             cancel->check();
         if (Clock::now() >= deadline)
             co_return std::nullopt;
-        co_return std::optional<T>(future.get());
+        struct Race {
+            std::mutex mutex;
+            std::function<void(Result<T>)> deliver;
+            void complete(Result<T> result) {
+                std::function<void(Result<T>)> notify;
+                {
+                    std::lock_guard lock(mutex);
+                    notify.swap(deliver);
+                }
+                if (notify)
+                    notify(std::move(result));
+            }
+        };
+        auto subscription = std::make_shared<Cancellation::Subscription>();
+        auto initiate = [this, work, deadline, cancel, subscription](auto handler) mutable {
+            auto executor = asio::get_associated_executor(handler);
+            auto serial = asio::make_strand(executor);
+            auto timer = std::make_shared<asio::steady_timer>(serial, deadline);
+            auto guard =
+                std::make_shared<decltype(asio::make_work_guard(executor))>(asio::make_work_guard(executor));
+            auto receiver = std::make_shared<decltype(handler)>(std::move(handler));
+            auto race = std::make_shared<Race>();
+            race->deliver = [executor, serial, receiver, guard, timer](Result<T> result) mutable {
+                asio::post(serial, [executor, receiver, guard, timer, result = std::move(result)]() mutable {
+                    timer->cancel();
+                    asio::post(executor, [receiver, guard, result = std::move(result)]() mutable {
+                        (*receiver)(std::move(result));
+                    });
+                });
+            };
+            // The timer is armed before a completion/cancellation can cancel it, on one private strand.
+            asio::post(serial, [timer, race] {
+                timer->async_wait([race](boost::system::error_code error) {
+                    if (!error)
+                        race->complete(Result<T>{});
+                });
+            });
+            if (cancel) {
+                const std::weak_ptr<Race> observed = race;
+                *subscription = cancel->subscribe([observed] {
+                    if (const auto race = observed.lock()) {
+                        Result<T> result;
+                        result.error = std::make_exception_ptr(Cancelled());
+                        race->complete(std::move(result));
+                    }
+                });
+            }
+            auto task = [race, work, deadline, cancel] {
+                Result<T> result;
+                try {
+                    if (cancel)
+                        cancel->check();
+                    if (Clock::now() < deadline) {
+                        if constexpr (std::is_void_v<std::invoke_result_t<Fn>>) {
+                            (*work)();
+                            result.value.emplace();
+                        } else
+                            result.value.emplace((*work)());
+                    }
+                } catch (...) {
+                    result.error = std::current_exception();
+                }
+                // The winner removes the only executor-bearing callback. A late OS operation
+                // retains only its owned callable/race and cannot post into a destroyed context.
+                race->complete(std::move(result));
+            };
+            if (!enqueue(std::move(task))) {
+                Result<T> result;
+                result.error = std::make_exception_ptr(
+                    ResourceExhausted("Bounded worker queue is full; retry shortly."));
+                race->complete(std::move(result));
+            }
+        };
+        auto result = co_await asio::async_initiate<decltype(asio::use_awaitable), void(Result<T>)>(
+            std::move(initiate), asio::use_awaitable);
+        subscription->reset();
+        if (cancel)
+            cancel->check();
+        if (Clock::now() >= deadline)
+            co_return std::nullopt;
+        if (result.error)
+            std::rethrow_exception(result.error);
+        co_return std::move(result.value);
     }
 
     template <class Fn>
@@ -101,7 +154,8 @@ class WorkPool {
             };
             if (!enqueue(std::move(task))) {
                 Result<T> result;
-                result.error = std::make_exception_ptr(Error("Bounded worker queue is full; retry shortly."));
+                result.error = std::make_exception_ptr(
+                    ResourceExhausted("Bounded worker queue is full; retry shortly."));
                 complete(std::move(result));
             }
         };

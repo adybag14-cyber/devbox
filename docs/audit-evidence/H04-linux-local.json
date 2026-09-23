@@ -1,0 +1,44 @@
+{
+  "ticket": "H04",
+  "status": "in_progress",
+  "linux_profile": "bubblewrap namespaces and native seccomp filter",
+  "qualification": {
+    "platform": "Ubuntu 22.04 on WSL x86_64",
+    "bubblewrap": "0.6.1",
+    "compiler": "GNU 12.3.0 in C++23 mode",
+    "required_isolation": "DEVBOX_REQUIRE_LINUX_ISOLATION=1",
+    "native_tests": {
+      "grants": "passed",
+      "isolation": "passed"
+    },
+    "linux_binary_sha256": "61d9f2537b205cd6989ed352823788c3298382226a340a2b00f2134b18f5e2e1",
+    "windows_binary_sha256": "54c4b6d186f1e23dd9861c42474321a2396e082b2ed0f82dda8bd4e5f3b4687d",
+    "windows_tests": [
+      "grants",
+      "isolation",
+      "process",
+      "runtime",
+      "search"
+    ]
+  },
+  "verified": [
+    "no_new_privs and seccomp active in the actual worker",
+    "network sockets denied by syscall policy",
+    "fork denied, ordinary threads usable",
+    "outside file and ambient synthetic credentials unavailable",
+    "private workspace writable, namespace root readonly",
+    "no additional descriptors inherited by the program"
+  ],
+  "limits": [
+    "Linux memory is per-process address space, CPU rounded to seconds, file-size limit per file",
+    "No aggregate workspace hard disk quota claimed",
+    "Development snapshot build; not a release artifact",
+    "arm64 and complete hosted certification pending"
+  ],
+  "windows_ci_followup": {
+    "previous_run": "35752496325",
+    "state_store_progress": "80128 rows at 167038 ms, still progressing at 180s timeout",
+    "change": "Windows-only fixture allowance increased to 360s; 100k rows and VM-step bounds unchanged",
+    "powershell": "standard nonsecret runtime identity/profile variables restored to allowlist; hosted result pending"
+  }
+}

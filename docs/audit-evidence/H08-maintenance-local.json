@@ -1,0 +1,51 @@
+{
+  "ticket": "H08",
+  "date": "2026-09-22",
+  "status": "partial_local_verified",
+  "implementation": [
+    "SQLite-indexed job pages capped at 64",
+    "Per-job disk samples and aggregate counters/cursor committed in one transaction",
+    "Persistent cursor survives a new frontend",
+    "Filesystem inspection/compaction/reclamation in cancellable native worker",
+    "Operation receipts and terminal metadata survive artifact pruning",
+    "Unknown/interrupted outcomes are not reclaimed",
+    "Legacy backend retained; indexed mode avoids in-memory directory index",
+    "Durable prune intent precedes deletion; partial cleanup can resume after status.json was removed. Known research/ledger.json and research/documents/sN.json are counted and reclaimed under the same 1024-entry budget. Live producers and unverified outcomes are retained. Missing/pending logs are explicit."
+  ],
+  "bounds": {
+    "jobs_per_call": 64,
+    "entries_per_job_directory": 1024,
+    "filesystem_worker_deadline_ms": 5000
+  },
+  "validation": {
+    "windows_native": [
+      "indexed-maintenance",
+      "indexed-jobs",
+      "jobs"
+    ],
+    "linux_native": [
+      "indexed-maintenance",
+      "indexed-jobs",
+      "jobs"
+    ],
+    "sdk_sqlite_windows": true,
+    "sdk_sqlite_linux": true,
+    "fixture_jobs": 140,
+    "unexpected_nested_content_retained": true,
+    "pruned_receipts_retained": true,
+    "accounting_replay_verified": true,
+    "cancel_before_effect": true,
+    "research_artifacts_accounted": true,
+    "actual_worker_crash_during_prune_reconciled": true
+  },
+  "development_binary_sha256": {
+    "windows": "36488d54b864f86a38d0775bb292ec0a0704e7a4e3ac3c5fb3702a77e224fbd5",
+    "linux": "18439f0b33cc7b3caa6c02aef65a31b71ecb6a0197e2c560ea014afe55f93a93"
+  },
+  "limits": [
+    "Incremental disk accounting is sampled and explicitly partial while a cycle is incomplete or has errors; it is not a hard filesystem quota",
+    "Quota reclamation uses eligible terminal jobs in index-page order, not a full-store oldest-first sort",
+    "State export/recovery and resource-lease integration remain outstanding",
+    "Production unchanged"
+  ]
+}

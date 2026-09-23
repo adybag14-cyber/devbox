@@ -15,7 +15,22 @@ class McpBackend {
         return false;
     }
     virtual asio::awaitable<Json> call_tool(std::string name, Json arguments, Cancel cancel) = 0;
+    virtual asio::awaitable<Json> call_tool_authenticated(std::string name, Json arguments, Cancel cancel,
+                                                          std::string principal) {
+        (void)principal;
+        return call_tool(std::move(name), std::move(arguments), std::move(cancel));
+    }
     virtual asio::awaitable<Json> metadata(const HttpRequest& request) = 0;
+    virtual Json extension_capabilities() const {
+        return Json::object();
+    }
+    virtual bool handles_method(std::string_view) const {
+        return false;
+    }
+    virtual asio::awaitable<Json> call_method(std::string, Json, Cancel, std::string) {
+        throw Error("MCP_METHOD_UNAVAILABLE");
+        co_return Json();
+    }
     virtual bool ready() const = 0;
     virtual std::string tool_started(const std::string&, const Json&, const Json&) {
         return {};
@@ -38,6 +53,7 @@ class HttpServer {
     void stop();
     std::uint16_t port() const;
     std::size_t active_requests() const;
+    Json resource_snapshot() const;
     asio::any_io_executor executor() const;
     Cancel stop_token() const;
 };

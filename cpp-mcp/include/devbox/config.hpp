@@ -32,12 +32,20 @@ struct Config {
     std::string host_search_backend;
     bool host_exec_enabled = false, allow_windows_host_exec_uac = false;
     fs::path execution_slot_root, jobs_root, mcp_performance_state_path;
+    std::string state_backend = "legacy";
+    fs::path state_root;
     std::uint64_t usage_log_max_bytes = 16 * 1024 * 1024;
     std::size_t usage_log_rotations = 3, mcp_json_body_limit_bytes = 8 * 1024 * 1024, oauth_max_clients = 256;
+    std::size_t mcp_response_max_bytes = 64 * 1024 * 1024, mcp_response_budget_bytes = 256 * 1024 * 1024,
+                mcp_request_budget_bytes = 256 * 1024 * 1024;
+    std::uint64_t mcp_write_idle_ms = 15000, mcp_response_deadline_ms = 300000;
+    // Internal authenticated protocols can add envelopes around an already bounded request.
+    unsigned internal_json_depth = 128;
     std::size_t exec_max_concurrent = 6, exec_reserved_interactive = 1, watch_max_concurrent = 4;
     std::uint64_t exec_queue_timeout_ms = 15000, background_queue_timeout_ms = 300000;
     std::size_t exec_heavy_capacity = 4, exec_heavy_weight = 2, exec_io_heavy_capacity = 2,
                 exec_io_heavy_weight = 2;
+    std::uint64_t exec_memory_capacity_bytes = 0, exec_gpu_capacity_bytes = 0, exec_disk_capacity_bytes = 0;
     std::uint64_t background_priority_age_ms = 30000, job_log_max_bytes = 32 * 1024 * 1024;
     std::size_t job_log_rotations = 2;
     std::uint64_t job_heartbeat_ms = 5000, job_orphan_stale_ms = 15000, job_retention_hours = 168;
@@ -48,7 +56,7 @@ struct Config {
     std::size_t screen_capture_retries = 1;
     double max_wait_seconds = 300;
     std::size_t command_output_limit_chars = 65536, max_mcp_transfer_chars = 4000000;
-    static Config load();
+    static Config load(bool read_env_files = true);
     std::string server_name() const;
     std::string runtime_label() const;
     std::string auth_name() const;

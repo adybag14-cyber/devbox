@@ -1,0 +1,78 @@
+{
+  "ticket": "H06",
+  "status": "partial_local_verified",
+  "date": "2026-09-22",
+  "worker": "C++23 self-exec filesystem worker with bounded stdin/stdout, child environment allowlist and owned process termination",
+  "operations": [
+    "read_text",
+    "read_large",
+    "write_text",
+    "write_large",
+    "atomic_write",
+    "state",
+    "path_state",
+    "list",
+    "inspect"
+  ],
+  "budgets": {
+    "input_bytes": 16777216,
+    "response_bytes": 67108864,
+    "read_bytes": 8388608,
+    "termination_grace_ms": 1000,
+    "windows_memory_bytes": 268435456
+  },
+  "validation": {
+    "windows_native": {
+      "tests": 5,
+      "passed": 5,
+      "includes": "real frontend SIGINT/SIGTERM and stuck-worker shutdown"
+    },
+    "linux_native": {
+      "tests": 2,
+      "passed": 2
+    },
+    "sdk": {
+      "windows": true,
+      "linux": true,
+      "tools": 52,
+      "concurrent_passive_waits": 32,
+      "durable_retry": true,
+      "byte_roundtrip": true,
+      "cancel": true
+    }
+  },
+  "development_binary_sha256": {
+    "windows": "af7efc947fcd95a89f0951d586e6b92ec9554364d9b50c2bc1d3633377bf49e2",
+    "linux": "07bd0b4e959f3cab4178e2d94262ad48ec5d1e614ae76db220bd3f782064460a"
+  },
+  "limitations": [
+    "Development binaries, not release artifacts",
+    "Filesystem worker preserves trusted-operator authority, not an OS sandbox",
+    "Lost write acknowledgements remain uncertain; inspect destination version before retrying",
+    "Kernel-level unkillable device/driver I/O is not certified by synthetic stalls",
+    "Artifact assembly and legacy metadata maintenance still require lifecycle integration",
+    "Production unchanged"
+  ],
+  "shutdown_followup": {
+    "posix": "Fixed-capacity owned child reaper is reserved before spawn. Cleanup uses WNOHANG and defers unreaped children; static shutdown never waits for child exit. No later PID-based signal is sent by the reaper.",
+    "windows": "Removed an extra undeclared 3-second wait after the termination grace expired.",
+    "job_outcome": "Interrupted and workloadTerminationVerified=false when timeout/cancel occurs without an observed child exit.",
+    "validation": {
+      "windows": [
+        "process",
+        "jobs",
+        "filesystem-worker",
+        "shutdown-terminate",
+        "shutdown-interrupt",
+        "shutdown-stuck-filesystem"
+      ],
+      "linux": [
+        "process",
+        "filesystem-worker",
+        "jobs",
+        "indexed-jobs"
+      ],
+      "reaper": "4096-slot admission bound and asynchronous child collection verified"
+    }
+  }
+}

@@ -340,6 +340,24 @@ std::uint64_t unix_millis() {
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<Millis>(std::chrono::system_clock::now().time_since_epoch()).count());
 }
+std::uint64_t unix_micros() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<Micros>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+std::string utc_from_micros(std::int64_t us) {
+    auto ms = us / 1000;
+    auto remainder = us % 1000;
+    if (remainder < 0) {
+        --ms;
+        remainder += 1000;
+    }
+    auto value = utc_from_millis(ms);
+    value.pop_back();
+    value += static_cast<char>('0' + remainder / 100);
+    value += static_cast<char>('0' + (remainder / 10) % 10);
+    value += static_cast<char>('0' + remainder % 10);
+    return value + 'Z';
+}
 std::string utc_from_millis(std::int64_t ms) {
     auto seconds = ms / 1000;
     auto remainder = ms % 1000;
@@ -650,7 +668,9 @@ void ensure_directory(const fs::path& path) {
 void write_json_atomic(const fs::path& path, const Json& value) {
     if (!path.parent_path().empty())
         ensure_directory(path.parent_path());
-    const auto temporary = path_from_utf8(path_text(path) + "." + uuid() + ".tmp");
+    // Keep the temporary basename independent of long operation/ticket IDs. Appending another
+    // UUID to the destination name can exceed Windows' legacy path bound even when the final path fits.
+    const auto temporary = path.parent_path() / path_from_utf8(".devbox-" + uuid() + ".tmp");
     try {
         write_file(temporary, value.dump(2));
 #ifdef _WIN32
@@ -835,7 +855,8 @@ std::optional<fs::path> tls_ca_bundle() {
     return std::nullopt;
 }
 HttpResult http_request(std::string_view method, std::string_view url, std::string_view body,
-                        const Json& headers, Millis timeout, std::size_t max_bytes, const Cancel& cancel) {
+                        const Json& headers, Millis timeout, std::size_t max_bytes, const Cancel& cancel,
+                        bool direct_connection) {
     static const bool initialized = []() {
         if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
             throw Error("HTTP initialization failed");
@@ -860,6 +881,8 @@ HttpResult http_request(std::string_view method, std::string_view url, std::stri
     const std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> header_list(raw_headers,
                                                                                   curl_slist_free_all);
     curl_easy_setopt(handle.get(), CURLOPT_URL, uri.c_str());
+    if (direct_connection)
+        curl_easy_setopt(handle.get(), CURLOPT_PROXY, "");
     curl_easy_setopt(handle.get(), CURLOPT_CUSTOMREQUEST, verb.c_str());
     curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, raw_headers);
     curl_easy_setopt(handle.get(), CURLOPT_NOSIGNAL, 1L);

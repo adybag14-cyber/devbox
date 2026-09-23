@@ -1,5 +1,9 @@
 #include "devbox/engine.hpp"
+#include "devbox/artifacts.hpp"
+#include "devbox/filesystem_worker.hpp"
 #include "devbox/result.hpp"
+#include "devbox/run_service.hpp"
+#include "devbox/wsl.hpp"
 #include <algorithm>
 namespace devbox {
 namespace {
@@ -12,13 +16,14 @@ std::optional<std::string> optional_string(const Json& value, const char* key) {
 }
 } // namespace
 Engine::Engine(std::shared_ptr<const Config> config)
-    : config_(std::move(config)), contract_(*config_),
+    : config_(std::move(config)), contract_(*config_), admission_(*config_),
       commands_(std::clamp<std::size_t>(config_->exec_max_concurrent + 1, 2, 16), 128), runtime_(config_),
       scheduler_(SchedulerConfig::from(*config_)), jobs_(config_), docker_files_(config_), search_(config_),
       research_(config_), lifecycle_(config_, background_), github_(config_, runtime_, lifecycle_),
       capture_(config_), usage_(*config_, background_), performance_(*config_, background_, build_snapshot),
       monitoring_(config_, background_, scheduler_, jobs_.store(), runtime_, performance_, usage_,
                   [this] { return server_ ? server_->active_requests() : 0; }) {
+    jobs_.store().require_writable_backend();
     for (const auto& tool : contract_.all()) {
         const auto name = json_string(tool, "name");
         implemented_.insert(name);
@@ -34,10 +39,18 @@ void Engine::attach(HttpServer& server) {
     if (server_)
         throw Error("Engine is already attached");
     server_ = &server;
+    ensure_directory(config_->project_root / "run");
+    frontend_lock_ = std::make_unique<FileLock>(config_->project_root / "run" / ".frontend.lock",
+                                                Millis(1000), Cancel{}, true);
     // Compute the binary digest outside the HTTP I/O executor before accepting tool work.
     (void)build_snapshot();
     performance_.attach(server.executor(), server.stop_token());
     monitoring_.start();
+    background_.periodic("operator-admission", Millis(0), Millis(500),
+                         [this](const Cancel&) { admission_.refresh(); });
+    if (config_->state_backend == "sqlite")
+        background_.once("backend-run-recovery", Millis(0),
+                         [this](const Cancel& cancel) { RunService(config_).recover(cancel); });
     if (config_->devbox_auto_start)
         background_.once("runtime-auto-start", Millis(0), [this](const Cancel& cancel) {
             lifecycle_.control(LifecycleAction::start, cancel);
@@ -48,6 +61,7 @@ void Engine::stop() {
         return;
     background_.stop();
     usage_.stop();
+    frontend_lock_.reset();
 }
 Json Engine::server_info() const {
     return Json{{"name", config_->server_name()},
@@ -74,7 +88,7 @@ Json Engine::parity_report() const {
                 {"build", build_snapshot()}};
 }
 bool Engine::ready() const {
-    return monitoring_.ready(implemented_.size());
+    return !stopped_ && monitoring_.ready(implemented_.size());
 }
 std::string Engine::tool_started(const std::string& name, const Json& args, const Json& context) {
     return usage_.started(name, args, context);
@@ -101,13 +115,62 @@ void Engine::require_agent_host() const {
     if (!config_->host_exec_enabled)
         throw Error("Host execution is disabled");
 }
+asio::awaitable<Json> Engine::call_tool_authenticated(std::string name, Json arguments, Cancel cancel,
+                                                      std::string principal) {
+    if (name != "devbox_agent_run")
+        co_return co_await call_tool(std::move(name), std::move(arguments), std::move(cancel));
+    try {
+        const auto args = contract_.arguments(name, arguments);
+        if (!admission_.permits(name, args))
+            co_return with_outcome(result_error("SERVER_DRAINING: new work is paused by the local operator"),
+                                   ToolOutcome::PolicyDenied);
+        auto pending = controls_.run(
+            [this, args, principal] {
+                RunService service(config_);
+                const auto result = service.call(principal, args);
+                return result_explicit("Native backend run controller.", std::optional<Json>{result},
+                                       result.dump());
+            },
+            cancel);
+        co_return co_await std::move(pending);
+    } catch (const std::exception& error) {
+        co_return result_error(error.what());
+    }
+}
 asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel cancel) {
+    if (name == "devbox_agent_run")
+        co_return co_await call_tool_authenticated(std::move(name), std::move(arguments), std::move(cancel),
+                                                   "operator");
     if (!cancel)
         cancel = std::make_shared<Cancellation>();
     try {
         if (!implemented_.contains(name))
             throw Error("Unknown tool: " + name);
         auto args = contract_.arguments(name, arguments);
+        if (!admission_.permits(name, args))
+            co_return with_outcome(result_error("SERVER_DRAINING: new work is paused by the local operator"),
+                                   ToolOutcome::PolicyDenied);
+        if (name == "devbox_wsl") {
+            std::optional<ExecutionLease> lease;
+            if (json_string(args, "action") == "run")
+                lease = co_await acquire(
+                    {ExecutionKind::interactive, ResourceClass::light, 1, "structured-wsl", {}}, cancel);
+            auto pending = commands_.run(
+                [this, args, cancel] {
+                    auto value = wsl_operation(*config_, args, cancel);
+                    const auto state = json_string(value, "status");
+                    if (state == "available" || state == "completed")
+                        return result_success("Structured WSL operation completed.", value);
+                    auto result = result_error("WSL operation status: " + state, value);
+                    if (state == "cancel_requested")
+                        return with_outcome(result, ToolOutcome::Cancelled);
+                    if (state == "guest_deadline" || state == "bridge_deadline")
+                        return with_outcome(result, ToolOutcome::TimedOut);
+                    return result;
+                },
+                cancel);
+            co_return co_await std::move(pending);
+        }
         if (name == "devbox_web_fetch" || name == "devbox_web_research" || name == "devbox_web_evidence") {
             auto& pool = name == "devbox_web_fetch" ? research_workers_ : controls_;
             auto pending = pool.run(
@@ -162,7 +225,7 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
             try {
                 co_await async_delay(Millis(static_cast<Millis::rep>(seconds * 1000)), cancel);
             } catch (const Cancelled&) {
-                co_return result_error("Wait was cancelled.");
+                co_return with_outcome(result_error("Wait was cancelled."), ToolOutcome::Cancelled);
             }
             co_return result_success(
                 "Waited " + args["seconds"].dump() + " seconds without an execution process.",
@@ -240,24 +303,48 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
                 cancel);
             co_return co_await std::move(pending);
         }
+        if (name == "devbox_artifact_upload") {
+            require_agent_host();
+            auto pending = atomic_.run(
+                [this, args, cancel] {
+                    if (!jobs_.store().indexed())
+                        throw Error("UPLOAD_REQUIRES_INDEXED_STATE: migrate and select the SQLite state "
+                                    "backend first");
+                    (void)jobs_.store().index(); // Validate layout and start the independent coordinator.
+                    auto result =
+                        isolated_filesystem("artifact_upload",
+                                            Json{{"state_root", path_text(config_->state_root)},
+                                                 {"workspace", path_text(config_->devbox_workspace_path)},
+                                                 {"max_transfer_chars", config_->max_mcp_transfer_chars},
+                                                 {"request", args}},
+                                            Millis(300000), cancel);
+                    return result_explicit("Resumable artifact upload.", result, result.dump());
+                },
+                cancel);
+            co_return co_await std::move(pending);
+        }
         if (name == "devbox_file_state" || name == "devbox_write_file_atomic" || name == "devbox_task_get" ||
             name == "devbox_task_put" || name == "devbox_task_list" || name == "devbox_job_list" ||
             name == "devbox_capabilities") {
             auto& pool = name == "devbox_write_file_atomic" ? atomic_ : files_;
-            auto pending = pool.run([this, name, args] { return durable(name, args); }, cancel);
+            auto pending =
+                pool.run([this, name, args, cancel] { return durable(name, args, cancel); }, cancel);
             co_return co_await std::move(pending);
         }
         auto& pool = name.find("write") != name.npos ? atomic_ : files_;
         auto pending = pool.run([this, name, args, cancel] { return files(name, args, cancel); }, cancel);
         co_return co_await std::move(pending);
     } catch (const ParameterError& e) {
-        co_return Json{{"content", Json::array({Json{{"type", "text"}, {"text", e.what()}}})},
-                       {"isError", true}};
+        co_return with_outcome(
+            Json{{"content", Json::array({Json{{"type", "text"}, {"text", e.what()}}})}, {"isError", true}},
+            ToolOutcome::InvalidArguments);
+    } catch (const Cancelled& e) {
+        co_return with_outcome(result_error(e.what()), ToolOutcome::Cancelled);
     } catch (const std::exception& e) {
         co_return result_error(e.what());
     }
 }
-Json Engine::durable(std::string name, const Json& args) {
+Json Engine::durable(std::string name, const Json& args, const Cancel& cancel) {
     Json value;
     std::string summary;
     if (name == "devbox_capabilities") {
@@ -271,14 +358,31 @@ Json Engine::durable(std::string name, const Json& args) {
     } else if (name.starts_with("devbox_task_")) {
         const auto root = config_->project_root / "run" / "tasks";
         if (name == "devbox_task_get") {
-            value = task_get(root, json_string(args, "task_id"));
+            value = jobs_.store().indexed()
+                        ? indexed_task_get(jobs_.store(), json_string(args, "task_id"))
+                        : isolated_filesystem(
+                              "legacy_task",
+                              Json{{"root", path_text(root)}, {"action", "get"}, {"request", args}},
+                              Millis(30000), cancel);
             summary = "Read task checkpoint.";
         } else if (name == "devbox_task_put") {
-            value = task_put(root, json_string(args, "task_id"), json_uint(args, "expected_revision"),
-                             args["state"]);
+            jobs_.store().require_writable_backend();
+            value = jobs_.store().indexed()
+                        ? indexed_task_put(jobs_.store(), json_string(args, "task_id"),
+                                           json_uint(args, "expected_revision"), args["state"])
+                        : isolated_filesystem(
+                              "legacy_task",
+                              Json{{"root", path_text(root)}, {"action", "put"}, {"request", args}},
+                              Millis(30000), cancel);
             summary = "Saved task checkpoint.";
         } else {
-            value = task_list(root, optional_string(args, "cursor"), json_uint(args, "limit", 50));
+            value = jobs_.store().indexed()
+                        ? indexed_task_list(jobs_.store(), optional_string(args, "cursor"),
+                                            json_uint(args, "limit", 50))
+                        : isolated_filesystem(
+                              "legacy_task",
+                              Json{{"root", path_text(root)}, {"action", "list"}, {"request", args}},
+                              Millis(30000), cancel);
             summary = "Listed task checkpoints.";
         }
     } else {
@@ -286,7 +390,7 @@ Json Engine::durable(std::string name, const Json& args) {
         const auto path = path_from_utf8(json_string(args, "path"));
         const auto resolved = path.is_absolute() ? path : config_->devbox_workspace_path / path;
         if (name == "devbox_file_state") {
-            value = file_state(resolved).json();
+            value = isolated_filesystem("state", Json{{"path", path_text(resolved)}}, Millis(30000), cancel);
             summary = "Read file version.";
         } else {
             const auto encoded = json_string(args, "content_base64");
@@ -299,15 +403,10 @@ Json Engine::durable(std::string name, const Json& args) {
             const auto payload = base64_decode(encoded);
             if (base64_encode(payload) != encoded)
                 throw Error("content_base64 must be canonical");
-            Preconditions expected;
-            expected.sha256 = json_string(args, "expected_file_sha256");
-            if (args.contains("expected_offset_bytes") && args["expected_offset_bytes"].is_number())
-                expected.offset = json_uint(args, "expected_offset_bytes");
-            value =
-                atomic_write(resolved,
-                             std::string_view(reinterpret_cast<const char*>(payload.data()), payload.size()),
-                             append, json_bool(args, "create_dirs", true), expected)
-                    .json();
+            auto request = args;
+            request["path"] = path_text(resolved);
+            request["expected_file_sha256"] = json_string(args, "expected_file_sha256");
+            value = isolated_filesystem("atomic_write", request, Millis(30000), cancel);
             summary = "Committed atomic file write.";
         }
     }
@@ -407,6 +506,7 @@ Json Engine::status(const Cancel& cancel) {
         json_string(health, "diskPressure") == "warning" ? Json::array({"disk-pressure"}) : Json::array();
     data["degradedSubsystems"] = degraded_background(bg);
     data["usageTelemetry"] = usage_.snapshot();
+    data["admission"] = admission_.snapshot();
     const auto active = server_ ? server_->active_requests() : 0;
     data["activeRequestsIncludingCurrent"] = active;
     data["activeRequests"] = active ? active - 1 : 0;
@@ -491,6 +591,9 @@ asio::awaitable<Json> Engine::metadata(const HttpRequest& request) {
         co_return value;
     const auto active_requests = server_ ? server_->active_requests() : 0;
     value["activity"] = usage_.active_counts();
+    value["admission"] = admission_.snapshot();
+    if (server_)
+        value["transport_resources"] = server_->resource_snapshot();
     value["activity"]["activeRequests"] = active_requests ? active_requests - 1 : 0;
     value["runtime"] = Json{{"runtimeMode", config_->runtime_name()},
                             {"platform", config_->platform.id},
