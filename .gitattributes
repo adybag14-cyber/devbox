@@ -1,0 +1,2 @@
+# Preserve upstream unified-diff context lines, including a single-space blank context.
+cpp-mcp/cmake/ports/boost-asio/*.patch -whitespace
