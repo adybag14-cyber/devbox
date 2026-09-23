@@ -175,3 +175,40 @@ test("signed production promotion retains the binding qualification receipt", as
     assert.deepEqual(JSON.parse(await readFile(spec.candidate.CandidateManifestPath, "utf8")).ReleaseQualification, qualification);
   } finally { await f.close(); }
 });
+
+test("Windows managed startup persists qualified and development promotion records", { skip: process.platform !== "win32" }, async () => {
+  // Execute only the real launcher's manifest block with a harmless JSON sink.
+  // Never dot-source the startup script: that would control the live service.
+  const source = await readFile(new URL("../scripts/Start-ChatGptDevboxMcp.ps1", import.meta.url), "utf8");
+  const begin = source.indexOf("    $promotionManifest = @{");
+  const end = source.indexOf("    # Keep the current candidate", begin);
+  assert(begin >= 0 && end > begin, "Managed promotion block is present");
+  const qualification = { verified: true, sourceSha: "a".repeat(40), sourceTree: "b".repeat(40),
+    binarySha256: "c".repeat(64), contractVersion: 9, stateSchemaVersion: 2,
+    stateCoordinatorProtocol: 1, workflowRunId: "fixture-only" };
+  for (const qualified of [true, false]) {
+    const candidate = { GitSha: qualification.sourceSha, SourceTree: qualification.sourceTree,
+      SourceDirty: false, Sha256: qualification.binarySha256, Generation: "fixture-generation",
+      FilePath: "C:\\fixture-only\\candidate.exe",
+      ...(qualified ? { QualificationRequired: true, ReleaseQualification: qualification } : {}) };
+    const script = `$ErrorActionPreference='Stop'
+$launchSpec = '${JSON.stringify(candidate)}' | ConvertFrom-Json
+$manifestPath='fixture-only.json'
+$startedAtUtc=$promotedAtUtc=$firstPromotedAtUtc='2026-09-23T00:00:00Z'
+function Write-JsonStateFile { param($Path,$Value) $Value | ConvertTo-Json -Depth 8 -Compress }
+${source.slice(begin, end)}`;
+    const result = await runCheckedProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64")], { label: "Isolated managed promotion record" });
+    const manifest = JSON.parse(result.stdout);
+    assert.equal(manifest.Sha256, candidate.Sha256);
+    assert.equal(manifest.SourceDirty, false);
+    assert.equal(manifest.FirstPromotedAtUtc, "2026-09-23T00:00:00Z");
+    if (qualified) {
+      assert.equal(manifest.QualificationRequired, true);
+      assert.deepEqual(manifest.ReleaseQualification, qualification);
+    } else {
+      assert.equal(Object.hasOwn(manifest, "QualificationRequired"), false);
+      assert.equal(Object.hasOwn(manifest, "ReleaseQualification"), false);
+    }
+  }
+});

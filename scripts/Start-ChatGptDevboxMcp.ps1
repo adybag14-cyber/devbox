@@ -1824,7 +1824,7 @@ if ($mcpImplementation -in @('cpp', 'rust') -and $launchSpec.CandidateManifestPa
             # A corrupt previous manifest must not prevent a successfully validated candidate from promotion.
         }
     }
-    Write-JsonStateFile -Path $manifestPath -Value @{
+    $promotionManifest = @{
         GitSha = [string]$launchSpec.GitSha
         SourceTree = [string]$launchSpec.SourceTree
         SourceDirty = [bool]$launchSpec.SourceDirty
@@ -1835,6 +1835,11 @@ if ($mcpImplementation -in @('cpp', 'rust') -and $launchSpec.CandidateManifestPa
         FirstPromotedAtUtc = $firstPromotedAtUtc
         LastStartedAtUtc = $startedAtUtc
     }
+    if ($launchSpec.QualificationRequired -eq $true) {
+        $promotionManifest.QualificationRequired = $true
+        $promotionManifest.ReleaseQualification = $launchSpec.ReleaseQualification
+    }
+    Write-JsonStateFile -Path $manifestPath -Value $promotionManifest
     # Keep the current candidate plus two recent rollback candidates. Older locked
     # binaries are harmless and will be retried on the next successful start.
     $keep = @(Get-ChildItem (Split-Path -Parent ([string]$launchSpec.CandidateManifestPath)) -Filter 'devbox-mcp-*.exe' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3 -ExpandProperty FullName)
