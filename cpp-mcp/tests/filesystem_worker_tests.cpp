@@ -57,6 +57,28 @@ int main(int argc, char** argv) {
         require(isolated_filesystem("read_large", Json{{"path", path}}, Millis(5000))["content_base64"] ==
                     base64_encode(payload),
                 "binary roundtrip");
+        {
+            Json nested = Json::array();
+            for (int i = 0; i < 500; ++i)
+                nested.push_back("checkpoint");
+            for (int depth = 0; depth < 60; ++depth)
+                nested = Json{{"next", std::move(nested)}};
+            Json request{{"task_id", "nested"}, {"expected_revision", 0}, {"state", nested}};
+            const auto task_root = path_text(root / "tasks");
+            const auto result = isolated_filesystem(
+                "legacy_task", Json{{"root", task_root}, {"action", "put"}, {"request", request}},
+                Millis(5000));
+            require(result["record"]["state"] == nested, "deep legacy checkpoint survives worker envelopes");
+            Json leaves = Json::array();
+            for (int i = 0; i < 20000; ++i)
+                leaves.push_back(0);
+            request = Json{{"task_id", "many-leaves"}, {"expected_revision", 0}, {"state", leaves}};
+            const auto wide = isolated_filesystem(
+                "legacy_task", Json{{"root", task_root}, {"action", "put"}, {"request", request}},
+                Millis(5000));
+            require(wide["record"]["state"] == leaves,
+                    "legal sub-64KiB checkpoint preserves its node capacity");
+        }
         rejects(
             [&] {
                 isolated_filesystem("read_large", Json{{"path", path}, {"max_bytes", 9000000}}, Millis(5000));

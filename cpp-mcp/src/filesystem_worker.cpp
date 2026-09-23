@@ -200,7 +200,9 @@ int run_filesystem_worker(const FilesystemDispatch& dispatch) {
         }
         std::size_t nodes = 0;
         const auto request = Json::parse(bytes, [&](int depth, Json::parse_event_t, Json&) {
-            if (depth > 32 || ++nodes > 16384)
+            // Preserve the transport's bounded deep-checkpoint contract when
+            // adding our internal envelope. Byte limits remain independent.
+            if (depth > 256 || ++nodes > 131072)
                 throw Error("FILESYSTEM_WORKER_INPUT_SHAPE");
             return true;
         });
@@ -244,7 +246,7 @@ Json isolated_filesystem(std::string_view operation, const Json& args, Millis ti
         (void)spawn_process(path_text(binary), {"--filesystem-worker"}, options, cancel);
         std::size_t nodes = 0;
         const auto response = Json::parse(output, [&](int depth, Json::parse_event_t, Json&) {
-            if (depth > 64 || ++nodes > 131072)
+            if (depth > 256 || ++nodes > 131072)
                 throw Error("FILESYSTEM_WORKER_OUTPUT_SHAPE");
             return true;
         });
