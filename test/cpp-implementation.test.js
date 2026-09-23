@@ -192,6 +192,7 @@ test("Windows managed startup persists qualified and development promotion recor
       FilePath: "C:\\fixture-only\\candidate.exe",
       ...(qualified ? { QualificationRequired: true, ReleaseQualification: qualification } : {}) };
     const script = `$ErrorActionPreference='Stop'
+Set-StrictMode -Version Latest
 $launchSpec = '${JSON.stringify(candidate)}' | ConvertFrom-Json
 $manifestPath='fixture-only.json'
 $startedAtUtc=$promotedAtUtc=$firstPromotedAtUtc='2026-09-23T00:00:00Z'

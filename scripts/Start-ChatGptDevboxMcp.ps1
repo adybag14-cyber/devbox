@@ -1835,7 +1835,8 @@ if ($mcpImplementation -in @('cpp', 'rust') -and $launchSpec.CandidateManifestPa
         FirstPromotedAtUtc = $firstPromotedAtUtc
         LastStartedAtUtc = $startedAtUtc
     }
-    if ($launchSpec.QualificationRequired -eq $true) {
+    $qualificationProperty = $launchSpec.PSObject.Properties['QualificationRequired']
+    if ($null -ne $qualificationProperty -and $qualificationProperty.Value -eq $true) {
         $promotionManifest.QualificationRequired = $true
         $promotionManifest.ReleaseQualification = $launchSpec.ReleaseQualification
     }
