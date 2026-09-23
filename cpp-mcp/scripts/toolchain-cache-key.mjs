@@ -14,6 +14,9 @@ await writeFile(path.join(probe,'CMakeLists.txt'),[
 await runCheckedProcess('cmake',['-S',probe,'-B',path.join(probe,'build')],{cwd:repo,timeoutMs:120000,label:'Dependency cache compiler/SDK identity'});
 const compiler=await readFile(path.join(probe,'build/compiler.txt'),'utf8');
 const manifest=await readFile(path.join(repo,'vcpkg.json'),'utf8');
+// Changes to our sanitizer triplet must invalidate the outer archive cache as
+// well as vcpkg's per-package ABI validation.
+const securityTriplet=await readFile(path.join(repo,'cpp-mcp/triplets/x64-windows-static-asan.cmake'),'utf8');
 const cmake=(await runCheckedProcess('cmake',['--version'],{timeoutMs:10000,label:'CMake identity'})).stdout.split('\n')[0];
 let sdk='';
 if(process.platform==='darwin') sdk=(await runCheckedProcess('xcrun',['--show-sdk-version'],{timeoutMs:10000,label:'Apple SDK identity'})).stdout.trim();
@@ -22,7 +25,7 @@ const identity={schema:1,compiler,cmake,sdk,platform:process.platform,arch:proce
   instrumentation:process.env.DEVBOX_CACHE_INSTRUMENTATION||'none',
   cFlags:process.env.CFLAGS||'',cxxFlags:process.env.CXXFLAGS||'',
   triplet:process.env.DEVBOX_CACHE_TRIPLET||`${process.arch==='arm64'?'arm64':'x64'}-${process.platform==='win32'?'windows-static':process.platform==='darwin'?'osx':'linux'}`,
-  runtime:process.platform==='win32'?'MultiThreaded':'platform',cxxStandard:23,manifest};
+  runtime:process.platform==='win32'?'MultiThreaded':'platform',cxxStandard:23,manifest,securityTriplet};
 const bytes=JSON.stringify(identity);const key=createHash('sha256').update(bytes).digest('hex');
 await writeFile(path.join(probe,'identity.json'),JSON.stringify({...identity,key},null,2)+'\n');
 if(process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT,`key=${key}\n`);

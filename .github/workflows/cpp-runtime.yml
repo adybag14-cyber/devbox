@@ -66,6 +66,7 @@ jobs:
         id: native-cache-identity
         env:
           DEVBOX_CACHE_INSTRUMENTATION: ${{ matrix.sanitizers }}
+          DEVBOX_CACHE_CONFIGURATION: ${{ matrix.sanitizers == '1' && 'RelWithDebInfo' || 'Release' }}
         run: node cpp-mcp/scripts/toolchain-cache-key.mjs
       - name: Cache pinned native dependencies
         id: native-dependencies
@@ -375,6 +376,7 @@ jobs:
         env:
           DEVBOX_CACHE_INSTRUMENTATION: ${{ matrix.mode }}
           DEVBOX_CACHE_CONFIGURATION: RelWithDebInfo
+          DEVBOX_CACHE_TRIPLET: ${{ runner.os == 'Windows' && 'x64-windows-static-asan' || 'x64-linux' }}
         run: node cpp-mcp/scripts/toolchain-cache-key.mjs
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:

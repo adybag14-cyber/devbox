@@ -51,7 +51,10 @@ int run(int argc, char** argv) {
     try {
         {
             SchedulerConfig bounded;
-            bounded.root = root / "resource-vectors";
+            // Exercise queue replacement with a final path below MAX_PATH but
+            // too long to append another UUID to its filename (the CI failure).
+            const auto root_length = path_text(root).size();
+            bounded.root = root / std::string(root_length < 136 ? 136 - root_length : 16, 'r');
             bounded.max_concurrent = 3;
             bounded.reserved_interactive = 0;
             bounded.capacity = {100, 50, 80};

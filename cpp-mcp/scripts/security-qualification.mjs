@@ -13,10 +13,11 @@ const run=(file,args)=>runCheckedProcess(file,args,{cwd:repo,env,stdio:'inherit'
 const flags=['-S',repo,'-B',build,'-DCMAKE_BUILD_TYPE=RelWithDebInfo','-DDEVBOX_BUILD_TUI=OFF','-DDEVBOX_BUILD_TESTS=ON',
   `-DCMAKE_TOOLCHAIN_FILE=${path.join(vcpkg,'scripts/buildsystems/vcpkg.cmake')}`,
   `-DVCPKG_INSTALLED_DIR=${path.join(repo,'.cpp-build/security-vcpkg-installed')}`,
-  `-DVCPKG_TARGET_TRIPLET=${process.platform==='win32'?'x64-windows-static':'x64-linux'}`];
+  `-DVCPKG_TARGET_TRIPLET=${process.platform==='win32'?'x64-windows-static-asan':'x64-linux'}`];
 let targets,pattern;
 if(mode==='windows-asan-analysis') {
-  assert.equal(process.platform,'win32');flags.push('-DDEVBOX_MSVC_ASAN=ON','-DDEVBOX_STATIC_ANALYSIS=ON');
+  assert.equal(process.platform,'win32');flags.push('-DDEVBOX_MSVC_ASAN=ON','-DDEVBOX_STATIC_ANALYSIS=ON',
+    `-DVCPKG_OVERLAY_TRIPLETS=${path.join(repo,'cpp-mcp/triplets')}`);
   targets=['devbox-core-tests','devbox-process-tests','devbox-storage-tests','devbox-security-tests','devbox-provider-tests','devbox-web-offer-tests'];
   pattern='^(core|process|storage|security|providers|web-offers)$';
 } else if(mode==='linux-tsan') {

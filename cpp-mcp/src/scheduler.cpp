@@ -273,8 +273,9 @@ std::unique_ptr<Claim> claim_once(const fs::path& path, Json owner) {
     return {};
 }
 void replace_text(const fs::path& path, std::string_view text) {
-    const auto temporary =
-        path.parent_path() / path_from_utf8("." + path_text(path.filename()) + "." + uuid() + ".tmp");
+    // Queue ticket names already contain a sequence and UUID. Keep replacement
+    // names independent of the destination so valid Windows paths stay valid.
+    const auto temporary = path.parent_path() / path_from_utf8(".devbox-" + uuid() + ".tmp");
     ScopeExit cleanup([&] {
         std::error_code ec;
         fs::remove(temporary, ec);
