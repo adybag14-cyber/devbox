@@ -80,6 +80,13 @@ void RunController::save(StateRecord& record, std::string_view event) {
         record = *current;
         return;
     }
+    if ((event == "model_admitted" || event == "tool_admitted") &&
+        (current->status == "paused" || json_string(current->data, "control") == "pause")) {
+        // Pause won before admission. Keep the safe pre-admission phase and budgets;
+        // marking this work pending would make a later resume falsely uncertain.
+        record = *current;
+        return;
+    }
     if (current->revision != record.revision) {
         record.data["control"] = current->data.value("control", Json(""));
         record.revision = current->revision;
@@ -386,8 +393,8 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
         run.data["phase"] = "model_pending";
         run.status = "running";
         save(run, "model_admitted");
-        // A terminal control transition may have won admission.
-        if (terminal(run.status))
+        // A terminal control transition or pause may have won admission.
+        if (run.status != "running")
             return public_view(run);
         if (hooks.transition)
             hooks.transition("model_admitted");
@@ -525,8 +532,8 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             run.data["phase"] = "tool_pending";
             run.status = "running";
             save(run, "tool_admitted");
-            // A terminal control transition may have won admission.
-            if (terminal(run.status))
+            // A terminal control transition or pause may have won admission.
+            if (run.status != "running")
                 return public_view(run);
             if (hooks.transition)
                 hooks.transition("tool_admitted");

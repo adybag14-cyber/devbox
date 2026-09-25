@@ -156,8 +156,8 @@ void responses_valid_terminals() {
     for (const auto* status : {"completed", "incomplete", "failed"}) {
         for (const bool sentinel : {false, true}) {
             ProviderStream stream(ProviderProtocol::Responses);
-            stream.feed(event(Json{{"type", std::string("response.") + status},
-                                   {"response", response_terminal(status)}}));
+            stream.feed(event(
+                Json{{"type", std::string("response.") + status}, {"response", response_terminal(status)}}));
             if (sentinel)
                 stream.feed("data: [DONE]\n\n");
             const auto result = stream.finish();
@@ -179,12 +179,15 @@ void chat_tool_container(bool streaming) {
         } catch (const std::exception&) {
             rejected = true;
         }
-        require(rejected && stream.finish().calls.empty(), "streamed tool_calls must not accept object values as an array");
+        require(rejected && stream.finish().calls.empty(),
+                "streamed tool_calls must not accept object values as an array");
     } else {
         try {
-            (void)parse_provider_response(ProviderProtocol::ChatCompletions,
-                Json{{"choices", Json::array({Json{{"finish_reason", "tool_calls"},
-                    {"message", {{"role", "assistant"}, {"tool_calls", malformed}}}}})}});
+            (void)parse_provider_response(
+                ProviderProtocol::ChatCompletions,
+                Json{{"choices",
+                      Json::array({Json{{"finish_reason", "tool_calls"},
+                                        {"message", {{"role", "assistant"}, {"tool_calls", malformed}}}}})}});
         } catch (const std::exception&) {
             rejected = true;
         }
@@ -193,17 +196,24 @@ void chat_tool_container(bool streaming) {
 }
 void chat_null_tools_and_usage() {
     ProviderStream stream(ProviderProtocol::ChatCompletions);
-    stream.feed(event(chunk(Json{{"role", "assistant"}, {"content", "ok"}, {"tool_calls", nullptr}}, "stop")));
-    stream.feed(event(Json{{"id", "chat_reliability"}, {"choices", Json::array()},
+    stream.feed(
+        event(chunk(Json{{"role", "assistant"}, {"content", "ok"}, {"tool_calls", nullptr}}, "stop")));
+    stream.feed(event(Json{{"id", "chat_reliability"},
+                           {"choices", Json::array()},
                            {"usage", {{"prompt_tokens", 10}, {"completion_tokens", 2}}}}));
     stream.feed("data: [DONE]\n\n");
     const auto result = stream.finish();
-    require(result.status == "completed" && result.text == "ok" && result.calls.empty() && !result.billing_unknown,
+    require(result.status == "completed" && result.text == "ok" && result.calls.empty() &&
+                !result.billing_unknown,
             "nullable tool metadata and usage-only final chunks remain valid");
-    const auto parsed = parse_provider_response(ProviderProtocol::ChatCompletions,
-        Json{{"choices", Json::array({Json{{"finish_reason", "stop"},
-            {"message", {{"role", "assistant"}, {"content", "ok"}, {"tool_calls", nullptr}}}}})}});
-    require(parsed.status == "completed" && parsed.calls.empty(), "non-streamed nullable tool metadata remains valid");
+    const auto parsed = parse_provider_response(
+        ProviderProtocol::ChatCompletions,
+        Json{{"choices",
+              Json::array({Json{
+                  {"finish_reason", "stop"},
+                  {"message", {{"role", "assistant"}, {"content", "ok"}, {"tool_calls", nullptr}}}}})}});
+    require(parsed.status == "completed" && parsed.calls.empty(),
+            "non-streamed nullable tool metadata remains valid");
 }
 
 RunSpec spec(std::string request = "reliability") {
@@ -358,7 +368,8 @@ void admission_control(const fs::path& root, bool tool, std::string_view action)
     if (action == "pause") {
         (void)controller.control("operator", id, "resume");
         const auto resumed = controller.step("operator", id, hooks);
-        require(resumed["status"] == (tool ? "ready" : "completed"), "pause retains a safely resumable phase");
+        require(resumed["status"] == (tool ? "ready" : "completed"),
+                "pause retains a safely resumable phase");
         require(generations == generations_before + (tool ? 0U : 1U) && effects == (tool ? 1U : 0U),
                 "explicit resume dispatches the previously unadmitted work exactly once");
     }
@@ -515,7 +526,8 @@ int run(int argc, char** argv) {
         ensure_directory(root / name);
         check(name, [&] { terminal_control_race(root / name, approval); });
     }
-    for (const auto* scenario : {"completed", "cancelled", "failed", "contender", "ready", "pending", "paused", "uncertain", "awaiting_approval"}) {
+    for (const auto* scenario : {"completed", "cancelled", "failed", "contender", "ready", "pending",
+                                 "paused", "uncertain", "awaiting_approval"}) {
         ensure_directory(root / scenario);
         check(std::string("driver-") + scenario, [&] { driver(root / scenario, scenario); });
     }

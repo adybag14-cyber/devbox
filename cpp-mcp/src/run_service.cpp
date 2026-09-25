@@ -182,7 +182,7 @@ Json RunService::call(std::string_view principal, const Json& args) {
                                       args.value("observed_result", Json::object()));
     else
         result = controller.control(principal, id, action);
-    if (action == "resume" || action == "approve" || (action == "reconcile" && result["status"] == "ready"))
+    if ((action == "resume" || action == "approve" || action == "reconcile") && result["status"] == "ready")
         result["driver"] = start_driver(principal, id);
     return result;
 }
@@ -359,7 +359,9 @@ int RunService::drive(std::string_view principal, std::string_view id, const std
         const auto current = index->get("run", id);
         if (!current || current->principal != principal)
             return 1;
-        if (current->status == "completed" || current->status == "failed" || current->status == "cancelled")
+        // A queued driver can arrive after pause, approval wait or reconciliation.
+        // Dormant runs need no provider configuration and must retain their state.
+        if (current->status != "ready" && current->status != "running")
             return 0;
         try {
             return drive_impl(principal, id, stop);
@@ -368,8 +370,8 @@ int RunService::drive(std::string_view principal, std::string_view id, const std
             // Revision-CAS below still protects concurrent operator control writes.
             FileLock controller(directory / ".controller.lock", Millis(1000), {}, true);
             const auto latest = index->get("run", id);
-            if (latest && latest->principal == principal && latest->status != "completed" &&
-                latest->status != "failed" && latest->status != "cancelled") {
+            if (latest && latest->principal == principal &&
+                (latest->status == "ready" || latest->status == "running")) {
                 auto record = *latest;
                 const auto phase = json_string(record.data, "phase");
                 record.status = phase.ends_with("_pending") ? "uncertain" : "failed";
