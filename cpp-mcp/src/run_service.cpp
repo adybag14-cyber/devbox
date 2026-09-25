@@ -159,7 +159,7 @@ Json RunService::call(std::string_view principal, const Json& args) {
         ensure_private_state_directory(config_->state_root / "isolated");
         ensure_private_state_directory(config_->state_root / "isolated" / run_id);
         auto result = created;
-        if (!json_bool(created, "terminal"))
+        if (created["status"] == "ready" || created["status"] == "running")
             result["driver"] = start_driver(principal, run_id);
         return result;
     }
@@ -182,7 +182,7 @@ Json RunService::call(std::string_view principal, const Json& args) {
                                       args.value("observed_result", Json::object()));
     else
         result = controller.control(principal, id, action);
-    if (action == "resume" || action == "approve" || (action == "reconcile" && result["status"] == "ready"))
+    if ((action == "resume" || action == "approve" || action == "reconcile") && result["status"] == "ready")
         result["driver"] = start_driver(principal, id);
     return result;
 }
