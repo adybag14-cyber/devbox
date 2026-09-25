@@ -110,6 +110,102 @@ void chat_shape(std::string_view fault) {
     require(rejected, "malformed streamed role, tool type or missing index must be rejected");
     require(stream.finish().calls.empty(), "malformed streams cannot yield calls after rejection");
 }
+
+Json response_terminal(std::string_view status = "completed") {
+    return Json{{"id", "response_refinement"},
+                {"status", status},
+                {"output", Json::array({Json{{"type", "function_call"},
+                                             {"call_id", "call_one"},
+                                             {"name", "program"},
+                                             {"arguments", "{}"}}})}};
+}
+void responses_interrupted_output() {
+    for (const auto* tail : {"data: {", "data: {}\n"}) {
+        ProviderStream stream(ProviderProtocol::Responses);
+        stream.feed(event(Json{{"type", "response.completed"}, {"response", response_terminal()}}));
+        stream.feed(tail);
+        const auto result = stream.finish();
+        require(result.status == "interrupted" && result.calls.empty() && result.native_output.empty() &&
+                    result.billing_unknown,
+                "an interrupted frame must discard both normalized and native executable output");
+        require(stream.finish().json() == result.json(), "interrupted finish must remain fail-closed");
+    }
+}
+void responses_terminal_mismatch() {
+    for (const auto* name : {"completed", "incomplete", "failed"}) {
+        for (const auto* status : {"completed", "incomplete", "failed"}) {
+            if (std::string_view(name) == status)
+                continue;
+            ProviderStream stream(ProviderProtocol::Responses);
+            bool rejected = false;
+            try {
+                stream.feed(event(Json{{"type", std::string("response.") + name},
+                                       {"response", response_terminal(status)}}));
+                (void)stream.finish();
+            } catch (const std::exception&) {
+                rejected = true;
+            }
+            const auto result = stream.finish();
+            require(rejected && result.status == "protocol_error" && result.calls.empty() &&
+                        result.native_output.empty() && result.billing_unknown,
+                    "terminal event type must agree with its nested response status");
+        }
+    }
+}
+void responses_valid_terminals() {
+    for (const auto* status : {"completed", "incomplete", "failed"}) {
+        for (const bool sentinel : {false, true}) {
+            ProviderStream stream(ProviderProtocol::Responses);
+            stream.feed(event(Json{{"type", std::string("response.") + status},
+                                   {"response", response_terminal(status)}}));
+            if (sentinel)
+                stream.feed("data: [DONE]\n\n");
+            const auto result = stream.finish();
+            const bool completed = std::string_view(status) == "completed";
+            require(result.status == status && result.calls.size() == (completed ? 1U : 0U) &&
+                        result.native_output.size() == (completed ? 1U : 0U),
+                    "matching terminal events remain compatible, with or without a Responses sentinel");
+        }
+    }
+}
+void chat_tool_container(bool streaming) {
+    const auto malformed = Json{{"unexpected_object_key", call(0)}};
+    bool rejected = false;
+    if (streaming) {
+        ProviderStream stream(ProviderProtocol::ChatCompletions);
+        try {
+            stream.feed(event(chunk(Json{{"tool_calls", malformed}}, "tool_calls")) + "data: [DONE]\n\n");
+            (void)stream.finish();
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        require(rejected && stream.finish().calls.empty(), "streamed tool_calls must not accept object values as an array");
+    } else {
+        try {
+            (void)parse_provider_response(ProviderProtocol::ChatCompletions,
+                Json{{"choices", Json::array({Json{{"finish_reason", "tool_calls"},
+                    {"message", {{"role", "assistant"}, {"tool_calls", malformed}}}}})}});
+        } catch (const std::exception&) {
+            rejected = true;
+        }
+        require(rejected, "non-streamed tool_calls must not accept object values as an array");
+    }
+}
+void chat_null_tools_and_usage() {
+    ProviderStream stream(ProviderProtocol::ChatCompletions);
+    stream.feed(event(chunk(Json{{"role", "assistant"}, {"content", "ok"}, {"tool_calls", nullptr}}, "stop")));
+    stream.feed(event(Json{{"id", "chat_reliability"}, {"choices", Json::array()},
+                           {"usage", {{"prompt_tokens", 10}, {"completion_tokens", 2}}}}));
+    stream.feed("data: [DONE]\n\n");
+    const auto result = stream.finish();
+    require(result.status == "completed" && result.text == "ok" && result.calls.empty() && !result.billing_unknown,
+            "nullable tool metadata and usage-only final chunks remain valid");
+    const auto parsed = parse_provider_response(ProviderProtocol::ChatCompletions,
+        Json{{"choices", Json::array({Json{{"finish_reason", "stop"},
+            {"message", {{"role", "assistant"}, {"content", "ok"}, {"tool_calls", nullptr}}}}})}});
+    require(parsed.status == "completed" && parsed.calls.empty(), "non-streamed nullable tool metadata remains valid");
+}
+
 RunSpec spec(std::string request = "reliability") {
     RunSpec value;
     value.principal = "operator";
@@ -209,7 +305,7 @@ class InterleavedStore final : public StateStore {
         return inner_->private_snapshot(target);
     }
 };
-void admission_cancellation(const fs::path& root, bool tool) {
+void admission_control(const fs::path& root, bool tool, std::string_view action) {
     auto store = std::make_shared<InterleavedStore>(open_state_store(root / "state"));
     GrantAuthority grants(store, root / "grants");
     RunController controller(store, root / "runs", grants);
@@ -241,20 +337,31 @@ void admission_cancellation(const fs::path& root, bool tool) {
     }
     unsigned reads = 0;
     const auto generations_before = generations;
-    Json cancelled;
+    const auto before = controller.get("operator", id);
+    Json controlled;
     store->before_get = [&](std::string_view kind) {
         // step reads before and after taking its lease, then save rechecks admission.
         if (kind == "run" && ++reads == 3) {
             store->before_get = {};
-            cancelled = controller.control("operator", id, "cancel");
+            controlled = controller.control("operator", id, action);
         }
     };
     const auto result = controller.step("operator", id, hooks);
-    require(!cancelled.is_null() && result["status"] == "cancelled" &&
-                result["revision"] == cancelled["revision"],
-            "terminal cancellation wins before admission");
+    const auto expected_status = action == "cancel" ? "cancelled" : "paused";
+    require(!controlled.is_null() && result["status"] == expected_status &&
+                result["revision"] == controlled["revision"],
+            "committed control wins before admission without a spurious event or revision");
     require(generations == generations_before && effects == 0,
             "losing admission must return before calling the provider or executing a granted effect");
+    for (const auto* field : {"rounds", "tool_calls", "tokens", "cost_micro_usd", "phase"})
+        require(result[field] == before[field], "unadmitted work must not consume budget or become pending");
+    if (action == "pause") {
+        (void)controller.control("operator", id, "resume");
+        const auto resumed = controller.step("operator", id, hooks);
+        require(resumed["status"] == (tool ? "ready" : "completed"), "pause retains a safely resumable phase");
+        require(generations == generations_before + (tool ? 0U : 1U) && effects == (tool ? 1U : 0U),
+                "explicit resume dispatches the previously unadmitted work exactly once");
+    }
 }
 void terminal_control_race(const fs::path& root, bool approval) {
     auto store = std::make_shared<InterleavedStore>(open_state_store(root / "state"));
@@ -322,7 +429,15 @@ void driver(const fs::path& root, std::string_view scenario) {
         (void)controller.step("operator", id, hooks);
     else if (scenario == "cancelled")
         (void)controller.control("operator", id, "cancel");
-    else if (scenario == "failed") {
+    else if (scenario == "paused")
+        (void)controller.control("operator", id, "pause");
+    else if (scenario == "uncertain" || scenario == "awaiting_approval") {
+        auto record = *store->get("run", id);
+        record.status = scenario;
+        record.data["phase"] = scenario == "uncertain" ? "model_pending" : "approval_wait";
+        const StateMutation update{record, record.revision};
+        store->apply({&update, 1});
+    } else if (scenario == "failed") {
         auto record = *store->get("run", id);
         record.status = "failed";
         record.data["error_code"] = "ORIGINAL_FAILURE";
@@ -376,6 +491,12 @@ int run(int argc, char** argv) {
     };
     check("numeric-stream-call-order", stream_order);
     check("nullable-fragments-and-finalization", chat_nullable_fragments);
+    check("responses-interrupted-native-output", responses_interrupted_output);
+    check("responses-terminal-status-consistency", responses_terminal_mismatch);
+    check("responses-valid-terminal-controls", responses_valid_terminals);
+    check("chat-stream-rejects-object-tools", [] { chat_tool_container(true); });
+    check("chat-response-rejects-object-tools", [] { chat_tool_container(false); });
+    check("chat-null-tools-and-usage-control", chat_null_tools_and_usage);
     check("chat-error-poisons-stream", [] { stream_poison(ProviderProtocol::ChatCompletions); });
     check("responses-error-poisons-stream", [] { stream_poison(ProviderProtocol::Responses); });
     for (const auto* fault : {"role", "type", "index"})
@@ -383,16 +504,18 @@ int run(int argc, char** argv) {
     ensure_directory(root / "cancellation");
     check("cancellation-is-monotonic", [&] { cancellation(root / "cancellation"); });
     for (const bool tool : {false, true}) {
-        const auto name = tool ? "tool-admission-cancellation" : "model-admission-cancellation";
-        ensure_directory(root / name);
-        check(name, [&] { admission_cancellation(root / name, tool); });
+        for (const auto* action : {"cancel", "pause"}) {
+            const auto name = std::string(tool ? "tool-admission-" : "model-admission-") + action;
+            ensure_directory(root / name);
+            check(name, [&] { admission_control(root / name, tool, action); });
+        }
     }
     for (const bool approval : {true, false}) {
         const auto name = approval ? "approval-cancellation-race" : "reconciliation-cancellation-race";
         ensure_directory(root / name);
         check(name, [&] { terminal_control_race(root / name, approval); });
     }
-    for (const auto* scenario : {"completed", "cancelled", "failed", "contender", "ready", "pending"}) {
+    for (const auto* scenario : {"completed", "cancelled", "failed", "contender", "ready", "pending", "paused", "uncertain", "awaiting_approval"}) {
         ensure_directory(root / scenario);
         check(std::string("driver-") + scenario, [&] { driver(root / scenario, scenario); });
     }
