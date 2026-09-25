@@ -310,6 +310,9 @@ struct ProviderStream::State {
         bool done = false;
     };
     std::map<std::string, Call> calls;
+    // Responses uses opaque item IDs; Chat Completions uses numeric call indexes.
+    // Sharing string keys silently orders index 10 before index 2 at dispatch.
+    std::map<std::uint64_t, Call> chat_calls;
     void event() {
         if (data.empty())
             return;
@@ -385,19 +388,32 @@ struct ProviderStream::State {
             else if (!json_string(value, "id").empty() && result.response_id != json_string(value, "id"))
                 throw Error("PROVIDER_RESPONSE_ID_CHANGED");
             result.resolved_model = json_string(value, "model", result.resolved_model);
-            for (const auto& choice : value.value("choices", Json::array())) {
-                if (json_uint(choice, "index") != 0 || terminal)
+            const auto choices = value.value("choices", Json::array());
+            if (!choices.is_array() || choices.size() > 1)
+                throw Error("PROVIDER_SINGLE_CHOICE_REQUIRED");
+            for (const auto& choice : choices) {
+                if (!choice.contains("index") || !choice["index"].is_number_integer() ||
+                    json_uint(choice, "index") != 0 || terminal)
                     throw Error("PROVIDER_SINGLE_CHOICE_REQUIRED");
                 const auto part = choice.value("delta", Json::object());
+                if (!part.is_object() ||
+                    (part.contains("role") && !part["role"].is_null() &&
+                     json_string(part, "role") != "assistant"))
+                    throw Error("PROVIDER_OUTPUT_ROLE_ESCALATION");
                 const auto text = json_string(part, "content");
                 result.text += text;
                 if (delta && !text.empty())
                     delta(text);
                 for (const auto& tool : part.value("tool_calls", Json::array())) {
+                    if (!tool.contains("index") || !tool["index"].is_number_integer())
+                        throw Error("PROVIDER_TOOL_INDEX_REQUIRED");
+                    if (tool.contains("type") && !tool["type"].is_null() &&
+                        json_string(tool, "type") != "function")
+                        throw Error("PROVIDER_TOOL_TYPE_UNSUPPORTED");
                     const auto index = json_uint(tool, "index");
                     if (index >= 32)
                         throw Error("PROVIDER_TOOL_ARGUMENT_BUDGET");
-                    auto& call = calls[std::to_string(index)];
+                    auto& call = chat_calls[index];
                     const auto id = json_string(tool, "id");
                     if (!id.empty()) {
                         if (!call.id.empty() && call.id != id)
@@ -427,7 +443,7 @@ struct ProviderStream::State {
 ProviderStream::ProviderStream(ProviderProtocol protocol, std::size_t maximum,
                                std::function<void(std::string_view)> delta)
     : state_(std::make_unique<State>(
-          State{protocol, maximum, 0, {}, {}, std::move(delta), false, false, false, {}, {}})) {
+          State{protocol, maximum, 0, {}, {}, std::move(delta), false, false, false, {}, {}, {}})) {
     if (!maximum || maximum > 16 * 1024 * 1024)
         throw Error("PROVIDER_STREAM_BUDGET");
 }
@@ -436,31 +452,49 @@ void ProviderStream::feed(std::string_view bytes) {
     auto& state = *state_;
     if (state.finalized)
         throw Error("PROVIDER_STREAM_ALREADY_FINALIZED");
-    if (bytes.size() > state.maximum - state.received)
-        throw Error("PROVIDER_STREAM_BUDGET");
-    state.received += bytes.size();
-    state.pending += bytes;
-    std::size_t position = 0;
-    for (;;) {
-        const auto end = state.pending.find('\n', position);
-        if (end == std::string::npos)
-            break;
-        auto line = state.pending.substr(position, end - position);
-        position = end + 1;
-        if (line.ends_with('\r'))
-            line.pop_back();
-        if (line.empty())
-            state.event();
-        else if (line.starts_with("data:")) {
-            auto content = line.substr(5);
-            if (content.starts_with(' '))
-                content.erase(0, 1);
-            if (!state.data.empty())
-                state.data += '\n';
-            state.data += content;
+    try {
+        if (bytes.size() > state.maximum - state.received)
+            throw Error("PROVIDER_STREAM_BUDGET");
+        state.received += bytes.size();
+        state.pending += bytes;
+        std::size_t position = 0;
+        for (;;) {
+            const auto end = state.pending.find('\n', position);
+            if (end == std::string::npos)
+                break;
+            auto line = state.pending.substr(position, end - position);
+            position = end + 1;
+            if (line.ends_with('\r'))
+                line.pop_back();
+            if (line.empty())
+                state.event();
+            else if (line.starts_with("data:")) {
+                auto content = line.substr(5);
+                if (content.starts_with(' '))
+                    content.erase(0, 1);
+                if (!state.data.empty())
+                    state.data += '\n';
+                state.data += content;
+            }
         }
+        state.pending.erase(0, position);
+    } catch (...) {
+        // A caller may catch feed() and inspect finish(). Never expose a previously
+        // completed tool batch after any later parse, shape or byte-budget failure.
+        state.finalized = true;
+        state.result.billing_unknown = true;
+        // Clear executable data before error strings, which can allocate.
+        state.result.calls.clear();
+        state.result.native_output.clear();
+        state.result.text.clear();
+        state.calls.clear();
+        state.chat_calls.clear();
+        state.pending.clear();
+        state.data.clear();
+        state.result.status = "protocol_error";
+        state.result.error_code = "PROVIDER_INVALID_STREAM";
+        throw;
     }
-    state.pending.erase(0, position);
 }
 ProviderResult ProviderStream::finish() {
     auto& state = *state_;
@@ -477,7 +511,7 @@ ProviderResult ProviderStream::finish() {
     if (state.protocol == ProviderProtocol::ChatCompletions && state.result.status == "completed") {
         try {
             auto complete = state.result;
-            for (const auto& [_, call] : state.calls)
+            for (const auto& [_, call] : state.chat_calls)
                 add_call(complete, call.id, call.name, call.arguments);
             state.result = std::move(complete);
         } catch (...) {
