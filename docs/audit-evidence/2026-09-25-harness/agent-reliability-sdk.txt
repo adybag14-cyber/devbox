@@ -1,0 +1,46 @@
+{
+  "ok": true,
+  "checks": [
+    {
+      "name": "complete native tool contract, capability hash and heavy capacity five",
+      "ok": true,
+      "durationMs": 45
+    },
+    {
+      "name": "atomic overwrite, conflict, append and replay",
+      "ok": true,
+      "durationMs": 179
+    },
+    {
+      "name": "concurrent duplicate submission executes once and survives retention",
+      "ok": true,
+      "durationMs": 280
+    },
+    {
+      "name": "global and per-task runner admission plus pagination",
+      "ok": true,
+      "durationMs": 216
+    },
+    {
+      "name": "task CAS and reconnect recover work without resubmission",
+      "ok": true,
+      "durationMs": 265
+    },
+    {
+      "name": "cancellation confirms both runner and child stopped",
+      "ok": true,
+      "durationMs": 80
+    },
+    {
+      "name": "nested task checkpoints retain bounded compact output",
+      "ok": true,
+      "durationMs": 13
+    },
+    {
+      "name": "native cold capture works through successive Rust server starts",
+      "ok": true,
+      "durationMs": 450
+    }
+  ],
+  "root": "<USER_HOME>\\AppData\\Local\\Temp\\devbox-agent-reliability-bjZdil"
+}

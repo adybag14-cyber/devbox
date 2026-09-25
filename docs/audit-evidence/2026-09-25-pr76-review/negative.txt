@@ -1,0 +1,39 @@
+PASS numeric-stream-call-order
+PASS nullable-fragments-and-finalization
+FAIL chat-error-envelope-before-done: an error envelope before DONE must invalidate previously completed calls
+FAIL chat-typed-error-before-done: an error envelope before DONE must invalidate previously completed calls
+FAIL responses-unfinished-tail: an unfinished trailing event must clear all executable native output
+PASS chat-error-poisons-stream
+PASS responses-error-poisons-stream
+PASS chat-rejects-role
+PASS chat-rejects-type
+PASS chat-rejects-index
+PASS cancellation-is-monotonic
+PASS model-admission-cancel
+PASS tool-admission-cancel
+FAIL recovered-cancel-model_pending: recovery with control intent must retain unknown outcomes without dispatch
+FAIL recovered-cancel-tool_pending: recovery with control intent must retain unknown outcomes without dispatch
+FAIL model-admission-pause: accepted control wins before admission without consuming a budget reservation
+FAIL tool-admission-pause: accepted control wins before admission without consuming a budget reservation
+FAIL recovered-pause-model_pending: recovery with control intent must retain unknown outcomes without dispatch
+FAIL recovered-pause-tool_pending: recovery with control intent must retain unknown outcomes without dispatch
+PASS approval-cancellation-race
+PASS reconciliation-cancellation-race
+PASS driver-completed
+PASS driver-cancelled
+PASS driver-failed
+PASS driver-contender
+PASS driver-ready
+PASS driver-pending
+FAIL driver-paused: a non-owner or late driver failure must not rewrite run state or revision
+FAIL driver-uncertain: a non-owner or late driver failure must not rewrite run state or revision
+FAIL driver-awaiting_approval: a non-owner or late driver failure must not rewrite run state or revision
+FAIL driver-cancel-ready: driver failure must preserve an accepted operator control request
+FAIL driver-cancel-pending: driver failure must preserve an accepted operator control request
+FAIL driver-pause-ready: driver failure must preserve an accepted operator control request
+FAIL driver-pause-pending: pending external outcomes must remain explicit through controlled driver failure
+FAIL driver-resume-completed: a terminal resume must not report or launch a driver
+FAIL driver-resume-cancelled: a terminal resume must not report or launch a driver
+FAIL driver-resume-failed: a terminal resume must not report or launch a driver
+Harness reliability: 18 passed, 19 failed
+Retained fixture: <owned-negative-fixture>

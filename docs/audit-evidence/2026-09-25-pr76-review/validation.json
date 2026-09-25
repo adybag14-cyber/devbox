@@ -1,0 +1,164 @@
+{
+  "source_commit": "d262aa23d19e191129399ec6ad3fb080e96f0bd7",
+  "binary_sha256": "0932f7b245b2d104e74d501e21aee1938e115d33ffb2bd110ebd063112961434",
+  "configuration": "Windows MSVC Release; LTO disabled; TUI disabled",
+  "started_at": "2026-09-25T12:33:28.8992890Z",
+  "checked_at": "2026-09-25T12:37:14.4539010Z",
+  "success": true,
+  "failed_steps": 0,
+  "excluded_native_tests": [
+    "computer-native",
+    "computer-broker-native",
+    "capture",
+    "setup"
+  ],
+  "steps": [
+    {
+      "name": "candidate-regressions",
+      "exit_code": 0,
+      "elapsed_ms": 6949,
+      "log": "candidate-regressions.txt",
+      "arguments": []
+    },
+    {
+      "name": "candidate-native",
+      "exit_code": 0,
+      "elapsed_ms": 49821,
+      "log": "candidate-native.txt",
+      "arguments": [
+        "--test-dir",
+        ".cpp-build/windows",
+        "-C",
+        "Release",
+        "--output-on-failure",
+        "--parallel",
+        "2",
+        "-E",
+        "^(computer-native|computer-broker-native|capture|setup)$"
+      ]
+    },
+    {
+      "name": "candidate-repeat",
+      "exit_code": 0,
+      "elapsed_ms": 123704,
+      "log": "candidate-repeat.txt",
+      "arguments": [
+        "--test-dir",
+        ".cpp-build/windows",
+        "-C",
+        "Release",
+        "--output-on-failure",
+        "--parallel",
+        "2",
+        "-R",
+        "^(harness-reliability|runs|providers)$",
+        "--repeat",
+        "until-fail:20"
+      ]
+    },
+    {
+      "name": "runtime-contract",
+      "exit_code": 0,
+      "elapsed_ms": 56,
+      "log": "runtime-contract.txt",
+      "arguments": [
+        "scripts/check-runtime-contract.mjs"
+      ]
+    },
+    {
+      "name": "schema-parity",
+      "exit_code": 0,
+      "elapsed_ms": 6484,
+      "log": "schema-parity.txt",
+      "arguments": [
+        "rust-mcp/scripts/schema-parity-audit.mjs"
+      ]
+    },
+    {
+      "name": "engine-sdk",
+      "exit_code": 0,
+      "elapsed_ms": 12607,
+      "log": "engine-sdk.txt",
+      "arguments": [
+        "cpp-mcp/scripts/engine-sdk-smoke.mjs"
+      ]
+    },
+    {
+      "name": "agent-reliability-sdk",
+      "exit_code": 0,
+      "elapsed_ms": 14171,
+      "log": "agent-reliability-sdk.txt",
+      "arguments": [
+        "rust-mcp/scripts/agent-reliability-smoke.mjs"
+      ]
+    },
+    {
+      "name": "backend-harness-sdk",
+      "exit_code": 0,
+      "elapsed_ms": 11635,
+      "log": "backend-harness-sdk.txt",
+      "arguments": [
+        "cpp-mcp/scripts/run-harness-smoke.mjs"
+      ]
+    }
+  ],
+  "negative_control": {
+    "runtime_source_commit": "97927d763103da6418b154f3ecf3a9b9bf690bf2",
+    "test_only_commit": "1af6425",
+    "expected_exit_code": 1,
+    "observed_exit_code": 1,
+    "existing_passed": 18,
+    "new_failed": 19,
+    "log": "negative.txt"
+  },
+  "regression_scenarios": 37,
+  "native_suites_passed": 35,
+  "repeat_suite_invocations_passed": 60,
+  "evidence_files": [
+    {
+      "path": "negative.txt",
+      "sha256": "b276b9aa01792b34bd1ec7485895310ec440faa0566639cea8bc98ad22cccdb1",
+      "bytes": 2475
+    },
+    {
+      "path": "candidate-regressions.txt",
+      "sha256": "75482b6e9b6e63bff2bc4bafb00047a1197aa980036a0842bd06ba72bc7ce84c",
+      "bytes": 1081
+    },
+    {
+      "path": "candidate-native.txt",
+      "sha256": "fbbb0cfd73cd9f48c807855aa12c2d42bce671a5b206bc5664d463e48764875d",
+      "bytes": 3638
+    },
+    {
+      "path": "candidate-repeat.txt",
+      "sha256": "5d2c4a6c6e319d6f612d9017b2ef41052aca8408eee8579d6bfc84c8b398447a",
+      "bytes": 5751
+    },
+    {
+      "path": "runtime-contract.txt",
+      "sha256": "5b349a45e784c22d88d22ac4b6b22064601a16b0d07541751538c01992ca53df",
+      "bytes": 245
+    },
+    {
+      "path": "schema-parity.txt",
+      "sha256": "a205f5fb35434dbd5bd3c5d4267105cbca5ab747d24cbc2fabf522fc744e21ef",
+      "bytes": 384
+    },
+    {
+      "path": "engine-sdk.txt",
+      "sha256": "580cd7c22f9049cd06dc3dcd415fa1a0b3f937e9b208b8844feab37b8968ecdc",
+      "bytes": 350
+    },
+    {
+      "path": "agent-reliability-sdk.txt",
+      "sha256": "2555ea28b05a57137688ed6333fa686fc43ac9e49a35f5f1058eaa049c00cb78",
+      "bytes": 1159
+    },
+    {
+      "path": "backend-harness-sdk.txt",
+      "sha256": "4013c304156bcb061c595fb0e4616b127754a32fb8e57d3bb62e7b85bd40e6ee",
+      "bytes": 337
+    }
+  ]
+}
