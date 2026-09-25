@@ -67,6 +67,35 @@ void stream_poison(ProviderProtocol protocol) {
             "a rejected stream must never expose an earlier executable batch");
     require(stream.finish().calls.empty(), "poisoned finish remains non-executable on repeated reads");
 }
+void chat_error_before_done(bool typed) {
+    ProviderStream stream(ProviderProtocol::ChatCompletions);
+    stream.feed(event(chunk(Json{{"tool_calls", Json::array({call(0)})}}, "tool_calls")));
+    bool rejected = false;
+    try {
+        stream.feed(event(typed ? Json{{"type", "error"}, {"message", "recorded failure"}} :
+                                  Json{{"error", {{"message", "recorded failure"}}}}));
+        stream.feed("data: [DONE]\n\n");
+    } catch (const std::exception&) { rejected = true; }
+    const auto result = stream.finish();
+    require(rejected && result.status == "protocol_error" && result.calls.empty() &&
+                result.native_output.empty(),
+            "an error envelope before DONE must invalidate previously completed calls");
+}
+void response_unfinished_tail() {
+    ProviderStream stream(ProviderProtocol::Responses);
+    stream.feed(event(Json{{"type", "response.completed"},
+                           {"response", {{"id", "response_tail"}, {"status", "completed"},
+                                         {"output", Json::array({Json{{"type", "function_call"},
+                                                                      {"call_id", "call_tail"},
+                                                                      {"name", "program"},
+                                                                      {"arguments", "{}"}}})}}}}));
+    stream.feed("data: {\"type\":");
+    const auto result = stream.finish();
+    require(result.status == "interrupted" && result.calls.empty() && result.native_output.empty() &&
+                result.text.empty() && result.billing_unknown,
+            "an unfinished trailing event must clear all executable native output");
+    require(stream.finish().json() == result.json(), "interrupted finish must remain idempotent");
+}
 void chat_nullable_fragments() {
     ProviderStream stream(ProviderProtocol::ChatCompletions);
     auto first = call(0);
@@ -209,7 +238,7 @@ class InterleavedStore final : public StateStore {
         return inner_->private_snapshot(target);
     }
 };
-void admission_cancellation(const fs::path& root, bool tool) {
+void admission_cancellation(const fs::path& root, bool tool, std::string_view command) {
     auto store = std::make_shared<InterleavedStore>(open_state_store(root / "state"));
     GrantAuthority grants(store, root / "grants");
     RunController controller(store, root / "runs", grants);
@@ -246,13 +275,13 @@ void admission_cancellation(const fs::path& root, bool tool) {
         // step reads before and after taking its lease, then save rechecks admission.
         if (kind == "run" && ++reads == 3) {
             store->before_get = {};
-            cancelled = controller.control("operator", id, "cancel");
+            cancelled = controller.control("operator", id, command);
         }
     };
     const auto result = controller.step("operator", id, hooks);
-    require(!cancelled.is_null() && result["status"] == "cancelled" &&
+    require(!cancelled.is_null() && result["status"] == (command == "cancel" ? "cancelled" : "paused") &&
                 result["revision"] == cancelled["revision"],
-            "terminal cancellation wins before admission");
+            "accepted control wins before admission without consuming a budget reservation");
     require(generations == generations_before && effects == 0,
             "losing admission must return before calling the provider or executing a granted effect");
 }
@@ -318,11 +347,11 @@ void driver(const fs::path& root, std::string_view scenario) {
     const auto id = json_string(controller.create(spec()), "run_id");
     RunHooks hooks;
     hooks.model = [](const auto&) { return answer(); };
-    if (scenario == "completed")
+    if (scenario == "completed" || scenario == "resume-completed")
         (void)controller.step("operator", id, hooks);
-    else if (scenario == "cancelled")
+    else if (scenario == "cancelled" || scenario == "resume-cancelled")
         (void)controller.control("operator", id, "cancel");
-    else if (scenario == "failed") {
+    else if (scenario == "failed" || scenario == "resume-failed") {
         auto record = *store->get("run", id);
         record.status = "failed";
         record.data["error_code"] = "ORIGINAL_FAILURE";
@@ -335,10 +364,31 @@ void driver(const fs::path& root, std::string_view scenario) {
         const StateMutation update{record, record.revision};
         store->apply({&update, 1});
     }
+    if (scenario == "paused" || scenario == "uncertain" || scenario == "awaiting_approval" ||
+        scenario.starts_with("cancel-") || scenario.starts_with("pause-")) {
+        auto record = *store->get("run", id);
+        if (scenario == "paused" || scenario == "uncertain" || scenario == "awaiting_approval") {
+            record.status = scenario;
+            record.data["phase"] = scenario == "uncertain" ? "model_pending" :
+                                   scenario == "awaiting_approval" ? "approval_wait" : "model_ready";
+        } else {
+            record.status = "running";
+            record.data["phase"] = scenario.ends_with("pending") ? "model_pending" : "model_ready";
+            record.data["control"] = scenario.starts_with("cancel-") ? "cancel" : "pause";
+        }
+        const StateMutation update{record, record.revision};
+        store->apply({&update, 1});
+    }
     const auto before = controller.get("operator", id);
     const auto events_before = controller.events("operator", id, 0, 100);
     RunService service(config);
-    if (scenario == "contender") {
+    if (scenario.starts_with("resume-")) {
+        const auto result = service.call("operator", Json{{"action", "resume"}, {"run_id", id}});
+        require(result == before && !result.contains("driver"),
+                "a terminal resume must not report or launch a driver");
+        require(!fs::exists(root / "state" / "runs" / id / "driver-owner.json"),
+                "a terminal resume must not leave driver ownership metadata");
+    } else if (scenario == "contender") {
         FileLock owner(root / "state" / "runs" / id / ".driver.lock", Millis(1000), {}, true);
         require(service.drive("operator", id) != 0, "a competing driver must not acquire ownership");
     } else
@@ -350,13 +400,50 @@ void driver(const fs::path& root, std::string_view scenario) {
     } else if (scenario == "pending") {
         require(after["status"] == "uncertain" && after["error_code"] == "RUN_DRIVER_FAILURE",
                 "an admitted unknown outcome must stay uncertain, not become safe to retry");
+    } else if (scenario.starts_with("cancel-") || scenario.starts_with("pause-")) {
+        const bool pending = scenario.ends_with("pending");
+        const bool cancelling = scenario.starts_with("cancel-");
+        require(after["status"] == (cancelling ? "cancelled" : pending ? "uncertain" : "paused") &&
+                    after["error_code"] == "RUN_DRIVER_FAILURE",
+                "driver failure must preserve an accepted operator control request");
+        require(json_bool(after, "external_outcome_unknown") == pending,
+                "pending external outcomes must remain explicit through controlled driver failure");
     } else {
         require(after == before, "a non-owner or late driver failure must not rewrite run state or revision");
         require(controller.events("operator", id, 0, 100) == events_before,
                 "a non-owner or late driver failure must not append a misleading failure event");
     }
 }
+void recovered_control(const fs::path& root, std::string_view command, std::string_view phase) {
+    auto store = open_state_store(root / "state");
+    GrantAuthority grants(store, root / "grants");
+    RunController controller(store, root / "runs", grants);
+    const auto id = json_string(controller.create(spec()), "run_id");
+    auto record = *store->get("run", id);
+    record.status = "running";
+    record.data["phase"] = phase;
+    record.data["control"] = command;
+    const StateMutation update{record, record.revision};
+    store->apply({&update, 1});
+    unsigned callbacks = 0;
+    RunHooks hooks;
+    hooks.model = [&](const ProviderRequest&) { ++callbacks; return answer(); };
+    hooks.tool = [&](const GrantDefinition&) { ++callbacks; return Json::object(); };
+    const auto result = controller.step("operator", id, hooks);
+    require(result["status"] == (command == "cancel" ? "cancelled" : "uncertain") &&
+                json_bool(result, "external_outcome_unknown") && callbacks == 0,
+            "recovery with control intent must retain unknown outcomes without dispatch");
+    if (command == "pause") {
+        bool denied = false;
+        try { (void)controller.control("operator", id, "resume"); }
+        catch (const Error&) { denied = true; }
+        require(denied, "a paused unknown effect requires reconciliation, not blind resume");
+    }
+}
 int run(int argc, char** argv) {
+    // A negative-control service launch must never recursively run the test suite.
+    if (argc == 4 && std::string_view(argv[1]) == "--agent-runner")
+        return 0;
     if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
         return run_filesystem_worker();
     if (argc == 3 && std::string_view(argv[1]) == "--state-coordinator")
@@ -376,23 +463,36 @@ int run(int argc, char** argv) {
     };
     check("numeric-stream-call-order", stream_order);
     check("nullable-fragments-and-finalization", chat_nullable_fragments);
+    check("chat-error-envelope-before-done", [] { chat_error_before_done(false); });
+    check("chat-typed-error-before-done", [] { chat_error_before_done(true); });
+    check("responses-unfinished-tail", response_unfinished_tail);
     check("chat-error-poisons-stream", [] { stream_poison(ProviderProtocol::ChatCompletions); });
     check("responses-error-poisons-stream", [] { stream_poison(ProviderProtocol::Responses); });
     for (const auto* fault : {"role", "type", "index"})
         check(std::string("chat-rejects-") + fault, [=] { chat_shape(fault); });
     ensure_directory(root / "cancellation");
     check("cancellation-is-monotonic", [&] { cancellation(root / "cancellation"); });
-    for (const bool tool : {false, true}) {
-        const auto name = tool ? "tool-admission-cancellation" : "model-admission-cancellation";
-        ensure_directory(root / name);
-        check(name, [&] { admission_cancellation(root / name, tool); });
+    for (const auto* command : {"cancel", "pause"}) {
+        for (const bool tool : {false, true}) {
+            const auto name = std::string(tool ? "tool-admission-" : "model-admission-") + command;
+            ensure_directory(root / name);
+            check(name, [&] { admission_cancellation(root / name, tool, command); });
+        }
+        for (const auto* phase : {"model_pending", "tool_pending"}) {
+            const auto name = std::string("recovered-") + command + "-" + phase;
+            ensure_directory(root / name);
+            check(name, [&] { recovered_control(root / name, command, phase); });
+        }
     }
     for (const bool approval : {true, false}) {
         const auto name = approval ? "approval-cancellation-race" : "reconciliation-cancellation-race";
         ensure_directory(root / name);
         check(name, [&] { terminal_control_race(root / name, approval); });
     }
-    for (const auto* scenario : {"completed", "cancelled", "failed", "contender", "ready", "pending"}) {
+    for (const auto* scenario : {"completed", "cancelled", "failed", "contender", "ready", "pending",
+                                  "paused", "uncertain", "awaiting_approval", "cancel-ready", "cancel-pending",
+                                  "pause-ready", "pause-pending", "resume-completed", "resume-cancelled",
+                                  "resume-failed"}) {
         ensure_directory(root / scenario);
         check(std::string("driver-") + scenario, [&] { driver(root / scenario, scenario); });
     }
