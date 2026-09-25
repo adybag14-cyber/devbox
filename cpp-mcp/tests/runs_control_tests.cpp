@@ -15,8 +15,12 @@ class ControlStore final : public StateStore {
 
   public:
     std::function<void()> before_apply;
+    mutable std::function<void()> before_run_get;
     explicit ControlStore(std::shared_ptr<StateStore> inner) : inner_(std::move(inner)) {}
     std::optional<StateRecord> get(std::string_view kind, std::string_view id) const override {
+        const auto callback = before_run_get;
+        if (kind == "run" && callback)
+            callback();
         return inner_->get(kind, id);
     }
     StatePage list(const StateQuery& query) const override {
@@ -367,10 +371,131 @@ void cancel_admission_cas(Fixture& f) {
             "committed terminal control wins the admission CAS without a refund underflow");
     require(f.models == 0 && f.effects == 0, "terminal admission conflict never dispatches");
 }
+
+// PR76's admission contract must survive a PR77 integration: a pause already
+// committed at the admission read is a no-op, not an admission followed by refund.
+void pause_wins_admission(Fixture& f, bool tool) {
+    if (tool) {
+        f.approval_wait();
+        f.approve();
+    }
+    const auto before = f.get();
+    Json controlled;
+    unsigned reads = 0, admitted_callbacks = 0;
+    f.hooks.transition = [&](std::string_view point) {
+        if (point == (tool ? "tool_admitted" : "model_admitted"))
+            ++admitted_callbacks;
+    };
+    f.state->before_run_get = [&] {
+        if (++reads == 3) {
+            f.state->before_run_get = {};
+            controlled = f.control("pause");
+        }
+    };
+    const auto result = f.step();
+    require(!controlled.is_null() && result["status"] == "paused", "pause committed at admission boundary");
+    require(f.effects == 0 && f.models == (tool ? 1U : 0U), "no external callback after pre-admission pause");
+    for (const auto* key : {"rounds", "tool_calls", "tokens", "cost_micro_usd", "phase"})
+        require(result[key] == before[key],
+                "pre-admission pause must not charge/refund an unmade reservation");
+    if (result["revision"] != controlled["revision"] || admitted_callbacks != 0)
+        throw Error("pause-won admission wrote extra revisions or published model/tool_admitted; crash there "
+                    "leaves false pending work: " +
+                    Json{{"controlled_revision", controlled["revision"]},
+                         {"result_revision", result["revision"]},
+                         {"admitted_callbacks", admitted_callbacks}}
+                        .dump());
+    f.hooks.transition = {};
+    f.control("resume");
+    f.step();
+    require(tool ? f.effects == 1 : f.models == 1, "original paused work resumes exactly once");
+}
+
+// Exercise a real competing transaction after the admission read, not just
+// before it. A retry must return the committed stop without refunding twice.
+void stopped_admission_cas(Fixture& f, bool tool, std::string action) {
+    if (tool) {
+        f.approval_wait();
+        f.approve();
+    }
+    const auto before = f.get();
+    Json stopped;
+    unsigned admissions = 0;
+    f.hooks.transition = [&](std::string_view point) {
+        if (point == (tool ? "tool_admitted" : "model_admitted"))
+            ++admissions;
+    };
+    f.state->before_apply = [&] { stopped = f.control(action); };
+    const auto result = f.step();
+    require(!stopped.is_null() && result["revision"] == stopped["revision"],
+            "a stop that wins admission CAS is a state/event no-op");
+    require(result["status"] == (action == "pause" ? "paused" : "cancelled"), "committed stop preserved");
+    for (const auto* key : {"rounds", "tool_calls", "tokens", "cost_micro_usd", "phase"})
+        require(result[key] == before[key], "denied admission never refunds an unmade reservation");
+    require(admissions == 0 && f.effects == 0 && f.models == (tool ? 1U : 0U),
+            "no callbacks at denied admission");
+    if (action == "pause") {
+        f.hooks.transition = {};
+        f.control("resume");
+        f.step();
+        require(tool ? f.effects == 1 : f.models == 1, "CAS-denied pause remains exactly-once resumable");
+    }
+}
+void terminal_before_dispatch(Fixture& f, bool tool) {
+    if (tool) {
+        f.approval_wait();
+        f.approve();
+    }
+    Json terminal;
+    f.hooks.transition = [&](std::string_view point) {
+        if (point != (tool ? "tool_admitted" : "model_admitted"))
+            return;
+        auto live = *f.state->get("run", f.id);
+        live.status = "failed";
+        live.data["error_code"] = "fixture_terminal_publication";
+        const StateMutation change{live, live.revision};
+        f.state->apply({&change, 1});
+        terminal = f.get();
+    };
+    const auto result = f.step();
+    require(result == terminal && f.effects == 0 && f.models == (tool ? 1U : 0U),
+            "fresh pre-dispatch terminal observation prevents callbacks and does not rewrite evidence");
+}
+void refund_failure_stays_pending(Fixture& f, bool tool) {
+    if (tool) {
+        f.approval_wait();
+        f.approve();
+    }
+    f.hooks.transition = [&](std::string_view point) {
+        if (point != (tool ? "tool_admitted" : "model_admitted"))
+            return;
+        f.control("pause");
+        f.state->before_apply = [] { throw Error("FIXTURE_REFUND_STORAGE_FAILURE"); };
+    };
+    bool rejected = false;
+    try {
+        f.step();
+    } catch (const Error& error) {
+        rejected = std::string_view(error.what()) == "FIXTURE_REFUND_STORAGE_FAILURE";
+    }
+    const auto pending = f.get();
+    require(rejected && pending["phase"] == (tool ? "tool_pending" : "model_pending"),
+            "failed refund persistence is not represented as successful non-dispatch recovery");
+    require(f.effects == 0 && f.models == (tool ? 1U : 0U), "refund storage failure dispatches nothing");
+    f.hooks.transition = {};
+    const auto recovered = f.step();
+    require(recovered["status"] == "uncertain" && json_bool(recovered, "external_outcome_unknown"),
+            "recovered pending work needs reconciliation after a failed refund");
+    for (const auto* key : {"rounds", "tool_calls", "tokens", "cost_micro_usd"})
+        require(recovered[key] == pending[key], "recovery retains the durable reservation");
+}
+
 int run() {
     const auto root = fs::canonical(fs::temp_directory_path()) / ("devbox-run-controls-" + uuid());
     ensure_private_state_directory(root);
     std::vector<std::pair<std::string, std::function<void(Fixture&)>>> cases{
+        {"pause_wins_model_admission", [](auto& f) { pause_wins_admission(f, false); }},
+        {"pause_wins_tool_admission", [](auto& f) { pause_wins_admission(f, true); }},
         {"approval_resume", approval_resume},
         {"cancel_final_cas", cancel_final_cas},
         {"sticky_control_cas", sticky_control_cas},
@@ -393,6 +518,15 @@ int run() {
             cases.emplace_back(action + "_recovered_" + kind + "_pending",
                                [=](auto& f) { pending_stop(f, tool, action); });
         }
+    for (bool tool : {false, true}) {
+        const std::string kind = tool ? "tool" : "model";
+        for (const std::string action : {"pause", "cancel"})
+            cases.emplace_back(action + "_wins_" + kind + "_admission_cas",
+                               [=](auto& f) { stopped_admission_cas(f, tool, action); });
+        cases.emplace_back("terminal_before_" + kind + "_dispatch",
+                           [=](auto& f) { terminal_before_dispatch(f, tool); });
+        cases.emplace_back("refund_failure_" + kind, [=](auto& f) { refund_failure_stays_pending(f, tool); });
+    }
     Json report{
         {"suite", "harness-control-boundaries"}, {"cases", Json::array()}, {"passed", 0}, {"failed", 0}};
     for (const auto& [name, test] : cases) {

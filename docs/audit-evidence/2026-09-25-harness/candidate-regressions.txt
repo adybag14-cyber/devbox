@@ -1,0 +1,19 @@
+PASS numeric-stream-call-order
+PASS nullable-fragments-and-finalization
+PASS chat-error-poisons-stream
+PASS responses-error-poisons-stream
+PASS chat-rejects-role
+PASS chat-rejects-type
+PASS chat-rejects-index
+PASS cancellation-is-monotonic
+PASS model-admission-cancellation
+PASS tool-admission-cancellation
+PASS approval-cancellation-race
+PASS reconciliation-cancellation-race
+PASS driver-completed
+PASS driver-cancelled
+PASS driver-failed
+PASS driver-contender
+PASS driver-ready
+PASS driver-pending
+Harness reliability: 18 passed, 0 failed

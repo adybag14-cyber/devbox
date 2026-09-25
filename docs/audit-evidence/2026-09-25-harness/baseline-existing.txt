@@ -1,0 +1,9 @@
+Test project <AUDIT_WORKTREE>/.cpp-build/windows
+    Start 7: runs
+1/2 Test #7: runs .............................   Passed    1.15 sec
+    Start 8: providers
+2/2 Test #8: providers ........................   Passed    1.21 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =   2.37 sec

@@ -289,7 +289,10 @@ ProviderResult parse_provider_response(ProviderProtocol protocol, const Json& va
         if (json_string(message, "role", "assistant") != "assistant")
             throw Error("PROVIDER_OUTPUT_ROLE_ESCALATION");
         result.text = json_string(message, "content");
-        for (const auto& call : message.value("tool_calls", Json::array())) {
+        const auto tool_calls = message.value("tool_calls", Json::array());
+        if (!tool_calls.is_null() && !tool_calls.is_array())
+            throw Error("PROVIDER_TOOL_CALLS_ARRAY_REQUIRED");
+        for (const auto& call : tool_calls) {
             if (json_string(call, "type") != "function")
                 throw Error("PROVIDER_TOOL_TYPE_UNSUPPORTED");
             add_call(result, json_string(call, "id"), json_string(call.at("function"), "name"),
@@ -310,6 +313,15 @@ struct ProviderStream::State {
         bool done = false;
     };
     std::map<std::string, Call> calls;
+    // Responses uses opaque item IDs; Chat Completions uses numeric call indexes.
+    // Sharing string keys silently orders index 10 before index 2 at dispatch.
+    std::map<std::uint64_t, Call> chat_calls;
+    void discard_calls() {
+        result.calls.clear();
+        result.native_output.clear();
+        calls.clear();
+        chat_calls.clear();
+    }
     void event() {
         if (data.empty())
             return;
@@ -322,6 +334,10 @@ struct ProviderStream::State {
         }
         const auto value = parse_bounded(data, maximum);
         data.clear();
+        // Streaming errors are not usage-only chunks. A provider may report an
+        // error after a finish reason but before the transport's DONE marker.
+        if ((value.contains("error") && !value["error"].is_null()) || json_string(value, "type") == "error")
+            throw Error("PROVIDER_STREAM_ERROR");
         if (terminal && protocol == ProviderProtocol::Responses)
             throw Error("PROVIDER_EVENT_AFTER_TERMINAL");
         if (protocol == ProviderProtocol::Responses) {
@@ -359,6 +375,9 @@ struct ProviderStream::State {
                     throw Error("PROVIDER_TOOL_ARGUMENT_BUDGET");
             } else if (type == "response.completed" || type == "response.incomplete" ||
                        type == "response.failed") {
+                // A failed/incomplete envelope cannot smuggle a completed response.
+                if (json_string(value.at("response"), "status") != type.substr(9))
+                    throw Error("PROVIDER_TERMINAL_STATUS_MISMATCH");
                 const auto final = parse_provider_response(protocol, value.at("response"));
                 if (!result.response_id.empty() && result.response_id != final.response_id)
                     throw Error("PROVIDER_RESPONSE_ID_CHANGED");
@@ -385,19 +404,34 @@ struct ProviderStream::State {
             else if (!json_string(value, "id").empty() && result.response_id != json_string(value, "id"))
                 throw Error("PROVIDER_RESPONSE_ID_CHANGED");
             result.resolved_model = json_string(value, "model", result.resolved_model);
-            for (const auto& choice : value.value("choices", Json::array())) {
-                if (json_uint(choice, "index") != 0 || terminal)
+            const auto choices = value.value("choices", Json::array());
+            if (!choices.is_array() || choices.size() > 1)
+                throw Error("PROVIDER_SINGLE_CHOICE_REQUIRED");
+            for (const auto& choice : choices) {
+                if (!choice.contains("index") || !choice["index"].is_number_integer() ||
+                    json_uint(choice, "index") != 0 || terminal)
                     throw Error("PROVIDER_SINGLE_CHOICE_REQUIRED");
                 const auto part = choice.value("delta", Json::object());
+                if (!part.is_object() || (part.contains("role") && !part["role"].is_null() &&
+                                          json_string(part, "role") != "assistant"))
+                    throw Error("PROVIDER_OUTPUT_ROLE_ESCALATION");
                 const auto text = json_string(part, "content");
                 result.text += text;
                 if (delta && !text.empty())
                     delta(text);
-                for (const auto& tool : part.value("tool_calls", Json::array())) {
+                const auto tool_calls = part.value("tool_calls", Json::array());
+                if (!tool_calls.is_null() && !tool_calls.is_array())
+                    throw Error("PROVIDER_TOOL_CALLS_ARRAY_REQUIRED");
+                for (const auto& tool : tool_calls) {
+                    if (!tool.contains("index") || !tool["index"].is_number_integer())
+                        throw Error("PROVIDER_TOOL_INDEX_REQUIRED");
+                    if (tool.contains("type") && !tool["type"].is_null() &&
+                        json_string(tool, "type") != "function")
+                        throw Error("PROVIDER_TOOL_TYPE_UNSUPPORTED");
                     const auto index = json_uint(tool, "index");
                     if (index >= 32)
                         throw Error("PROVIDER_TOOL_ARGUMENT_BUDGET");
-                    auto& call = calls[std::to_string(index)];
+                    auto& call = chat_calls[index];
                     const auto id = json_string(tool, "id");
                     if (!id.empty()) {
                         if (!call.id.empty() && call.id != id)
@@ -427,7 +461,7 @@ struct ProviderStream::State {
 ProviderStream::ProviderStream(ProviderProtocol protocol, std::size_t maximum,
                                std::function<void(std::string_view)> delta)
     : state_(std::make_unique<State>(
-          State{protocol, maximum, 0, {}, {}, std::move(delta), false, false, false, {}, {}})) {
+          State{protocol, maximum, 0, {}, {}, std::move(delta), false, false, false, {}, {}, {}})) {
     if (!maximum || maximum > 16 * 1024 * 1024)
         throw Error("PROVIDER_STREAM_BUDGET");
 }
@@ -436,31 +470,46 @@ void ProviderStream::feed(std::string_view bytes) {
     auto& state = *state_;
     if (state.finalized)
         throw Error("PROVIDER_STREAM_ALREADY_FINALIZED");
-    if (bytes.size() > state.maximum - state.received)
-        throw Error("PROVIDER_STREAM_BUDGET");
-    state.received += bytes.size();
-    state.pending += bytes;
-    std::size_t position = 0;
-    for (;;) {
-        const auto end = state.pending.find('\n', position);
-        if (end == std::string::npos)
-            break;
-        auto line = state.pending.substr(position, end - position);
-        position = end + 1;
-        if (line.ends_with('\r'))
-            line.pop_back();
-        if (line.empty())
-            state.event();
-        else if (line.starts_with("data:")) {
-            auto content = line.substr(5);
-            if (content.starts_with(' '))
-                content.erase(0, 1);
-            if (!state.data.empty())
-                state.data += '\n';
-            state.data += content;
+    try {
+        if (bytes.size() > state.maximum - state.received)
+            throw Error("PROVIDER_STREAM_BUDGET");
+        state.received += bytes.size();
+        state.pending += bytes;
+        std::size_t position = 0;
+        for (;;) {
+            const auto end = state.pending.find('\n', position);
+            if (end == std::string::npos)
+                break;
+            auto line = state.pending.substr(position, end - position);
+            position = end + 1;
+            if (line.ends_with('\r'))
+                line.pop_back();
+            if (line.empty())
+                state.event();
+            else if (line.starts_with("data:")) {
+                auto content = line.substr(5);
+                if (content.starts_with(' '))
+                    content.erase(0, 1);
+                if (!state.data.empty())
+                    state.data += '\n';
+                state.data += content;
+            }
         }
+        state.pending.erase(0, position);
+    } catch (...) {
+        // A caller may catch feed() and inspect finish(). Never expose a previously
+        // completed tool batch after any later parse, shape or byte-budget failure.
+        state.finalized = true;
+        state.result.billing_unknown = true;
+        // Clear executable data before error strings, which can allocate.
+        state.discard_calls();
+        state.result.text.clear();
+        state.pending.clear();
+        state.data.clear();
+        state.result.status = "protocol_error";
+        state.result.error_code = "PROVIDER_INVALID_STREAM";
+        throw;
     }
-    state.pending.erase(0, position);
 }
 ProviderResult ProviderStream::finish() {
     auto& state = *state_;
@@ -469,26 +518,30 @@ ProviderResult ProviderStream::finish() {
     state.finalized = true;
     if (!state.pending.empty() || !state.data.empty() || !state.terminal ||
         (state.protocol == ProviderProtocol::ChatCompletions && !state.done)) {
-        state.result.status = "interrupted";
-        state.result.calls.clear();
+        // An incomplete trailing frame invalidates any prior Responses completion.
+        // Clear normalized/native calls and residual text before diagnostics.
+        state.discard_calls();
+        state.result.text.clear();
         state.result.billing_unknown = true;
+        state.result.status = "interrupted";
         return state.result;
     }
     if (state.protocol == ProviderProtocol::ChatCompletions && state.result.status == "completed") {
         try {
             auto complete = state.result;
-            for (const auto& [_, call] : state.calls)
+            for (const auto& [_, call] : state.chat_calls)
                 add_call(complete, call.id, call.name, call.arguments);
             state.result = std::move(complete);
         } catch (...) {
-            state.result.calls.clear();
-            state.result.status = "protocol_error";
+            state.discard_calls();
             state.result.billing_unknown = true;
+            state.result.status = "protocol_error";
+            state.result.error_code = "PROVIDER_INVALID_STREAM";
             throw;
         }
     }
     if (state.result.status != "completed") {
-        state.result.calls.clear();
+        state.discard_calls();
         state.result.billing_unknown = true;
     }
     return state.result;

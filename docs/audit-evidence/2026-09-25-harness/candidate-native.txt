@@ -1,0 +1,75 @@
+Test project <AUDIT_WORKTREE>/.cpp-build/windows
+      Start  8: providers
+      Start  7: runs
+ 1/35 Test  #8: providers ........................   Passed    1.18 sec
+      Start  1: harness-reliability
+ 2/35 Test  #7: runs .............................   Passed    1.58 sec
+      Start  2: wsl-contract
+ 3/35 Test  #2: wsl-contract .....................   Passed    0.01 sec
+      Start  3: state-snapshot
+ 4/35 Test  #3: state-snapshot ...................   Passed    0.20 sec
+      Start  4: scheduler-notifications
+ 5/35 Test  #4: scheduler-notifications ..........   Passed    0.65 sec
+      Start  5: indexed-maintenance
+ 6/35 Test  #1: harness-reliability ..............   Passed    2.96 sec
+      Start  6: filesystem-worker
+ 7/35 Test  #6: filesystem-worker ................   Passed    1.05 sec
+      Start  9: grants
+ 8/35 Test  #9: grants ...........................   Passed    0.15 sec
+      Start 10: isolation
+ 9/35 Test #10: isolation ........................   Passed    0.24 sec
+      Start 11: artifacts
+10/35 Test #11: artifacts ........................   Passed    2.22 sec
+      Start 12: indexed-jobs
+11/35 Test #12: indexed-jobs .....................   Passed    0.71 sec
+      Start 13: state-coordinator
+12/35 Test #13: state-coordinator ................   Passed    0.27 sec
+      Start 14: state-store
+13/35 Test  #5: indexed-maintenance ..............   Passed    7.58 sec
+      Start 15: resource-budget
+14/35 Test #15: resource-budget ..................   Passed    0.02 sec
+      Start 16: security
+15/35 Test #16: security .........................   Passed    0.07 sec
+      Start 17: web-offers
+16/35 Test #17: web-offers .......................   Passed    0.07 sec
+      Start 18: web-research
+17/35 Test #18: web-research .....................   Passed   16.24 sec
+      Start 19: computer-contract
+18/35 Test #19: computer-contract ................   Passed    0.03 sec
+      Start 20: async
+19/35 Test #20: async ............................   Passed    1.39 sec
+      Start 21: engine
+20/35 Test #21: engine ...........................   Passed    1.74 sec
+      Start 22: telemetry
+21/35 Test #22: telemetry ........................   Passed    0.88 sec
+      Start 23: core
+22/35 Test #23: core .............................   Passed    1.58 sec
+      Start 24: process
+23/35 Test #24: process ..........................   Passed    1.09 sec
+      Start 25: storage
+24/35 Test #14: state-store ......................   Passed   24.46 sec
+      Start 26: runtime
+25/35 Test #25: storage ..........................   Passed    0.30 sec
+      Start 27: scheduler
+26/35 Test #26: runtime ..........................   Passed    0.61 sec
+      Start 28: jobs
+27/35 Test #27: scheduler ........................   Passed    1.55 sec
+      Start 29: oauth
+28/35 Test #29: oauth ............................   Passed    1.33 sec
+      Start 30: transport
+29/35 Test #28: jobs .............................   Passed    2.61 sec
+      Start 31: shutdown-terminate
+30/35 Test #31: shutdown-terminate ...............   Passed    0.24 sec
+      Start 32: shutdown-interrupt
+31/35 Test #32: shutdown-interrupt ...............   Passed    0.21 sec
+      Start 33: shutdown-stuck-filesystem
+32/35 Test #33: shutdown-stuck-filesystem ........   Passed    0.26 sec
+      Start 34: lifecycle
+33/35 Test #34: lifecycle ........................   Passed    0.14 sec
+      Start 35: search
+34/35 Test #35: search ...........................   Passed    0.65 sec
+35/35 Test #30: transport ........................   Passed   12.98 sec
+
+100% tests passed, 0 tests failed out of 35
+
+Total Test time (real) =  49.34 sec

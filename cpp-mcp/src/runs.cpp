@@ -68,19 +68,25 @@ StateRecord RunController::read(std::string_view principal, std::string_view id)
         throw Error("RUN_NOT_FOUND");
     return *value;
 }
-void RunController::save(StateRecord& record, std::string_view event) {
+bool RunController::save(StateRecord& record, std::string_view event) {
     // The controller lease serializes steps, approvals and reconciliation. Control requests
     // deliberately remain independent of slow callbacks; merge them at the CAS boundary.
     const auto proposed_status = record.status;
+    const bool admitting = event == "model_admitted" || event == "tool_admitted";
     for (unsigned attempt = 0; attempt < 8; ++attempt) {
         const auto current = state_->get("run", record.id);
         if (!current || current->principal != record.principal)
             throw Error("RUN_OWNERSHIP_CHANGED");
+        const auto control = json_string(current->data, "control");
+        if (terminal(current->status) ||
+            (admitting && (current->status == "paused" || current->status == "uncertain" ||
+                           control == "pause" || control == "cancel"))) {
+            // A committed stop wins before admission: no reservation, event or
+            // revision is created. The caller must not refund unadmitted work.
+            record = *current;
+            return false;
+        }
         if (current->revision != record.revision) {
-            if (terminal(current->status)) {
-                record = *current;
-                return;
-            }
             record.data["control"] = current->data.value("control", Json(""));
             record.revision = current->revision;
         }
@@ -109,7 +115,7 @@ void RunController::save(StateRecord& record, std::string_view event) {
         try {
             state_->apply({&update, 1}, {&change, 1});
             ++record.revision;
-            return;
+            return true;
         } catch (const Error& error) {
             if (std::string_view(error.what()) != "STATE_REVISION_CONFLICT")
                 throw;
@@ -124,6 +130,10 @@ bool RunController::stop_before_dispatch(StateRecord& run, std::string_view read
     if (terminal(run.status))
         return true;
     const auto live = read(run.principal, run.id);
+    if (terminal(live.status)) {
+        run = live;
+        return true;
+    }
     const auto command = json_string(live.data, "control");
     const bool cancelling = command == "cancel" || (cancel && cancel->cancelled());
     const bool expired = unix_millis() >= json_uint(live.data, "expires_at_ms");
@@ -133,6 +143,10 @@ bool RunController::stop_before_dispatch(StateRecord& run, std::string_view read
     run.data["expires_at_ms"] = live.data.at("expires_at_ms");
     const auto& budget = run.data.at("budget");
     if (ready_phase == "model_ready") {
+        if (!json_uint(run.data, "rounds") ||
+            json_uint(run.data, "tokens") < json_uint(budget, "call_tokens") ||
+            json_uint(run.data, "cost_micro_usd") < json_uint(budget, "call_cost_micro_usd"))
+            throw Error("RUN_ADMISSION_ACCOUNTING_INVALID");
         run.data["rounds"] = json_uint(run.data, "rounds") - 1;
         run.data["tokens"] = json_uint(run.data, "tokens") - json_uint(budget, "call_tokens");
         run.data["cost_micro_usd"] =
@@ -141,6 +155,8 @@ bool RunController::stop_before_dispatch(StateRecord& run, std::string_view read
         const auto& call = run.data.at("pending_approval");
         const auto signature = sha256(
             canonical_json(Json{{"name", call.at("name")}, {"arguments", call.at("arguments")}}).dump());
+        if (!json_uint(run.data, "tool_calls") || !json_uint(run.data["repetitions"], signature))
+            throw Error("RUN_ADMISSION_ACCOUNTING_INVALID");
         run.data["tool_calls"] = json_uint(run.data, "tool_calls") - 1;
         run.data["repetitions"][signature] = json_uint(run.data["repetitions"], signature) - 1;
     }
@@ -305,6 +321,8 @@ Json RunController::approve(std::string_view principal, std::string_view id, std
     auto run = read(principal, id);
     FileLock lease(root_ / run.id / ".controller.lock", Millis(1000), {}, true);
     run = read(principal, id);
+    if (terminal(run.status))
+        return public_view(run);
     if (run.status != "awaiting_approval")
         throw Error("RUN_NOT_AWAITING_APPROVAL");
     const auto grant = grants_.inspect(grant_id);
@@ -325,6 +343,8 @@ Json RunController::reconcile(std::string_view principal, std::string_view id, s
     auto run = read(principal, id);
     FileLock lease(root_ / run.id / ".controller.lock", Millis(1000), {}, true);
     run = read(principal, id);
+    if (terminal(run.status))
+        return public_view(run);
     if (run.status != "uncertain")
         throw Error("RUN_NOT_UNCERTAIN");
     if (resolution == "abandon") {
@@ -464,7 +484,8 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             json_uint(run.data, "cost_micro_usd") + json_uint(budget, "call_cost_micro_usd");
         run.data["phase"] = "model_pending";
         run.status = "running";
-        save(run, "model_admitted");
+        if (!save(run, "model_admitted"))
+            return public_view(run);
         if (hooks.transition)
             hooks.transition("model_admitted");
         if (stop_before_dispatch(run, "model_ready", cancel))
@@ -606,7 +627,8 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             run.data["tool_calls"] = json_uint(run.data, "tool_calls") + 1;
             run.data["phase"] = "tool_pending";
             run.status = "running";
-            save(run, "tool_admitted");
+            if (!save(run, "tool_admitted"))
+                return public_view(run);
             if (hooks.transition)
                 hooks.transition("tool_admitted");
             if (stop_before_dispatch(run, "tool_ready", cancel))
