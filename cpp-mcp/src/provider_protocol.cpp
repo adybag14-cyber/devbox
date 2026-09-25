@@ -289,7 +289,10 @@ ProviderResult parse_provider_response(ProviderProtocol protocol, const Json& va
         if (json_string(message, "role", "assistant") != "assistant")
             throw Error("PROVIDER_OUTPUT_ROLE_ESCALATION");
         result.text = json_string(message, "content");
-        for (const auto& call : message.value("tool_calls", Json::array())) {
+        const auto tool_calls = message.value("tool_calls", Json::array());
+        if (!tool_calls.is_null() && !tool_calls.is_array())
+            throw Error("PROVIDER_TOOL_CALLS_ARRAY_REQUIRED");
+        for (const auto& call : tool_calls) {
             if (json_string(call, "type") != "function")
                 throw Error("PROVIDER_TOOL_TYPE_UNSUPPORTED");
             add_call(result, json_string(call, "id"), json_string(call.at("function"), "name"),
@@ -313,6 +316,12 @@ struct ProviderStream::State {
     // Responses uses opaque item IDs; Chat Completions uses numeric call indexes.
     // Sharing string keys silently orders index 10 before index 2 at dispatch.
     std::map<std::uint64_t, Call> chat_calls;
+    void discard_calls() {
+        result.calls.clear();
+        result.native_output.clear();
+        calls.clear();
+        chat_calls.clear();
+    }
     void event() {
         if (data.empty())
             return;
@@ -366,6 +375,9 @@ struct ProviderStream::State {
                     throw Error("PROVIDER_TOOL_ARGUMENT_BUDGET");
             } else if (type == "response.completed" || type == "response.incomplete" ||
                        type == "response.failed") {
+                // A failed/incomplete envelope cannot smuggle a completed response.
+                if (json_string(value.at("response"), "status") != type.substr(9))
+                    throw Error("PROVIDER_TERMINAL_STATUS_MISMATCH");
                 const auto final = parse_provider_response(protocol, value.at("response"));
                 if (!result.response_id.empty() && result.response_id != final.response_id)
                     throw Error("PROVIDER_RESPONSE_ID_CHANGED");
@@ -407,7 +419,10 @@ struct ProviderStream::State {
                 result.text += text;
                 if (delta && !text.empty())
                     delta(text);
-                for (const auto& tool : part.value("tool_calls", Json::array())) {
+                const auto tool_calls = part.value("tool_calls", Json::array());
+                if (!tool_calls.is_null() && !tool_calls.is_array())
+                    throw Error("PROVIDER_TOOL_CALLS_ARRAY_REQUIRED");
+                for (const auto& tool : tool_calls) {
                     if (!tool.contains("index") || !tool["index"].is_number_integer())
                         throw Error("PROVIDER_TOOL_INDEX_REQUIRED");
                     if (tool.contains("type") && !tool["type"].is_null() &&
@@ -487,11 +502,8 @@ void ProviderStream::feed(std::string_view bytes) {
         state.finalized = true;
         state.result.billing_unknown = true;
         // Clear executable data before error strings, which can allocate.
-        state.result.calls.clear();
-        state.result.native_output.clear();
+        state.discard_calls();
         state.result.text.clear();
-        state.calls.clear();
-        state.chat_calls.clear();
         state.pending.clear();
         state.data.clear();
         state.result.status = "protocol_error";
@@ -506,10 +518,9 @@ ProviderResult ProviderStream::finish() {
     state.finalized = true;
     if (!state.pending.empty() || !state.data.empty() || !state.terminal ||
         (state.protocol == ProviderProtocol::ChatCompletions && !state.done)) {
-        // An incomplete trailing frame also invalidates a prior Responses
-        // completion. Clear both executable representations before diagnostics.
-        state.result.calls.clear();
-        state.result.native_output.clear();
+        // An incomplete trailing frame invalidates any prior Responses completion.
+        // Clear normalized/native calls and residual text before diagnostics.
+        state.discard_calls();
         state.result.text.clear();
         state.result.billing_unknown = true;
         state.result.status = "interrupted";
@@ -522,14 +533,15 @@ ProviderResult ProviderStream::finish() {
                 add_call(complete, call.id, call.name, call.arguments);
             state.result = std::move(complete);
         } catch (...) {
-            state.result.calls.clear();
-            state.result.status = "protocol_error";
+            state.discard_calls();
             state.result.billing_unknown = true;
+            state.result.status = "protocol_error";
+            state.result.error_code = "PROVIDER_INVALID_STREAM";
             throw;
         }
     }
     if (state.result.status != "completed") {
-        state.result.calls.clear();
+        state.discard_calls();
         state.result.billing_unknown = true;
     }
     return state.result;
