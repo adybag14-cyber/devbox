@@ -325,6 +325,10 @@ struct ProviderStream::State {
         }
         const auto value = parse_bounded(data, maximum);
         data.clear();
+        // Streaming errors are not usage-only chunks. A provider may report an
+        // error after a finish reason but before the transport's DONE marker.
+        if ((value.contains("error") && !value["error"].is_null()) || json_string(value, "type") == "error")
+            throw Error("PROVIDER_STREAM_ERROR");
         if (terminal && protocol == ProviderProtocol::Responses)
             throw Error("PROVIDER_EVENT_AFTER_TERMINAL");
         if (protocol == ProviderProtocol::Responses) {
@@ -396,9 +400,8 @@ struct ProviderStream::State {
                     json_uint(choice, "index") != 0 || terminal)
                     throw Error("PROVIDER_SINGLE_CHOICE_REQUIRED");
                 const auto part = choice.value("delta", Json::object());
-                if (!part.is_object() ||
-                    (part.contains("role") && !part["role"].is_null() &&
-                     json_string(part, "role") != "assistant"))
+                if (!part.is_object() || (part.contains("role") && !part["role"].is_null() &&
+                                          json_string(part, "role") != "assistant"))
                     throw Error("PROVIDER_OUTPUT_ROLE_ESCALATION");
                 const auto text = json_string(part, "content");
                 result.text += text;
@@ -503,9 +506,13 @@ ProviderResult ProviderStream::finish() {
     state.finalized = true;
     if (!state.pending.empty() || !state.data.empty() || !state.terminal ||
         (state.protocol == ProviderProtocol::ChatCompletions && !state.done)) {
-        state.result.status = "interrupted";
+        // An incomplete trailing frame also invalidates a prior Responses
+        // completion. Clear both executable representations before diagnostics.
         state.result.calls.clear();
+        state.result.native_output.clear();
+        state.result.text.clear();
         state.result.billing_unknown = true;
+        state.result.status = "interrupted";
         return state.result;
     }
     if (state.protocol == ProviderProtocol::ChatCompletions && state.result.status == "completed") {

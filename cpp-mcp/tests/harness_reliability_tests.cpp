@@ -72,10 +72,12 @@ void chat_error_before_done(bool typed) {
     stream.feed(event(chunk(Json{{"tool_calls", Json::array({call(0)})}}, "tool_calls")));
     bool rejected = false;
     try {
-        stream.feed(event(typed ? Json{{"type", "error"}, {"message", "recorded failure"}} :
-                                  Json{{"error", {{"message", "recorded failure"}}}}));
+        stream.feed(event(typed ? Json{{"type", "error"}, {"message", "recorded failure"}}
+                                : Json{{"error", {{"message", "recorded failure"}}}}));
         stream.feed("data: [DONE]\n\n");
-    } catch (const std::exception&) { rejected = true; }
+    } catch (const std::exception&) {
+        rejected = true;
+    }
     const auto result = stream.finish();
     require(rejected && result.status == "protocol_error" && result.calls.empty() &&
                 result.native_output.empty(),
@@ -84,11 +86,13 @@ void chat_error_before_done(bool typed) {
 void response_unfinished_tail() {
     ProviderStream stream(ProviderProtocol::Responses);
     stream.feed(event(Json{{"type", "response.completed"},
-                           {"response", {{"id", "response_tail"}, {"status", "completed"},
-                                         {"output", Json::array({Json{{"type", "function_call"},
-                                                                      {"call_id", "call_tail"},
-                                                                      {"name", "program"},
-                                                                      {"arguments", "{}"}}})}}}}));
+                           {"response",
+                            {{"id", "response_tail"},
+                             {"status", "completed"},
+                             {"output", Json::array({Json{{"type", "function_call"},
+                                                          {"call_id", "call_tail"},
+                                                          {"name", "program"},
+                                                          {"arguments", "{}"}}})}}}}));
     stream.feed("data: {\"type\":");
     const auto result = stream.finish();
     require(result.status == "interrupted" && result.calls.empty() && result.native_output.empty() &&
@@ -369,8 +373,9 @@ void driver(const fs::path& root, std::string_view scenario) {
         auto record = *store->get("run", id);
         if (scenario == "paused" || scenario == "uncertain" || scenario == "awaiting_approval") {
             record.status = scenario;
-            record.data["phase"] = scenario == "uncertain" ? "model_pending" :
-                                   scenario == "awaiting_approval" ? "approval_wait" : "model_ready";
+            record.data["phase"] = scenario == "uncertain"           ? "model_pending"
+                                   : scenario == "awaiting_approval" ? "approval_wait"
+                                                                     : "model_ready";
         } else {
             record.status = "running";
             record.data["phase"] = scenario.ends_with("pending") ? "model_pending" : "model_ready";
@@ -403,7 +408,9 @@ void driver(const fs::path& root, std::string_view scenario) {
     } else if (scenario.starts_with("cancel-") || scenario.starts_with("pause-")) {
         const bool pending = scenario.ends_with("pending");
         const bool cancelling = scenario.starts_with("cancel-");
-        require(after["status"] == (cancelling ? "cancelled" : pending ? "uncertain" : "paused") &&
+        require(after["status"] == (cancelling ? "cancelled"
+                                    : pending  ? "uncertain"
+                                               : "paused") &&
                     after["error_code"] == "RUN_DRIVER_FAILURE",
                 "driver failure must preserve an accepted operator control request");
         require(json_bool(after, "external_outcome_unknown") == pending,
@@ -427,16 +434,25 @@ void recovered_control(const fs::path& root, std::string_view command, std::stri
     store->apply({&update, 1});
     unsigned callbacks = 0;
     RunHooks hooks;
-    hooks.model = [&](const ProviderRequest&) { ++callbacks; return answer(); };
-    hooks.tool = [&](const GrantDefinition&) { ++callbacks; return Json::object(); };
+    hooks.model = [&](const ProviderRequest&) {
+        ++callbacks;
+        return answer();
+    };
+    hooks.tool = [&](const GrantDefinition&) {
+        ++callbacks;
+        return Json::object();
+    };
     const auto result = controller.step("operator", id, hooks);
     require(result["status"] == (command == "cancel" ? "cancelled" : "uncertain") &&
                 json_bool(result, "external_outcome_unknown") && callbacks == 0,
             "recovery with control intent must retain unknown outcomes without dispatch");
     if (command == "pause") {
         bool denied = false;
-        try { (void)controller.control("operator", id, "resume"); }
-        catch (const Error&) { denied = true; }
+        try {
+            (void)controller.control("operator", id, "resume");
+        } catch (const Error&) {
+            denied = true;
+        }
         require(denied, "a paused unknown effect requires reconciliation, not blind resume");
     }
 }
@@ -489,10 +505,10 @@ int run(int argc, char** argv) {
         ensure_directory(root / name);
         check(name, [&] { terminal_control_race(root / name, approval); });
     }
-    for (const auto* scenario : {"completed", "cancelled", "failed", "contender", "ready", "pending",
-                                  "paused", "uncertain", "awaiting_approval", "cancel-ready", "cancel-pending",
-                                  "pause-ready", "pause-pending", "resume-completed", "resume-cancelled",
-                                  "resume-failed"}) {
+    for (const auto* scenario :
+         {"completed", "cancelled", "failed", "contender", "ready", "pending", "paused", "uncertain",
+          "awaiting_approval", "cancel-ready", "cancel-pending", "pause-ready", "pause-pending",
+          "resume-completed", "resume-cancelled", "resume-failed"}) {
         ensure_directory(root / scenario);
         check(std::string("driver-") + scenario, [&] { driver(root / scenario, scenario); });
     }

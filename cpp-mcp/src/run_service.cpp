@@ -182,7 +182,10 @@ Json RunService::call(std::string_view principal, const Json& args) {
                                       args.value("observed_result", Json::object()));
     else
         result = controller.control(principal, id, action);
-    if (action == "resume" || action == "approve" || (action == "reconcile" && result["status"] == "ready"))
+    // A late control/approval may return a terminal or paused record. Do not
+    // manufacture a worker (or claim one was launched) for that committed result.
+    if (!json_bool(result, "terminal") && json_string(result, "status") == "ready" &&
+        (action == "resume" || action == "approve" || action == "reconcile"))
         result["driver"] = start_driver(principal, id);
     return result;
 }
@@ -193,6 +196,13 @@ Json RunService::start_driver(std::string_view principal, std::string_view id) {
         throw Error("RUN_NOT_FOUND");
     const auto directory = config_->state_root / "runs" / run->id;
     FileLock launch(directory / ".launch.lock", Millis(5000), {}, true);
+    // Recovery and explicit launch requests can race with control transitions.
+    // Re-read under the launch lease before consulting stale owner metadata.
+    const auto current = index->get("run", id);
+    if (!current || current->principal != principal)
+        throw Error("RUN_NOT_FOUND");
+    if (current->status != "ready" && current->status != "running")
+        return Json{{"started", false}, {"status", current->status}};
     if (const auto owner = read_json_optional(directory / "driver-owner.json", 4096)) {
         const auto pid = json_uint(*owner, "pid");
         const auto instance =
@@ -359,7 +369,9 @@ int RunService::drive(std::string_view principal, std::string_view id, const std
         const auto current = index->get("run", id);
         if (!current || current->principal != principal)
             return 1;
-        if (current->status == "completed" || current->status == "failed" || current->status == "cancelled")
+        // Parked runs need operator input, not provider configuration or a new
+        // failure publication. The controller will resume only from runnable state.
+        if (current->status != "ready" && current->status != "running")
             return 0;
         try {
             return drive_impl(principal, id, stop);
@@ -368,11 +380,18 @@ int RunService::drive(std::string_view principal, std::string_view id, const std
             // Revision-CAS below still protects concurrent operator control writes.
             FileLock controller(directory / ".controller.lock", Millis(1000), {}, true);
             const auto latest = index->get("run", id);
-            if (latest && latest->principal == principal && latest->status != "completed" &&
-                latest->status != "failed" && latest->status != "cancelled") {
+            if (latest && latest->principal == principal &&
+                (latest->status == "ready" || latest->status == "running")) {
                 auto record = *latest;
                 const auto phase = json_string(record.data, "phase");
-                record.status = phase.ends_with("_pending") ? "uncertain" : "failed";
+                const bool pending = phase.ends_with("_pending");
+                const auto control = json_string(record.data, "control");
+                record.status = control == "cancel"  ? "cancelled"
+                                : pending            ? "uncertain"
+                                : control == "pause" ? "paused"
+                                                     : "failed";
+                if (pending)
+                    record.data["external_outcome_unknown"] = true;
                 record.data["error_code"] = "RUN_DRIVER_FAILURE";
                 record.data["updated_at"] = utc_now();
                 StateMutation update{record, record.revision};
