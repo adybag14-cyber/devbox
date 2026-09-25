@@ -240,7 +240,6 @@ int RunService::drive_impl(std::string_view principal, std::string_view id,
     RunController controller(index, config_->state_root / "runs", grants);
     (void)controller.get(principal, id);
     const auto directory = config_->state_root / "runs" / std::string(id);
-    FileLock driver(directory / ".driver.lock", Millis(1000), {}, true);
     {
         FileLock launch(directory / ".launch.lock", Millis(5000), {}, true);
         write_json_atomic(directory / "driver-owner.json",
@@ -347,19 +346,44 @@ int RunService::drive_impl(std::string_view principal, std::string_view id,
 }
 int RunService::drive(std::string_view principal, std::string_view id, const std::function<bool()>& stop) {
     try {
-        return drive_impl(principal, id, stop);
-    } catch (...) {
+        validate_key(principal);
+        validate_key(id);
         auto index = state();
+        const auto initial = index->get("run", id);
+        if (!initial || initial->principal != principal)
+            return 1;
+        const auto directory = config_->state_root / "runs" / initial->id;
+        // Keep ownership through failure publication. A contender that cannot
+        // obtain this lock must not change the real driver's state or events.
+        FileLock driver(directory / ".driver.lock", Millis(1000), {}, true);
         const auto current = index->get("run", id);
-        if (current && current->principal == principal) {
-            auto record = *current;
-            const auto phase = json_string(record.data, "phase");
-            record.status = phase.ends_with("_pending") ? "uncertain" : "failed";
-            record.data["error_code"] = "RUN_DRIVER_FAILURE";
-            StateMutation update{record, record.revision};
-            StateEvent event{record.id, "driver_failed", 0, Json{{"status", record.status}}};
-            index->apply({&update, 1}, {&event, 1});
+        if (!current || current->principal != principal)
+            return 1;
+        if (current->status == "completed" || current->status == "failed" || current->status == "cancelled")
+            return 0;
+        try {
+            return drive_impl(principal, id, stop);
+        } catch (...) {
+            // The controller lease also excludes an in-flight state-machine step.
+            // Revision-CAS below still protects concurrent operator control writes.
+            FileLock controller(directory / ".controller.lock", Millis(1000), {}, true);
+            const auto latest = index->get("run", id);
+            if (latest && latest->principal == principal && latest->status != "completed" &&
+                latest->status != "failed" && latest->status != "cancelled") {
+                auto record = *latest;
+                const auto phase = json_string(record.data, "phase");
+                record.status = phase.ends_with("_pending") ? "uncertain" : "failed";
+                record.data["error_code"] = "RUN_DRIVER_FAILURE";
+                record.data["updated_at"] = utc_now();
+                StateMutation update{record, record.revision};
+                StateEvent event{record.id, "driver_failed", 0, Json{{"status", record.status}}};
+                index->apply({&update, 1}, {&event, 1});
+            }
+            return 1;
         }
+    } catch (...) {
+        // Startup/ownership failures (or a racing CAS) carry no authority to
+        // overwrite another driver, a terminal result, or an operator decision.
         return 1;
     }
 }

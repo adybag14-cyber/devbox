@@ -74,6 +74,12 @@ void RunController::save(StateRecord& record, std::string_view event) {
     const auto current = state_->get("run", record.id);
     if (!current || current->principal != record.principal)
         throw Error("RUN_OWNERSHIP_CHANGED");
+    if (terminal(current->status)) {
+        // An approval/reconciliation begun before cancellation may reach save()
+        // after the terminal transition. Return that committed result unchanged.
+        record = *current;
+        return;
+    }
     if (current->revision != record.revision) {
         record.data["control"] = current->data.value("control", Json(""));
         record.revision = current->revision;
@@ -196,6 +202,14 @@ Json RunController::control(std::string_view principal, std::string_view id, std
     auto run = read(principal, id);
     if (terminal(run.status))
         return public_view(run);
+    if (action == "pause" && json_string(run.data, "control") == "cancel") {
+        // Cancellation is monotonic. A delayed/retried pause cannot restore a
+        // resumable state after cancellation was accepted for an in-flight step.
+        auto result = public_view(run);
+        result["request_acknowledged"] = true;
+        result["terminal_acknowledgement"] = false;
+        return result;
+    }
     if (action == "pause" || action == "cancel") {
         run.data["control"] = action;
         if (run.status != "running") {
@@ -372,6 +386,9 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
         run.data["phase"] = "model_pending";
         run.status = "running";
         save(run, "model_admitted");
+        // A terminal control transition may have won admission.
+        if (terminal(run.status))
+            return public_view(run);
         if (hooks.transition)
             hooks.transition("model_admitted");
         ProviderResult reply;
@@ -508,6 +525,9 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             run.data["phase"] = "tool_pending";
             run.status = "running";
             save(run, "tool_admitted");
+            // A terminal control transition may have won admission.
+            if (terminal(run.status))
+                return public_view(run);
             if (hooks.transition)
                 hooks.transition("tool_admitted");
         }
