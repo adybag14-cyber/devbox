@@ -37,6 +37,9 @@ struct StateStoreOptions {
     std::uint64_t maximum_bytes = 1024ULL * 1024 * 1024;
     // Native fault injection only. No environment variable or MCP argument exposes this hook.
     std::function<void(std::string_view)> transition_hook;
+    // Native qualification switch only; not an environment or model-facing setting.
+    // Reuse compiled SELECT programs, never rows, transactions or authorization results.
+    bool reuse_read_statements = true;
 };
 class StateStore {
   public:

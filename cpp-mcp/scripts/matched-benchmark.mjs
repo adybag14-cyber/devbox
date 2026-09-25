@@ -1,5 +1,5 @@
 // Owned synthetic fixture only. A tunnel, if requested, exposes an authenticated
-// four-route proxy; it never exposes an MCP endpoint or arbitrary request input.
+// fixed-route proxy; it never exposes an MCP endpoint or arbitrary request input.
 import assert from 'node:assert/strict';
 import {spawn,execFileSync} from 'node:child_process';
 import {createHash,randomBytes} from 'node:crypto';
@@ -114,10 +114,16 @@ try {
     health:async()=>{const response=await request(`${base}/healthz`);assert.equal(await response.text(),'ok');return {ok:true};},
     capabilities:()=>rpc('tools/call',{name:'devbox_capabilities',arguments:{tool_name:'devbox_web_research'}}),
     read4k:()=>rpc('tools/call',{name:'devbox_read_large_file',arguments:{path:path.join(workspace,'fixed.bin'),max_bytes:4096}}),
+    task:()=>rpc('tools/call',{name:'devbox_task_get',arguments:{task_id:'benchmark-task'}}),
     child:()=>rpc('tools/call',{name:'host_run_program',arguments:{program:'node',args:['-e',"process.stdout.write('fixed-benchmark-ok')"],working_dir:workspace,timeout_seconds:10}}),
   };
-  const classes=(process.env.DEVBOX_BENCH_CLASSES||Object.keys(operations).join(',')).split(',');
+  const classes=(process.env.DEVBOX_BENCH_CLASSES||'health,capabilities,read4k,child').split(',');
   assert(classes.length>0&&classes.every(name=>Object.hasOwn(operations,name)));
+  // Opt-in only; this checkpoint belongs to the new synthetic fixture, never production.
+  if(classes.includes('task')) {
+    const checkpoint=await rpc('tools/call',{name:'devbox_task_put',arguments:{task_id:'benchmark-task',expected_revision:0,state:{marker:'fixed-query-fixture',payload:'x'.repeat(128)}}});
+    assert(!checkpoint.result?.isError,JSON.stringify(checkpoint));
+  }
   const token=randomBytes(32).toString('hex');
   proxy=http.createServer(async(req,res)=>{
     if(req.method!=='GET'||req.headers.authorization!==`Bearer ${token}`||!Object.hasOwn(operations,req.url.slice(1))) {res.writeHead(403).end();return;}
@@ -156,6 +162,7 @@ try {
     const call=async()=>{assert(Date.now()<overallDeadline,'Overall benchmark budget');const begin=performance.now();const response=await request(`${url}/${name}`,{headers:{authorization:`Bearer ${token}`}});const value=await response.json();assert.equal(response.status,200,JSON.stringify(value));assert(!value.result?.isError,JSON.stringify(value));
       if(name==='read4k')assert.equal(value.result.structuredContent.data.content_base64,data.toString('base64'));
       if(name==='child')assert(JSON.stringify(value).includes('fixed-benchmark-ok'));
+      if(name==='task'){const record=value.result.structuredContent.data.record;assert.equal(record.revision,1);assert.equal(record.state.marker,'fixed-query-fixture');assert.equal(record.state.payload,'x'.repeat(128));}
       return performance.now()-begin;};
     for(let i=0;i<20;i++)await call();
     const before=await cpu(),start=new Date().toISOString();const begin=performance.now();const latency=new Array(samples);let next=0;
