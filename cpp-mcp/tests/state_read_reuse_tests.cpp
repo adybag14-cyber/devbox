@@ -34,13 +34,13 @@ void check_mode(const fs::path& root, bool reuse) {
     std::vector<StateMutation> seed;
     for (unsigned i = 0; i < 120; ++i) {
         seed.push_back({{"job", "row-" + std::to_string(1000 + i), "owner-" + std::to_string(i % 4),
-                         "group-" + std::to_string(i % 3), i % 2 ? "running" : "done", 0,
+                         "group-" + std::to_string(i % 3), ((i % 2) != 0) ? "running" : "done", 0,
                          Json{{"i", i}, {"text", "literal ${NO_EXPANSION}\\n \xce\xa9"}}},
                         0});
     }
     std::vector<StateEvent> events;
     for (unsigned i = 0; i < 8; ++i)
-        events.push_back({i % 2 ? "run-a" : "run-b", "observed", 0, Json{{"i", i}}});
+        events.push_back({((i % 2) != 0) ? "run-a" : "run-b", "observed", 0, Json{{"i", i}}});
     writer->apply(seed, events);
     options.writable = false;
     auto reader = open_state_store(root, options);

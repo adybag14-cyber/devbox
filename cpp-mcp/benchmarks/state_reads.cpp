@@ -22,7 +22,7 @@ struct Fixture {
         std::vector<StateMutation> rows;
         for (unsigned i = 0; i < 240; ++i)
             rows.push_back({{"job", "row-" + std::to_string(1000 + i), "owner-" + std::to_string(i % 4),
-                             "group-" + std::to_string(i % 3), i % 2 ? "running" : "done", 0,
+                             "group-" + std::to_string(i % 3), ((i % 2) != 0) ? "running" : "done", 0,
                              Json{{"i", i}, {"payload", std::string(128, 'x')}}},
                             0});
         rows.push_back(
