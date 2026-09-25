@@ -1,0 +1,209 @@
+{
+  "checked_at": "2026-09-25T11:21:11.2108288Z",
+  "ctest_exit": 8,
+  "total": 39,
+  "passed": 36,
+  "failed": 3,
+  "excluded": 0,
+  "skipped": 0,
+  "cases": [
+    {
+      "name": "wsl-contract",
+      "passed": true,
+      "elapsed_seconds": 0.0114985
+    },
+    {
+      "name": "state-snapshot",
+      "passed": true,
+      "elapsed_seconds": 0.129072
+    },
+    {
+      "name": "scheduler-notifications",
+      "passed": true,
+      "elapsed_seconds": 0.583179
+    },
+    {
+      "name": "indexed-maintenance",
+      "passed": true,
+      "elapsed_seconds": 6.56714
+    },
+    {
+      "name": "filesystem-worker",
+      "passed": true,
+      "elapsed_seconds": 1.03308
+    },
+    {
+      "name": "runs",
+      "passed": true,
+      "elapsed_seconds": 1.1096
+    },
+    {
+      "name": "runs-controls",
+      "passed": true,
+      "elapsed_seconds": 1.49525
+    },
+    {
+      "name": "providers",
+      "passed": true,
+      "elapsed_seconds": 1.1996
+    },
+    {
+      "name": "grants",
+      "passed": true,
+      "elapsed_seconds": 0.12911
+    },
+    {
+      "name": "isolation",
+      "passed": true,
+      "elapsed_seconds": 0.176715
+    },
+    {
+      "name": "artifacts",
+      "passed": true,
+      "elapsed_seconds": 1.72651
+    },
+    {
+      "name": "indexed-jobs",
+      "passed": true,
+      "elapsed_seconds": 0.517586
+    },
+    {
+      "name": "state-coordinator",
+      "passed": true,
+      "elapsed_seconds": 0.337406
+    },
+    {
+      "name": "state-store",
+      "passed": true,
+      "elapsed_seconds": 13.3067
+    },
+    {
+      "name": "resource-budget",
+      "passed": true,
+      "elapsed_seconds": 0.0203492
+    },
+    {
+      "name": "security",
+      "passed": true,
+      "elapsed_seconds": 0.0414795
+    },
+    {
+      "name": "web-offers",
+      "passed": true,
+      "elapsed_seconds": 0.0648576
+    },
+    {
+      "name": "web-research",
+      "passed": true,
+      "elapsed_seconds": 12.1786
+    },
+    {
+      "name": "computer-contract",
+      "passed": true,
+      "elapsed_seconds": 0.0165163
+    },
+    {
+      "name": "computer-native",
+      "passed": false,
+      "elapsed_seconds": 0.0153977,
+      "failure": "COMPUTER_DESKTOP_UNAVAILABLE: unlock the interactive desktop first"
+    },
+    {
+      "name": "computer-broker-native",
+      "passed": false,
+      "elapsed_seconds": 0.0428394,
+      "failure": "owned broker did not become ready"
+    },
+    {
+      "name": "async",
+      "passed": true,
+      "elapsed_seconds": 1.41549
+    },
+    {
+      "name": "capture",
+      "passed": false,
+      "elapsed_seconds": 1.04195,
+      "failure": "Error: Process <fixture-pid> (devbox-capture-tests) and its visible child processes have no non-minimized, non-cloaked top-level window to capture."
+    },
+    {
+      "name": "engine",
+      "passed": true,
+      "elapsed_seconds": 1.36861
+    },
+    {
+      "name": "telemetry",
+      "passed": true,
+      "elapsed_seconds": 0.658407
+    },
+    {
+      "name": "core",
+      "passed": true,
+      "elapsed_seconds": 0.460923
+    },
+    {
+      "name": "process",
+      "passed": true,
+      "elapsed_seconds": 1.02372
+    },
+    {
+      "name": "storage",
+      "passed": true,
+      "elapsed_seconds": 0.190211
+    },
+    {
+      "name": "runtime",
+      "passed": true,
+      "elapsed_seconds": 0.534203
+    },
+    {
+      "name": "scheduler",
+      "passed": true,
+      "elapsed_seconds": 1.33951
+    },
+    {
+      "name": "jobs",
+      "passed": true,
+      "elapsed_seconds": 2.27438
+    },
+    {
+      "name": "oauth",
+      "passed": true,
+      "elapsed_seconds": 1.16228
+    },
+    {
+      "name": "transport",
+      "passed": true,
+      "elapsed_seconds": 12.9423
+    },
+    {
+      "name": "shutdown-terminate",
+      "passed": true,
+      "elapsed_seconds": 0.194023
+    },
+    {
+      "name": "shutdown-interrupt",
+      "passed": true,
+      "elapsed_seconds": 0.192386
+    },
+    {
+      "name": "shutdown-stuck-filesystem",
+      "passed": true,
+      "elapsed_seconds": 0.229237
+    },
+    {
+      "name": "lifecycle",
+      "passed": true,
+      "elapsed_seconds": 0.118987
+    },
+    {
+      "name": "search",
+      "passed": true,
+      "elapsed_seconds": 0.599937
+    },
+    {
+      "name": "setup",
+      "passed": true,
+      "elapsed_seconds": 0.203293
+    }
+  ]
+}

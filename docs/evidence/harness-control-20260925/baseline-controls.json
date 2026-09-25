@@ -1,0 +1,133 @@
+{
+  "suite": "harness-control-boundaries",
+  "cases": [
+    {
+      "name": "approval_resume",
+      "passed": false,
+      "error": "resume must restore the approval wait"
+    },
+    {
+      "name": "cancel_final_cas",
+      "passed": false,
+      "error": "STATE_REVISION_CONFLICT"
+    },
+    {
+      "name": "sticky_control_cas",
+      "passed": false,
+      "error": "control CAS retry preserves cancellation"
+    },
+    {
+      "name": "resume_during_approval_cas",
+      "passed": false,
+      "error": "STATE_REVISION_CONFLICT"
+    },
+    {
+      "name": "bounded_cas_retries",
+      "passed": false,
+      "error": "revision retries are explicitly bounded"
+    },
+    {
+      "name": "cancel_admission_cas",
+      "passed": false,
+      "error": "STATE_REVISION_CONFLICT"
+    },
+    {
+      "name": "cancel_final_reply",
+      "passed": false,
+      "error": "cancellation wins final-reply commit; pause lets the current final step complete"
+    },
+    {
+      "name": "pause_final_reply",
+      "passed": true
+    },
+    {
+      "name": "cancel_throwing_model",
+      "passed": false,
+      "error": "cancelled throwing provider retains unknown outcome without dropping control"
+    },
+    {
+      "name": "cancel_is_sticky",
+      "passed": false,
+      "error": "later pause cannot downgrade accepted cancellation"
+    },
+    {
+      "name": "cancel_event_terminal",
+      "passed": false,
+      "error": "event terminal metadata agrees with cancellation acknowledgement"
+    },
+    {
+      "name": "completed_stays_terminal",
+      "passed": true
+    },
+    {
+      "name": "completed_effect_replay",
+      "passed": true
+    },
+    {
+      "name": "paused_approval_denied",
+      "passed": true
+    },
+    {
+      "name": "cancel_before_model_dispatch",
+      "passed": false,
+      "error": "observed stop wins before external dispatch"
+    },
+    {
+      "name": "cancel_recovered_model_pending",
+      "passed": false,
+      "error": "pending stop must expose unknown outcome"
+    },
+    {
+      "name": "pause_before_model_dispatch",
+      "passed": false,
+      "error": "observed stop wins before external dispatch"
+    },
+    {
+      "name": "pause_recovered_model_pending",
+      "passed": false,
+      "error": "stopping recovered pending work preserves its uncertainty"
+    },
+    {
+      "name": "expire_before_model_dispatch",
+      "passed": false,
+      "error": "observed stop wins before external dispatch"
+    },
+    {
+      "name": "expire_recovered_model_pending",
+      "passed": false,
+      "error": "pending stop must expose unknown outcome"
+    },
+    {
+      "name": "cancel_before_tool_dispatch",
+      "passed": false,
+      "error": "observed stop wins before external dispatch"
+    },
+    {
+      "name": "cancel_recovered_tool_pending",
+      "passed": false,
+      "error": "pending stop must expose unknown outcome"
+    },
+    {
+      "name": "pause_before_tool_dispatch",
+      "passed": false,
+      "error": "observed stop wins before external dispatch"
+    },
+    {
+      "name": "pause_recovered_tool_pending",
+      "passed": false,
+      "error": "stopping recovered pending work preserves its uncertainty"
+    },
+    {
+      "name": "expire_before_tool_dispatch",
+      "passed": false,
+      "error": "observed stop wins before external dispatch"
+    },
+    {
+      "name": "expire_recovered_tool_pending",
+      "passed": false,
+      "error": "pending stop must expose unknown outcome"
+    }
+  ],
+  "passed": 4,
+  "failed": 22
+}
