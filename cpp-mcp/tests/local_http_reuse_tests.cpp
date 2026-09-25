@@ -1,3 +1,4 @@
+#include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/server.hpp"
 #include <boost/beast.hpp>
