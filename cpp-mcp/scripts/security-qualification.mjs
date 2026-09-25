@@ -18,12 +18,12 @@ let targets,pattern;
 if(mode==='windows-asan-analysis') {
   assert.equal(process.platform,'win32');flags.push('-DDEVBOX_MSVC_ASAN=ON','-DDEVBOX_STATIC_ANALYSIS=ON',
     `-DVCPKG_OVERLAY_TRIPLETS=${path.join(repo,'cpp-mcp/triplets')}`);
-  targets=['devbox-core-tests','devbox-process-tests','devbox-storage-tests','devbox-security-tests','devbox-provider-tests','devbox-web-offer-tests'];
-  pattern='^(core|process|storage|security|providers|web-offers)$';
+  targets=['devbox-core-tests','devbox-process-tests','devbox-storage-tests','devbox-security-tests','devbox-provider-tests','devbox-web-offer-tests','devbox-state-read-reuse-tests','devbox-state-read-bench'];
+  pattern='^(core|process|storage|security|providers|web-offers|state-read-reuse|state-read-benchmark-smoke)$';
 } else if(mode==='linux-tsan') {
   assert.equal(process.platform,'linux');flags.push('-DDEVBOX_THREAD_SANITIZER=ON','-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O1 -g -DNDEBUG');
-  targets=['devbox-async-tests','devbox-security-tests','devbox-state-coordinator-tests','devbox-scheduler-notification-tests'];
-  pattern='^(async|security|state-coordinator|scheduler-notifications)$';
+  targets=['devbox-async-tests','devbox-security-tests','devbox-state-coordinator-tests','devbox-scheduler-notification-tests','devbox-state-read-reuse-tests','devbox-state-read-bench'];
+  pattern='^(async|security|state-coordinator|scheduler-notifications|state-read-reuse|state-read-benchmark-smoke)$';
 } else {
   assert.equal(process.platform,'linux');flags.push('-DDEVBOX_SANITIZERS=ON','-DDEVBOX_FUZZING=ON','-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O1 -g -DNDEBUG');
   targets=['devbox-fuzz-parsers'];
