@@ -134,7 +134,8 @@ Json endpoint_at(const fs::path& root) {
         return Json();
     return *value;
 }
-Json exchange(const Json& endpoint, const Json& payload, Millis timeout, const Cancel& cancel) {
+Json exchange(const Json& endpoint, const Json& payload, Millis timeout, const Cancel& cancel,
+              bool reuse_reads = false) {
     Json envelope{{"protocol", 1},
                   {"nonce", uuid()},
                   {"issued_steady_ms", monotonic_ms()},
@@ -146,13 +147,22 @@ Json exchange(const Json& endpoint, const Json& payload, Millis timeout, const C
                  {"id", nonce},
                  {"method", "tools/call"},
                  {"params", {{"name", "devbox_internal_state"}, {"arguments", envelope}}}};
+    const auto operation = json_string(payload, "op");
+    const bool read = operation == "get" || operation == "count" || operation == "count_matching" ||
+                      operation == "list" || operation == "events" || operation == "diagnostics";
+    // A socket is only an optimization. Every request still verifies the process
+    // instance, nonce, generation, MAC and encrypted response. No keys/results cached.
+    const auto scope = reuse_reads && read ? std::to_string(json_uint(endpoint, "pid")) + ":" +
+                                                 std::to_string(json_uint(endpoint, "instance")) + ":" +
+                                                 std::to_string(json_uint(endpoint, "generation"))
+                                           : std::string();
     const auto response =
         http_request("POST", "http://127.0.0.1:" + std::to_string(json_uint(endpoint, "port")) + "/mcp",
                      bounded_json_dump(request, frame_limit),
                      Json{{"content-type", "application/json"},
                           {"accept", "application/json"},
                           {"user-agent", "devbox-state-ipc/1"}},
-                     timeout, frame_limit, cancel, true);
+                     timeout, frame_limit, cancel, true, scope);
     if (response.status != 200)
         throw Error("STATE_IPC_UNAVAILABLE");
     const auto parsed = Json::parse(response.body);
@@ -352,7 +362,8 @@ class StateClient final : public StateStore {
         for (int attempt = 0; attempt < 2; ++attempt) {
             const auto endpoint = ensure();
             try {
-                return exchange(endpoint, request, options_.timeout, options_.cancel);
+                return exchange(endpoint, request, options_.timeout, options_.cancel,
+                                options_.reuse_read_connections);
             } catch (const Cancelled&) {
                 throw;
             } catch (const Error& error) {

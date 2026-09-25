@@ -856,7 +856,7 @@ std::optional<fs::path> tls_ca_bundle() {
 }
 HttpResult http_request(std::string_view method, std::string_view url, std::string_view body,
                         const Json& headers, Millis timeout, std::size_t max_bytes, const Cancel& cancel,
-                        bool direct_connection) {
+                        bool direct_connection, std::string_view local_reuse_scope) {
     static const bool initialized = []() {
         if (curl_global_init(CURL_GLOBAL_DEFAULT) != CURLE_OK)
             throw Error("HTTP initialization failed");
@@ -870,7 +870,43 @@ HttpResult http_request(std::string_view method, std::string_view url, std::stri
         bool oversized = false;
     };
     State state{{}, max_bytes, cancel};
-    const std::unique_ptr<CURL, decltype(&curl_easy_cleanup)> handle(curl_easy_init(), curl_easy_cleanup);
+    using Handle = std::unique_ptr<CURL, decltype(&curl_easy_cleanup)>;
+    struct LocalConnection {
+        Handle idle{nullptr, curl_easy_cleanup};
+        std::string scope, uri;
+    };
+    // One idle connection at most per caller thread, never a process-wide URL map.
+    // Worker-thread exit closes it. Only private authenticated read RPCs opt in.
+    LocalConnection* retained = nullptr;
+    if (!local_reuse_scope.empty()) {
+        constexpr std::string_view prefix = "http://127.0.0.1:";
+        if (!direct_connection || !url.starts_with(prefix) || !url.ends_with("/mcp") ||
+            local_reuse_scope.size() > 256 || method != "POST")
+            throw Error("HTTP_LOCAL_REUSE_SCOPE_INVALID");
+        const auto port = url.substr(prefix.size(), url.size() - prefix.size() - 4);
+        unsigned number = 0;
+        if (port.empty() || port.size() > 5)
+            throw Error("HTTP_LOCAL_REUSE_SCOPE_INVALID");
+        for (const char ch : port) {
+            if (ch < '0' || ch > '9')
+                throw Error("HTTP_LOCAL_REUSE_SCOPE_INVALID");
+            number = number * 10 + static_cast<unsigned>(ch - '0');
+        }
+        if (!number || number > 65535)
+            throw Error("HTTP_LOCAL_REUSE_SCOPE_INVALID");
+        if (cancel)
+            cancel->check();
+        thread_local LocalConnection connection;
+        retained = &connection;
+        if (retained->scope != local_reuse_scope || retained->uri != url) {
+            retained->idle.reset();
+            retained->scope = local_reuse_scope;
+            retained->uri = url;
+        }
+    }
+    Handle handle(retained ? retained->idle.release() : nullptr, curl_easy_cleanup);
+    if (!handle)
+        handle.reset(curl_easy_init());
     if (!handle)
         throw Error("HTTP allocation failed");
     const auto uri = std::string(url), verb = std::string(method);
@@ -880,6 +916,19 @@ HttpResult http_request(std::string_view method, std::string_view url, std::stri
             curl_slist_append(raw_headers, (it.key() + ": " + it.value().get<std::string>()).c_str());
     const std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> header_list(raw_headers,
                                                                                   curl_slist_free_all);
+    bool reusable = false;
+    ScopeExit release([&] {
+        // Clear pointers to request bodies, headers, callbacks and cancellation
+        // state before those objects die. reset preserves only libcurl's caches.
+        // Any transport failure, timeout, oversize or non-200 result closes it.
+        if (retained) {
+            curl_easy_reset(handle.get());
+            if (reusable)
+                retained->idle = std::move(handle);
+            else
+                handle.reset();
+        }
+    });
     curl_easy_setopt(handle.get(), CURLOPT_URL, uri.c_str());
     if (direct_connection)
         curl_easy_setopt(handle.get(), CURLOPT_PROXY, "");
@@ -890,7 +939,12 @@ HttpResult http_request(std::string_view method, std::string_view url, std::stri
                      static_cast<long>(std::clamp<std::int64_t>(timeout.count(), 1, 2147483647)));
     curl_easy_setopt(handle.get(), CURLOPT_CONNECTTIMEOUT_MS,
                      static_cast<long>(std::min<std::int64_t>(5000, timeout.count())));
-    curl_easy_setopt(handle.get(), CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(handle.get(), CURLOPT_FOLLOWLOCATION, retained ? 0L : 1L);
+    if (retained) {
+        curl_easy_setopt(handle.get(), CURLOPT_MAXCONNECTS, 1L);
+        curl_easy_setopt(handle.get(), CURLOPT_MAXAGE_CONN, 5L);
+        curl_easy_setopt(handle.get(), CURLOPT_MAXLIFETIME_CONN, 60L);
+    }
     curl_easy_setopt(handle.get(), CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(handle.get(), CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(handle.get(), CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
@@ -952,6 +1006,7 @@ HttpResult http_request(std::string_view method, std::string_view url, std::stri
     long status = 0;
     curl_easy_getinfo(handle.get(), CURLINFO_RESPONSE_CODE, &status);
     state.result.status = static_cast<int>(status);
+    reusable = status == 200;
     return state.result;
 }
 } // namespace devbox
