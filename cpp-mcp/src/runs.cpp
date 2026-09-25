@@ -74,16 +74,14 @@ void RunController::save(StateRecord& record, std::string_view event) {
     const auto current = state_->get("run", record.id);
     if (!current || current->principal != record.principal)
         throw Error("RUN_OWNERSHIP_CHANGED");
-    if (terminal(current->status)) {
-        // An approval/reconciliation begun before cancellation may reach save()
-        // after the terminal transition. Return that committed result unchanged.
-        record = *current;
-        return;
-    }
-    if ((event == "model_admitted" || event == "tool_admitted") &&
-        (current->status == "paused" || json_string(current->data, "control") == "pause")) {
-        // Pause won before admission. Keep the safe pre-admission phase and budgets;
-        // marking this work pending would make a later resume falsely uncertain.
+    const bool admitting = event == "model_admitted" || event == "tool_admitted";
+    const auto control = json_string(current->data, "control");
+    if (terminal(current->status) ||
+        (admitting && (current->status == "paused" || current->status == "uncertain" || control == "pause" ||
+                       control == "cancel"))) {
+        // Accepted terminal/control transitions win admission without consuming
+        // another budget reservation. In-flight result publication still retains
+        // its existing control merge below; only new dispatch is denied here.
         record = *current;
         return;
     }
@@ -314,7 +312,12 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
         return public_view(run);
     const auto command = json_string(run.data, "control");
     if (command == "pause" || command == "cancel" || (cancel && cancel->cancelled())) {
-        run.status = command == "pause" ? "paused" : "cancelled";
+        const bool pending = json_string(run.data, "phase").ends_with("_pending");
+        // A recovered pending operation may already have had an external effect.
+        // Pause cannot make it blindly resumable; cancel cannot erase uncertainty.
+        run.status = command == "pause" ? (pending ? "uncertain" : "paused") : "cancelled";
+        if (pending)
+            run.data["external_outcome_unknown"] = true;
         save(run, run.status);
         return public_view(run);
     }
@@ -393,8 +396,9 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
         run.data["phase"] = "model_pending";
         run.status = "running";
         save(run, "model_admitted");
-        // A terminal control transition or pause may have won admission.
-        if (run.status != "running")
+        // A terminal or pause transition may have won admission.
+        if (run.status != "running" || json_string(run.data, "control") == "pause" ||
+            json_string(run.data, "control") == "cancel")
             return public_view(run);
         if (hooks.transition)
             hooks.transition("model_admitted");
@@ -532,8 +536,9 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             run.data["phase"] = "tool_pending";
             run.status = "running";
             save(run, "tool_admitted");
-            // A terminal control transition or pause may have won admission.
-            if (run.status != "running")
+            // A terminal or pause transition may have won admission.
+            if (run.status != "running" || json_string(run.data, "control") == "pause" ||
+                json_string(run.data, "control") == "cancel")
                 return public_view(run);
             if (hooks.transition)
                 hooks.transition("tool_admitted");
