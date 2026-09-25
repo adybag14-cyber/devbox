@@ -1,0 +1,23 @@
+{
+  "ok": true,
+  "toolCount": 37,
+  "input": {
+    "differingToolCount": 0,
+    "differingTools": [],
+    "differences": []
+  },
+  "output": {
+    "differingToolCount": 0,
+    "differingTools": [],
+    "differences": []
+  },
+  "metadata": {
+    "differingToolCount": 0,
+    "differingTools": [],
+    "differences": []
+  },
+  "validity": {
+    "errorCount": 0,
+    "errors": []
+  }
+}

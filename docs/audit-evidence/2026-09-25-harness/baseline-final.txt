@@ -1,0 +1,20 @@
+FAIL numeric-stream-call-order: streamed calls must retain numeric index order, including index 10
+PASS nullable-fragments-and-finalization
+FAIL chat-error-poisons-stream: a rejected stream must never expose an earlier executable batch
+FAIL responses-error-poisons-stream: a rejected stream must never expose an earlier executable batch
+FAIL chat-rejects-role: malformed streamed role, tool type or missing index must be rejected
+FAIL chat-rejects-type: malformed streamed role, tool type or missing index must be rejected
+FAIL chat-rejects-index: malformed streamed role, tool type or missing index must be rejected
+FAIL cancellation-is-monotonic: an accepted cancellation cannot be weakened into pause
+FAIL model-admission-cancellation: terminal cancellation wins before admission
+FAIL tool-admission-cancellation: terminal cancellation wins before admission
+FAIL approval-cancellation-race: late approval or reconciliation must not resurrect a terminal cancelled run
+FAIL reconciliation-cancellation-race: late approval or reconciliation must not resurrect a terminal cancelled run
+FAIL driver-completed: a non-owner or late driver failure must not rewrite run state or revision
+FAIL driver-cancelled: a non-owner or late driver failure must not rewrite run state or revision
+FAIL driver-failed: a non-owner or late driver failure must not rewrite run state or revision
+FAIL driver-contender: a non-owner or late driver failure must not rewrite run state or revision
+PASS driver-ready
+PASS driver-pending
+Harness reliability: 3 passed, 15 failed
+Retained fixture: <USER_HOME>\AppData\Local\Temp\devbox-harness-reliability-c369b08a-82bb-4b51-a2a3-d438d521d4b5

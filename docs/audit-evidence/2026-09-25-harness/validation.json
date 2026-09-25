@@ -1,0 +1,283 @@
+{
+  "evidence_kind": "local developer qualification; not a signed release or agent benchmark",
+  "audited_base": "43127402af2b82cd00561017570f350335593057",
+  "test_only_negative_control_commit": "d47441274553e05a94f08261f2a350ee853acce0",
+  "candidate_qualification": {
+    "source_commit": "f0c5dd10899cb6d9e239e589656096992aef2c64",
+    "binary_sha256": "e3268d80ccdf612b65538e97738bd4b0fb10a74930627c97938673180ed32b91",
+    "configuration": "Windows MSVC Release; LTO disabled; TUI disabled",
+    "started_at": "2026-09-25T11:11:37.4435548Z",
+    "checked_at": "2026-09-25T11:14:16.9838597Z",
+    "success": true,
+    "failed_steps": 0,
+    "excluded_native_tests": [
+      "computer-native",
+      "computer-broker-native",
+      "capture",
+      "setup"
+    ],
+    "steps": [
+      {
+        "name": "candidate-regressions",
+        "exit_code": 0,
+        "elapsed_ms": 2501,
+        "log": "candidate-regressions.txt",
+        "arguments": []
+      },
+      {
+        "name": "candidate-native",
+        "exit_code": 0,
+        "elapsed_ms": 49360,
+        "log": "candidate-native.txt",
+        "arguments": [
+          "--test-dir",
+          ".cpp-build/windows",
+          "-C",
+          "Release",
+          "--output-on-failure",
+          "--parallel",
+          "2",
+          "-E",
+          "^(computer-native|computer-broker-native|capture|setup)$"
+        ]
+      },
+      {
+        "name": "candidate-repeat",
+        "exit_code": 0,
+        "elapsed_ms": 63177,
+        "log": "candidate-repeat.txt",
+        "arguments": [
+          "--test-dir",
+          ".cpp-build/windows",
+          "-C",
+          "Release",
+          "--output-on-failure",
+          "--parallel",
+          "2",
+          "-R",
+          "^(harness-reliability|runs|providers)$",
+          "--repeat",
+          "until-fail:20"
+        ]
+      },
+      {
+        "name": "runtime-contract",
+        "exit_code": 0,
+        "elapsed_ms": 46,
+        "log": "runtime-contract.txt",
+        "arguments": [
+          "scripts/check-runtime-contract.mjs"
+        ]
+      },
+      {
+        "name": "schema-parity",
+        "exit_code": 0,
+        "elapsed_ms": 5699,
+        "log": "schema-parity.txt",
+        "arguments": [
+          "rust-mcp/scripts/schema-parity-audit.mjs"
+        ]
+      },
+      {
+        "name": "engine-sdk",
+        "exit_code": 0,
+        "elapsed_ms": 13097,
+        "log": "engine-sdk.txt",
+        "arguments": [
+          "cpp-mcp/scripts/engine-sdk-smoke.mjs"
+        ]
+      },
+      {
+        "name": "agent-reliability-sdk",
+        "exit_code": 0,
+        "elapsed_ms": 14043,
+        "log": "agent-reliability-sdk.txt",
+        "arguments": [
+          "rust-mcp/scripts/agent-reliability-smoke.mjs"
+        ]
+      },
+      {
+        "name": "backend-harness-sdk",
+        "exit_code": 0,
+        "elapsed_ms": 11499,
+        "log": "backend-harness-sdk.txt",
+        "arguments": [
+          "cpp-mcp/scripts/run-harness-smoke.mjs"
+        ]
+      }
+    ]
+  },
+  "regression_cases": [
+    {
+      "name": "numeric-stream-call-order",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "nullable-fragments-and-finalization",
+      "baseline": "PASS",
+      "candidate": "PASS"
+    },
+    {
+      "name": "chat-error-poisons-stream",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "responses-error-poisons-stream",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "chat-rejects-role",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "chat-rejects-type",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "chat-rejects-index",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "cancellation-is-monotonic",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "model-admission-cancellation",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "tool-admission-cancellation",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "approval-cancellation-race",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "reconciliation-cancellation-race",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "driver-completed",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "driver-cancelled",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "driver-failed",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "driver-contender",
+      "baseline": "FAIL",
+      "candidate": "PASS"
+    },
+    {
+      "name": "driver-ready",
+      "baseline": "PASS",
+      "candidate": "PASS"
+    },
+    {
+      "name": "driver-pending",
+      "baseline": "PASS",
+      "candidate": "PASS"
+    }
+  ],
+  "summary": {
+    "baseline_cases": 18,
+    "baseline_expected_failures": 15,
+    "baseline_passing_controls": 3,
+    "candidate_cases_passed": 18,
+    "native_suites_passed": 35,
+    "native_suites_total": 39,
+    "repeat_passes_by_suite": {
+      "runs": 20,
+      "harness-reliability": 20,
+      "providers": 20
+    },
+    "compatibility_surface_tools": 37,
+    "native_tools": 53,
+    "backend_model_requests_recorded_local": 2,
+    "backend_isolated_effects": 1,
+    "backend_paid_requests": 0
+  },
+  "readme_integrity": {
+    "README.md": {
+      "base_git_blob": "ec4df95d5d256210cdbac87368fb1c4811214d37",
+      "candidate_git_blob": "ec4df95d5d256210cdbac87368fb1c4811214d37",
+      "unchanged": true
+    },
+    "README.es-ES.md": {
+      "base_git_blob": "cdf11e30ffdbe0361ec58ce9ab76405516853302",
+      "candidate_git_blob": "cdf11e30ffdbe0361ec58ce9ab76405516853302",
+      "unchanged": true
+    }
+  },
+  "published_logs": {
+    "baseline-final.txt": {
+      "sha256": "277994d863547c8a2931ba297e1fc03f0a4bce05dd4374e43f8593f193bb607f",
+      "bytes": 1662
+    },
+    "baseline-existing.txt": {
+      "sha256": "4c5eeaae53e1febcaf8f1a44498e954e348a385e18b16bb1f07ba528079fe6a0",
+      "bytes": 309
+    },
+    "candidate-regressions.txt": {
+      "sha256": "720ba107e5f6622eb69ab968842f2c798c7eff501ad8b8ca3f9485b4b7b97af5",
+      "bytes": 541
+    },
+    "candidate-native.txt": {
+      "sha256": "a0f495eb74e34de7b2ea005760057939e175da3d0645966fedd06324da7437fd",
+      "bytes": 3637
+    },
+    "candidate-repeat.txt": {
+      "sha256": "791db6771a919dce9025afab72b2927b74a09b6549e2f88a7426081183a3861f",
+      "bytes": 5750
+    },
+    "runtime-contract.txt": {
+      "sha256": "5b349a45e784c22d88d22ac4b6b22064601a16b0d07541751538c01992ca53df",
+      "bytes": 245
+    },
+    "schema-parity.txt": {
+      "sha256": "a205f5fb35434dbd5bd3c5d4267105cbca5ab747d24cbc2fabf522fc744e21ef",
+      "bytes": 384
+    },
+    "engine-sdk.txt": {
+      "sha256": "c46dffd8cf663ff6da15e19ef16931544f4c9042736fe7d1a73a86d9b55d5fe5",
+      "bytes": 350
+    },
+    "agent-reliability-sdk.txt": {
+      "sha256": "9c79e46e6133ed6deb749e62b7df62c93e62a78e201f02c31d4d67cfac7bce4b",
+      "bytes": 1154
+    },
+    "backend-harness-sdk.txt": {
+      "sha256": "6983dc41ff7fba1fe322ab742f4996b7c85d05e4d081c093262bae1228a637f7",
+      "bytes": 337
+    }
+  },
+  "redaction": "Only absolute worktree/user-home paths and line endings are normalized; verdicts and counts are retained.",
+  "limitations": [
+    "Windows MSVC Release only",
+    "Link-time optimization and TUI disabled",
+    "Existing native dependency caches reused",
+    "Four named native suites excluded locally; hosted multi-platform and sanitizer CI still required",
+    "Existing agent SDK smoke includes read-only display capture across three fixture restarts; no images published",
+    "No live paid provider calls, live-model score, production load benchmark, merge or deployment"
+  ]
+}

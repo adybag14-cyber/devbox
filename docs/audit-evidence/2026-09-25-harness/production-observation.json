@@ -1,0 +1,31 @@
+{
+  "provenance": "Selected values transcribed from live Devbox capabilities/status results in this audit conversation; not a raw signed response.",
+  "observation_date": "2026-09-25",
+  "serving_build": {
+    "git_sha": "43127402af2b82cd00561017570f350335593057",
+    "binary_sha256": "58cb55e051e8000c8da5af9a54498cbe288cf9b8a70c51a285d38b3ab9561129",
+    "contract_version": 9,
+    "tool_count": 53,
+    "source_dirty": false,
+    "state_backend": "sqlite",
+    "state_schema": 2,
+    "state_coordinator_protocol": 1,
+    "schema_sha256": "685181742bdd4a5e2b7136da45feef6582fc5f75a110f61a622ae4df1d0c5366"
+  },
+  "final_capabilities_recheck": "Same serving git SHA, binary SHA, contract, tool count, schema and SQLite backend after local qualification.",
+  "production_runtime_or_configuration_changed_by_audit": false,
+  "trusted_operator_tools_are_os_sandboxed": false,
+  "autonomous_profile": "windows_lpac with scoped operator grants",
+  "declared_aggregate_capacity_bytes": {
+    "memory": 0,
+    "gpu": 0,
+    "disk": 0
+  },
+  "zero_capacity_interpretation": "Dimension disabled for aggregate declared reservations; not an OS limit.",
+  "disk_warning_free_percent": 4.29,
+  "observed_baseline_build_queue_wait_ms": [
+    39617,
+    27779
+  ],
+  "admission_latency_cause": "Not established; subsequent snapshots were not simultaneous with failed admissions."
+}
