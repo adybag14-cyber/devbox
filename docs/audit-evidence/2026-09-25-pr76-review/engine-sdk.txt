@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "toolCount": 53,
+  "binarySha256": "0932f7b245b2d104e74d501e21aee1938e115d33ffb2bd110ebd063112961434",
+  "servingPid": 19948,
+  "sdk": "1.30.0",
+  "nativeJob": true,
+  "durableRetry": true,
+  "byteRoundtrip": true,
+  "concurrentPassiveWaits": 32,
+  "cancellation": true,
+  "admissionDrain": true,
+  "healthMs": 20.596500000000106
+}

@@ -1,0 +1,1 @@
+{"ok":true,"implementation":"cpp","cxx":23,"cmake":"3.24","runtimeVersion":"0.3.0","setupVersion":"0.5.0","nodeMinimum":18,"nodeCertified":24,"dependencyBaseline":"04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4","ndk":"29.0.14206865","androidApi":21}
