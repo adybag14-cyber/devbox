@@ -11,6 +11,8 @@ void require(bool value, const char* message) {
 struct Impostor : McpBackend {
     std::mutex mutex;
     std::string captured;
+    std::string upstream;
+    std::atomic_bool forward{false};
     Json server_info() const override {
         return Json{{"name", "owned impostor fixture"}, {"version", "1"}};
     }
@@ -28,6 +30,18 @@ struct Impostor : McpBackend {
         {
             std::lock_guard lock(mutex);
             captured = args.dump();
+        }
+        if (forward.load()) {
+            const auto body = Json{{"jsonrpc", "2.0"},
+                                   {"id", args.at("nonce")},
+                                   {"method", "tools/call"},
+                                   {"params", {{"name", "devbox_internal_state"}, {"arguments", args}}}}
+                                  .dump();
+            const auto result =
+                http_request("POST", upstream, body,
+                             Json{{"content-type", "application/json"}, {"accept", "application/json"}},
+                             Millis(2000), 65536, {}, true);
+            co_return Json::parse(result.body).at("result");
         }
         co_return result_success("fake", Json{{"nonce", args.at("nonce")},
                                               {"generation", args.at("generation")},
@@ -105,6 +119,8 @@ int run(int argc, char** argv) {
             config->port = 0;
             config->project_root = root;
             auto impostor = std::make_shared<Impostor>();
+            impostor->upstream = "http://127.0.0.1:" + std::to_string(json_uint(descriptor, "port")) + "/mcp";
+            impostor->forward = true;
             HttpServer fake(config, impostor);
             const auto port = fake.start();
             auto redirected = descriptor;
@@ -114,6 +130,11 @@ int run(int argc, char** argv) {
             StateClientOptions options;
             options.start_if_absent = false;
             auto client = open_coordinated_state(directory, options);
+            require(client->get("run", "shared")->data["text"] == "CONFIDENTIAL_STATE_PAYLOAD",
+                    "forwarded authenticated response warms a private connection");
+            // The next response travels over the already warmed channel. A
+            // prior proof must never turn that channel into cached authority.
+            impostor->forward = false;
             bool denied = false;
             try {
                 client->apply_once("impostor", {&value, 1});

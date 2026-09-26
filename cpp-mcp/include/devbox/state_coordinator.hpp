@@ -6,6 +6,8 @@ struct StateClientOptions {
     Millis timeout{2000};
     bool start_if_absent = true;
     Cancel cancel;
+    // Native qualification comparator only; never a model/environment setting.
+    bool reuse_connections = true;
 };
 // Authenticated loopback IPC; credentials stay in the private state directory, never argv/env.
 std::shared_ptr<StateStore> open_coordinated_state(const fs::path& directory,

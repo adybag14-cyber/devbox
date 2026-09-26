@@ -3,6 +3,7 @@
 #include "devbox/resource_budget.hpp"
 #include "devbox/result.hpp"
 #include "devbox/server.hpp"
+#include "devbox/state_transport.hpp"
 #include <algorithm>
 #include <array>
 #include <deque>
@@ -134,7 +135,8 @@ Json endpoint_at(const fs::path& root) {
         return Json();
     return *value;
 }
-Json exchange(const Json& endpoint, const Json& payload, Millis timeout, const Cancel& cancel) {
+Json exchange(const Json& endpoint, const Json& payload, Millis timeout, const Cancel& cancel,
+              const StateHttpTransport& transport) {
     Json envelope{{"protocol", 1},
                   {"nonce", uuid()},
                   {"issued_steady_ms", monotonic_ms()},
@@ -146,13 +148,12 @@ Json exchange(const Json& endpoint, const Json& payload, Millis timeout, const C
                  {"id", nonce},
                  {"method", "tools/call"},
                  {"params", {{"name", "devbox_internal_state"}, {"arguments", envelope}}}};
-    const auto response =
-        http_request("POST", "http://127.0.0.1:" + std::to_string(json_uint(endpoint, "port")) + "/mcp",
-                     bounded_json_dump(request, frame_limit),
-                     Json{{"content-type", "application/json"},
-                          {"accept", "application/json"},
-                          {"user-agent", "devbox-state-ipc/1"}},
-                     timeout, frame_limit, cancel, true);
+    auto transfer = transport.post(
+        StateHttpTransport::Peer{static_cast<std::uint16_t>(json_uint(endpoint, "port")),
+                                 json_uint(endpoint, "generation"), json_uint(endpoint, "instance"),
+                                 static_cast<std::uint32_t>(json_uint(endpoint, "pid"))},
+        bounded_json_dump(request, frame_limit), timeout, frame_limit, cancel);
+    const auto& response = transfer.response();
     if (response.status != 200)
         throw Error("STATE_IPC_UNAVAILABLE");
     const auto parsed = Json::parse(response.body);
@@ -167,6 +168,9 @@ Json exchange(const Json& endpoint, const Json& payload, Millis timeout, const C
                              authenticate(json_string(endpoint, "key"), "devbox-state-response-v1:", reply)))
         throw Error("STATE_IPC_SERVER_PROOF_FAILED");
     const auto data = unseal(json_string(endpoint, "key"), "response", json_string(reply, "sealed"));
+    // An authenticated application error may reuse transport, never an unverified
+    // HTTP reply. A pooled connection is not evidence of server identity.
+    transfer.verified();
     if (!json_bool(data, "ok"))
         throw Error(json_string(data, "error", "STATE_IPC_OPERATION_FAILED"));
     return data.at("result");
@@ -310,6 +314,7 @@ class Coordinator final : public McpBackend {
 class StateClient final : public StateStore {
     fs::path root_;
     StateClientOptions options_;
+    StateHttpTransport transport_;
     mutable std::mutex endpoint_mutex_;
     mutable Json endpoint_;
     std::atomic_bool writable_{true};
@@ -352,7 +357,7 @@ class StateClient final : public StateStore {
         for (int attempt = 0; attempt < 2; ++attempt) {
             const auto endpoint = ensure();
             try {
-                return exchange(endpoint, request, options_.timeout, options_.cancel);
+                return exchange(endpoint, request, options_.timeout, options_.cancel, transport_);
             } catch (const Cancelled&) {
                 throw;
             } catch (const Error& error) {
@@ -362,6 +367,7 @@ class StateClient final : public StateStore {
                     throw;
                 if (attempt)
                     throw Error("STATE_IPC_OUTCOME_UNCONFIRMED: retain the same batch or operation identity");
+                transport_.discard_idle();
                 std::lock_guard lock(endpoint_mutex_);
                 endpoint_ = nullptr;
             }
@@ -371,7 +377,7 @@ class StateClient final : public StateStore {
 
   public:
     StateClient(fs::path root, StateClientOptions options)
-        : root_(std::move(root)), options_(std::move(options)) {
+        : root_(std::move(root)), options_(std::move(options)), transport_(options_.reuse_connections) {
         ensure_directory(root_.parent_path());
         ensure_private_state_directory(root_);
         (void)ensure();
@@ -500,7 +506,8 @@ bool stop_state_coordinator(const fs::path& root, Millis wait) {
     if (endpoint.is_null() || !running(endpoint))
         return true;
     try {
-        (void)exchange(endpoint, Json{{"op", "stop"}}, Millis(1000), {});
+        const StateHttpTransport transport(false);
+        (void)exchange(endpoint, Json{{"op", "stop"}}, Millis(1000), {}, transport);
     } catch (...) {
     }
     const auto deadline = Clock::now() + wait;

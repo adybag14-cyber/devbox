@@ -39,6 +39,7 @@ add_library(devbox_core
   src/state_file.cpp
   src/state_store.cpp
   src/state_coordinator.cpp
+  src/state_transport.cpp
   src/config.cpp
   src/result.cpp
   src/process.cpp
@@ -133,6 +134,12 @@ if(DEVBOX_FUZZING)
 endif()
 target_link_libraries(devbox-mcp PRIVATE devbox_core)
 if(DEVBOX_BUILD_TESTS OR DEVBOX_BUILD_BENCHMARKS)
+  add_executable(devbox-state-ipc-bench benchmarks/state_ipc.cpp)
+  target_link_libraries(devbox-state-ipc-bench PRIVATE devbox_core)
+  if(DEVBOX_BUILD_TESTS)
+    add_test(NAME state-ipc-benchmark-smoke COMMAND devbox-state-ipc-bench)
+    set_tests_properties(state-ipc-benchmark-smoke PROPERTIES TIMEOUT 90)
+  endif()
   add_executable(devbox-state-read-bench benchmarks/state_reads.cpp)
   target_link_libraries(devbox-state-read-bench PRIVATE devbox_core)
   if(DEVBOX_BUILD_TESTS)
@@ -168,6 +175,10 @@ if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-state-transport-tests tests/state_transport_tests.cpp)
+  target_link_libraries(devbox-state-transport-tests PRIVATE devbox_core)
+  add_test(NAME state-transport COMMAND devbox-state-transport-tests)
+  set_tests_properties(state-transport PROPERTIES TIMEOUT 60)
   add_executable(devbox-state-read-reuse-tests tests/state_read_reuse_tests.cpp)
   target_link_libraries(devbox-state-read-reuse-tests PRIVATE devbox_core)
   add_test(NAME state-read-reuse COMMAND devbox-state-read-reuse-tests)
