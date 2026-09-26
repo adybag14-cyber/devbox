@@ -24,7 +24,10 @@ class RunController {
     fs::path root_;
     GrantAuthority& grants_;
     StateRecord read(std::string_view principal, std::string_view id) const;
-    void save(StateRecord& record, std::string_view event);
+    // True only when this invocation committed the transition. Admission callers
+    // use this receipt to distinguish fresh reservations from stopped no-ops.
+    bool save(StateRecord& record, std::string_view event);
+    bool stop_before_dispatch(StateRecord& run, std::string_view ready_phase, const Cancel& cancel);
     Json artifact(StateRecord& record, std::string_view kind, const Json& data);
     Json context(const StateRecord& record) const;
     void context(StateRecord& record, const Json& messages);

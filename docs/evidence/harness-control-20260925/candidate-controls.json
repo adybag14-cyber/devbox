@@ -1,0 +1,111 @@
+{
+  "suite": "harness-control-boundaries",
+  "cases": [
+    {
+      "name": "approval_resume",
+      "passed": true
+    },
+    {
+      "name": "cancel_final_cas",
+      "passed": true
+    },
+    {
+      "name": "sticky_control_cas",
+      "passed": true
+    },
+    {
+      "name": "resume_during_approval_cas",
+      "passed": true
+    },
+    {
+      "name": "bounded_cas_retries",
+      "passed": true
+    },
+    {
+      "name": "cancel_admission_cas",
+      "passed": true
+    },
+    {
+      "name": "cancel_final_reply",
+      "passed": true
+    },
+    {
+      "name": "pause_final_reply",
+      "passed": true
+    },
+    {
+      "name": "cancel_throwing_model",
+      "passed": true
+    },
+    {
+      "name": "cancel_is_sticky",
+      "passed": true
+    },
+    {
+      "name": "cancel_event_terminal",
+      "passed": true
+    },
+    {
+      "name": "completed_stays_terminal",
+      "passed": true
+    },
+    {
+      "name": "completed_effect_replay",
+      "passed": true
+    },
+    {
+      "name": "paused_approval_denied",
+      "passed": true
+    },
+    {
+      "name": "cancel_before_model_dispatch",
+      "passed": true
+    },
+    {
+      "name": "cancel_recovered_model_pending",
+      "passed": true
+    },
+    {
+      "name": "pause_before_model_dispatch",
+      "passed": true
+    },
+    {
+      "name": "pause_recovered_model_pending",
+      "passed": true
+    },
+    {
+      "name": "expire_before_model_dispatch",
+      "passed": true
+    },
+    {
+      "name": "expire_recovered_model_pending",
+      "passed": true
+    },
+    {
+      "name": "cancel_before_tool_dispatch",
+      "passed": true
+    },
+    {
+      "name": "cancel_recovered_tool_pending",
+      "passed": true
+    },
+    {
+      "name": "pause_before_tool_dispatch",
+      "passed": true
+    },
+    {
+      "name": "pause_recovered_tool_pending",
+      "passed": true
+    },
+    {
+      "name": "expire_before_tool_dispatch",
+      "passed": true
+    },
+    {
+      "name": "expire_recovered_tool_pending",
+      "passed": true
+    }
+  ],
+  "passed": 26,
+  "failed": 0
+}

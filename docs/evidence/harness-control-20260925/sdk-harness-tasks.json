@@ -1,0 +1,12 @@
+{
+  "ok": true,
+  "binarySha256": "931091e457c1ec9cf0da8e4e58264451099f18588b5f9a14e3633fea00937086",
+  "runId": "run-95344790-68cc-4792-8e84-89c655195bd7",
+  "modelRequests": 2,
+  "isolatedEffects": 1,
+  "frontendRestart": true,
+  "operatorGrant": true,
+  "completedReceiptReplay": true,
+  "paidRequests": 0,
+  "tasksExtension": true
+}

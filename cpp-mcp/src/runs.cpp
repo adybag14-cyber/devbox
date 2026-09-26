@@ -68,36 +68,104 @@ StateRecord RunController::read(std::string_view principal, std::string_view id)
         throw Error("RUN_NOT_FOUND");
     return *value;
 }
-void RunController::save(StateRecord& record, std::string_view event) {
-    // Control requests are independent of a slow provider/tool callback. Preserve a control
-    // transition that arrived while this step was in flight, under the same immutable owner.
-    const auto current = state_->get("run", record.id);
-    if (!current || current->principal != record.principal)
-        throw Error("RUN_OWNERSHIP_CHANGED");
+bool RunController::save(StateRecord& record, std::string_view event) {
+    // The controller lease serializes steps, approvals and reconciliation. Control requests
+    // deliberately remain independent of slow callbacks; merge them at the CAS boundary.
+    const auto proposed_status = record.status;
     const bool admitting = event == "model_admitted" || event == "tool_admitted";
-    const auto control = json_string(current->data, "control");
-    if (terminal(current->status) ||
-        (admitting && (current->status == "paused" || current->status == "uncertain" || control == "pause" ||
-                       control == "cancel"))) {
-        // Accepted terminal/control transitions win admission without consuming
-        // another budget reservation. In-flight result publication still retains
-        // its existing control merge below; only new dispatch is denied here.
-        record = *current;
-        return;
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        const auto current = state_->get("run", record.id);
+        if (!current || current->principal != record.principal)
+            throw Error("RUN_OWNERSHIP_CHANGED");
+        const auto control = json_string(current->data, "control");
+        if (terminal(current->status) ||
+            (admitting && (current->status == "paused" || current->status == "uncertain" ||
+                           control == "pause" || control == "cancel"))) {
+            // A committed stop wins before admission: no reservation, event or
+            // revision is created. The caller must not refund unadmitted work.
+            record = *current;
+            return false;
+        }
+        if (current->revision != record.revision) {
+            record.data["control"] = current->data.value("control", Json(""));
+            record.revision = current->revision;
+        }
+        // Re-evaluate the proposed transition on every retry. An earlier, uncommitted
+        // pause must not survive a newer resume that won the revision race.
+        record.status = proposed_status;
+        auto settled_event = std::string(event);
+        const auto command = json_string(record.data, "control");
+        if (command == "cancel" && record.status != "running") {
+            if (record.status == "uncertain")
+                record.data["external_outcome_unknown"] = true;
+            record.status = "cancelled";
+            settled_event = "cancelled";
+        } else if (command == "pause" && (record.status == "ready" || record.status == "awaiting_approval")) {
+            record.status = "paused";
+            settled_event = "paused";
+        }
+        record.data["updated_at"] = utc_now();
+        StateMutation update{record, record.revision};
+        StateEvent change{record.id, settled_event, 0,
+                          Json{{"status", record.status},
+                               {"terminal", terminal(record.status)},
+                               {"phase", record.data.at("phase")},
+                               {"rounds", record.data.at("rounds")},
+                               {"tool_calls", record.data.at("tool_calls")}}};
+        try {
+            state_->apply({&update, 1}, {&change, 1});
+            ++record.revision;
+            return true;
+        } catch (const Error& error) {
+            if (std::string_view(error.what()) != "STATE_REVISION_CONFLICT")
+                throw;
+        }
     }
-    if (current->revision != record.revision) {
-        record.data["control"] = current->data.value("control", Json(""));
-        record.revision = current->revision;
+    throw Error("RUN_STATE_CONTENTION");
+}
+bool RunController::stop_before_dispatch(StateRecord& run, std::string_view ready_phase,
+                                         const Cancel& cancel) {
+    // Only this invocation knows that its freshly admitted callback has not been entered.
+    // A recovered *_pending record MUST NOT use this refund path.
+    if (terminal(run.status))
+        return true;
+    const auto live = read(run.principal, run.id);
+    if (terminal(live.status)) {
+        run = live;
+        return true;
     }
-    record.data["updated_at"] = utc_now();
-    StateMutation update{record, record.revision};
-    StateEvent change{record.id, std::string(event), 0,
-                      Json{{"status", record.status},
-                           {"phase", record.data.at("phase")},
-                           {"rounds", record.data.at("rounds")},
-                           {"tool_calls", record.data.at("tool_calls")}}};
-    state_->apply({&update, 1}, {&change, 1});
-    ++record.revision;
+    const auto command = json_string(live.data, "control");
+    const bool cancelling = command == "cancel" || (cancel && cancel->cancelled());
+    const bool expired = unix_millis() >= json_uint(live.data, "expires_at_ms");
+    if (!cancelling && !expired && command != "pause")
+        return false;
+    run.data["control"] = live.data.value("control", Json(""));
+    run.data["expires_at_ms"] = live.data.at("expires_at_ms");
+    const auto& budget = run.data.at("budget");
+    if (ready_phase == "model_ready") {
+        if (!json_uint(run.data, "rounds") ||
+            json_uint(run.data, "tokens") < json_uint(budget, "call_tokens") ||
+            json_uint(run.data, "cost_micro_usd") < json_uint(budget, "call_cost_micro_usd"))
+            throw Error("RUN_ADMISSION_ACCOUNTING_INVALID");
+        run.data["rounds"] = json_uint(run.data, "rounds") - 1;
+        run.data["tokens"] = json_uint(run.data, "tokens") - json_uint(budget, "call_tokens");
+        run.data["cost_micro_usd"] =
+            json_uint(run.data, "cost_micro_usd") - json_uint(budget, "call_cost_micro_usd");
+    } else {
+        const auto& call = run.data.at("pending_approval");
+        const auto signature = sha256(
+            canonical_json(Json{{"name", call.at("name")}, {"arguments", call.at("arguments")}}).dump());
+        if (!json_uint(run.data, "tool_calls") || !json_uint(run.data["repetitions"], signature))
+            throw Error("RUN_ADMISSION_ACCOUNTING_INVALID");
+        run.data["tool_calls"] = json_uint(run.data, "tool_calls") - 1;
+        run.data["repetitions"][signature] = json_uint(run.data["repetitions"], signature) - 1;
+    }
+    run.data["phase"] = ready_phase;
+    run.status = cancelling ? "cancelled" : expired ? "failed" : "paused";
+    if (expired && !cancelling)
+        run.data["error_code"] = "RUN_TIME_BUDGET_EXHAUSTED";
+    save(run, "dispatch_suppressed");
+    return true;
 }
 Json RunController::artifact(StateRecord& record, std::string_view kind, const Json& data) {
     const auto bytes = bounded_json_dump(data, json_uint(record.data.at("budget"), "artifact_bytes"));
@@ -204,46 +272,57 @@ Json RunController::events(std::string_view principal, std::string_view id, std:
     return result;
 }
 Json RunController::control(std::string_view principal, std::string_view id, std::string_view action) {
-    auto run = read(principal, id);
-    if (terminal(run.status))
-        return public_view(run);
-    if (action == "pause" && json_string(run.data, "control") == "cancel") {
-        // Cancellation is monotonic. A delayed/retried pause cannot restore a
-        // resumable state after cancellation was accepted for an in-flight step.
+    for (unsigned attempt = 0; attempt < 8; ++attempt) {
+        auto run = read(principal, id);
+        if (terminal(run.status))
+            return public_view(run);
+        const bool pending = json_string(run.data, "phase").ends_with("_pending");
+        if (action == "pause" || action == "cancel") {
+            // Once accepted, cancellation cannot be downgraded by a later pause.
+            if (action == "cancel" || json_string(run.data, "control") != "cancel")
+                run.data["control"] = action;
+            const bool cancelling = json_string(run.data, "control") == "cancel";
+            if (run.status != "running") {
+                if (run.status == "uncertain" || pending) {
+                    run.data["external_outcome_unknown"] = true;
+                    run.status = cancelling ? "cancelled" : "uncertain";
+                } else
+                    run.status = cancelling ? "cancelled" : "paused";
+            }
+        } else if (action == "resume") {
+            if (run.status == "uncertain" || pending)
+                throw Error("RUN_RECONCILIATION_REQUIRED");
+            if (run.status != "paused")
+                throw Error("RUN_NOT_PAUSED");
+            run.data["control"] = "";
+            run.status = json_string(run.data, "phase") == "approval_wait" ? "awaiting_approval" : "ready";
+        } else
+            throw Error("RUN_CONTROL_ACTION_INVALID");
+        run.data["updated_at"] = utc_now();
+        StateMutation update{run, run.revision};
+        StateEvent event{run.id, std::string(action) + "_requested", 0,
+                         Json{{"terminal", terminal(run.status)}, {"control", run.data.at("control")}}};
+        try {
+            state_->apply({&update, 1}, {&event, 1});
+        } catch (const Error& error) {
+            if (std::string_view(error.what()) == "STATE_REVISION_CONFLICT")
+                continue;
+            throw;
+        }
+        ++run.revision;
         auto result = public_view(run);
         result["request_acknowledged"] = true;
-        result["terminal_acknowledgement"] = false;
+        result["terminal_acknowledgement"] = terminal(run.status);
         return result;
     }
-    if (action == "pause" || action == "cancel") {
-        run.data["control"] = action;
-        if (run.status != "running") {
-            if (run.status == "uncertain")
-                run.data["external_outcome_unknown"] = true;
-            if (run.status != "uncertain" || action == "cancel")
-                run.status = action == "cancel" ? "cancelled" : "paused";
-        }
-    } else if (action == "resume") {
-        if (run.status == "uncertain")
-            throw Error("RUN_RECONCILIATION_REQUIRED");
-        if (run.status != "paused")
-            throw Error("RUN_NOT_PAUSED");
-        run.data["control"] = "";
-        run.status = "ready";
-    } else
-        throw Error("RUN_CONTROL_ACTION_INVALID");
-    run.data["updated_at"] = utc_now();
-    StateMutation update{run, run.revision};
-    StateEvent event{run.id, std::string(action) + "_requested", 0, Json{{"terminal", false}}};
-    state_->apply({&update, 1}, {&event, 1});
-    ++run.revision;
-    auto result = public_view(run);
-    result["request_acknowledged"] = true;
-    result["terminal_acknowledgement"] = terminal(run.status);
-    return result;
+    throw Error("RUN_STATE_CONTENTION");
 }
 Json RunController::approve(std::string_view principal, std::string_view id, std::string_view grant_id) {
     auto run = read(principal, id);
+    FileLock lease(root_ / run.id / ".controller.lock", Millis(1000), {}, true);
+    run = read(principal, id);
+    if (terminal(run.status))
+        return public_view(run);
     if (run.status != "awaiting_approval")
         throw Error("RUN_NOT_AWAITING_APPROVAL");
     const auto grant = grants_.inspect(grant_id);
@@ -262,6 +341,10 @@ Json RunController::approve(std::string_view principal, std::string_view id, std
 Json RunController::reconcile(std::string_view principal, std::string_view id, std::string_view resolution,
                               const Json& observed) {
     auto run = read(principal, id);
+    FileLock lease(root_ / run.id / ".controller.lock", Millis(1000), {}, true);
+    run = read(principal, id);
+    if (terminal(run.status))
+        return public_view(run);
     if (run.status != "uncertain")
         throw Error("RUN_NOT_UNCERTAIN");
     if (resolution == "abandon") {
@@ -311,13 +394,17 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
     if (terminal(run.status))
         return public_view(run);
     const auto command = json_string(run.data, "control");
-    if (command == "pause" || command == "cancel" || (cancel && cancel->cancelled())) {
-        const bool pending = json_string(run.data, "phase").ends_with("_pending");
-        // A recovered pending operation may already have had an external effect.
-        // Pause cannot make it blindly resumable; cancel cannot erase uncertainty.
-        run.status = command == "pause" ? (pending ? "uncertain" : "paused") : "cancelled";
-        if (pending)
+    const auto phase = json_string(run.data, "phase");
+    const bool pending = phase.ends_with("_pending");
+    const bool stop_requested = command == "cancel" || (cancel && cancel->cancelled());
+    if (stop_requested || command == "pause") {
+        if (pending || run.status == "uncertain")
             run.data["external_outcome_unknown"] = true;
+        if (!stop_requested && run.status == "uncertain")
+            return public_view(run);
+        run.status = stop_requested ? "cancelled" : pending ? "uncertain" : "paused";
+        if (pending && !stop_requested)
+            run.data["error_code"] = "RUN_PENDING_OUTCOME_REQUIRES_RECONCILIATION";
         save(run, run.status);
         return public_view(run);
     }
@@ -325,15 +412,17 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
         return public_view(run);
     if (unix_millis() >= json_uint(run.data, "expires_at_ms")) {
         run.status = "failed";
+        if (pending)
+            run.data["external_outcome_unknown"] = true;
         run.data["error_code"] = "RUN_TIME_BUDGET_EXHAUSTED";
         save(run, "budget_exhausted");
         return public_view(run);
     }
     const auto& budget = run.data.at("budget");
-    auto phase = json_string(run.data, "phase");
     if (phase == "model_pending") {
         run.status = "uncertain";
         run.data["error_code"] = "MODEL_REPLY_NOT_DURABLE";
+        run.data["external_outcome_unknown"] = true;
         save(run, "reconciliation_required");
         return public_view(run);
     }
@@ -395,20 +484,23 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             json_uint(run.data, "cost_micro_usd") + json_uint(budget, "call_cost_micro_usd");
         run.data["phase"] = "model_pending";
         run.status = "running";
-        save(run, "model_admitted");
-        // A terminal or pause transition may have won admission.
-        if (run.status != "running" || json_string(run.data, "control") == "pause" ||
-            json_string(run.data, "control") == "cancel")
+        if (!save(run, "model_admitted"))
             return public_view(run);
         if (hooks.transition)
             hooks.transition("model_admitted");
+        if (stop_before_dispatch(run, "model_ready", cancel))
+            return public_view(run);
         ProviderResult reply;
         try {
             if (!hooks.model)
                 throw Error("RUN_MODEL_UNAVAILABLE");
             reply = hooks.model(request);
         } catch (...) {
-            run.status = "uncertain";
+            const auto live = read(principal, id);
+            const bool stopping =
+                json_string(live.data, "control") == "cancel" || (cancel && cancel->cancelled());
+            run.status = stopping ? "cancelled" : "uncertain";
+            run.data["external_outcome_unknown"] = true;
             run.data["error_code"] = "MODEL_OUTCOME_UNKNOWN";
             save(run, "reconciliation_required");
             return public_view(run);
@@ -421,8 +513,8 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             const bool cancelling =
                 json_string(live.data, "control") == "cancel" || (cancel && cancel->cancelled());
             run.status = cancelling ? "cancelled" : reply.billing_unknown ? "uncertain" : "failed";
-            if (cancelling)
-                run.data["external_outcome_unknown"] = reply.billing_unknown;
+            if (reply.billing_unknown)
+                run.data["external_outcome_unknown"] = true;
             run.data["error_code"] = "MODEL_" + reply.status;
             save(run, "model_not_completed");
             return public_view(run);
@@ -535,13 +627,12 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             run.data["tool_calls"] = json_uint(run.data, "tool_calls") + 1;
             run.data["phase"] = "tool_pending";
             run.status = "running";
-            save(run, "tool_admitted");
-            // A terminal or pause transition may have won admission.
-            if (run.status != "running" || json_string(run.data, "control") == "pause" ||
-                json_string(run.data, "control") == "cancel")
+            if (!save(run, "tool_admitted"))
                 return public_view(run);
             if (hooks.transition)
                 hooks.transition("tool_admitted");
+            if (stop_before_dispatch(run, "tool_ready", cancel))
+                return public_view(run);
         }
         Json receipt;
         try {
@@ -557,8 +648,7 @@ Json RunController::step(std::string_view principal, std::string_view id, const 
             const bool cancelling =
                 json_string(live.data, "control") == "cancel" || (cancel && cancel->cancelled());
             run.status = cancelling ? "cancelled" : "uncertain";
-            if (cancelling)
-                run.data["external_outcome_unknown"] = true;
+            run.data["external_outcome_unknown"] = true;
             run.data["error_code"] = "TOOL_OUTCOME_REQUIRES_RECONCILIATION";
             save(run, "reconciliation_required");
             return public_view(run);

@@ -89,9 +89,17 @@ try{
     assert.equal((await rpc('tasks/get',{taskId:'task-missing'})).error.code,-32602);
   }
   const pending=await waitStatus('awaiting_approval');assert.equal(generations,1);assert.equal(pending.tool_calls,0);
-  assert.equal((await invoke(create)).run_id,runId,'create retry keeps identity');
+  const replayed=await invoke(create);assert.equal(replayed.run_id,runId,'create retry keeps identity');
+  assert.equal(Object.hasOwn(replayed,'driver'),false,'approval-wait replay starts no driver');
+  const paused=await invoke({action:'pause',run_id:runId});assert.equal(paused.status,'paused');
+  assert.deepEqual(paused.pending_approval,pending.pending_approval,'pause retains the exact grant request');
   await stopFrontend();await start();
+  assert.equal((await invoke({action:'get',run_id:runId})).status,'paused','pause survives frontend restart');
+  const resumed=await invoke({action:'resume',run_id:runId});assert.equal(resumed.status,'awaiting_approval');
+  assert.equal(Object.hasOwn(resumed,'driver'),false,'resuming an approval wait starts no driver');
+  assert.equal(generations,1,'pause/resume does not spend another generation');
   const retained=await invoke({action:'get',run_id:runId});assert.equal(retained.status,'awaiting_approval');
+  assert.deepEqual(retained.pending_approval,pending.pending_approval,'restart/resume preserves operation identity');
   if(tasks){
     const poll=await rpc('tasks/get',{taskId});assert.equal(poll.result.status,'input_required');assert(poll.result.inputRequests[retained.pending_approval.operation_id]);
     const ignored=await rpc('tasks/update',{taskId,inputResponses:{not_issued:{action:'accept',content:{grant_id:'fake'}}}});assert.equal(ignored.result.resultType,'complete');

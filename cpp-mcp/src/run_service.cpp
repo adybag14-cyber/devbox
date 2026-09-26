@@ -159,7 +159,7 @@ Json RunService::call(std::string_view principal, const Json& args) {
         ensure_private_state_directory(config_->state_root / "isolated");
         ensure_private_state_directory(config_->state_root / "isolated" / run_id);
         auto result = created;
-        if (!json_bool(created, "terminal"))
+        if (created["status"] == "ready" || created["status"] == "running")
             result["driver"] = start_driver(principal, run_id);
         return result;
     }

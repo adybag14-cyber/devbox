@@ -53,3 +53,13 @@ Full hosted certification, broader task-quality evaluation, negotiated MCP Tasks
 The operator can configure `MCP_EXEC_MEMORY_CAPACITY_BYTES`, `MCP_EXEC_GPU_CAPACITY_BYTES` and `MCP_EXEC_DISK_CAPACITY_BYTES`. A zero dimension disables its aggregate reservation limit. These are admission budgets for declared costs, not measurements or replacements for OS sandbox limits. Reservations are charged once per weighted lease across both execution and watch pools. Requests larger than a configured capacity fail before admission.
 
 Isolated backend programs declare their configured process-memory limit. Native research runners declare 256 MiB memory and 64 MiB disk. A local provider declaring nonzero `required_vram_bytes` also requires a nonzero global GPU capacity; configure that capacity before enabling concurrent local inference. The provider's per-request `available_vram_bytes` validation remains in place. Generic trusted-operator commands with no declared reservation remain governed by their existing slots and process policy.
+
+## Control-boundary guarantees (September 2026 candidate)
+
+Pausing an approval wait retains its exact pending operation. Resuming it returns `awaiting_approval`, not `ready`, and does not start another driver or model generation. A create replay at an approval wait likewise does not launch a driver.
+
+Once cancellation is accepted, a later pause cannot downgrade it. Controller settlement merges concurrent controls with at most eight revision-conflict retries, without repeating a model or tool callback. A result committed before cancellation remains terminal. Event terminal metadata describes the actual committed state.
+
+Immediately before a newly admitted callback, the controller rechecks pause, cancellation and expiry. Suppression refunds only work that this invocation proves it never dispatched. Recovered pending work is different: cancellation or expiry retains explicit unknown-outcome evidence and its reservation; pause keeps the run uncertain and ordinary resume is rejected until operator reconciliation. Cancellation is cooperative, not a promise of remote rollback.
+
+See the [production-backed audit](HARNESS_CONTROL_AUDIT_2026-09-25.md), [technical design and proposals](HARNESS_CONTROL_DESIGN_2026-09-25.md), and [retained qualification evidence](evidence/harness-control-20260925/). Local qualification passed 26 control cases and both SDK modes; the full native run passed 36/39, with three desktop-dependent failures retained for lead-team qualification. This candidate has not been deployed.

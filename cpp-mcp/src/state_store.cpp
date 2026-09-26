@@ -5,6 +5,7 @@
 #include <set>
 #include <sqlite3.h>
 #include <thread>
+#include <utility>
 #ifdef _WIN32
 #include <aclapi.h>
 #include <sddl.h>
@@ -143,14 +144,35 @@ void check(sqlite3* db, int code) {
 class Statement {
     sqlite3* db_;
     sqlite3_stmt* statement_ = nullptr;
+    sqlite3_stmt** reusable_ = nullptr;
 
   public:
-    Statement(sqlite3* db, const std::string& sql) : db_(db) {
-        check(db, sqlite3_prepare_v3(db, sql.c_str(), static_cast<int>(sql.size()), SQLITE_PREPARE_PERSISTENT,
-                                     &statement_, nullptr));
+    Statement(sqlite3* db, const std::string& sql, sqlite3_stmt** reusable = nullptr)
+        : db_(db), reusable_(reusable) {
+        if (reusable_)
+            statement_ = std::exchange(*reusable_, nullptr);
+        if (!statement_) {
+            const auto result = sqlite3_prepare_v3(db, sql.c_str(), static_cast<int>(sql.size()),
+                                                   SQLITE_PREPARE_PERSISTENT, &statement_, nullptr);
+            if (result != SQLITE_OK) {
+                sqlite3_finalize(std::exchange(statement_, nullptr));
+                check(db, result);
+            }
+        }
+        // Counters describe this execution, not every previous cached use.
+        (void)sqlite3_stmt_status(statement_, SQLITE_STMTSTATUS_VM_STEP, 1);
     }
     ~Statement() {
-        sqlite3_finalize(statement_);
+        // Release every read transaction and all caller-owned bindings even on
+        // early return, pagination, validation failure or JSON parse exception.
+        // reset() alone does NOT clear bindings. Never reuse an errored statement.
+        if (reusable_ && sqlite3_reset(statement_) == SQLITE_OK &&
+            sqlite3_clear_bindings(statement_) == SQLITE_OK &&
+            sqlite3_stmt_status(statement_, SQLITE_STMTSTATUS_MEMUSED, 0) <= 64 * 1024) {
+            *reusable_ = statement_;
+        } else {
+            sqlite3_finalize(statement_);
+        }
     }
     Statement(const Statement&) = delete;
     void bind(int at, std::string_view value) {
@@ -197,6 +219,14 @@ class SqliteStore final : public StateStore {
     std::uint64_t generation_ = 0;
     std::string journal_mode_ = "wal";
     mutable int last_query_steps_ = 0;
+    // Exactly fifteen trusted SELECT shapes: get/count/events, eight list filters,
+    // and four capped-count filters. Slots are borrowed under mutex_, not shared
+    // across SQLite connections. At most 15 * 64 KiB of compiled statements.
+    mutable std::array<sqlite3_stmt*, 15> read_statements_{};
+    bool reuse_read_statements_ = true;
+    sqlite3_stmt** read_slot(std::size_t slot) const {
+        return reuse_read_statements_ ? &read_statements_.at(slot) : nullptr;
+    }
     void sql(const char* statement) const {
         check(db_, sqlite3_exec(db_, statement, nullptr, nullptr, nullptr));
     }
@@ -223,7 +253,8 @@ class SqliteStore final : public StateStore {
 
   public:
     SqliteStore(fs::path directory, StateStoreOptions options)
-        : directory_(std::move(directory)), transition_hook_(std::move(options.transition_hook)) {
+        : directory_(std::move(directory)), transition_hook_(std::move(options.transition_hook)),
+          reuse_read_statements_(options.reuse_read_statements) {
         private_local_directory(directory_, options.writable);
         // Resolve trusted platform parent aliases (macOS /var -> /private/var) before SQLite's
         // NOFOLLOW open, while the final private directory itself remains required to be ordinary.
@@ -366,6 +397,8 @@ PRAGMA user_version=2;
         cleanup.disarm();
     }
     ~SqliteStore() override {
+        for (auto* statement : read_statements_)
+            sqlite3_finalize(statement);
         if (db_)
             sqlite3_close_v2(db_);
     }
@@ -374,7 +407,8 @@ PRAGMA user_version=2;
         key(id);
         std::lock_guard lock(mutex_);
         Statement row(
-            db_, "SELECT kind,id,principal,group_id,status,revision,data FROM records WHERE kind=? AND id=?");
+            db_, "SELECT kind,id,principal,group_id,status,revision,data FROM records WHERE kind=? AND id=?",
+            read_slot(0));
         row.bind(1, kind);
         row.bind(2, id);
         auto result = row.step() ? std::optional(record(row)) : std::nullopt;
@@ -408,7 +442,8 @@ PRAGMA user_version=2;
                 sql += std::string(" AND ") + column + "=?";
             }
         sql += " ORDER BY id LIMIT ?";
-        Statement row(db_, sql);
+        const auto shape = (query.principal ? 1U : 0U) | (query.group ? 2U : 0U) | (query.status ? 4U : 0U);
+        Statement row(db_, sql, read_slot(3 + shape));
         row.bind(1, query.kind);
         row.bind(2, query.after.value_or(""));
         int at = 3;
@@ -438,7 +473,7 @@ PRAGMA user_version=2;
         if (status)
             key(*status);
         std::lock_guard lock(mutex_);
-        Statement row(db_, "SELECT n FROM counts WHERE kind=? AND principal=? AND status=?");
+        Statement row(db_, "SELECT n FROM counts WHERE kind=? AND principal=? AND status=?", read_slot(1));
         row.bind(1, kind);
         row.bind(2, principal.value_or("*"));
         row.bind(3, status.value_or("*"));
@@ -470,7 +505,8 @@ PRAGMA user_version=2;
             if (query.group)
                 sql += " AND group_id=?";
             sql += " LIMIT ?";
-            Statement row(db_, sql);
+            const auto shape = (query.principal ? 1U : 0U) | (query.group ? 2U : 0U);
+            Statement row(db_, sql, read_slot(11 + shape));
             row.bind(1, query.kind);
             row.bind(2, status);
             int at = 3;
@@ -660,8 +696,10 @@ PRAGMA user_version=2;
         if (!limit || limit > 100)
             throw Error("STATE_PAGE_LIMIT");
         std::lock_guard lock(mutex_);
-        Statement row(db_, "SELECT run_id,type,sequence,data FROM events WHERE run_id=? AND sequence>? ORDER "
-                           "BY sequence LIMIT ?");
+        Statement row(db_,
+                      "SELECT run_id,type,sequence,data FROM events WHERE run_id=? AND sequence>? ORDER "
+                      "BY sequence LIMIT ?",
+                      read_slot(2));
         row.bind(1, run);
         row.bind(2, after);
         row.bind(3, limit);

@@ -1,0 +1,9 @@
+{
+  "git_sha": "43127402af2b82cd00561017570f350335593057",
+  "source_files": {
+    "cpp-mcp/src/runs.cpp": "b25a81f6b1fbe666e9d8682793e56b33ec8372e7d0b24c9b460d8635eed07afa",
+    "cpp-mcp/src/run_service.cpp": "6a6487ae95f85b35032248e6bc77e982b9ee75653607dfa279d06abd720a2f04",
+    "cpp-mcp/include/devbox/runs.hpp": "eb4b5f8aae9217ef499da4585b5f25f7e0c9be619ea2bf680ab62725ddfc14ac"
+  },
+  "test_sha256": "d44ca58b2763693630f3047877dc424c0262ff60359975c7fd0d5d543cc95073"
+}
