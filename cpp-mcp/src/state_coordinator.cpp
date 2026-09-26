@@ -375,8 +375,17 @@ class StateClient final : public StateStore {
                 if (!message.starts_with("HTTP request failed") && !message.starts_with("STATE_IPC_") &&
                     message != "STATE_WRITER_FENCED")
                     throw;
-                if (attempt)
-                    throw Error("STATE_IPC_OUTCOME_UNCONFIRMED: retain the same batch or operation identity");
+                if (attempt) {
+                    // Retain a bounded classification, not private request/response
+                    // data. This path already accepts only our HTTP/IPC/fence errors.
+                    const auto end = message.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789");
+                    auto cause = message.substr(0, std::min<std::size_t>(end, 96));
+                    if (message.starts_with("HTTP request failed"))
+                        cause = "HTTP_TRANSFER_FAILED";
+                    throw Error(
+                        "STATE_IPC_OUTCOME_UNCONFIRMED: retain the same batch or operation identity; cause=" +
+                        cause);
+                }
                 transport_.discard_idle();
                 std::lock_guard lock(endpoint_mutex_);
                 endpoint_ = nullptr;

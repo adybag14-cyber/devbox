@@ -45,3 +45,7 @@ PR #79 independently implements thread-local, read-only keep-alive. The initial 
 The permanent coordinator test now forwards a real transaction, drops its authenticated acknowledgement, and requires the existing bounded retry to return a verified original receipt. Losing both replies must return explicit uncertainty after exactly two attempts; a later identical-batch retry must recover. Exactly one revision and one event must remain in both cases. The native benchmark records actual FULL-durability writes and replay receipts separately from reads. Warm sockets never authorize operations or change receipt semantics.
 
 The first hosted macOS attempt exposed unsupported `std::jthread` in the new test fixture. The existing `ScopedThread`/`ThreadStopToken` compatibility wrapper now preserves cooperative stop and scope joining on Apple libc++, without upgrading dependencies or removing the test.
+
+## Failure classification
+
+Exhausting the existing two-attempt budget retains the `STATE_IPC_OUTCOME_UNCONFIRMED` prefix and adds only a bounded uppercase/digit/underscore cause classification. HTTP failures are coarsened to `HTTP_TRANSFER_FAILED`; request/response bodies, credentials, and caller strings are not appended. This does not change retry or uncertainty semantics. The benchmark labels its failing phase to separate initial admission, reads, writes, replay and event verification without loosening any check.

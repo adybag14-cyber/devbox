@@ -4,6 +4,7 @@
 #include <iostream>
 using namespace devbox;
 namespace {
+thread_local const char* benchmark_phase = "startup";
 int run(int argc, char** argv) {
     if (argc == 3 && std::string_view(argv[1]) == "--state-coordinator")
         return run_state_coordinator(path_from_utf8(argv[2]), [] { return false; });
@@ -19,14 +20,17 @@ int run(int argc, char** argv) {
             fs::remove_all(root, ec);
         }
     });
+    benchmark_phase = "coordinator-start";
     auto setup = open_coordinated_state(root / "state");
     StateMutation seed{
         {"task", "fixed", "owner", "scope", "checkpoint", 0,
          Json{{"payload", std::string(128, 'x')}, {"literal", "${NO_EXPANSION}\\n"}, {"expected", 4265}}},
         0};
+    benchmark_phase = "seed-read-record";
     setup->apply({&seed, 1});
     StateMutation write_seed{{"task", "write-fixed", "owner", "scope", "checkpoint", 0, Json{{"value", 0}}},
                              0};
+    benchmark_phase = "seed-write-record";
     setup->apply({&write_seed, 1});
     unsigned committed = 0;
     Json write_trials = Json::array();
@@ -36,6 +40,7 @@ int run(int argc, char** argv) {
         options.reuse_connections = reuse;
         auto client = open_coordinated_state(root / "state", options);
         const auto read = [&] {
+            benchmark_phase = "read";
             auto record = client->get("task", "fixed");
             if (!record || record->revision != 1 || record->principal != "owner" ||
                 record->data != seed.record.data)
@@ -68,6 +73,7 @@ int run(int argc, char** argv) {
                     event.data["value"] = committed;
                     batch = "batch-" + std::to_string(committed);
                 }
+                benchmark_phase = replay ? "receipt-replay" : "durable-write";
                 const auto begin = Clock::now();
                 if (client->apply_once(batch, {&mutation, 1}, {&event, 1}) != replay)
                     throw Error("Incorrect durable write/replay acknowledgement");
@@ -83,6 +89,7 @@ int run(int argc, char** argv) {
                                         {"p99_us", ranked[write_samples * 99 / 100]},
                                         {"samples_us", values}});
         }
+        benchmark_phase = "verify-written-record";
         const auto state = client->get("task", "write-fixed");
         if (!state || state->revision != committed + 1 || state->data["value"] != committed)
             throw Error("Durable write receipt repeated or lost a transaction");
@@ -94,6 +101,7 @@ int run(int argc, char** argv) {
                               {"p99_us", sorted[samples * 99 / 100]},
                               {"samples_us", times}});
     }
+    benchmark_phase = "verify-events";
     std::uint64_t after = 0, events = 0;
     for (;;) {
         const auto page = setup->events("write-events", after, 100);
@@ -135,7 +143,7 @@ int wmain(int argc, wchar_t** wide) {
             values.push_back(arg.data());
         return run(argc, values.data());
     } catch (const std::exception& e) {
-        std::cerr << e.what() << '\n';
+        std::cerr << "benchmark_phase=" << benchmark_phase << " error=" << e.what() << '\n';
         return 1;
     }
 }
@@ -144,7 +152,7 @@ int main(int argc, char** argv) {
     try {
         return run(argc, argv);
     } catch (const std::exception& e) {
-        std::cerr << e.what() << '\n';
+        std::cerr << "benchmark_phase=" << benchmark_phase << " error=" << e.what() << '\n';
         return 1;
     }
 }
