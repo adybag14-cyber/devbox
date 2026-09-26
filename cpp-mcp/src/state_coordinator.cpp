@@ -148,7 +148,17 @@ Json exchange(const Json& endpoint, const Json& payload, Millis timeout, const C
                  {"id", nonce},
                  {"method", "tools/call"},
                  {"params", {{"name", "devbox_internal_state"}, {"arguments", envelope}}}};
-    auto transfer = transport.post(
+    const auto operation = json_string(payload, "op");
+    const bool reusable = operation == "get" || operation == "count" || operation == "count_matching" ||
+                          operation == "list" || operation == "events" || operation == "diagnostics" ||
+                          operation == "apply";
+    // Writes use the existing durable batch receipt. Administrative operations
+    // (import/snapshot/stop) keep fresh transport; no new automatic retry policy.
+    std::optional<StateHttpTransport> ephemeral;
+    if (!reusable)
+        ephemeral.emplace(false);
+    const auto& selected_transport = reusable ? transport : *ephemeral;
+    auto transfer = selected_transport.post(
         StateHttpTransport::Peer{static_cast<std::uint16_t>(json_uint(endpoint, "port")),
                                  json_uint(endpoint, "generation"), json_uint(endpoint, "instance"),
                                  static_cast<std::uint32_t>(json_uint(endpoint, "pid"))},

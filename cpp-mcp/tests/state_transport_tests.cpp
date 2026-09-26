@@ -1,4 +1,5 @@
 #include "devbox/result.hpp"
+#include "devbox/scoped_thread.hpp"
 #include "devbox/server.hpp"
 #include "devbox/state_store.hpp"
 #include "devbox/state_transport.hpp"
@@ -66,7 +67,7 @@ void verify(StateHttpTransport::Transfer& transfer, const Json& expected) {
 class RawReply {
     asio::io_context io_;
     asio::ip::tcp::acceptor acceptor_{io_, {asio::ip::make_address("127.0.0.1"), 0}};
-    std::jthread worker_;
+    ScopedThread worker_;
 
   public:
     std::uint16_t port() const {
@@ -74,7 +75,7 @@ class RawReply {
     }
     explicit RawReply(std::string reply) {
         acceptor_.non_blocking(true);
-        worker_ = std::jthread([this, reply = std::move(reply)](std::stop_token stop) {
+        worker_ = ScopedThread([this, reply = std::move(reply)](ThreadStopToken stop) {
             asio::ip::tcp::socket socket(io_);
             const auto deadline = Clock::now() + Millis(3000);
             boost::system::error_code ec;
@@ -210,7 +211,7 @@ int run() {
     require(transport.statistics().idle == 0, "Timeout destroys the channel");
     {
         auto pending_cancel = std::make_shared<Cancellation>();
-        std::jthread request_cancel([pending_cancel] {
+        ScopedThread request_cancel([pending_cancel] {
             std::this_thread::sleep_for(Millis(20));
             pending_cancel->cancel();
         });

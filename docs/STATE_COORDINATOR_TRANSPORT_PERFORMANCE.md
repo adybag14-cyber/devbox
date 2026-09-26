@@ -37,3 +37,11 @@ Response/authorization caching, bypassing the state coordinator for local reads,
 - Connection cache bound: https://curl.se/libcurl/c/CURLOPT_MAXCONNECTS.html.
 - Idle/lifetime eligibility: https://curl.se/libcurl/c/CURLOPT_MAXAGE_CONN.html and https://curl.se/libcurl/c/CURLOPT_MAXLIFETIME_CONN.html.
 - Existing state proof and replay contract: `cpp-mcp/src/state_coordinator.cpp` and `cpp-mcp/tests/state_coordinator_tests.cpp`.
+
+## Relation to the existing read-only candidate (#79)
+
+PR #79 independently implements thread-local, read-only keep-alive. The initial #78 comparison is not a further gain over #79. This candidate is an alternative private transport, not a second optimization to stack blindly. It differs by per-client ownership, proof-gated return, explicit peer/epoch retirement and reuse for receipt-protected `apply`. Import, snapshots and stop use fresh transport. A shared get/count/write/replay comparison against all three versions is required before choosing a release path.
+
+The permanent coordinator test now forwards a real transaction, drops its authenticated acknowledgement, and requires the existing bounded retry to return a verified original receipt. Losing both replies must return explicit uncertainty after exactly two attempts; a later identical-batch retry must recover. Exactly one revision and one event must remain in both cases. The native benchmark records actual FULL-durability writes and replay receipts separately from reads. Warm sockets never authorize operations or change receipt semantics.
+
+The first hosted macOS attempt exposed unsupported `std::jthread` in the new test fixture. The existing `ScopedThread`/`ThreadStopToken` compatibility wrapper now preserves cooperative stop and scope joining on Apple libc++, without upgrading dependencies or removing the test.

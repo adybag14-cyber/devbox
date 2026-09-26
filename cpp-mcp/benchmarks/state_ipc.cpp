@@ -25,6 +25,11 @@ int run(int argc, char** argv) {
          Json{{"payload", std::string(128, 'x')}, {"literal", "${NO_EXPANSION}\\n"}, {"expected", 4265}}},
         0};
     setup->apply({&seed, 1});
+    StateMutation write_seed{{"task", "write-fixed", "owner", "scope", "checkpoint", 0, Json{{"value", 0}}},
+                             0};
+    setup->apply({&write_seed, 1});
+    unsigned committed = 0;
+    Json write_trials = Json::array();
     Json trials = Json::array();
     for (bool reuse : {false, true, true, false, false, true, true, false}) {
         StateClientOptions options;
@@ -49,6 +54,38 @@ int run(int argc, char** argv) {
         const auto wall = std::chrono::duration<double, std::milli>(Clock::now() - start).count();
         auto sorted = times;
         std::sort(sorted.begin(), sorted.end());
+        const auto write_samples = std::min<unsigned long>(samples, 256);
+        StateMutation mutation = write_seed;
+        StateEvent event{"write-events", "committed", 0, Json::object()};
+        std::string batch;
+        for (const bool replay : {false, true}) {
+            std::vector<double> values;
+            values.reserve(write_samples);
+            for (unsigned i = 0; i < write_samples; ++i) {
+                if (!replay) {
+                    mutation.expected_revision = ++committed;
+                    mutation.record.data["value"] = committed;
+                    event.data["value"] = committed;
+                    batch = "batch-" + std::to_string(committed);
+                }
+                const auto begin = Clock::now();
+                if (client->apply_once(batch, {&mutation, 1}, {&event, 1}) != replay)
+                    throw Error("Incorrect durable write/replay acknowledgement");
+                values.push_back(std::chrono::duration<double, std::micro>(Clock::now() - begin).count());
+            }
+            auto ranked = values;
+            std::sort(ranked.begin(), ranked.end());
+            write_trials.push_back(Json{{"reuse", reuse},
+                                        {"operation", replay ? "receipt_replay" : "durable_write"},
+                                        {"samples", write_samples},
+                                        {"p50_us", ranked[write_samples / 2]},
+                                        {"p95_us", ranked[write_samples * 95 / 100]},
+                                        {"p99_us", ranked[write_samples * 99 / 100]},
+                                        {"samples_us", values}});
+        }
+        const auto state = client->get("task", "write-fixed");
+        if (!state || state->revision != committed + 1 || state->data["value"] != committed)
+            throw Error("Durable write receipt repeated or lost a transaction");
         trials.push_back(Json{{"reuse", reuse},
                               {"samples", samples},
                               {"wall_ms", wall},
@@ -57,11 +94,27 @@ int run(int argc, char** argv) {
                               {"p99_us", sorted[samples * 99 / 100]},
                               {"samples_us", times}});
     }
+    std::uint64_t after = 0, events = 0;
+    for (;;) {
+        const auto page = setup->events("write-events", after, 100);
+        if (page.empty())
+            break;
+        for (const auto& event : page) {
+            if (event.sequence != ++events || event.data["value"] != events)
+                throw Error("Benchmark found duplicated or missing event");
+        }
+        after = page.back().sequence;
+    }
+    if (events != committed)
+        throw Error("Commit/event count mismatch");
     std::cout << Json{{"ok", true},
                       {"order", "ABBAABBA"},
                       {"baseline", "ephemeral fixed-endpoint HTTP"},
                       {"candidate", "bounded verified connection reuse"},
                       {"trials", trials},
+                      {"write_trials", write_trials},
+                      {"durable_commits", committed},
+                      {"events", events},
                       {"build", build_snapshot()},
                       {"production_requests", 0},
                       {"scope", "native coordinated read including encryption, proof checks, HTTP and "
