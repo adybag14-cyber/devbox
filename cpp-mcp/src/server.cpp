@@ -460,6 +460,15 @@ struct HttpServer::Impl::Session : std::enable_shared_from_this<Session> {
                     asio::bind_cancellation_slot(state->cancel.slot(),
                                                  asio::redirect_error(asio::use_awaitable, ec)));
                 buffer.commit(bytes);
+                // EOF/reset is a peer disconnect even when our read-ahead stop
+                // races its completion. Only operation_aborted acknowledges our
+                // own cancellation. Ignoring an already-consumed EOF here can
+                // strand a CLOSE_WAIT socket until the keep-alive timeout and
+                // exhaust the connection cap during short-lived request churn.
+                if (ec && ec != asio::error::operation_aborted) {
+                    close(true);
+                    break;
+                }
                 if (state->stopping)
                     break;
                 if (ec) {

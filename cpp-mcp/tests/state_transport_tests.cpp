@@ -3,6 +3,7 @@
 #include "devbox/server.hpp"
 #include "devbox/state_store.hpp"
 #include "devbox/state_transport.hpp"
+#include <algorithm>
 #include <boost/beast.hpp>
 #include <future>
 #include <iostream>
@@ -141,6 +142,35 @@ int run() {
         report.push_back(
             Json{{"reuse", reuse}, {"transfers", stats.transfers}, {"connections", stats.connections}});
     }
+    // A close can race cancellation of the server's speculative read-ahead.
+    // Retired peers must release connection admission, including under TSan.
+    // More than 512 sequential connections exercises reuse of capacity rather
+    // than increasing the configured limit or retrying a dropped operation.
+    std::size_t retired_peak = 0;
+    const auto served_before_churn = echo->calls.load();
+    {
+        StateHttpTransport fresh(false);
+        for (unsigned i = 0; i < 768; ++i) {
+            const Json args{{"retired_peer", i}};
+            {
+                auto transfer = fresh.post(peer, request(args), Millis(3000), 65536);
+                verify(transfer, args);
+            }
+            retired_peak = std::max(
+                retired_peak, static_cast<std::size_t>(json_uint(server.resource_snapshot(), "connections")));
+        }
+        const auto stats = fresh.statistics();
+        require(stats.transfers == 768 && stats.connections == 768 && stats.idle == 0,
+                "Retired-peer stress must use actual fresh TCP connections");
+    }
+    require(echo->calls.load() == served_before_churn + 768,
+            "Fresh peer retirement must neither lose nor repeat application dispatch");
+    const auto retired_deadline = Clock::now() + Millis(1000);
+    while (json_uint(server.resource_snapshot(), "connections") != 0 && Clock::now() < retired_deadline)
+        std::this_thread::sleep_for(Millis(1));
+    require(json_uint(server.resource_snapshot(), "connections") == 0,
+            "Closed peers must retire without waiting for the 15-second keep-alive timeout");
+    require(retired_peak < 512, "Closed peers must not exhaust connection admission");
     StateHttpTransport transport;
     const Json small{{"payload", "fixed"}};
     {
@@ -258,8 +288,9 @@ int run() {
             "STATE_IPC_INVALID_PEER");
     rejects([&] { (void)transport.post(peer, request(small), Millis(100), 0); }, "STATE_IPC_FRAME_LIMIT");
     server.stop();
-    std::cout << Json{{"ok", true},    {"connection_comparison", report}, {"concurrent_requests", 160},
-                      {"max_idle", 4}, {"redirect_followed", false},      {"production_requests", 0}}
+    std::cout << Json{{"retired_peer_requests", 768},    {"retired_peer_peak", retired_peak}, {"ok", true},
+                      {"connection_comparison", report}, {"concurrent_requests", 160},        {"max_idle", 4},
+                      {"redirect_followed", false},      {"production_requests", 0}}
                      .dump(2)
               << '\n';
     return 0;
