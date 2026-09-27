@@ -1,6 +1,6 @@
 # Native computer use
 
-The C++23 MCP contract version 4 exposes 50 tools: the frozen 45-tool compatibility surface, `host_computer_windows`, `host_computer_use`, and three [native research tools](NATIVE_WEB_RESEARCH.md). Computer input is supported on the interactive Windows host runtime with `ENABLE_HOST_EXEC=true`. Other operating systems explicitly report unsupported input; Docker mode does not direct mouse or keyboard events into a container.
+The C++23 MCP exposes `host_computer_windows` and `host_computer_use` alongside the frozen 45-tool compatibility surface and other native extensions. The current version and tool count come from the [generated manifest](TOOL_MANIFEST.md). Computer input is supported on the interactive Windows host runtime with `ENABLE_HOST_EXEC=true`. Other operating systems explicitly report unsupported input; Docker mode does not direct mouse or keyboard events into a container.
 
 These tools use native Windows window/process APIs, SendInput, and GDI/WIC screenshots. They do not evaluate browser JavaScript or run a shell. Existing capture tools remain available for read-only capture.
 
@@ -82,6 +82,18 @@ This is a bounded, preplanned gesture. Use it where intermediate input is predic
 - Local root metadata includes activity counts for managed quiescence checks. A deployment or fallback must wait for active computer-use and other tool calls to finish before stopping the server; an in-process key hold has no child process to discover through PID inspection alone.
 
 Window targeting does not make arbitrary application content trustworthy or grant permission for what is displayed. The caller must follow the user's task and authorization, and inspect each new image before choosing another action.
+
+## Scrolling inside dialogs and panels
+
+Scroll the container that owns the missing controls. A dialog can have a fixed header and footer with an independently scrollable body. Point `x` and `y` inside that body in the latest returned image; scrolling over the page behind it or over its fixed action button may leave the dialog unchanged. Avoid number inputs, where a wheel can change the value instead of moving the panel. Do not click implicitly to focus a scroll target.
+
+```json
+{"action":"scroll","observation_id":"<latest observation_id>","x":820,"y":535,"scroll_y":3,"settle_ms":500}
+```
+
+These coordinates are illustrative: derive them from the current image. `scroll_y` is wheel notches, not pixels; positive moves down and negative moves up. Each axis is limited to 20 notches per call. After each call, inspect the new image. If more content remains below the fold, use its new ID and scroll within the same pane again. If nothing moved, check the target and scrollbar position before choosing another action. A control that becomes visible but remains disabled may need a prerequisite field completed first.
+
+Native responses include `scroll_guidance`. Scroll responses also include the requested target/deltas, `wheel_events_sent`, and `content_movement_verified: false`. This distinguishes accepted native input from a verified application outcome: **a successful call alone does not establish that the intended panel moved or that a form is ready to submit**. No DOM inspection, form submission, implicit click, or automatic retry is performed by the scroll action.
 
 ## Authorization and telemetry
 

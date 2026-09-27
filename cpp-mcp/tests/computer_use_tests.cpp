@@ -2,6 +2,7 @@
 #include "devbox/contract.hpp"
 #include "devbox/native.hpp"
 #include "devbox/oauth.hpp"
+#include <algorithm>
 #include <atomic>
 #include <future>
 #include <iostream>
@@ -102,6 +103,9 @@ struct Fixture {
     HWND window = nullptr, edit = nullptr;
     std::atomic_uint down{0}, up{0}, double_clicks{0}, drag_moves{0}, keys{0};
     std::atomic_int wheel{0};
+    std::atomic_bool nested_pane{false};
+    std::atomic_int pane_vertical{0}, pane_horizontal{0};
+    std::atomic_uint pane_events{0};
     std::atomic_bool control_a{false};
     std::atomic_uint arrow_up_down{0}, arrow_up_up{0}, arrow_right_down{0}, arrow_right_up{0};
     std::atomic_bool up_held_on_right_down{false};
@@ -149,8 +153,23 @@ struct Fixture {
                 ++self->drag_moves;
             return 0;
         case WM_MOUSEWHEEL:
-            self->wheel += static_cast<short>(HIWORD(wparam));
+        case WM_MOUSEHWHEEL: {
+            // A custom pane with fixed surrounding content. Its lower controls
+            // only become visible after scrolling inside the pane's hit region.
+            POINT point{static_cast<short>(LOWORD(lparam)), static_cast<short>(HIWORD(lparam))};
+            ScreenToClient(window, &point);
+            if (self->nested_pane && point.x >= 290 && point.x < 600 && point.y >= 110 && point.y < 360) {
+                const auto delta = static_cast<short>(HIWORD(wparam));
+                auto& offset = message == WM_MOUSEWHEEL ? self->pane_vertical : self->pane_horizontal;
+                const auto notches = (message == WM_MOUSEWHEEL ? -delta : delta) / WHEEL_DELTA;
+                offset = std::clamp(offset.load() + notches * 40, 0, 480);
+                ++self->pane_events;
+                InvalidateRect(window, nullptr, FALSE);
+            }
+            if (message == WM_MOUSEWHEEL)
+                self->wheel += static_cast<short>(HIWORD(wparam));
             return 0;
+        }
         case WM_KEYDOWN:
             ++self->keys;
             if (wparam == VK_UP)
@@ -184,6 +203,10 @@ struct Fixture {
             Rectangle(dc, 290, 110, 600, 360);
             const wchar_t area[] = L"Click, scroll and drag here";
             TextOutW(dc, 310, 130, area, static_cast<int>(std::size(area) - 1));
+            if (self->nested_pane && self->pane_vertical >= 80) {
+                const wchar_t revealed[] = L"Take Profit / Stop Loss test controls";
+                TextOutW(dc, 300, 220, revealed, static_cast<int>(std::size(revealed) - 1));
+            }
             EndPaint(window, &paint);
             return 0;
         }
@@ -249,6 +272,17 @@ struct Fixture {
             std::this_thread::sleep_for(Millis(10));
         } while (Clock::now() < deadline);
         throw Error("native click did not focus the owned edit before typing");
+    }
+    void expect_pane(int vertical, int horizontal, unsigned events) const {
+        const auto deadline = Clock::now() + Millis(2000);
+        do {
+            if (pane_vertical == vertical && pane_horizontal == horizontal && pane_events == events)
+                return;
+            std::this_thread::sleep_for(Millis(10));
+        } while (Clock::now() < deadline);
+        throw Error("nested pane observation did not match requested scroll: vertical=" +
+                    std::to_string(pane_vertical.load()) + " horizontal=" +
+                    std::to_string(pane_horizontal.load()) + " events=" + std::to_string(pane_events.load()));
     }
     void expect_text(std::string_view expected, const std::string& message) const {
         const auto desired = wide(expected);
@@ -445,6 +479,36 @@ void native_checks() {
     scroll.update(Json{{"action", "scroll"}, {"scroll_y", 2}});
     act(scroll);
     require(fixture.wheel == -2 * WHEEL_DELTA, "wheel direction and amount");
+    fixture.nested_pane = true;
+    const auto clicks_before_scroll = fixture.down.load();
+    const auto nested_id = frame.metadata["observation_id"];
+    auto nested = position(350, 180);
+    nested.update(Json{{"action", "scroll"}, {"scroll_y", 2}, {"scroll_x", 1}});
+    act(nested);
+    fixture.expect_pane(80, 40, 2);
+    require(fixture.down == clicks_before_scroll, "scroll never implicitly clicks a form control");
+    require(frame.metadata["scroll"]["wheel_events_sent"] == 2 &&
+                frame.metadata["scroll"]["content_movement_verified"] == false,
+            "scroll receipt distinguishes input delivery from observed content movement");
+    rejects(
+        [&] {
+            computer.perform(Json{{"action", "scroll"},
+                                  {"observation_id", nested_id},
+                                  {"x", 10},
+                                  {"y", 10},
+                                  {"scroll_y", 1}},
+                             {});
+        },
+        "STALE_OBSERVATION");
+    auto outside = position(280, 180);
+    outside.update(Json{{"action", "scroll"}, {"scroll_y", 1}});
+    act(outside);
+    fixture.expect_pane(80, 40, 2);
+    auto reverse = position(350, 180);
+    reverse.update(Json{{"action", "scroll"}, {"scroll_y", -2}, {"scroll_x", -1}});
+    act(reverse);
+    fixture.expect_pane(0, 0, 4);
+    fixture.nested_pane = false;
     act(Json{{"action", "drag"},
              {"path", {position(330, 180), position(420, 230), position(500, 290)}},
              {"duration_ms", 300}});
