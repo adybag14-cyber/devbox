@@ -523,6 +523,7 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
             ++it;
     }
     bool attempted = false;
+    unsigned scroll_events = 0;
     const auto deadline = Clock::now() + std::chrono::seconds(10);
     auto current = [&](bool compare_title = false) {
         check_cancel(cancel);
@@ -596,12 +597,16 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
         if (action == "scroll") {
             move(points.front());
             point_owner(points.front());
-            if (scroll_y)
+            if (scroll_y) {
                 send_input(mouse_event(MOUSEEVENTF_WHEEL, static_cast<DWORD>(-scroll_y * WHEEL_DELTA)),
                            attempted);
-            if (scroll_x)
+                ++scroll_events;
+            }
+            if (scroll_x) {
                 send_input(mouse_event(MOUSEEVENTF_HWHEEL, static_cast<DWORD>(scroll_x * WHEEL_DELTA)),
                            attempted);
+                ++scroll_events;
+            }
         }
         if (action == "key") {
             std::vector<WORD> held;
@@ -706,6 +711,20 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
         capture.metadata["usage_type"] = "computer_use";
         capture.metadata["action"] = action;
         capture.metadata["input_events_sent"] = attempted;
+        if (action == "scroll") {
+            capture.metadata["scroll"] = Json{
+                {"unit", "wheel_notches"},
+                {"x", arguments.at("x")},
+                {"y", arguments.at("y")},
+                {"requested_x", scroll_x},
+                {"requested_y", scroll_y},
+                {"wheel_events_sent", scroll_events},
+                {"content_movement_verified", false},
+                {"instruction", "Inspect the returned image to verify the intended pane moved. Target a "
+                                "point inside its scrollable content, not a fixed header/footer or number "
+                                "input. If controls are still below the fold, use the new observation_id "
+                                "to scroll that pane again. Input delivery alone does not prove movement."}};
+        }
         if (action == "key_sequence") {
             capture.metadata["sequence_segments"] = sequence.size();
             capture.metadata["scheduled_duration_ms"] = sequence_duration;
@@ -716,6 +735,12 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
         capture.metadata["coordinate_space"] = "returned_image_pixels";
         capture.metadata["instruction"] = "Inspect this image. Use this observation_id once for the next "
                                           "action; observe again after an error or window change.";
+        capture.metadata["scroll_guidance"] =
+            "Dialogs and side panels can scroll independently. To reveal lower controls, use action "
+            "scroll with x/y inside the panel's content, away from fixed headers, footers and number "
+            "inputs; scroll_y:3 means three wheel notches down, not pixels. Inspect the next image and "
+            "continue from its new observation_id if needed. A disabled control can require another "
+            "form field first; sending input does not verify the application's result.";
         return capture;
     } catch (const std::exception& error) {
         if (attempted)

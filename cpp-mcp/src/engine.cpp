@@ -210,7 +210,10 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
                                               computer_.windows(args, cancel));
                     auto capture = computer_.perform(args, cancel);
                     return result_image(
-                        "Native computer-use action completed; inspect the returned screenshot.",
+                        json_string(args, "action") == "scroll"
+                            ? "Native scroll input sent; verify that the intended pane moved in the "
+                              "returned screenshot."
+                            : "Native computer-use action completed; inspect the returned screenshot.",
                         std::move(capture.metadata), base64_encode(capture.image),
                         std::move(capture.mime_type));
                 },
