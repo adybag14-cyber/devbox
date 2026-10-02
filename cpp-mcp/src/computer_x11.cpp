@@ -963,6 +963,9 @@ ImageCapture ComputerX11::perform(const Json& args, const Cancel& cancel) {
                 d.checked(d.api.change_keyboard_mapping_checked(
                     d.connection, 1, static_cast<std::uint8_t>(spare), 2, symbols.data()));
                 d.application_sync(o.window);
+                // The acknowledgement can take time; revalidate after the wait
+                // so a popup or another application cannot receive this glyph.
+                current();
                 send(XCB_KEY_PRESS, static_cast<std::uint8_t>(spare));
                 send(XCB_KEY_RELEASE, static_cast<std::uint8_t>(spare));
                 // Server synchronization does not mean the app has consumed
