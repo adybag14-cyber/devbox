@@ -14,20 +14,47 @@ int main() {
     const auto root = DefaultRootWindow(display);
     const auto window = XCreateSimpleWindow(display, root, 30, 30, 800, 600, 0, 0, 0xfafafa);
     XStoreName(display, window, "Devbox native input fixture");
+    XWMHints hints{};
+    hints.flags = InputHint | StateHint;
+    hints.input = True;
+    hints.initial_state = NormalState;
+    XSetWMHints(display, window, &hints);
+    XSizeHints size{};
+    size.flags = USPosition | USSize;
+    size.x = 30;
+    size.y = 30;
+    size.width = 800;
+    size.height = 600;
+    XSetWMNormalHints(display, window, &size);
+    char instance[] = "devbox-fixture", app[] = "DevboxFixture";
+    XClassHint klass{instance, app};
+    XSetClassHint(display, window, &klass);
+    const auto protocols = XInternAtom(display, "WM_PROTOCOLS", False);
+    const auto ping = XInternAtom(display, "_NET_WM_PING", False);
+    Atom supported[]{ping, XInternAtom(display, "WM_DELETE_WINDOW", False)};
+    XSetWMProtocols(display, window, supported, 2);
     const unsigned long pid = static_cast<unsigned long>(getpid());
     XChangeProperty(display, window, XInternAtom(display, "_NET_WM_PID", False), XA_CARDINAL, 32,
                     PropModeReplace, reinterpret_cast<const unsigned char*>(&pid), 1);
     XSelectInput(display, window,
                  KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
                      ExposureMask | StructureNotifyMask);
-    XMapWindow(display, window);
-    XFlush(display);
+    // The harness maps after the optional window manager and MCP are ready.
+    XSync(display, False);
+    // Initialize Xlib's keyboard mapping before timed input arrives.
+    (void)XKeysymToKeycode(display, 0x61);
     std::cout << "ready " << window << std::endl;
     Window overlay = 0;
     for (;;) {
         while (XPending(display)) {
             XEvent event;
             XNextEvent(display, &event);
+            if (event.type == ClientMessage && event.xclient.message_type == protocols &&
+                static_cast<Atom>(event.xclient.data.l[0]) == ping) {
+                event.xclient.window = root;
+                XSendEvent(display, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &event);
+                XFlush(display);
+            }
             if (event.type == MappingNotify)
                 XRefreshKeyboardMapping(&event.xmapping);
             if (event.type == KeyPress || event.type == KeyRelease) {
@@ -62,15 +89,23 @@ int main() {
                 break;
             if (command == "quit")
                 break;
+            if (command == "map")
+                XMapWindow(display, window);
             if (command == "title")
                 XStoreName(display, window, "Devbox changed fixture title");
             if (command == "resize")
                 XResizeWindow(display, window, 720, 540);
-            if (command == "cover") {
+            if (command == "cover" || command == "owned_popup") {
                 XSetWindowAttributes attr{};
                 attr.override_redirect = True;
                 overlay = XCreateWindow(display, root, 60, 60, 300, 200, 0, CopyFromParent, InputOutput,
                                         CopyFromParent, CWOverrideRedirect, &attr);
+                if (command == "owned_popup") {
+                    XChangeProperty(display, overlay, XInternAtom(display, "_NET_WM_PID", False), XA_CARDINAL,
+                                    32, PropModeReplace, reinterpret_cast<const unsigned char*>(&pid), 1);
+                    XSetTransientForHint(display, overlay, window);
+                    XSelectInput(display, overlay, ButtonPressMask | ButtonReleaseMask);
+                }
                 XMapRaised(display, overlay);
             }
             if (command == "uncover" && overlay) {

@@ -60,14 +60,19 @@ try {
     const result=await client.callTool({name,arguments:args});assert.equal(result.isError,false,JSON.stringify(result));
     return {data:result.structuredContent.data,image:result.content.find(c=>c.type==='image')};
   };
+  const capability=await invoke('devbox_capabilities');
+  assert.equal(capability.data.computer_use.supported,true);
+  assert.equal(capability.data.platform_availability.desktop_input,'permission_probe_on_use');
   const reject=async(args,pattern)=>{const value=await client.callTool({name:'host_computer_use',arguments:args});assert.equal(value.isError,true);assert.match(JSON.stringify(value),pattern);};
+  window.handle.stdin.write('map\n');
+  await until(()=>window.output().includes('ack map'),()=>window.output());
   let inventory;
   try {
     await until(async()=>{inventory=await invoke('host_computer_windows',{title_contains:'Devbox native input fixture'});return inventory.data.windows.length===1;},()=>JSON.stringify(inventory)+server.output()+window.output());
   } catch(error) {
     console.error((await run('xprop',['-root','_NET_CLIENT_LIST_STACKING','_NET_CLIENT_LIST'],env)).stdout);
     console.error((await run('xwininfo',['-root','-tree'],env)).stdout);
-    for(const item of children)console.error({pid:item.handle.pid,exited:item.handle.exitCode,output:item.output()});
+    for(const item of children)console.error({pid:item.handle.pid,exited:item.handle.exitCode,output:item.output(),wait:await readFile(`/proc/${item.handle.pid}/wchan`,'utf8').catch(()=>'?')});
     throw error;
   }
   assert.equal(inventory.data.supported,true);assert.equal(inventory.data.windows.length,1,JSON.stringify(inventory)+server.output());
@@ -88,20 +93,29 @@ try {
   assert.equal((window.output().match(/button_down 5\n/g)||[]).length,3);
   assert.equal((window.output().match(/button_down 6\n/g)||[]).length,2);
   await act('type',{text:'Ab9 £éλ🙂'});
-  for(const key of [65,98,57,163,233,0x10003bb,0x101f642])assert(window.output().includes(`key_down ${key}\n`),`Unicode keysym ${key}: ${window.output()}`);
+  // MCP reports delivery, not application processing. Wait for the real event
+  // receiver (including Xlib's first-use keyboard-map initialization) to ack.
+  for(const key of [65,98,57,163,233,0x10003bb,0x101f642])
+    await until(()=>window.output().includes(`key_down ${key}\n`),()=>`Unicode keysym ${key}: ${window.output()}`);
+  const beforeBudget=window.output().length;
+  await reject({action:'type',observation_id:observed.data.observation_id,text:'λ'.repeat(100)},/COMPUTER_TEXT_BUDGET/);
+  assert.equal(window.output().length,beforeBudget,'over-budget text emits no input');
+  await act('type',{text:'Still usable'});
   await act('key',{keys:['CTRL','L']});
   await act('key_sequence',{sequence:[{keys:['UP'],duration_ms:30},{keys:['UP','RIGHT'],duration_ms:30},{keys:[],duration_ms:10}]});
   await act('drag',{path:[{x:100,y:200},{x:250,y:200},{x:400,y:200}],duration_ms:100});
   assert.match(window.output(),/motion 400 200/);
   await reject({action:'key',observation_id:observed.data.observation_id,keys:['CTRL','ALT','F1']},/COMPUTER_SYSTEM_SHORTCUT_DENIED/);
-  async function control(command){window.handle.stdin.write(command+'\n');await until(()=>window.output().includes('ack '+command),()=>window.output());}
+  async function control(command){const start=window.output().length;window.handle.stdin.write(command+'\n');await until(()=>window.output().slice(start).includes('ack '+command),()=>window.output());}
   await control('title');await reject({action:'click',observation_id:observed.data.observation_id,x:100,y:100},/COMPUTER_STALE_OBSERVATION/);
   await observe();await control('cover');await reject({action:'click',observation_id:observed.data.observation_id,x:100,y:100},/COMPUTER_WINDOW_OCCLUDED/);
   await control('uncover');await observe();
+  await control('owned_popup');await act('click',{x:70,y:70});await control('uncover');await observe();
   const controller=new AbortController();
+  const beforeCancel=window.output().length;
   const cancelled=client.callTool({name:'host_computer_use',arguments:{action:'key',observation_id:observed.data.observation_id,keys:['SHIFT'],hold_ms:5000}},undefined,{signal:controller.signal}).catch(()=>{});
-  await until(()=>window.output().includes('key_down 65505\n'),()=>window.output());controller.abort();await cancelled;
-  await until(()=>window.output().includes('key_up 65505\n'),()=>window.output());
+  await until(()=>window.output().slice(beforeCancel).includes('key_down 65505\n'),()=>window.output());controller.abort();await cancelled;
+  await until(()=>window.output().slice(beforeCancel).includes('key_up 65505\n'),()=>window.output());
   await observe();await act('click',{x:10,y:10});
   await control('resize');await reject({action:'click',observation_id:observed.data.observation_id,x:10,y:10},/COMPUTER_STALE_OBSERVATION/);
   await observe();assert.equal(observed.data.image_width,720);

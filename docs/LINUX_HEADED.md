@@ -37,7 +37,13 @@ that an application accepted a form value or completed an action.
 Linux capture returns lossless PNG, including when `quality` is supplied for API
 compatibility. Literal Unicode typing temporarily maps an unused keycode, restores
 the previous map, and never changes clipboard contents. A display with no spare
-keycode rejects typing. Unsupported layouts/keys and windows that extend outside
+keycode rejects characters absent from its existing layout. Typing has a preflight
+budget of 1024 work units: existing layout characters cost 1, and characters that
+need temporary mapping cost 11. Larger requests are rejected before input; split
+them into smaller calls (at most 90 unfamiliar glyphs per call). Unmapped Unicode
+requires the target to support the standard `_NET_WM_PING` protocol: the backend
+waits for the app's event queue before reusing/restoring a key mapping. This avoids
+lost characters when the app is busy, without modifying the clipboard. Unsupported layouts/keys and windows that extend outside
 the screen are rejected. Native Wayland-only sessions and Android input are out
 of scope; use X11/XWayland with a matching local process identity. For container
 deployments, the browser and MCP must share the UID and PID namespace.

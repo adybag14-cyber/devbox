@@ -330,7 +330,7 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                 {"wsl", wsl_capabilities(config)},
                 {"platform_availability",
                  {{"native_host_execution", config.host_exec_enabled ? "available" : "permission_denied"},
-                  {"desktop_input", !config.platform.is_windows ? "unsupported"
+                  {"desktop_input", !(config.platform.is_windows || computer_x11_enabled()) ? "unsupported"
                                     : !config.host_exec_enabled ? "permission_denied"
                                                                 : "permission_probe_on_use"},
                   {"scoped_program", isolation_capabilities()},
@@ -368,6 +368,8 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                   {"max_action_duration_ms", 5000},
                   {"max_key_sequence_segments", 32},
                   {"max_key_sequence_duration_ms", 5000},
+                  {"linux_type_work_budget", 1024},
+                  {"linux_unmapped_symbol_work_units", 11},
                   {"scroll_unit", "wheel_notches"},
                   {"scroll_max_notches_per_axis", 20},
                   {"scroll_target", "point_inside_scrollable_content_in_returned_image"},

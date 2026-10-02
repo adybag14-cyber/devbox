@@ -54,6 +54,9 @@ struct Api {
     XCB_FUNCTION(depth_visuals_iterator);
     XCB_FUNCTION(visualtype_next);
     XCB_FUNCTION(poll_for_reply);
+    XCB_FUNCTION(poll_for_event);
+    XCB_FUNCTION(change_window_attributes_checked);
+    XCB_FUNCTION(send_event_checked);
     XCB_FUNCTION(flush);
     XCB_FUNCTION(request_check);
     XCB_FUNCTION(intern_atom);
@@ -111,6 +114,9 @@ struct Api {
             LOAD(depth_visuals_iterator);
             LOAD(visualtype_next);
             LOAD(poll_for_reply);
+            LOAD(poll_for_event);
+            LOAD(change_window_attributes_checked);
+            LOAD(send_event_checked);
             LOAD(flush);
             LOAD(request_check);
             LOAD(intern_atom);
@@ -286,7 +292,12 @@ class Display {
         if (!value.pid || ::stat(process.c_str(), &identity) || identity.st_uid != geteuid())
             throw Error(
                 "COMPUTER_SESSION_MISMATCH: target must belong to the same local user and PID namespace");
-        const auto stat = read_file(process / "stat", 8192);
+        std::string stat;
+        try {
+            stat = read_file(process / "stat", 8192);
+        } catch (const std::system_error&) {
+            throw Error("COMPUTER_PROCESS_UNAVAILABLE: process exited or became inaccessible");
+        }
         const auto close = stat.rfind(')');
         if (close == stat.npos)
             throw Error("COMPUTER_PROCESS_UNAVAILABLE");
@@ -387,6 +398,21 @@ class Display {
                 reply<xcb_get_window_attributes_reply_t>(api.get_window_attributes(connection, children[i]));
             if (attr->map_state != XCB_MAP_STATE_VIEWABLE || attr->_class != XCB_WINDOW_CLASS_INPUT_OUTPUT)
                 continue;
+            // Non-activating application menus/tooltips are part of the target's
+            // visible UI. An independent window or unidentified overlay remains
+            // an occluder, even when it is in the same desktop session.
+            if (attr->override_redirect) {
+                auto owner = property(children[i], "_NET_WM_PID", XCB_ATOM_CARDINAL);
+                std::uint32_t pid = 0;
+                if (owner->format == 32 && owner->value_len == 1)
+                    std::memcpy(&pid, api.get_property_value(owner.get()), sizeof(pid));
+                auto transient = property(children[i], "WM_TRANSIENT_FOR", XCB_ATOM_WINDOW);
+                std::uint32_t parent = 0;
+                if (transient->format == 32 && transient->value_len == 1)
+                    std::memcpy(&parent, api.get_property_value(transient.get()), sizeof(parent));
+                if (pid == window.pid && (!parent || parent == window.handle))
+                    continue;
+            }
             auto g = reply<xcb_get_geometry_reply_t>(api.get_geometry(connection, children[i]));
             const auto& b = window.bounds;
             if (g->x < b.x + b.width && g->y < b.y + b.height && g->x + g->width > b.x &&
@@ -400,9 +426,60 @@ class Display {
         checked(api.test_fake_input_checked(connection, type, detail, XCB_CURRENT_TIME, screen->root,
                                             static_cast<std::int16_t>(x), static_cast<std::int16_t>(y), 0));
     }
+    template <typename Function> void cleanup(Function function) noexcept {
+        auto previous_cancel = std::move(cancel);
+        const auto previous_deadline = deadline;
+        deadline = Clock::now() + std::chrono::seconds(1);
+        try {
+            function();
+        } catch (...) {
+        }
+        cancel = std::move(previous_cancel);
+        deadline = previous_deadline;
+    }
     void release(std::uint8_t type, std::uint8_t detail) noexcept {
-        api.test_fake_input_checked(connection, type, detail, XCB_CURRENT_TIME, screen->root, 0, 0, 0);
-        api.flush(connection);
+        // Flush alone can lose XTEST releases when the connection immediately
+        // closes. A bounded round trip must finish even after cancellation.
+        cleanup([&] { input(type, detail); });
+    }
+    bool supports_ping(const Window& window) {
+        auto protocols = property(window.handle, "WM_PROTOCOLS", XCB_ATOM_ATOM);
+        if (protocols->format != 32)
+            return false;
+        const auto* values = static_cast<xcb_atom_t*>(api.get_property_value(protocols.get()));
+        const auto ping = atom("_NET_WM_PING");
+        return std::find(values, values + protocols->value_len, ping) != values + protocols->value_len;
+    }
+    void application_sync(const Window& window) {
+        const std::uint32_t mask = XCB_EVENT_MASK_SUBSTRUCTURE_NOTIFY;
+        checked(api.change_window_attributes_checked(connection, screen->root, XCB_CW_EVENT_MASK, &mask));
+        static std::atomic_uint32_t serial{1};
+        xcb_client_message_event_t message{};
+        message.response_type = XCB_CLIENT_MESSAGE;
+        message.format = 32;
+        message.window = window.handle;
+        message.type = atom("WM_PROTOCOLS");
+        message.data.data32[0] = atom("_NET_WM_PING");
+        message.data.data32[1] = serial.fetch_add(1);
+        message.data.data32[2] = window.handle;
+        checked(api.send_event_checked(connection, false, window.handle, XCB_EVENT_MASK_NO_EVENT,
+                                       reinterpret_cast<const char*>(&message)));
+        const auto until = std::min(deadline, Clock::now() + std::chrono::seconds(2));
+        while (Clock::now() < until) {
+            health();
+            while (auto* raw = api.poll_for_event(connection)) {
+                Reply<xcb_generic_event_t> event(raw);
+                if ((event->response_type & 0x7f) != XCB_CLIENT_MESSAGE)
+                    continue;
+                const auto* reply = reinterpret_cast<xcb_client_message_event_t*>(event.get());
+                if (reply->type == message.type && reply->format == 32 &&
+                    std::equal(std::begin(message.data.data32), std::begin(message.data.data32) + 3,
+                               std::begin(reply->data.data32)))
+                    return;
+            }
+            delay(5, cancel);
+        }
+        throw Error("COMPUTER_APPLICATION_TIMEOUT: the target did not acknowledge its X11 event queue");
     }
 };
 class InputLease {
@@ -741,7 +818,15 @@ ImageCapture ComputerX11::perform(const Json& args, const Cancel& cancel) {
     if (sx < -20 || sx > 20 || sy < -20 || sy > 20 || (action == "scroll" && !sx && !sy))
         throw Error("COMPUTER_SCROLL_INVALID");
     unsigned spare = 0;
-    if (action == "type") {
+    const auto unmapped = std::count_if(typed.begin(), typed.end(),
+                                        [&](auto symbol) { return !keyboard.literal(symbol).first; });
+    if (typed.size() + static_cast<std::size_t>(unmapped) * 10 > 1024)
+        throw Error("COMPUTER_TEXT_BUDGET: split text into smaller calls before typing (1024 work units; "
+                    "mapped characters cost 1, unmapped Unicode characters cost 11). No input was sent.");
+    if (unmapped) {
+        if (!d.supports_ping(o.window))
+            throw Error("COMPUTER_TEXT_LAYOUT_UNAVAILABLE: this app cannot acknowledge temporary Unicode "
+                        "key mappings; use characters in its keyboard layout. No input was sent.");
         for (unsigned i = 0; i < keyboard.count; ++i)
             if (std::all_of(keyboard.symbols.begin() + i * keyboard.per,
                             keyboard.symbols.begin() + (i + 1) * keyboard.per,
@@ -843,12 +928,16 @@ ImageCapture ComputerX11::perform(const Json& args, const Cancel& cancel) {
             held.clear();
         }
         if (action == "type") {
-            const auto offset = (spare - keyboard.first) * keyboard.per;
+            const auto offset = spare ? (spare - keyboard.first) * keyboard.per : 0;
             ScopeExit restore([&] {
-                d.release(XCB_KEY_RELEASE, static_cast<std::uint8_t>(spare));
-                d.api.change_keyboard_mapping_checked(d.connection, 1, static_cast<std::uint8_t>(spare),
-                                                      keyboard.per, keyboard.symbols.data() + offset);
-                d.api.flush(d.connection);
+                if (spare) {
+                    d.release(XCB_KEY_RELEASE, static_cast<std::uint8_t>(spare));
+                    d.cleanup([&] {
+                        d.checked(d.api.change_keyboard_mapping_checked(
+                            d.connection, 1, static_cast<std::uint8_t>(spare), keyboard.per,
+                            keyboard.symbols.data() + offset));
+                    });
+                }
             });
             for (const auto symbol : typed) {
                 current();
@@ -872,13 +961,18 @@ ImageCapture ComputerX11::perform(const Json& args, const Cancel& cancel) {
                 const std::array<xcb_keysym_t, 2> symbols{symbol, symbol};
                 d.checked(d.api.change_keyboard_mapping_checked(
                     d.connection, 1, static_cast<std::uint8_t>(spare), 2, symbols.data()));
-                delay(10, cancel);
+                d.application_sync(o.window);
                 send(XCB_KEY_PRESS, static_cast<std::uint8_t>(spare));
                 send(XCB_KEY_RELEASE, static_cast<std::uint8_t>(spare));
-                delay(10, cancel);
+                // Server synchronization does not mean the app has consumed
+                // MappingNotify/KeyPress. Ack the app queue before reusing or
+                // restoring the keycode, otherwise a busy Chromium loses text.
+                d.application_sync(o.window);
             }
-            d.checked(d.api.change_keyboard_mapping_checked(d.connection, 1, static_cast<std::uint8_t>(spare),
-                                                            keyboard.per, keyboard.symbols.data() + offset));
+            if (spare)
+                d.checked(
+                    d.api.change_keyboard_mapping_checked(d.connection, 1, static_cast<std::uint8_t>(spare),
+                                                          keyboard.per, keyboard.symbols.data() + offset));
             restore.disarm();
         }
         if (action == "wait")
