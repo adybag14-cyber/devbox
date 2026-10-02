@@ -45,12 +45,18 @@ int main() {
     (void)XKeysymToKeycode(display, 0x61);
     std::cout << "ready " << window << std::endl;
     Window overlay = 0;
+    Window focus_target = 0;
+    bool steal_ping = false;
     for (;;) {
         while (XPending(display)) {
             XEvent event;
             XNextEvent(display, &event);
             if (event.type == ClientMessage && event.xclient.message_type == protocols &&
                 static_cast<Atom>(event.xclient.data.l[0]) == ping) {
+                if (steal_ping) {
+                    steal_ping = false;
+                    XSetInputFocus(display, focus_target, RevertToNone, CurrentTime);
+                }
                 event.xclient.window = root;
                 XSendEvent(display, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &event);
                 XFlush(display);
@@ -91,6 +97,15 @@ int main() {
                 break;
             if (command == "map")
                 XMapWindow(display, window);
+            if (command == "steal_ping") {
+                XSetWindowAttributes attr{};
+                attr.override_redirect = True;
+                focus_target = XCreateWindow(display, root, 900, 640, 100, 100, 0, CopyFromParent,
+                                             InputOutput, CopyFromParent, CWOverrideRedirect, &attr);
+                XSelectInput(display, focus_target, KeyPressMask | KeyReleaseMask);
+                XMapRaised(display, focus_target);
+                steal_ping = true;
+            }
             if (command == "title")
                 XStoreName(display, window, "Devbox changed fixture title");
             if (command == "resize")
