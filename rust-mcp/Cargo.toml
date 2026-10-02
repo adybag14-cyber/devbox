@@ -18,7 +18,7 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 jsonwebtoken = { version = "11.0", features = ["aws_lc_rs"] }
 regex = "1.12"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-rmcp = { version = "3.1.2", features = ["transport-streamable-http-server"] }
+rmcp = { version = "3.4.1", features = ["transport-streamable-http-server"] }
 schemars = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
