@@ -444,7 +444,7 @@ class Display {
     }
     bool supports_ping(const Window& window) {
         auto protocols = property(window.handle, "WM_PROTOCOLS", XCB_ATOM_ATOM);
-        if (protocols->format != 32)
+        if (protocols->format != 32 || !protocols->value_len)
             return false;
         const auto* values = static_cast<xcb_atom_t*>(api.get_property_value(protocols.get()));
         const auto ping = atom("_NET_WM_PING");
@@ -469,10 +469,11 @@ class Display {
             health();
             while (auto* raw = api.poll_for_event(connection)) {
                 Reply<xcb_generic_event_t> event(raw);
+                health();
                 if ((event->response_type & 0x7f) != XCB_CLIENT_MESSAGE)
                     continue;
                 const auto* reply = reinterpret_cast<xcb_client_message_event_t*>(event.get());
-                if (reply->type == message.type && reply->format == 32 &&
+                if (reply->window == screen->root && reply->type == message.type && reply->format == 32 &&
                     std::equal(std::begin(message.data.data32), std::begin(message.data.data32) + 3,
                                std::begin(reply->data.data32)))
                     return;
