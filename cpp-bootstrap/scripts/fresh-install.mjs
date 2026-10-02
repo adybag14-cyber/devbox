@@ -37,7 +37,8 @@ try {
   assert.match(config, /^DEVBOX_MCP_IMPLEMENTATION=cpp$/m);
   assert.match(config, /^PORT=18193$/m);
   const installedSdk = JSON.parse(await readFile(path.join(installedRepo, 'node_modules/@modelcontextprotocol/sdk/package.json'), 'utf8'));
-  assert.equal(installedSdk.version, '1.30.0');
+  const lock = JSON.parse(await readFile(path.join(installedRepo, 'package-lock.json'), 'utf8'));
+  assert.equal(installedSdk.version, lock.packages['node_modules/@modelcontextprotocol/sdk'].version);
   // This is the native installer itself selecting its bundled sibling. No
   // compiler, package manager, runtime startup or production path is involved.
   outputs.staging = (await run(setup, ['--repo', installedRepo, '--build-runtime-only'])).stdout;

@@ -12,6 +12,7 @@ import {fileURLToPath} from 'node:url';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+const sdkVersion=JSON.parse(await readFile(path.join(repo,'node_modules/@modelcontextprotocol/sdk/package.json'),'utf8')).version;
 const binary=process.env.DEVBOX_CPP_BINARY||path.join(repo,'.cpp-build/windows/cpp-mcp/Release/devbox-mcp.exe');
 const binaryHash=createHash('sha256').update(await readFile(binary)).digest('hex');
 const root=await mkdtemp(path.join(os.tmpdir(),'devbox-cpp-engine-sdk-'));
@@ -110,7 +111,7 @@ try {
   await client.close();client=undefined;
   await delay(100);
   const usage=await readFile(path.join(root,'run','tool-usage.jsonl'),'utf8');assert(usage.includes('tool_finish'));
-  console.log(JSON.stringify({ok:true,toolCount:listed.length,binarySha256:binaryHash,servingPid:child.pid,sdk:'1.30.0',nativeJob:true,durableRetry:true,byteRoundtrip:true,concurrentPassiveWaits:32,cancellation:true,admissionDrain:true,healthMs},null,2));
+  console.log(JSON.stringify({ok:true,toolCount:listed.length,binarySha256:binaryHash,servingPid:child.pid,sdk:sdkVersion,nativeJob:true,durableRetry:true,byteRoundtrip:true,concurrentPassiveWaits:32,cancellation:true,admissionDrain:true,healthMs},null,2));
 } finally {
   await client?.close().catch(()=>{});
   if(child.exitCode===null&&child.signalCode===null){child.kill();await Promise.race([exited,delay(10000)]);}

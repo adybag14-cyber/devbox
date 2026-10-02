@@ -8,6 +8,7 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const sdkVersion = JSON.parse(await readFile(path.join(repo, 'node_modules/@modelcontextprotocol/sdk/package.json'), 'utf8')).version;
 const binary = process.env.DEVBOX_CPP_TRANSPORT_TEST_BINARY || path.join(repo, '.cpp-build/windows/cpp-mcp/Release/devbox-transport-tests.exe');
 const root = await mkdtemp(path.join(os.tmpdir(), 'devbox-cpp-sdk-'));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -52,7 +53,7 @@ try {
   await writeFile(path.join(root, 'stop'), 'stop');
   await Promise.race([exited, delay(5000)]);
   assert.equal(child.exitCode, 0, `Fixture failed to stop: ${output}`);
-  console.log(JSON.stringify({ok: true, sdk: '1.30.0', handshake: true, sseHeartbeat: true, cancellation: true, concurrentPassiveWaits: 24, healthMs}, null, 2));
+  console.log(JSON.stringify({ok: true, sdk: sdkVersion, handshake: true, sseHeartbeat: true, cancellation: true, concurrentPassiveWaits: 24, healthMs}, null, 2));
 } finally {
   await client?.close().catch(() => {});
   if (child.exitCode === null && child.signalCode === null) {
