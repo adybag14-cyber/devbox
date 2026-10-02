@@ -23,7 +23,7 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, tool::ToolCallContext},
     model::{
         CallToolRequestParams, CallToolResponse, CallToolResult, Implementation,
-        ServerCapabilities, ServerInfo,
+        ServerCapabilities, ServerConfig,
     },
     schemars,
     service::RequestContext,
@@ -2387,13 +2387,13 @@ impl ServerHandler for DevboxMcp {
         .await;
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         let mut capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_tool_list_changed()
             .build();
         capabilities.logging = Some(serde_json::Map::default());
-        ServerInfo::new(capabilities).with_server_info(
+        ServerConfig::new(capabilities).with_server_info(
             Implementation::new(self.config.server_name(), env!("CARGO_PKG_VERSION"))
                 .with_website_url("https://github.com/adybag14-cyber/devbox"),
         )
