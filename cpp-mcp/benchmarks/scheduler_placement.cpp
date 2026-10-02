@@ -58,8 +58,9 @@ int main(int argc, char** argv) {
                               {"warmup", 2},
                               {"count", samples.size()},
                               {"acquired", acquired},
-                              {"p50Ms", samples[10]},
-                              {"p95Ms", samples[19]},
+                              {"percentileConvention", "median and nearest-rank p95"},
+                              {"p50Ms", (samples[9] + samples[10]) / 2.0},
+                              {"p95Ms", samples[18]},
                               {"sortedSamplesMs", samples}}
                              .dump()
                       << '\n';
