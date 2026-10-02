@@ -51,8 +51,8 @@ Contract version: 9. Declared tool count: 53. Read-only hints do not provide an 
 | windows_host_run_program | mcp:host:exec | host_run_program | execution | windows, linux, macos, android, termux |
 | windows_host_status | mcp:host:read | host_status | files | windows, linux, macos, android, termux |
 | windows_host_write_large_file | mcp:host:exec |  | files | windows, linux, macos, android, termux |
-| host_computer_windows | mcp:host:read |  | desktop | windows |
-| host_computer_use | mcp:host:exec |  | desktop | windows |
+| host_computer_windows | mcp:host:read |  | desktop | windows, linux |
+| host_computer_use | mcp:host:exec |  | desktop | windows, linux |
 | devbox_web_fetch | mcp:devbox:read |  | research | windows, linux, macos, android, termux |
 | devbox_web_research | mcp:devbox:exec |  | research | windows, linux, macos, android, termux |
 | devbox_web_evidence | mcp:devbox:read |  | research | windows, linux, macos, android, termux |

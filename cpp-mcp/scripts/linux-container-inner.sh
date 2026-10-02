@@ -9,7 +9,7 @@ case "$DEVBOX_DISTRO_FAMILY" in
   pacman) pacman -Syu --noconfirm --needed nodejs npm git python ripgrep curl ca-certificates bash ;;
   apk)
     apk add --no-cache nodejs npm git python3 ripgrep curl ca-certificates bash \
-      g++ linux-headers cmake ninja make zip unzip tar pkgconf autoconf automake libtool perl
+      g++ linux-headers cmake ninja make zip unzip tar pkgconf autoconf automake libtool perl libxcb-dev
     ;;
   *) echo 'Unknown isolated distro fixture family' >&2; exit 2 ;;
 esac

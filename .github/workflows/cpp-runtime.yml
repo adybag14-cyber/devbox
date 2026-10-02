@@ -83,7 +83,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bubblewrap
+          sudo apt-get install -y --no-install-recommends bubblewrap libxcb-xtest0-dev
       - name: Select Clang sanitizer compiler
         if: matrix.sanitizers == '1'
         shell: bash
@@ -168,8 +168,10 @@ jobs:
         if: matrix.name == 'Linux GCC'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev xvfb xdotool x11-utils imagemagick
+          sudo apt-get install -y libx11-dev xvfb xdotool x11-utils imagemagick openbox
           node cpp-mcp/scripts/x11-capture-smoke.mjs
+          node cpp-mcp/scripts/x11-computer-smoke.mjs
+          DEVBOX_X11_TEST_WM=1 node cpp-mcp/scripts/x11-computer-smoke.mjs
       - name: Capture owned native Cocoa windows and display
         if: runner.os == 'macOS'
         run: node cpp-mcp/scripts/macos-capture-smoke.mjs
@@ -182,6 +184,7 @@ jobs:
             .cpp-build/package/
             .cpp-build/ci-native-result.json
             .cpp-build/x11-capture-result.json
+            .cpp-build/x11-computer-result.json
             .cpp-build/macos-capture-result.json
             .cpp-build/ci/Testing/Temporary/
           if-no-files-found: warn
@@ -373,6 +376,8 @@ jobs:
       - name: Bootstrap Linux tools
         if: runner.os == 'Linux'
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libxcb-xtest0-dev
           sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           echo 'CC=clang' >> "$GITHUB_ENV"
           echo 'CXX=clang++' >> "$GITHUB_ENV"

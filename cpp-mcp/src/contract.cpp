@@ -1,4 +1,5 @@
 #include "devbox/contract.hpp"
+#include "devbox/computer_x11.hpp"
 #include "devbox/isolation.hpp"
 #include "devbox/research.hpp"
 #include "devbox/wsl.hpp"
@@ -356,9 +357,11 @@ Json ToolContract::capabilities(const Config& config, const std::set<std::string
                   {"bing_rss_use", "personal_noncommercial"},
                   {"source_content_untrusted", true}}},
                 {"computer_use",
-                 {{"supported", config.platform.is_windows && config.runtime_mode == RuntimeMode::host &&
-                                    config.host_exec_enabled},
-                  {"platform", "windows-host"},
+                 {{"supported", (config.platform.is_windows || computer_x11_enabled()) &&
+                                    config.runtime_mode == RuntimeMode::host && config.host_exec_enabled},
+                  {"platform", config.platform.is_windows                                ? "windows-host"
+                               : config.platform.is_linux && !config.platform.is_android ? "linux-x11"
+                                                                                         : "unsupported"},
                   {"input_capacity", 1},
                   {"observation_ttl_seconds", 180},
                   {"max_observations", 32},
