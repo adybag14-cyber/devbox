@@ -39,8 +39,10 @@ try {
   assert.match(number,/^\d+$/);
   const env={...process.env,DISPLAY:`:${number}`,DEVBOX_COMPUTER_USE_X11:'1'};
   delete env.WAYLAND_DISPLAY;delete env.DEVBOX_COMPUTER_USE_PIPE;
+  delete env.SESSION_MANAGER;delete env.DBUS_SESSION_BUS_ADDRESS;
+  env.HOME=path.join(root,'home');await mkdir(env.HOME);
   if(process.env.DEVBOX_X11_TEST_WM==='1') {
-    const wm=child('openbox',[],env);
+    const wm=child('openbox',['--sm-disable'],env);
     await until(async()=>{const value=await run('xprop',['-root','_NET_SUPPORTING_WM_CHECK'],env);return value.stdout.includes('window id #');},()=>wm.output());
   }
   const window=child(path.join(root,'fixture'),[],env);
@@ -60,7 +62,14 @@ try {
   };
   const reject=async(args,pattern)=>{const value=await client.callTool({name:'host_computer_use',arguments:args});assert.equal(value.isError,true);assert.match(JSON.stringify(value),pattern);};
   let inventory;
-  await until(async()=>{inventory=await invoke('host_computer_windows',{title_contains:'Devbox native input fixture'});return inventory.data.windows.length===1;},()=>JSON.stringify(inventory)+server.output()+window.output());
+  try {
+    await until(async()=>{inventory=await invoke('host_computer_windows',{title_contains:'Devbox native input fixture'});return inventory.data.windows.length===1;},()=>JSON.stringify(inventory)+server.output()+window.output());
+  } catch(error) {
+    console.error((await run('xprop',['-root','_NET_CLIENT_LIST_STACKING','_NET_CLIENT_LIST'],env)).stdout);
+    console.error((await run('xwininfo',['-root','-tree'],env)).stdout);
+    for(const item of children)console.error({pid:item.handle.pid,exited:item.handle.exitCode,output:item.output()});
+    throw error;
+  }
   assert.equal(inventory.data.supported,true);assert.equal(inventory.data.windows.length,1,JSON.stringify(inventory)+server.output());
   const id=inventory.data.windows[0].window_id;
   let observed;
