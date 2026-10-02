@@ -1,4 +1,5 @@
 #include "devbox/computer_use.hpp"
+#include "devbox/computer_x11.hpp"
 #include "devbox/native.hpp"
 #include <algorithm>
 #include <array>
@@ -298,6 +299,7 @@ std::vector<WORD> key_chord(const Json& keys, bool allow_empty = false) {
 struct ComputerUse::Impl {
     std::mutex operation;
     std::string broker;
+    ComputerX11 x11;
 #ifdef _WIN32
     struct Observation {
         Window window;
@@ -365,12 +367,13 @@ Json ComputerUse::windows(const Json& arguments, const Cancel& cancel) {
                 {"truncated", state.truncated},
                 {"next", "Call host_computer_use action observe with one returned window_id."}};
 #else
-    (void)arguments;
-    (void)cancel;
+    if (computer_x11_enabled())
+        return impl_->x11.windows(arguments, cancel);
     return Json{{"supported", false},
                 {"usage_type", "computer_use"},
                 {"windows", Json::array()},
-                {"reason", "Native computer input is supported only on the Windows host runtime."}};
+                {"reason", "Native computer input needs a Windows desktop or an enabled local Linux X11 "
+                           "desktop (DEVBOX_COMPUTER_USE_X11=1 and DISPLAY)."}};
 #endif
 }
 
@@ -750,9 +753,10 @@ ImageCapture ComputerUse::perform(const Json& arguments, const Cancel& cancel) {
         throw;
     }
 #else
-    (void)arguments;
-    (void)cancel;
-    throw Error("COMPUTER_UNSUPPORTED: native computer input requires the Windows host runtime");
+    if (computer_x11_enabled())
+        return impl_->x11.perform(arguments, cancel);
+    throw Error("COMPUTER_UNSUPPORTED: native computer input requires a Windows desktop or an enabled local "
+                "Linux X11 desktop");
 #endif
 }
 } // namespace devbox

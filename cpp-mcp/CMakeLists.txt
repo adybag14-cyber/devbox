@@ -102,6 +102,7 @@ add_library(devbox_core
   src/capture_windows.cpp
   src/capture_posix.cpp
   src/computer_use.cpp
+  src/computer_x11.cpp
   src/computer_broker.cpp
   src/engine_capture.cpp
 )
@@ -175,6 +176,13 @@ if(APPLE)
 endif()
 if(UNIX AND NOT APPLE)
   target_compile_definitions(devbox_core PRIVATE _GNU_SOURCE)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # Headers only at build time; desktop libraries load on demand so headless
+  # installs keep working without an X11 runtime or a display server.
+  find_path(DEVBOX_XCB_INCLUDE_DIR xcb/xtest.h REQUIRED)
+  target_include_directories(devbox_core PRIVATE "${DEVBOX_XCB_INCLUDE_DIR}")
+  target_link_libraries(devbox_core PUBLIC ${CMAKE_DL_LIBS})
 endif()
 if(DEVBOX_BUILD_TESTS)
   add_executable(devbox-state-transport-tests tests/state_transport_tests.cpp)
