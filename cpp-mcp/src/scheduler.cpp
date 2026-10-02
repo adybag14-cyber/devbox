@@ -810,7 +810,14 @@ struct ExecutionWaiter::State {
                 }
             }
         });
-        for (auto index = plan.protected_low; index < plan.usable && owned.size() < plan.weight; ++index) {
+        // Class capacities restrict execution work to nested low slot ranges.
+        // Fill each request's highest eligible slots first so less-constrained
+        // work leaves the smaller heavy/I/O ranges available. Reservations,
+        // queue order, pressure exclusions and ownership checks are unchanged.
+        for (std::size_t offset = 0; offset < plan.usable - plan.protected_low && owned.size() < plan.weight;
+             ++offset) {
+            const auto index =
+                plan.pool == "execution" ? plan.usable - 1 - offset : plan.protected_low + offset;
             const auto path = slot_path(config.root, plan.pool, index);
             const auto token = uuid();
             auto owner = Json{{"token", token},

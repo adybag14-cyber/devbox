@@ -50,6 +50,34 @@ int run(int argc, char** argv) {
         fs::remove_all(root, ec);
     });
     try {
+        // A long light/heavy job must not occupy the small I/O class's entire
+        // eligible slot range when higher eligible slots are still available.
+        for (const auto kind : {ExecutionKind::interactive, ExecutionKind::background}) {
+            for (const auto holder_class : {ResourceClass::light, ResourceClass::heavy}) {
+                SchedulerConfig placement;
+                placement.root = root / (execution_name(kind) + "-" + resource_name(holder_class));
+                placement.max_concurrent = 10;
+                placement.reserved_interactive = 1;
+                placement.heavy_capacity = 5;
+                placement.io_heavy_capacity = 2;
+                ExecutionScheduler placed(placement);
+                auto held = placed.acquire(
+                    {kind, holder_class, holder_class == ResourceClass::heavy ? 2u : 1u, "holder", {}});
+                auto io = placed.begin(background("spare-capacity I/O", ResourceClass::io_heavy, 2));
+                auto admitted = io.poll();
+                require(admitted.has_value(), "unrelated job must leave eligible I/O slots available");
+                require(admitted->slots.size() == 2, "I/O weight is not reduced to avoid queueing");
+                auto excess =
+                    placed.begin(background("I/O capacity remains bounded", ResourceClass::io_heavy, 2));
+                require(!excess.poll(), "placement must retain the I/O class capacity");
+                admitted->release();
+                auto next = excess.poll();
+                require(next.has_value(), "weighted capacity is reusable before unrelated holder finishes");
+                next->release();
+                held.release();
+                require(placed.snapshot()["occupied"] == 0, "placement releases every reservation");
+            }
+        }
         {
             auto index = open_state_store(root / "deadline-state");
             SchedulerConfig delayed;
@@ -62,8 +90,7 @@ int run(int argc, char** argv) {
             auto request = background("metadata deadline");
             request.queue_timeout = Millis(5);
             rejects([&] { scheduler.acquire(request); }, "remained saturated");
-            require(!fs::exists(delayed.root / "slot-00.json"),
-                    "expired index admission releases its file claim");
+            require(scheduler.snapshot()["occupied"] == 0, "expired index admission releases its file claim");
             auto cancel = std::make_shared<Cancellation>();
             delayed.lease_index = [index, cancel] {
                 cancel->cancel();
@@ -72,7 +99,7 @@ int run(int argc, char** argv) {
             ExecutionScheduler cancelled(delayed);
             request.queue_timeout = Millis(500);
             rejects([&] { cancelled.acquire(request, cancel); }, "queue wait cancelled");
-            require(!fs::exists(delayed.root / "slot-00.json"),
+            require(cancelled.snapshot()["occupied"] == 0,
                     "cancel during metadata admission cannot dispatch work");
         }
         {
@@ -121,7 +148,7 @@ int run(int argc, char** argv) {
             resource.resources.memory_bytes = 1;
             rejects([&] { scheduler.acquire(resource); }, "STATE");
             rejects([&] { scheduler.acquire(background("fenced writer")); }, "STATE");
-            require(!fs::exists(indexed.root / "slot-00.json"),
+            require(scheduler.snapshot()["occupied"] == 0,
                     "index admission failure releases file reservation before any work");
         }
         {
@@ -170,7 +197,7 @@ int run(int argc, char** argv) {
         config.queue_timeout = Millis(300);
         ExecutionScheduler scheduler(config);
         auto heavy = scheduler.acquire(background("heavy", ResourceClass::heavy, 2));
-        require(heavy.slots == std::vector<std::size_t>{0, 1}, "weighted slots");
+        require(heavy.slots == std::vector<std::size_t>{1, 0}, "weighted slots");
         auto foreground =
             scheduler.acquire({ExecutionKind::interactive, ResourceClass::light, 1, "interactive", {}});
         require(foreground.slots == std::vector<std::size_t>{2}, "reserved interactive slot");
@@ -191,12 +218,12 @@ int run(int argc, char** argv) {
         require(scheduler.snapshot()["occupied"] == 0 && scheduler.snapshot()["watch_occupied"] == 0,
                 "lease release");
         const auto active_identity = std::to_string(*process_instance(process_id()));
-        write_json_atomic(config.root / "slot-00.json",
+        write_json_atomic(config.root / "slot-01.json",
                           Json{{"pid", process_id()},
                                {"processInstance", std::to_string(*process_instance(process_id()) + 1)},
                                {"token", "stale"}});
         auto stale = scheduler.acquire(background("reclaimed"));
-        require(stale.slots.front() == 0, "stale identity reclaim");
+        require(stale.slots.front() == 1, "stale identity reclaim");
         stale.release();
         write_json_atomic(
             config.root / "slot-00.json",
@@ -267,9 +294,9 @@ int run(int argc, char** argv) {
         ExecutionScheduler pressure(pressure_config);
         auto light =
             pressure.acquire({ExecutionKind::interactive, ResourceClass::light, 1, "light-pressure", {}});
-        require(light.slots.front() == 2, "disk pressure protects low weighted slots");
+        require(light.slots.front() >= 2, "disk pressure protects low weighted slots");
         auto weighted = pressure.acquire(background("weighted-pressure", ResourceClass::heavy, 2));
-        require(weighted.slots == std::vector<std::size_t>{0, 1}, "weighted work progresses under pressure");
+        require(weighted.slots == std::vector<std::size_t>{1, 0}, "weighted work progresses under pressure");
         weighted.release();
         light.release();
         SchedulerConfig age_config = fifo_config;
