@@ -101,6 +101,8 @@ struct BrokerFixture {
 };
 struct Fixture {
     HWND window = nullptr, edit = nullptr;
+    HWND observation_peer = nullptr;
+    std::atomic_bool query_peer{false}, peer_replied{false};
     std::atomic_uint down{0}, up{0}, double_clicks{0}, drag_moves{0}, keys{0};
     std::atomic_int wheel{0};
     std::atomic_bool nested_pane{false};
@@ -114,6 +116,11 @@ struct Fixture {
     std::string title = "Devbox Native CUA Test " + std::to_string(GetCurrentProcessId());
     static LRESULT CALLBACK edit_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
         auto* self = reinterpret_cast<Fixture*>(GetWindowLongPtrW(GetParent(window), GWLP_USERDATA));
+        if (message == WM_GETTEXT && self->query_peer.exchange(false)) {
+            DWORD_PTR ignored = 0;
+            self->peer_replied = SendMessageTimeoutW(self->observation_peer, WM_NULL, 0, 0, SMTO_ABORTIFHUNG,
+                                                     1500, &ignored) != 0;
+        }
         if (message == WM_KEYDOWN && wparam == 'A' && (GetKeyState(VK_CONTROL) & 0x8000))
             self->control_a = true;
         return CallWindowProcW(self->original_edit, window, message, wparam, lparam);
@@ -215,6 +222,10 @@ struct Fixture {
         }
     }
     Fixture() {
+        observation_peer = CreateWindowExW(0, L"STATIC", L"Owned observation peer", 0, 0, 0, 0, 0,
+                                           HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), nullptr);
+        require(observation_peer != nullptr, "owned observation peer");
+        ScopeExit remove_peer_on_failure([&] { DestroyWindow(observation_peer); });
         auto ready = std::make_shared<std::promise<void>>();
         auto future = ready->get_future();
         thread = std::thread([this, ready] {
@@ -252,6 +263,7 @@ struct Fixture {
             thread.join();
             throw;
         }
+        remove_peer_on_failure.disarm();
     }
     ~Fixture() {
         DWORD owner = 0;
@@ -259,6 +271,7 @@ struct Fixture {
             PostMessageW(window, WM_CLOSE, 0, 0);
         if (thread.joinable())
             thread.join();
+        DestroyWindow(observation_peer);
     }
     void expect_edit_focus() const {
         const auto deadline = Clock::now() + Millis(2000);
@@ -290,8 +303,11 @@ struct Fixture {
         for (;;) {
             wchar_t buffer[1024]{};
             DWORD_PTR copied = 0;
+            // This thread also owns fixture windows. Let Windows service
+            // incoming synchronous callbacks while the edit's UI thread reads
+            // its text; SMTO_BLOCK can deadlock that cross-thread send cycle.
             require(SendMessageTimeoutW(edit, WM_GETTEXT, std::size(buffer), reinterpret_cast<LPARAM>(buffer),
-                                        SMTO_BLOCK | SMTO_ABORTIFHUNG, 1000, &copied) != 0,
+                                        SMTO_NORMAL | SMTO_ABORTIFHUNG, 1000, &copied) != 0,
                     "owned edit observation timed out");
             const std::wstring actual(buffer);
             if (actual == desired)
@@ -463,8 +479,12 @@ void native_checks() {
         },
         "STALE_OBSERVATION");
     act(Json{{"action", "type"}, {"text", "Cua \xce\xa9 \xe4\xb8\xad \xf0\x9f\x98\x80"}});
+    // Model a synchronous callback to a window owned by the observing thread.
+    // A blocking cross-thread read must not deadlock this observation cycle.
+    fixture.query_peer = true;
     fixture.expect_text("Cua \xce\xa9 \xe4\xb8\xad \xf0\x9f\x98\x80",
                         "native Unicode input including surrogate pair");
+    require(fixture.peer_replied, "edit observation permits the owned cross-thread callback");
     act(Json{{"action", "key"}, {"keys", {"CTRL", "A"}}});
     require(fixture.control_a, "Ctrl+A arrived with the Control modifier held");
     // The classic Win32 EDIT does not implement Ctrl+A; test its supported selection keys.
