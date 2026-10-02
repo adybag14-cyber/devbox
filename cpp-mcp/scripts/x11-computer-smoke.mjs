@@ -111,6 +111,11 @@ try {
   await observe();await control('cover');await reject({action:'click',observation_id:observed.data.observation_id,x:100,y:100},/COMPUTER_WINDOW_OCCLUDED/);
   await control('uncover');await observe();
   await control('owned_popup');await act('click',{x:70,y:70});await control('uncover');await observe();
+  await control('steal_ping');
+  const beforeSteal=window.output().length;
+  await reject({action:'type',observation_id:observed.data.observation_id,text:'λ'},/COMPUTER_STALE_OBSERVATION/);
+  assert(!window.output().slice(beforeSteal).includes('key_down '),'focus loss during mapping acknowledgement sends no glyph');
+  await observe();
   const controller=new AbortController();
   const beforeCancel=window.output().length;
   const cancelled=client.callTool({name:'host_computer_use',arguments:{action:'key',observation_id:observed.data.observation_id,keys:['SHIFT'],hold_ms:5000}},undefined,{signal:controller.signal}).catch(()=>{});
