@@ -292,7 +292,7 @@ fs::path discover_project_root() {
 Config Config::load(bool read_env_files) {
     Config c;
     c.project_root = discover_project_root();
-    if (read_env_files)
+    if (read_env_files && !env_bool("DEVBOX_NATIVE_MANAGED", false))
         load_env_layers(c.project_root);
     c.platform = Platform::detect();
     const auto runtime = lower(trim(env_or("DEVBOX_RUNTIME_MODE", "")));

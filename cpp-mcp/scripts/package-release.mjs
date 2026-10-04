@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
 import {vulnerabilityReport} from './vulnerability-report.mjs';
+import {runtimeImports,assertCoreImports} from './runtime-imports.mjs';
 
 assert.equal(process.platform, 'linux', 'Assemble release artifacts on the isolated Linux packaging runner');
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -70,6 +71,7 @@ try {
       const bytes = await readFile(path.join(source, expectedFile));
       assert.equal(bytes.length, binary.bytes); assert.equal(digest(bytes), binary.sha256);
       assertArchitecture(bytes, target);
+      const imports=runtimeImports(bytes);assertCoreImports(imports);assert.deepEqual(binary.runtime,imports);
       const standalone = path.join(output, `${binary.name}-${target}${extension}`);
       await writeFile(standalone, bytes, { flag: 'wx', mode: 0o755 });
       await copyFile(standalone, path.join(bundle, binary.name + extension));
@@ -94,6 +96,25 @@ try {
     if (extension) await run('unzip', ['-q', archive, '-d', extracted]);
     else await run('tar', ['-xzf', archive, '-C', extracted]);
     for (const name of names) assert.equal(digest(await readFile(path.join(extracted, name))), digest(await readFile(path.join(bundle, name))));
+    // Core is a separate distribution of the exact qualified server binary. No
+    // installer, TUI, interpreter, browser or desktop package is bundled with it.
+    const coreManifest = {...manifest, profile: 'core', binaries: manifest.binaries.filter(row => row.name === 'devbox-mcp')};
+    const coreDirectory = path.join(scratch, `${target}-core`); await mkdir(coreDirectory);
+    const coreNames = ['devbox-mcp' + extension, 'build-manifest.json', licenseName, 'CORE_SERVER.md', ...manifest.assurance.files.map(row => row.file)];
+    for (const name of coreNames.filter(name => !['build-manifest.json', 'CORE_SERVER.md'].includes(name)))
+      await copyFile(path.join(bundle, name), path.join(coreDirectory, name));
+    await chmod(path.join(coreDirectory, 'devbox-mcp' + extension), 0o755);
+    await writeFile(path.join(coreDirectory, 'build-manifest.json'), JSON.stringify(coreManifest, null, 2) + '\n');
+    await copyFile(path.join(repo, 'docs/CORE_SERVER.md'), path.join(coreDirectory, 'CORE_SERVER.md'));
+    const coreArchive = path.join(output, `devbox-core-${target}.${extension ? 'zip' : 'tar.gz'}`);
+    if (extension) await run('zip', ['-j', coreArchive, ...coreNames.map(name => path.join(coreDirectory, name))]);
+    else await run('tar', ['-czf', coreArchive, '-C', coreDirectory, ...coreNames]);
+    const coreExtracted = path.join(scratch, `${target}-core-extracted`); await mkdir(coreExtracted);
+    if (extension) await run('unzip', ['-q', coreArchive, '-d', coreExtracted]);
+    else await run('tar', ['-xzf', coreArchive, '-C', coreExtracted]);
+    assert.deepEqual((await readdir(coreExtracted)).sort(), [...coreNames].sort());
+    for (const name of coreNames)
+      assert.equal(digest(await readFile(path.join(coreExtracted, name))), digest(await readFile(path.join(coreDirectory, name))));
     manifests.push(manifest);
   }
   await writeFile(path.join(output, 'build-provenance.json'), `${JSON.stringify({ schema: 1, implementation: 'cpp',
@@ -111,7 +132,7 @@ try {
   const names = (await readdir(output)).sort();
   await writeFile(path.join(output, 'SHA256SUMS'), (await Promise.all(names.map(async name =>
     `${digest(await readFile(path.join(output, name)))}  ${name}\n`))).join(''));
-  assert.equal(names.length, Object.keys(targets).length * 7 + 4, 'Every target requires binaries, archive, resolved dependency sidecars and global qualification evidence');
+  assert.equal(names.length, Object.keys(targets).length * 8 + 4, 'Every target requires binaries, full/core archives, resolved dependency sidecars and global qualification evidence');
   console.log(JSON.stringify({ ok: true, source: expectedSha, version, targets: Object.keys(targets), verifiedFiles: names.length, output }));
 } finally {
   await rm(scratch, { recursive: true, force: true });

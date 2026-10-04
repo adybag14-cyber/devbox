@@ -63,6 +63,37 @@ Json read_status_snapshot(const fs::path& path, std::uint64_t stale_ms) {
     }
 }
 Json guardian_snapshot(const Config& config) {
+    if (env_bool("DEVBOX_NATIVE_MANAGED", false)) {
+        try {
+            const auto root = config.project_root / "run" / "native";
+            const auto state = read_json(root / "status.json", 65536);
+            const auto heartbeat = read_json(root / "heartbeat.json", 65536);
+            const auto age = snapshot_age(heartbeat, "updatedAt");
+            const auto& owner = state.at("owner");
+            const auto pid = json_uint(owner, "pid"), instance = json_uint(owner, "instance");
+            const bool alive = pid > 0 && pid <= UINT32_MAX && instance > 0 &&
+                               process_matches_instance(static_cast<std::uint32_t>(pid), instance);
+            const bool stale = !age || *age > 15000 || !alive ||
+                               json_string(heartbeat, "epoch") != json_string(state, "epoch");
+            Json reasons = Json::array();
+            if (stale)
+                reasons.push_back("native supervisor heartbeat is stale or its owner exited");
+            if (state.contains("error"))
+                reasons.push_back(state.at("error"));
+            return Json{{"implementation", "cpp"},
+                        {"nativeManagementVersion", 1},
+                        {"observedAtUtc", heartbeat.at("updatedAt")},
+                        {"ageMs", age ? Json(*age) : Json()},
+                        {"stale", stale},
+                        {"isHealthy", !stale && json_bool(state, "healthy")},
+                        {"phase", state.value("phase", Json())},
+                        {"reasons", reasons},
+                        {"publicTunnelHealthy", state.value("publicHealthy", Json())},
+                        {"companions", state.value("companions", Json::array())}};
+        } catch (...) {
+            return Json{{"implementation", "cpp"}, {"stale", true}, {"isHealthy", false}};
+        }
+    }
     Json value;
     try {
         value = read_json(config.project_root / "run" / "guardian" / "state.json");

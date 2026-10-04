@@ -92,6 +92,9 @@ add_library(devbox_core
   src/allocator.cpp
   src/performance.cpp
   src/provenance.cpp
+  src/management.cpp
+  src/management_qualification.cpp
+  src/management_services.cpp
   src/contract.cpp
   src/monitoring.cpp
   src/engine.cpp
@@ -185,6 +188,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(devbox_core PUBLIC ${CMAKE_DL_LIBS})
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-management-tests tests/management_tests.cpp)
+  add_executable(devbox-management-bad-candidate tests/management_bad_candidate.cpp)
+  target_link_libraries(devbox-management-bad-candidate PRIVATE devbox_core)
+  target_link_libraries(devbox-management-tests PRIVATE devbox_core)
+  add_test(NAME native-management COMMAND devbox-management-tests)
+  set_tests_properties(native-management PROPERTIES TIMEOUT 30)
   add_executable(devbox-state-transport-tests tests/state_transport_tests.cpp)
   target_link_libraries(devbox-state-transport-tests PRIVATE devbox_core)
   add_test(NAME state-transport COMMAND devbox-state-transport-tests)

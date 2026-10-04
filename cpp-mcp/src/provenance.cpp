@@ -31,6 +31,7 @@ Json build_snapshot() {
                     {"toolCount", cpp_tool_count},
                     {"stateSchemaVersion", state_store_schema_version},
                     {"stateCoordinatorProtocol", 1},
+                    {"nativeManagementVersion", 1},
                     {"sanitizers",
 #ifdef DEVBOX_SANITIZERS
                      true

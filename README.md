@@ -11,13 +11,23 @@ It supports two runtime modes:
 
 ## Fastest setup: native C++ bundle
 
-Devbox ships three native programs from the same source revision:
+For a minimal server, download **`devbox-core-TARGET`** from the release assets.
+It contains one C++23 executable with native start/stop/supervision, verified
+promotion and rollback commands. Normal operation needs no Node/npm/Git, compiler,
+browser or desktop stack. Follow the [core installation guide](docs/CORE_SERVER.md)
+for signed initialization and optional OS startup integration.
+
+The full bundle remains available and ships three native programs from the same source revision:
 
 - **`devbox-tui`** — the guided C++17 interactive setup experience for new users.
 - **`devbox-setup`** — the C++ CLI used by the TUI and intended for scripts, CI, and unattended installation.
-- **`devbox-mcp`** — the C++23 MCP service, including native process control, durable jobs, files, authentication, and capture.
+- **`devbox-mcp`** — the C++23 MCP service and native management CLI, including process control, durable jobs, files, authentication, and capture.
 
-The TUI performs a platform/tool preflight, lets you choose host or Docker runtime, authentication (`none`, `oauth`, or `cloudflare`), repository location, bind address, workspace, dependency installation, service startup, and Guardian supervision, then invokes the C++ installer. Interactive and automated installs use the same backend. Packaged installation needs no Rust or C++ compiler. New clones select the release's exact source commit; existing checkouts retain their revision.
+The TUI retains the source-checkout installation workflow, including Node/npm/Git,
+for existing development and legacy installations. The CLI defaults to native
+management for new installations; `--repo` explicitly selects the source-checkout
+workflow. Packaged installation needs no Rust or C++ compiler. Existing checkouts
+and production services are not migrated by extracting a new bundle.
 
 Prebuilt release binaries are produced for:
 
@@ -50,7 +60,9 @@ devbox-mcp.exe
 The TUI and installer also recognize matching platform-named standalone assets. For direct CLI setup, launch:
 
 ```powershell
-.\devbox-setup.exe --guardian
+.\devbox-setup.exe --native-root C:\Devbox `
+  --receipt .\qualification-receipt.json --provenance .\provenance.sigstore.json `
+  --source RELEASE_COMMIT_SHA --target windows-x86_64
 ```
 
 The release workflow tests the three binaries together and verifies each extracted archive. PowerShell 7 is preferred by the Windows runtime while Windows PowerShell 5.1 remains an automatic launch fallback.
@@ -63,10 +75,12 @@ Configure an existing checkout:
 devbox-setup --repo . --guardian
 ```
 
-Run without `--repo` to clone the official repository into `./devbox` before configuration:
+For a new native installation, supply the matching release qualification files:
 
 ```bash
-devbox-setup
+devbox-setup --native-root /absolute/path/devbox \
+  --receipt qualification-receipt.json --provenance provenance.sigstore.json \
+  --source RELEASE_COMMIT_SHA --target linux-x86_64
 ```
 
 Useful options:
@@ -146,12 +160,18 @@ See [cpp-bootstrap/README.md](./cpp-bootstrap/README.md) for Windows and musl bu
 ## Requirements
 
 See [runtime dependency profiles](./docs/RUNTIME_DEPENDENCIES.md) for the distinction
-between the native server, managed supervision, optional tools, and a proposed
-smaller deployment profile.
+between the native core bundle, native supervision, optional tools and the
+retained source-checkout workflow.
 
 The setup binaries can provision common prerequisites automatically where a supported package manager is available. You can opt out with `--skip-system-packages`.
 
-### All modes
+### Native core and managed installations
+
+- A matching native release, supported OS/ABI, writable private state and TLS trust
+- GitHub CLI only during signed installation/promotion verification
+- No Node/npm/Git, compiler, browser or display packages for normal core operation
+
+### Retained source-checkout workflow (`--repo`)
 
 - Node.js 18 or newer for the launcher and Guardian; Node.js 24 is the certified/tested supervisor profile
 - A matching native C++ release bundle, or CMake 3.24+, a C++23 compiler and the pinned vcpkg checkout for source builds

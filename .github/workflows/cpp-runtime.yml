@@ -96,6 +96,15 @@ jobs:
         run: node cpp-mcp/scripts/ci-native.mjs
       - name: Fresh packaged installer and TUI discovery
         run: node cpp-bootstrap/scripts/fresh-install.mjs
+      - name: Native supervision without Node or Git on runtime PATH
+        if: matrix.sanitizers == '0'
+        run: node cpp-mcp/scripts/native-management-smoke.mjs
+      - name: Native packaged setup without development tools
+        if: matrix.sanitizers == '0'
+        run: node cpp-bootstrap/scripts/native-install.mjs
+      - name: Core runtime in a clean container without interpreters or desktop packages
+        if: matrix.name == 'Linux GCC'
+        run: node cpp-mcp/scripts/minimal-runtime-smoke.mjs
       - name: Require actual Linux namespace and syscall isolation
         if: matrix.name == 'Linux GCC' || matrix.name == 'Linux ARM64 GCC'
         run: sudo env DEVBOX_REQUIRE_LINUX_ISOLATION=1 ctest --test-dir .cpp-build/ci -R '^isolation$' --output-on-failure
@@ -462,6 +471,11 @@ jobs:
         env:
           BUNDLE_PATH: ${{ steps.attest-release.outputs.bundle-path }}
         run: cp "$BUNDLE_PATH" .cpp-build/release-assets/provenance.sigstore.json
+      - name: Verify native signed installation and policy downgrade refusal
+        if: steps.attest-release.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node cpp-mcp/scripts/native-signed-install-smoke.mjs
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: cpp-release-assets

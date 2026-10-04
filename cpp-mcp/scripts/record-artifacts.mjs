@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
 import {collectDependencies} from './dependency-assurance.mjs';
+import {inspectRuntimeFile} from './runtime-imports.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const options = Object.fromEntries(process.argv.slice(2).map((arg, i, args) =>
@@ -59,7 +60,8 @@ for (const name of ['devbox-mcp', 'devbox-setup', 'devbox-tui']) {
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   assert(bytes.length > 10000, `Invalid native binary ${file}`);
   if (name === 'devbox-mcp' && !android) assert.equal(build.binarySha256, sha256);
-  binaries.push({ name, file, bytes: bytes.length, sha256 });
+  const runtime=await inspectRuntimeFile(path.join(packageRoot,file),{instrumented:build.sanitizers});
+  binaries.push({ name, file, bytes: bytes.length, sha256, runtime });
 }
 const dependencyTriplet = android ? `${({'arm64-v8a':'arm64','armeabi-v7a':'arm',x86_64:'x64',x86:'x86'})[android]}-android-api21`
   : `${process.arch==='arm64'?'arm64':'x64'}-${process.platform==='win32'?'windows-static':process.platform==='darwin'?'osx':'linux'}`;

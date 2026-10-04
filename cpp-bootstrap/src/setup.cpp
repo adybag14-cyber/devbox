@@ -1,7 +1,9 @@
 #include "devbox/setup.hpp"
 #include "devbox/contract.hpp"
+#include "devbox/management.hpp"
 #include "devbox/native.hpp"
 #include "devbox/runtime.hpp"
+#include "devbox/state_store.hpp"
 #include <algorithm>
 #include <charconv>
 #include <iostream>
@@ -254,7 +256,19 @@ Options parse_options(const std::vector<std::string>& args) {
                 throw Error(flag + " requires a value");
             return args[i];
         };
-        if (flag == "--repo")
+        if (flag == "--native-root")
+            options.native_root = path_from_utf8(next());
+        else if (flag == "--receipt")
+            options.receipt = path_from_utf8(next());
+        else if (flag == "--provenance")
+            options.provenance = path_from_utf8(next());
+        else if (flag == "--source")
+            options.qualified_source = next();
+        else if (flag == "--target")
+            options.qualified_target = next();
+        else if (flag == "--allow-local-build")
+            options.allow_local_build = true;
+        else if (flag == "--repo")
             options.repo = path_from_utf8(next());
         else if (flag == "--repo-url")
             options.repo_url = next();
@@ -302,6 +316,8 @@ Options parse_options(const std::vector<std::string>& args) {
         else
             throw Error("unknown option " + flag + "\n\n" + usage());
     }
+    if (options.native_root && (options.repo || options.build_only))
+        throw Error("--native-root cannot be combined with --repo or --build-runtime-only");
     return options;
 }
 std::string usage() {
@@ -309,11 +325,15 @@ std::string usage() {
 
 Usage: devbox-setup [OPTIONS]
 
-Uses an existing checkout or clones ./devbox. Preserves existing configuration
-values except explicit options and the C++ implementation selection. Installs
-Node.js/npm and Git when required, links the devbox command, then starts MCP.
-Bundled native runtimes need no compiler or Rust installation.
+Packaged installation defaults to native C++23 management in ./devbox-native.
+This route needs no Node/npm/Git or compiler. Signed installation requires gh
+only while verifying release provenance. --repo explicitly selects the retained
+source-checkout installation route, which uses Node/npm/Git.
 
+  --native-root PATH       New empty native installation directory
+  --receipt FILE --provenance FILE --source SHA --target TARGET
+                          Signed qualification inputs for native installation
+  --allow-local-build      Explicit unqualified native development installation
   --repo PATH              Existing checkout or clone destination
   --repo-url URL           Repository to clone
   --runtime auto|host|docker
@@ -639,6 +659,97 @@ fs::path build_runtime(const fs::path& root, const Options& options) {
 void run(const Options& options) {
     std::cout << "Devbox C++ MCP setup " << installer_version
               << "\nPlatform: " << platform_name(platform_kind()) << '\n';
+    if (!options.repo && !options.build_only) {
+        const auto root = fs::absolute(options.native_root.value_or(fs::current_path() / "devbox-native"));
+#ifdef _WIN32
+        const auto name = "devbox-mcp.exe";
+#else
+        const auto name = "devbox-mcp";
+#endif
+        auto binary = options.runtime_binary.value_or(executable_path().parent_path() / name);
+        const auto self_name = path_text(executable_path().filename());
+        if (!options.runtime_binary && !fs::is_regular_file(binary) &&
+            starts_with(self_name, "devbox-setup-"))
+            binary = executable_path().parent_path() / path_from_utf8("devbox-mcp-" + self_name.substr(13));
+        if (options.dry_run) {
+            std::cout << "Native installation: " << path_text(root)
+                      << "\nNative binary: " << path_text(binary)
+                      << "\nVerify candidate, initialize private state, and "
+                      << (options.start ? "start native supervision" : "leave configured and stopped")
+                      << ".\n";
+            return;
+        }
+        // The candidate is not executed until the existing native qualifier has authenticated it.
+        // The installer links the same management implementation as devbox-mcp.
+        std::string content;
+        const auto set = [&](const char* key, const std::string& value) {
+            content = set_env_value(std::move(content), key, value);
+        };
+        set("HOST", options.host.value_or("127.0.0.1"));
+        set("DEVBOX_RUNTIME_MODE", options.runtime.value_or("host"));
+        if (options.workspace) {
+            const auto workspace =
+                options.workspace->is_absolute() ? *options.workspace : root / *options.workspace;
+            set("HOST_WORKSPACE_PATH", path_text(workspace));
+            set("HOST_DEFAULT_WORKDIR", path_text(workspace));
+        }
+        set("MCP_AUTH_MODE", options.auth == "oauth"        ? "demo-oauth"
+                             : options.auth == "cloudflare" ? "cloudflare-access"
+                                                            : "none");
+        for (const auto& [key, value] : {std::pair{"PUBLIC_BASE_URL", options.public_url},
+                                         std::pair{"CLOUDFLARE_ACCESS_TEAM_DOMAIN", options.team_domain},
+                                         std::pair{"CLOUDFLARE_ACCESS_AUD", options.audience},
+                                         std::pair{"CLOUDFLARE_ACCESS_JWKS_URL", options.jwks_url}})
+            if (value)
+                set(key, *value);
+        const auto temp = fs::temp_directory_path() / ("devbox-native-setup-" + uuid());
+        ensure_private_state_directory(temp);
+        ScopeExit cleanup([&] {
+            std::error_code ec;
+            fs::remove_all(temp, ec);
+        });
+        write_file(temp / "environment", content);
+        std::vector<std::string> init{"init",
+                                      "--root",
+                                      path_text(root),
+                                      "--binary",
+                                      path_text(fs::absolute(binary)),
+                                      "--port",
+                                      std::to_string(options.port.value_or(8100)),
+                                      "--env-file",
+                                      path_text(temp / "environment")};
+        if (options.allow_local_build)
+            init.push_back("--allow-local-build");
+        if (options.receipt) {
+            init.push_back("--receipt");
+            init.push_back(path_text(*options.receipt));
+        }
+        if (options.provenance) {
+            init.push_back("--provenance");
+            init.push_back(path_text(*options.provenance));
+        }
+        if (options.qualified_source) {
+            init.push_back("--source");
+            init.push_back(*options.qualified_source);
+        }
+        if (options.qualified_target) {
+            init.push_back("--target");
+            init.push_back(*options.qualified_target);
+        }
+        management_main(init);
+        if (options.start) {
+            const auto installed = read_json(root / "run" / "native" / "config.json").at("current");
+            const auto installed_file = json_string(installed, "file");
+            if (sha256_file(path_from_utf8(installed_file)) != json_string(installed, "sha256"))
+                throw Error("Native installed binary changed before startup");
+            command(installed_file, {"manage", "start", "--root", path_text(root)}, root, false);
+        }
+        std::cout
+            << "Native setup complete. Commands: devbox-mcp manage status|stop|restart --root "
+            << path_text(root)
+            << "\nNo system service was registered; use manage service-file for explicit OS integration.\n";
+        return;
+    }
     if (options.build_only) {
         const auto root = locate_repo(options);
         std::cout << path_text(build_runtime(root, options)) << '\n';

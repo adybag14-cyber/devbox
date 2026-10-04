@@ -45,7 +45,10 @@ jobs:
           Android API 21 builds: arm64-v8a, armeabi-v7a, x86_64, and x86.
           Android runtime certification runs in real Termux x86-64 userspace.
 
-          Each archive contains all three native executables and its build manifest.
+          Full archives contain all three native executables and their build manifest.
+          Separate devbox-core-TARGET archives contain only the server/native management
+          executable, documentation, manifest and dependency notices. Core startup and
+          supervision require no Node/npm/Git, compiler, browser or desktop packages.
           SHA256SUMS and build-provenance.json cover the standalone binaries and archives.
           Packaged installation does not require Rust or a C++ compiler.
 

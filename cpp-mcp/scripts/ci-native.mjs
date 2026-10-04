@@ -55,6 +55,7 @@ const exported = {
   DEVBOX_CPP_BINARY: path.join(packageRoot, 'bin/devbox-mcp' + extension),
   DEVBOX_SETUP_TEST_BINARY: path.join(packageRoot, 'bin/devbox-setup' + extension),
   DEVBOX_TUI_TEST_BINARY: path.join(packageRoot, 'bin/devbox-tui' + extension),
+  DEVBOX_MANAGEMENT_BAD_CANDIDATE: path.join(build, 'cpp-mcp', ...(process.platform === 'win32' ? [configuration] : []), 'devbox-management-bad-candidate' + extension),
 };
 for (const binary of Object.values(exported)) await access(binary);
 if (process.env.GITHUB_ENV) await appendFile(process.env.GITHUB_ENV,
