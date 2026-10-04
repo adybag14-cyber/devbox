@@ -11,4 +11,8 @@ permissions:
 jobs:
   certify:
     name: Native C++ platforms, installer and Guardian
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     uses: ./.github/workflows/cpp-runtime.yml

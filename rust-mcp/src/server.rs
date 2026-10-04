@@ -3750,7 +3750,8 @@ fn resolve_host_file_path(
         );
     if !cfg!(windows) {
         // The legacy tool names address the local host, just like the JavaScript
-        // aliases. Backslashes are filename characters on POSIX, not separators.
+        // aliases. Preserve POSIX backslashes except for the portable tilde prefix
+        // syntax in src/host-tools.js, which trims either leading separator.
         let path = if let Some(rest) = raw.strip_prefix('~') {
             let home = std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
@@ -4200,6 +4201,17 @@ mod tests {
         assert_eq!(
             resolve_host_file_path(r"literal\name.bin", None, base).unwrap(),
             base.join(r"literal\name.bin")
+        );
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .expect("host-path fixture needs a home directory");
+        assert_eq!(
+            resolve_host_file_path("~/file.bin", None, base).unwrap(),
+            PathBuf::from(&home).join("file.bin")
+        );
+        assert_eq!(
+            resolve_host_file_path(r"~\literal\name.bin", None, base).unwrap(),
+            PathBuf::from(&home).join(r"literal\name.bin")
         );
     }
 
