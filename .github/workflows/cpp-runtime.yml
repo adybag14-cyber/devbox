@@ -105,6 +105,11 @@ jobs:
       - name: Core runtime in a clean container without interpreters or desktop packages
         if: matrix.name == 'Linux GCC'
         run: node cpp-mcp/scripts/minimal-runtime-smoke.mjs
+      - name: Record native core startup and idle footprint
+        if: matrix.name == 'Linux GCC'
+        env:
+          DEVBOX_FOOTPRINT_OUTPUT: .cpp-build/native-footprint.json
+        run: node cpp-mcp/scripts/native-footprint.mjs
       - name: Require actual Linux namespace and syscall isolation
         if: matrix.name == 'Linux GCC' || matrix.name == 'Linux ARM64 GCC'
         run: sudo env DEVBOX_REQUIRE_LINUX_ISOLATION=1 ctest --test-dir .cpp-build/ci -R '^isolation$' --output-on-failure
@@ -192,6 +197,7 @@ jobs:
           path: |
             .cpp-build/package/
             .cpp-build/ci-native-result.json
+            .cpp-build/native-footprint.json
             .cpp-build/x11-capture-result.json
             .cpp-build/x11-computer-result.json
             .cpp-build/macos-capture-result.json

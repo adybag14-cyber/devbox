@@ -19,7 +19,7 @@ export function installedPackages(text, triplet) {
   assert(packages.size > 0 && packages.size <= 512, 'Bounded resolved dependency graph');
   return [...packages.values()].sort((a,b)=>a.Package.localeCompare(b.Package));
 }
-export async function collectDependencies({installed, triplet, manifest, output, sourceSha}) {
+export async function collectDependencies({installed, triplet, manifest, output, sourceSha, compilerRuntime = {bundledGccRuntime:false}}) {
   assert.match(triplet, /^[a-z0-9-]+$/u); assert.match(sourceSha, /^[a-f0-9]{40}$/u);
   const entries = installedPackages(await readFile(path.join(installed,'vcpkg/status'),'utf8'),triplet);
   for (const dep of manifest.dependencies) assert(entries.some(x=>x.Package === (typeof dep==='string'?dep:dep.name)),
@@ -56,6 +56,18 @@ export async function collectDependencies({installed, triplet, manifest, output,
     notices.push(`===== ${entry.Package} ${version} (${triplet}) =====\n${notice.trim()}\n`);
   }
   const generatedAt=new Date().toISOString();
+  if(compilerRuntime.bundledGccRuntime) {
+    assert.equal(compilerRuntime.compiler,'GNU');assert.match(compilerRuntime.version,/^\d+\.\d+(?:\.\d+)?$/u);
+    assert.deepEqual(compilerRuntime.archives.map(row=>row.file),['libstdc++.a','libgcc.a','libgcc_eh.a']);
+    for(const archive of compilerRuntime.archives)assert.match(archive.sha256,/^[a-f0-9]{64}$/u);
+    const license=await readFile(new URL('../licenses/GCC-COPYING3.txt',import.meta.url),'utf8');
+    const exception=await readFile(new URL('../licenses/GCC-COPYING.RUNTIME.txt',import.meta.url),'utf8');
+    const notice=`GNU compiler runtime ${compilerRuntime.version}: libstdc++ and libgcc\nSource: https://gcc.gnu.org/\n\n${license}\n${exception}`;
+    inventory.push({name:'gcc-runtime',version:compilerRuntime.version,license:'GPL-3.0-or-later WITH GCC-exception-3.1',
+      abi:digest(JSON.stringify(compilerRuntime.archives)),noticeSha256:digest(notice),source:'https://gcc.gnu.org/',
+      buildSupportOnly:false,bundledRuntime:true,archives:compilerRuntime.archives});
+    notices.push(`===== bundled GCC runtime =====\n${notice}\n`);
+  }
   const componentPresence={};
   const installedTarget=path.join(installed,triplet);
   const exists=async file=>{try{await access(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
@@ -79,11 +91,11 @@ export async function collectDependencies({installed, triplet, manifest, output,
       downloadLocation:item.source||'NOASSERTION',filesAnalyzed:false,licenseConcluded:item.license,
       licenseDeclared:'NOASSERTION',copyrightText:'NOASSERTION',
       externalRefs:[{referenceCategory:'PACKAGE-MANAGER',referenceType:'purl',
-        referenceLocator:`pkg:vcpkg/${item.name}@${encodeURIComponent(item.version)}?arch=${triplet}`}],
-      comment:`Resolved ABI ${item.abi}; notice SHA-256 ${item.noticeSha256}; resolved SPDX SHA-256 ${item.resolvedSpdxSha256}`})),
+        referenceLocator:`pkg:${item.bundledRuntime?'generic':'vcpkg'}/${item.name}@${encodeURIComponent(item.version)}?arch=${triplet}`}],
+      comment:`Resolved ABI ${item.abi}; notice SHA-256 ${item.noticeSha256}; ${item.bundledRuntime?'compiler archives '+JSON.stringify(item.archives):'resolved SPDX SHA-256 '+item.resolvedSpdxSha256}`})),
     relationships:inventory.map((_,i)=>({spdxElementId:'SPDXRef-DOCUMENT',relationshipType:'DESCRIBES',relatedSpdxElement:`SPDXRef-package-${i}`}))};
   const documents={'dependency-inventory.json':JSON.stringify({schema:1,sourceSha,triplet,generatedAt,
-    dependencyBaseline:manifest['builtin-baseline'],scope:'resolved_target_graph_including_build_support',componentPresence,dependencies:inventory},null,2)+'\n',
+    dependencyBaseline:manifest['builtin-baseline'],scope:'resolved_target_graph_including_build_support_and_bundled_runtime',compilerRuntime,componentPresence,dependencies:inventory},null,2)+'\n',
     'sbom.spdx.json':JSON.stringify(bom,null,2)+'\n','THIRD_PARTY_NOTICES.txt':notices.join('\n')};
   const files=[];
   for(const [file,body] of Object.entries(documents)) {

@@ -12,6 +12,10 @@ void require(bool value, const char* message) {
 }
 template <class Fn> void rejects(Fn&& fn, std::string_view text) {
     try {
+        require(management_instance(Json{{"instance", "18446744073709551615"}}) == UINT64_MAX,
+                "process birth tokens preserve all 64 bits across JSON consumers");
+        require(management_instance(Json{{"instance", "18446744073709551616"}}) == 0,
+                "overflow process token rejected");
         fn();
     } catch (const std::exception& error) {
         require(std::string_view(error.what()).find(text) != std::string_view::npos, error.what());

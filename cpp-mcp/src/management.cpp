@@ -2,6 +2,7 @@
 #include "devbox/admission.hpp"
 #include "devbox/contract.hpp"
 #include "devbox/native.hpp"
+#include "devbox/scoped_thread.hpp"
 #include "devbox/state_coordinator.hpp"
 #include "devbox/state_store.hpp"
 #include <algorithm>
@@ -80,7 +81,7 @@ void log(const fs::path& root, std::string_view value) {
     write_file(file, utc_now() + " " + std::string(value.substr(0, 8192)) + "\n", true);
 }
 bool identity_alive(const Json& record) {
-    const auto pid = json_uint(record, "pid"), birth = json_uint(record, "instance");
+    const auto pid = json_uint(record, "pid"), birth = management_instance(record);
     return pid > 0 && pid <= UINT32_MAX && birth > 0 &&
            process_matches_instance(static_cast<std::uint32_t>(pid), birth);
 }
@@ -163,7 +164,7 @@ Json prepare_candidate(ManagementOptions options, const Json& config) {
     if (options.binary.empty())
         options.binary = executable_path();
     const auto source = fs::canonical(options.binary);
-    const auto hash = sha256_file(source);
+    const auto hash = sha256_file(source, 256 * 1024 * 1024);
     const auto directory = control_root(options.root) / "releases" / hash;
     ensure_private_state_directory(directory.parent_path());
     ensure_private_state_directory(directory);
@@ -194,6 +195,9 @@ Json prepare_candidate(ManagementOptions options, const Json& config) {
         fs::remove_all(proof, ec);
     });
     if (!options.allow_local_build && !options.receipt.empty() && !options.bundle.empty()) {
+        if (fs::file_size(options.receipt) > 8 * 1024 * 1024 ||
+            fs::file_size(options.bundle) > 16 * 1024 * 1024)
+            throw Error("NATIVE_QUALIFICATION_INPUT_TOO_LARGE");
         fs::copy_file(options.receipt, proof / "receipt.json");
         fs::copy_file(options.bundle, proof / "bundle.json");
         options.receipt = proof / "receipt.json";
@@ -260,6 +264,7 @@ bool durable_idle(const fs::path& root) {
     return store->generation() == generation;
 }
 struct Child {
+    Clock::time_point started = Clock::now();
     std::future<void> task;
     Cancel cancel = std::make_shared<Cancellation>();
     std::atomic<std::uint32_t> pid{0};
@@ -277,7 +282,7 @@ struct Child {
     }
     Json identity() const {
         return Json{{"pid", pid.load()},
-                    {"instance", instance ? Json(*instance) : Json()},
+                    {"instance", instance ? Json(std::to_string(*instance)) : Json()},
                     {"generation", generation}};
     }
     void stop() {
@@ -341,6 +346,7 @@ class Companions {
         std::unique_ptr<Child> child;
         Clock::time_point retry = Clock::now();
         unsigned failures = 0;
+        unsigned unhealthy_probes = 0;
         std::string error;
     };
     fs::path root_;
@@ -366,7 +372,7 @@ class Companions {
                     throw Error("NATIVE_COMPANION_ORPHAN_REQUIRES_REVIEW: " + name);
                 entry.child = std::make_unique<Child>();
                 entry.child->pid = pid;
-                entry.child->instance = json_uint(identity, "instance");
+                entry.child->instance = management_instance(identity);
                 entry.child->generation = json_string(identity, "generation");
                 entry.child->adopted = true;
             }
@@ -391,6 +397,13 @@ class Companions {
         bool prerequisites = true;
         for (auto& entry : entries_) {
             const auto name = json_string(entry.spec, "name");
+            if (entry.child && !entry.child->alive()) {
+                entry.child->stop();
+                entry.child.reset();
+                ++entry.failures;
+                entry.retry = Clock::now() + Millis(std::min(60000U, 1000U << std::min(entry.failures, 6U)));
+                entry.error = "owned companion exited";
+            }
             if (!prerequisites && entry.child) {
                 entry.child->stop();
                 entry.child.reset();
@@ -432,8 +445,17 @@ class Companions {
                     healthy = false;
                 }
             }
-            if (healthy)
+            if (healthy && Clock::now() - entry.child->started >= Millis(30000))
                 entry.failures = 0;
+            entry.unhealthy_probes = healthy ? 0 : entry.unhealthy_probes + 1;
+            if (!healthy && entry.child && entry.child->alive() && entry.unhealthy_probes >= 3) {
+                entry.child->stop();
+                entry.child.reset();
+                ++entry.failures;
+                entry.retry = Clock::now() + Millis(std::min(60000U, 1000U << std::min(entry.failures, 6U)));
+                entry.error = "companion readiness failed repeatedly";
+                entry.unhealthy_probes = 0;
+            }
             value.push_back(Json{{"name", name},
                                  {"healthy", healthy},
                                  {"error", entry.error},
@@ -535,7 +557,7 @@ int supervise(const ManagementOptions& options) {
         throw Error("NATIVE_OWNER_IDENTITY_UNAVAILABLE");
     Json state{{"schema", 1},
                {"epoch", epoch},
-               {"owner", {{"pid", process_id()}, {"instance", *owner_instance}}},
+               {"owner", {{"pid", process_id()}, {"instance", std::to_string(*owner_instance)}}},
                {"healthy", false},
                {"phase", "starting"},
                {"restarts", 0},
@@ -560,7 +582,7 @@ int supervise(const ManagementOptions& options) {
             throw Error("NATIVE_ORPHAN_EXECUTABLE_IDENTITY_MISMATCH");
         child = std::make_unique<Child>();
         child->pid = static_cast<std::uint32_t>(json_uint(previous, "pid"));
-        child->instance = json_uint(previous, "instance");
+        child->instance = management_instance(previous);
         child->generation = json_string(previous, "generation");
         child->adopted = true;
     }
@@ -580,11 +602,9 @@ int supervise(const ManagementOptions& options) {
     };
     publish();
     // Heartbeat ownership stays observable during slow probes or bounded drains.
-    std::jthread heartbeat([dir, epoch, owner = state.at("owner")](std::stop_token stop) {
-        std::mutex mutex;
-        std::condition_variable_any wake;
-        std::unique_lock lock(mutex);
-        while (!stop.stop_requested()) {
+    const auto heartbeat_stop = std::make_shared<Cancellation>();
+    ScopedThread heartbeat([dir, epoch, owner = state.at("owner"), heartbeat_stop] {
+        while (!heartbeat_stop->cancelled()) {
             try {
                 write_json_atomic(dir / "heartbeat.json", Json{{"epoch", epoch},
                                                                {"owner", owner},
@@ -592,9 +612,10 @@ int supervise(const ManagementOptions& options) {
                                                                {"updatedAt", utc_now()}});
             } catch (...) { /* Readers report a stale heartbeat rather than success. */
             }
-            wake.wait_for(lock, stop, Millis(5000), [] { return false; });
+            (void)heartbeat_stop->wait_for(Millis(5000));
         }
     });
+    ScopeExit stop_heartbeat([&] { heartbeat_stop->cancel(); });
     (void)take_stop_signal();
     std::signal(SIGINT, signal_stop);
     std::signal(SIGTERM, signal_stop);
@@ -607,6 +628,17 @@ int supervise(const ManagementOptions& options) {
     auto next_health = Clock::now();
     log(root, "native supervisor started epoch=" + epoch);
     for (;;) {
+        if (child && !child->alive()) {
+            child->stop();
+            child.reset();
+            ++failures;
+            next_start = Clock::now() + Millis(std::min(60000U, 1000U << std::min(failures, 6U)));
+            state["healthy"] = false;
+            state["phase"] = "backoff";
+            state["restarts"] = json_uint(state, "restarts") + 1;
+            log(root, "owned frontend exited; restart is subject to backoff");
+            publish();
+        }
         if ((!child || !child->alive()) && Clock::now() >= next_start) {
             try {
                 if (child)
@@ -616,7 +648,6 @@ int supervise(const ManagementOptions& options) {
                 publish();
                 wait_ready(root, config, current, *child, options.timeout);
                 complete_handoff();
-                failures = 0;
                 unhealthy = 0;
                 state["phase"] = "ready";
                 state["healthy"] = true;
@@ -656,6 +687,9 @@ int supervise(const ManagementOptions& options) {
             json_string(request, "id") != last_request) {
             last_request = json_string(request, "id");
             const auto action = json_string(request, "action");
+            const auto operation_timeout = Millis(std::clamp<std::uint64_t>(
+                json_uint(request, "timeoutMs", static_cast<std::uint64_t>(options.timeout.count())), 1,
+                300000));
             const bool replacing = action == "promote" || action == "rollback";
             Json acknowledgement{{"id", last_request}, {"ok", false}};
             try {
@@ -667,7 +701,7 @@ int supervise(const ManagementOptions& options) {
                 publish();
                 bool resume = true;
                 if (child)
-                    resume = drain(root, config, current, *child, options.timeout);
+                    resume = drain(root, config, current, *child, operation_timeout);
                 else if (!durable_idle(root))
                     throw Error("NATIVE_DURABLE_WORK_ACTIVE");
                 handoff = Json{{"previous", current},
@@ -705,7 +739,7 @@ int supervise(const ManagementOptions& options) {
                     state["phase"] = "starting-candidate";
                     state["healthy"] = false;
                     publish();
-                    wait_ready(root, config, proposed, *child, options.timeout);
+                    wait_ready(root, config, proposed, *child, operation_timeout);
                     if (resume)
                         resume_admission(root, config, proposed, child->generation);
                     current = proposed;
@@ -723,7 +757,7 @@ int supervise(const ManagementOptions& options) {
                     if (!stop_state_coordinator(root / "run" / "state"))
                         throw Error("NATIVE_ROLLBACK_COORDINATOR_BUSY");
                     child = launch(root, config, previous);
-                    wait_ready(root, config, previous, *child, options.timeout);
+                    wait_ready(root, config, previous, *child, operation_timeout);
                     if (resume)
                         resume_admission(root, config, previous, child->generation);
                     fs::remove(dir / "handoff.json");
@@ -746,6 +780,8 @@ int supervise(const ManagementOptions& options) {
             state["companions"] = companions.tick();
             const auto env = managed_environment(root, config, child->generation);
             const bool healthy = ready(env, current, child->generation);
+            if (healthy && Clock::now() - child->started >= Millis(30000))
+                failures = 0;
             if (healthy)
                 complete_handoff();
             state["healthy"] = healthy;
@@ -789,9 +825,10 @@ Json send_control(const ManagementOptions& options, std::string action, const Js
     if (!json_bool(observed, "running"))
         throw Error("NATIVE_SUPERVISOR_NOT_RUNNING");
     const auto id = uuid();
-    write_json_atomic(
-        control_root(options.root) / "request.json",
-        Json{{"id", id}, {"action", action}, {"epoch", observed.at("epoch")}, {"candidate", candidate}});
+    Json request{{"id", id}, {"action", action}, {"epoch", observed.at("epoch")}, {"candidate", candidate}};
+    if (options.timeout_set)
+        request["timeoutMs"] = options.timeout.count();
+    write_json_atomic(control_root(options.root) / "request.json", request);
     const auto deadline = Clock::now() + options.timeout * 3 + Millis(15000);
     do {
         const auto value = management_status(options.root);
@@ -809,6 +846,17 @@ Json send_control(const ManagementOptions& options, std::string action, const Js
 }
 } // namespace
 
+std::uint64_t management_instance(const Json& identity) {
+    if (!identity.contains("instance"))
+        return 0;
+    const auto& value = identity.at("instance");
+    if (!value.is_string())
+        return json_uint(identity, "instance");
+    const auto text = value.get<std::string>();
+    std::uint64_t result = 0;
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
+    return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() ? result : 0;
+}
 Environment managed_environment(const fs::path& root, const Json& config, std::string generation) {
     auto env = worker_environment();
     // No ambient project configuration, loader variables, or production state paths.
@@ -878,10 +926,13 @@ ManagementOptions parse_management_options(const std::vector<std::string>& args)
             if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || number < 1 ||
                 number > (key == "--port" ? 65535U : 300000U))
                 throw Error("Invalid " + key);
-            if (key == "--port")
+            if (key == "--port") {
                 result.port = number;
-            else
+                result.port_set = true;
+            } else {
                 result.timeout = Millis(number);
+                result.timeout_set = true;
+            }
         } else
             throw Error("Unknown native management option " + key);
     }
@@ -927,6 +978,8 @@ int management_main(const std::vector<std::string>& args) {
             for (const auto& [key, value] : values.items())
                 config["environment"][key] = value;
         }
+        if (options.port_set)
+            config["environment"]["PORT"] = std::to_string(options.port);
         config["companions"] = Json::array();
         if (!options.companions.empty()) {
             auto values = read_json(options.companions, 65536);
@@ -986,6 +1039,12 @@ int management_main(const std::vector<std::string>& args) {
         result = Json{{"written", path_text(fs::absolute(options.output))}, {"activated", false}};
     } else if (command == "start") {
         result = management_status(root);
+        const auto prior_stop_deadline = Clock::now() + Millis(5000);
+        while (json_bool(result, "running") && json_string(result, "phase") == "stopped" &&
+               Clock::now() < prior_stop_deadline) {
+            std::this_thread::sleep_for(Millis(50));
+            result = management_status(root);
+        }
         if (!json_bool(result, "running")) {
             config["desired"] = true;
             config_write(root, config);
@@ -1005,6 +1064,17 @@ int management_main(const std::vector<std::string>& args) {
             } while (Clock::now() < deadline);
             if (!json_bool(result, "healthy"))
                 throw Error("NATIVE_START_TIMEOUT: inspect native status and logs");
+        }
+        if (!json_bool(result, "healthy")) {
+            const auto deadline = Clock::now() + options.timeout;
+            do {
+                std::this_thread::sleep_for(Millis(100));
+                result = management_status(root);
+                if (!json_bool(result, "running"))
+                    throw Error("NATIVE_EXISTING_SUPERVISOR_EXITED");
+            } while (!json_bool(result, "healthy") && Clock::now() < deadline);
+            if (!json_bool(result, "healthy"))
+                throw Error("NATIVE_EXISTING_SUPERVISOR_UNHEALTHY");
         }
     } else if (command == "stop" || command == "restart")
         result = send_control(options, command);

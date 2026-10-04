@@ -8,11 +8,12 @@ struct ManagementOptions {
     std::string source, target;
     unsigned port = 8100;
     Millis timeout{30000};
-    bool allow_local_build = false;
+    bool allow_local_build = false, port_set = false, timeout_set = false;
 };
 using ManagementRunner =
     std::function<ProcessOutput(const fs::path&, const std::vector<std::string>&, const ProcessOptions&)>;
 ManagementOptions parse_management_options(const std::vector<std::string>& args);
+std::uint64_t management_instance(const Json& identity);
 Environment managed_environment(const fs::path& root, const Json& config, std::string generation = {});
 Json qualify_managed_binary(const ManagementOptions& options, const Environment& env,
                             const ManagementRunner& runner = {});

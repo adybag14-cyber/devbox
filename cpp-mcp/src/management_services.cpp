@@ -12,11 +12,12 @@ std::string xml(std::string value) {
     value = replace_all(std::move(value), "\"", "&quot;");
     return replace_all(std::move(value), "'", "&apos;");
 }
-std::string unit_quote(std::string value) {
+std::string unit_quote(std::string value, bool command = true) {
     value = replace_all(std::move(value), "\\", "\\\\");
     value = replace_all(std::move(value), "\"", "\\\"");
     value = replace_all(std::move(value), "%", "%%");
-    value = replace_all(std::move(value), "$", "$$");
+    if (command)
+        value = replace_all(std::move(value), "$", "$$");
     return "\"" + value + "\"";
 }
 } // namespace
@@ -29,7 +30,7 @@ std::string native_service_definition(std::string_view kind, const fs::path& bin
     if (kind == "systemd")
         return "[Unit]\nDescription=Devbox native C++23 supervisor\nAfter=network-online.target\n\n"
                "[Service]\nType=simple\nWorkingDirectory=" +
-               unit_quote(directory) + "\nExecStart=" + unit_quote(file) + " manage run --root " +
+               unit_quote(directory, false) + "\nExecStart=" + unit_quote(file) + " manage run --root " +
                unit_quote(directory) + "\nExecStop=" + unit_quote(file) + " manage stop --root " +
                unit_quote(directory) +
                "\nRestart=on-failure\nRestartSec=5\nTimeoutStopSec=180\nKillMode=process\nSendSIGKILL=no\n"

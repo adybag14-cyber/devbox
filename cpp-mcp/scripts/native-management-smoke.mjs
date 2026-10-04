@@ -46,7 +46,7 @@ try {
   const initialized = await invoke('init', '--binary', binary, '--allow-local-build', '--port', String(port), '--env-file', environment,'--companions',companionFile);
   assert.equal(initialized.policy,'local-development');
   const startedAt = performance.now();
-  foreground = spawn(binary,['manage','run','--root',root,'--timeout-ms','2000'], {env,cwd:fixture,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  foreground = spawn(binary,['manage','run','--root',root,'--timeout-ms','20000'], {env,cwd:fixture,windowsHide:true,stdio:['ignore','pipe','pipe']});
   let output=''; for(const stream of [foreground.stdout,foreground.stderr]) stream.on('data',value=>output=(output+value).slice(-16000));
   exit = new Promise((resolve,reject)=>{foreground.once('exit',(code,signal)=>resolve({code,signal}));foreground.once('error',reject);});
   const by = performance.now()+20000;
@@ -69,19 +69,23 @@ try {
   const restarted=await invoke('status'); assert.notEqual(restarted.child.generation,first.child.generation);
   assert.equal(restarted.healthy,true); assert.equal(await readFile(file,'utf8'),'native-core-effect');
   assert.equal(restarted.companions[0].process.pid,companionPid,'frontend restart preserves healthy companion');
-  const longWait=rpc('devbox_wait',{seconds:5}); longWait.catch(()=>{}); await delay(500);
-  await assert.rejects(invoke('stop'), /DRAIN_BUSY_OR_UNCONFIRMED/);
+  const longWait=rpc('devbox_wait',{seconds:10}); longWait.catch(()=>{}); await delay(500);
+  await assert.rejects(invoke('stop','--timeout-ms','2000'), /DRAIN_BUSY_OR_UNCONFIRMED/);
   await longWait;
   assert.equal((await invoke('status')).owner.pid,foreground.pid,'busy refusal preserves owned server');
   await rpc('devbox_task_put',{task_id:'native_lifecycle',expected_revision:0,state:{phase:'test'}});
   const marker=path.join(root,'workspace','once.txt');
   const job=await rpc('devbox_job_submit',{task_id:'native_lifecycle',operation_id:'once',program:'node',
-    args:['-e',"setTimeout(()=>require('fs').appendFileSync(process.argv[1],'x'),5500)",marker]});
+    args:['-e',"setTimeout(()=>require('fs').appendFileSync(process.argv[1],'x'),12000)",marker]});
   await delay(300);
-  await assert.rejects(invoke('stop'), /DRAIN_BUSY_OR_UNCONFIRMED/);
-  const completed=await rpc('devbox_job_status',{job_id:job.id,wait_seconds:10});
+  await assert.rejects(invoke('stop','--timeout-ms','2000'), /DRAIN_BUSY_OR_UNCONFIRMED/);
+  let completed;const jobBy=performance.now()+30000;
+  do {completed=await rpc('devbox_job_status',{job_id:job.id,wait_seconds:10});}
+  while(['queued','running'].includes(completed.status)&&performance.now()<jobBy);
   assert.equal(completed.status,'succeeded',JSON.stringify(completed));
   assert.equal(await readFile(marker,'utf8'),'x','durable effect completed exactly once');
+  const liveStatus=await rpc('devbox_status');assert.equal(liveStatus.guardian.implementation,'cpp');
+  assert.equal(liveStatus.guardian.stale,false,'independent native heartbeat is visible to MCP clients');
   const beforeCrash=await invoke('status');
   const observed=await (await fetch(`http://127.0.0.1:${port}/`)).json();
   assert.equal(observed.build.deploymentGeneration,beforeCrash.child.generation);
@@ -97,9 +101,11 @@ try {
   const config=JSON.parse(await readFile(configPath,'utf8'));
   assert.equal(config.current.sha256,initialized.sha256);
   const service=path.join(fixture,process.platform==='win32'?'devbox.xml':'devbox.service');
-  const serviceKind=process.platform==='win32'?'windows':'systemd';
+  const serviceKind=process.platform==='win32'?'windows':process.platform==='darwin'?'launchd':'systemd';
   await invoke('service-file','--service',serviceKind,'--output',service);
-  const definition=await readFile(service,'utf8'); assert(definition.includes('manage run --root'));
+  const definition=await readFile(service,'utf8');
+  assert(definition.includes(serviceKind==='launchd'?'<string>manage</string>':'manage run --root'));
+  if(process.platform==='darwin') await runCheckedProcess('/usr/bin/plutil',['-lint',service],{timeoutMs:10000,label:'Native LaunchAgent XML validation'});
   assert(!definition.includes('node '));
   await writeFile(service,'unrelated existing service definition');
   await assert.rejects(invoke('service-file','--service',serviceKind,'--output',service));

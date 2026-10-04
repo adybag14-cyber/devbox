@@ -69,6 +69,7 @@ const assurance = await collectDependencies({
   installed:path.resolve(options.installed || path.join(repo,android?'.cpp-build/android/vcpkg_installed':'.cpp-build/vcpkg_installed')),
   triplet:dependencyTriplet,manifest:JSON.parse(await readFile(path.join(repo,'vcpkg.json'),'utf8')),
   output:packageRoot,sourceSha:gitSha,
+  compilerRuntime:JSON.parse(await readFile(path.resolve(options.build || (android ? `.cpp-build/android/${android}` : '.cpp-build/ci'),'compiler-runtime.json'),'utf8')),
 });
 const manifest = { schema: 1, assurance, implementation: 'cpp', target, gitSha, sourceTree, setupVersion, releaseReady, build,
   dependencyBaseline: JSON.parse(await readFile(path.join(repo, 'vcpkg.json'), 'utf8'))['builtin-baseline'],

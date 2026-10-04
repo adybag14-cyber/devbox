@@ -1,5 +1,6 @@
 #include "devbox/monitoring.hpp"
 #include "devbox/contract.hpp"
+#include "devbox/management.hpp"
 #include "devbox/result.hpp"
 #include <algorithm>
 #include <cmath>
@@ -70,7 +71,7 @@ Json guardian_snapshot(const Config& config) {
             const auto heartbeat = read_json(root / "heartbeat.json", 65536);
             const auto age = snapshot_age(heartbeat, "updatedAt");
             const auto& owner = state.at("owner");
-            const auto pid = json_uint(owner, "pid"), instance = json_uint(owner, "instance");
+            const auto pid = json_uint(owner, "pid"), instance = management_instance(owner);
             const bool alive = pid > 0 && pid <= UINT32_MAX && instance > 0 &&
                                process_matches_instance(static_cast<std::uint32_t>(pid), instance);
             const bool stale = !age || *age > 15000 || !alive ||
