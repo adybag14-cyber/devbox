@@ -419,7 +419,7 @@ fn build_list_result(
     };
     ProcessResult::success(stdout, stderr)
 }
-fn absolute_lexical_path(path: &Path) -> PathBuf {
+pub(crate) fn absolute_lexical_path(path: &Path) -> PathBuf {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {

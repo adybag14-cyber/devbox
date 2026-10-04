@@ -178,7 +178,7 @@ export const runProcessUntilExit = (file, args, options = {}) =>
     let timeoutTimer;
     let forcedSettleTimer;
 
-    const child = spawn(file, args, {
+    const child = (options.spawnImpl ?? spawn)(file, args, {
       cwd: options.cwd,
       env: options.env ?? process.env,
       windowsHide: options.windowsHide !== false,
@@ -235,6 +235,9 @@ export const runProcessUntilExit = (file, args, options = {}) =>
       settle(reject, snapshotError(error.message, { code: error.code }));
     });
     child.once("exit", (code, signal) => {
+      // The execution deadline ends when exit is observed. The bounded output
+      // drain must not turn an already completed command into a timeout.
+      clearTimeout(timeoutTimer);
       setTimeout(() => {
         if (bufferExceeded) {
           settle(reject, snapshotError(`Command output exceeded ${maxBuffer} bytes.`, { code: "ENOBUFS", killed: true, signal }));

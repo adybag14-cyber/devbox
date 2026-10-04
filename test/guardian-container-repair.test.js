@@ -16,6 +16,8 @@ import {
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 
 const environment = {
   DEVBOX_PROJECT_ROOT: "/repo",
@@ -217,21 +219,96 @@ test("guardian classifies a boundary-duration zero exit as timed out", () => {
 });
 
 test("repair runner resolves on parent exit even when a grandchild inherits its pipes", async () => {
-  const startedAt = Date.now();
-  const childScript = [
-    "const { spawn } = require('node:child_process');",
-    "const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'],",
-    "  { stdio: ['ignore', 'inherit', 'inherit'] });",
-    "child.unref();",
+  const root = await mkdtemp(path.join(tmpdir(), "devbox-guardian-inherited-pipes-"));
+  const readyPath = path.join(root, "ready.json");
+  const releasePath = path.join(root, "release");
+  const exitedPath = path.join(root, "exited");
+  const nonce = path.basename(root);
+  const grandchildScript = [
+    "const fs = require('node:fs');",
+    "const [ready, release, exited, nonce] = process.argv.slice(1);",
+    "const finish = () => { fs.writeFileSync(exited, nonce); process.exit(0); };",
+    "fs.writeFileSync(ready, JSON.stringify({ pid: process.pid, parentPid: process.ppid,",
+    "  executable: process.execPath, argv: process.argv, nonce,",
+    "  startedAtMs: Date.now() - process.uptime() * 1000 }));",
+    "setInterval(() => {",
+    "  if (fs.existsSync(release) && fs.readFileSync(release, 'utf8') === nonce) finish();",
+    "}, 20);",
+    "setTimeout(finish, 45000);",
   ].join("\n");
+  const parentScript = [
+    "const fs = require('node:fs');",
+    "const { spawn } = require('node:child_process');",
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(grandchildScript)}, ...process.argv.slice(1)],`,
+    "  { stdio: ['ignore', 'inherit', 'inherit'], detached: true, windowsHide: true });",
+    "child.once('error', () => process.exit(1));",
+    "child.unref();",
+    "setInterval(() => {",
+    "  if (fs.existsSync(process.argv[1])) process.exit(0);",
+    "}, 20);",
+  ].join("\n");
+  try {
+    const result = await runProcessUntilExit(process.execPath, [
+      "-e", parentScript, readyPath, releasePath, exitedPath, nonce,
+    ], { timeout: 15000, encoding: "utf8" });
+    assert.equal(result.exitCode, 0);
+    const owner = JSON.parse(await readFile(readyPath, "utf8"));
+    assert.equal(owner.nonce, nonce);
+    assert.equal(owner.executable, process.execPath);
+    assert.ok(isProcessAlive(owner.pid), "the pipe-owning grandchild must still be running");
+    await assert.rejects(readFile(exitedPath), { code: "ENOENT" });
+  } finally {
+    // A private release token stops only this fixture's grandchild, without PID signals.
+    await writeFile(releasePath, nonce);
+    const owner = await readFile(readyPath, "utf8").then(JSON.parse).catch(() => null);
+    if (owner) {
+      assert.equal(owner.nonce, nonce);
+      const deadline = Date.now() + 15000;
+      let exited;
+      do {
+        exited = await readFile(exitedPath, "utf8").catch(() => null);
+        if (exited === nonce) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      } while (Date.now() < deadline);
+      assert.equal(exited, nonce, "owned grandchild must acknowledge its release");
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
-  const result = await runProcessUntilExit(process.execPath, ["-e", childScript], {
-    timeout: 1000,
-    encoding: "utf8",
+test("repair runner preserves an exit observed before the deadline during output drain", async (t) => {
+  const child = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
   });
+  let killCalls = 0;
+  child.kill = () => { killCalls += 1; return true; };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = runProcessUntilExit("owned-fixture", [], {
+    timeout: 1000, spawnImpl: () => child,
+  });
+  t.mock.timers.tick(990);
+  child.emit("exit", 0, null);
+  t.mock.timers.tick(25);
+  assert.equal((await pending).exitCode, 0);
+  assert.equal(killCalls, 0, "an exited child must not be signalled by the deadline");
+  assert.ok(child.stdout.destroyed && child.stderr.destroyed);
+});
 
-  assert.equal(result.exitCode, 0);
-  assert.ok(Date.now() - startedAt < 750);
+test("repair runner retains a deadline that fired before child exit", async (t) => {
+  const child = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+  });
+  let killCalls = 0;
+  child.kill = () => { killCalls += 1; return true; };
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const pending = runProcessUntilExit("owned-fixture", [], {
+    timeout: 1000, spawnImpl: () => child,
+  });
+  t.mock.timers.tick(1000);
+  child.emit("exit", 0, null);
+  t.mock.timers.tick(25);
+  await assert.rejects(pending, (error) => error.timedOut === true && error.killed === true);
+  assert.equal(killCalls, 1);
 });
 
 test("repair runner rejects promptly when output exceeds its buffer", async () => {
