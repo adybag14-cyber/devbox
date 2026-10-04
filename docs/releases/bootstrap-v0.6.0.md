@@ -10,8 +10,8 @@ Android/Termux. The installer and TUI now share version 0.6.0 from one source fi
   into a timeout. Separate regressions preserve deadlines that fire before exit.
 - The inherited-pipe test now verifies a live, owned grandchild and releases it
   explicitly, instead of depending on sub-second process startup on CI runners.
-- Retained Rust host-file aliases now use native POSIX paths on Linux and macOS,
-  preserving Windows path behavior on Windows. Parity checks verify the actual
+- C++ and retained Rust host-file aliases now use native POSIX paths on Linux and
+  macOS, preserving Windows path behavior on Windows. Parity checks verify the actual
   destination bytes and use identical starting files for both implementations.
 
 ## Included since the previous published bundle

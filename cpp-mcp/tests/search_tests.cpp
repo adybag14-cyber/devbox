@@ -176,6 +176,21 @@ int main() {
             rejected = true;
         }
         require(rejected, "literal host path does not interpolate shell syntax");
+        require(resolve_host_path("one/../two.txt", root) == root / "two.txt",
+                "native host path normalization");
+        for (const auto* invalid : {"$env:TEMP/file.txt", "https://example.test/file.txt"}) {
+            rejected = false;
+            try {
+                (void)resolve_host_path(invalid, root);
+            } catch (const Error&) {
+                rejected = true;
+            }
+            require(rejected, "native host paths reject shell-variable and URL syntax");
+        }
+#ifndef _WIN32
+        require(resolve_host_path("literal\\name.bin", root) == root / "literal\\name.bin",
+                "POSIX filename backslashes remain literal");
+#endif
 #ifdef _WIN32
         write_file(root / "valid.ps1", "Write-Output 'valid'\n");
         inspection.path = "valid.ps1";
