@@ -1,13 +1,13 @@
-# Devbox C++ 0.6.0
-
-This qualification candidate was not published as a binary release. The tag is
-retained unchanged; [0.6.1](bootstrap-v0.6.1.md) supersedes it after correcting a
-post-merge request-drain timing assumption in the SDK fixture.
+# Devbox C++ 0.6.1
 
 Native C++ MCP server, installer and setup TUI for Windows, Linux, macOS and
-Android/Termux. The installer and TUI now share version 0.6.0 from one source file.
+Android/Termux. The installer and TUI now share version 0.6.1 from one source file.
 
 ## Reliability fixes
+
+- SDK cancellation/wait qualification now observes bounded MCP-request quiescence
+  after responses arrive. Each observation shares the five-second deadline, while
+  retaining the serving-PID and healthy-state-storage checks.
 
 - Guardian cancels its execution deadline as soon as child exit is observed.
   The bounded output drain can no longer convert an already completed command

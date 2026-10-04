@@ -90,9 +90,22 @@ try {
   const waits=Array.from({length:32},()=>invoke('devbox_wait',{seconds:0.4}));
   const started=performance.now();assert.equal(await(await fetch(`${base}/healthz`)).text(),'ok');const healthMs=performance.now()-started;
   assert(healthMs<1000,`Health stalled ${healthMs}ms`);await Promise.all(waits);
-  const status=(await invoke('devbox_status')).data;
-  assert.equal(status.performance.process.pid,child.pid,'live serving PID');assert.equal(status.executionStore.ok,true);
-  assert.equal(status.activeRequests,0,'cancelled/waited requests released');
+  // Receiving the final response can precede its server-side request cleanup.
+  // Observe bounded quiescence rather than racing that completion callback.
+  // This budget is still shorter than the cancelled 20-second wait.
+  const drainedBy=performance.now()+5000;
+  for(;;){
+    const remaining=drainedBy-performance.now();
+    assert(remaining>0,'cancelled/waited requests must release within 5 seconds');
+    const observed=await client.callTool({name:'devbox_status',arguments:{}},undefined,
+      {signal:AbortSignal.timeout(Math.max(1,Math.ceil(remaining)))});
+    assert.equal(observed.isError,false,JSON.stringify(observed));
+    const status=observed.structuredContent.data;
+    assert.equal(status.performance.process.pid,child.pid,'live serving PID');assert.equal(status.executionStore.ok,true);
+    assert(performance.now()<drainedBy,`cancelled/waited requests must release within 5 seconds: ${status.activeRequests} remain`);
+    if(status.activeRequests===0)break;
+    await delay(50);
+  }
   assert.equal((await fetch(`${base}/readyz`)).status,listed.length===nativeToolCount?200:503);
   const control=async action=>{
     const response=await runCheckedProcess(binary,['--admission',action],{env,cwd:repo,timeoutMs:10000,label:'Owned fixture admission control'});
