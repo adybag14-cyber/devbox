@@ -39,7 +39,7 @@ Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
                                                                 : "Windows host execution is disabled.");
     const auto requested = json_string(args, "path");
     const auto path =
-        host ? resolve_windows_host_path(requested, working_dir(args, true)) : path_from_utf8(requested);
+        host ? resolve_host_path(requested, working_dir(args, true)) : path_from_utf8(requested);
     if (name == "windows_host_inspect_file") {
         return result_success(
             "Inspected " + requested + " on the Windows host.",

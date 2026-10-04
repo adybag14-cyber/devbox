@@ -411,16 +411,19 @@ try {
   js = await startJs();
   rust = await startRust();
   for (const [name, args] of calls) {
-    const legacyWindowsWriteTarget = name === "windows_host_write_large_file" && process.platform !== "win32"
-      ? (path.win32.isAbsolute(args.path)
-          ? path.win32.normalize(args.path)
-          : path.win32.resolve(args.working_dir || fixtureRoot, args.path))
-      : null;
-    if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
+    const hostWrite = name === "windows_host_write_large_file";
+    if (hostWrite) await writeFile(args.path, "12345");
     let jsResult = await js.client.callTool({ name, arguments: args });
-    if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
+    if (hostWrite) {
+      assert.equal((await readFile(args.path)).toString("base64"), args.content_base64,
+        "JavaScript host alias must write to the requested native path");
+      await writeFile(args.path, "12345");
+    }
     let rustResult = await rust.client.callTool({ name, arguments: args });
-    if (legacyWindowsWriteTarget) await rm(legacyWindowsWriteTarget, { force: true });
+    if (hostWrite) {
+      assert.equal((await readFile(args.path)).toString("base64"), args.content_base64,
+        "native host alias must write to the requested native path");
+    }
     if (name === "devbox_status") {
       // Both services sample scheduler counters asynchronously. Compare their
       // eventual observable state after prior calls, retaining every counter in

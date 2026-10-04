@@ -268,14 +268,25 @@ int main(int argc, char** argv) {
         const auto host = data(invoke(base, "host_status"));
         require(host == data(invoke(base, "windows_host_status")), "host status aliases");
         const auto inspect = data(invoke(base, "windows_host_inspect_file", Json{{"path", path_text(file)}}));
-#ifdef _WIN32
-        require(inspect["resolved_path"] == path_text(file) && inspect["utf8_valid"] == true,
-                "file inspection dispatch");
-#else
-        require(inspect["resolved_path"] == replace_all(path_text(file), "/", "\\") &&
-                    inspect["exists"] == false,
-                "legacy Windows file tools retain Windows paths on POSIX");
-#endif
+        require(inspect["resolved_path"] == path_text(file) && inspect["exists"] == true &&
+                    inspect["utf8_valid"] == true,
+                "host file aliases inspect the native path on every platform");
+        const auto host_root = root / "host-alias";
+        const auto host_file = host_root / "exact.bin";
+        fs::create_directories(host_root);
+        const auto written = data(invoke(base, "windows_host_write_large_file",
+                                         Json{{"path", "nested/../exact.bin"},
+                                              {"working_dir", path_text(host_root)},
+                                              {"content_base64", base64_encode("host-alias")}}));
+        require(written["path"] == path_text(host_file) && written["verified"] == true &&
+                    read_file(host_file) == "host-alias",
+                "host write alias produces exact bytes at the native normalized path");
+        const auto host_read =
+            data(invoke(base, "windows_host_read_large_file",
+                        Json{{"path", path_text(host_file)}, {"offset_bytes", 5}, {"max_bytes", 5}}));
+        require(host_read["path"] == path_text(host_file) &&
+                    host_read["content_base64"] == base64_encode("alias"),
+                "host read alias addresses the same native file");
         const auto stopped = data(invoke(base, "devbox_stop"));
         require(stopped.contains("controlMessage") && process_alive(process_id()),
                 "host lifecycle stop preserves serving process");

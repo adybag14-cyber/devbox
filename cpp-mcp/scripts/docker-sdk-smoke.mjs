@@ -167,6 +167,10 @@ try {
   await invoke('devbox_recreate');
   assert.equal((await docker('exec', containerName, 'cat', '/tmp/legacy-marker')).stdout, 'legacy tmp bytes');
   assert.deepEqual(await readFile(path.join(workspace, 'nested/payload.bin')), bytes);
+  // Recreation returns before grace cleanup. Quiesce the second retirement too,
+  // so fixture teardown cannot race a daemon removal between list and inspect.
+  await eventually(async () => !(await docker('ps', '-aq', '--filter', `name=^/${containerName}-retired-`)).stdout.trim(),
+    'Second retired owned container was not cleaned after its grace period');
   assert.equal(await (await fetch(`${base}/healthz`)).text(), 'ok');
   outputs.push('Stop/start/restart, legacy /tmp migration, grace cleanup and volume-preserving recreation');
   console.log(JSON.stringify({ ok: true, binarySha256: binaryHash, imageId, checks: outputs }, null, 2));

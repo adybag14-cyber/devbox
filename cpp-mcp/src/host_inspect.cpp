@@ -201,6 +201,8 @@ fs::path resolve_host_path(std::string_view requested, const fs::path& workdir) 
     const auto text = trim(requested);
     if (text.empty())
         throw Error("path must not be empty");
+    if (text.find("://") != text.npos || text.starts_with('$'))
+        throw Error("Could not resolve a host path from \"" + std::string(requested) + "\".");
     if (text.starts_with('~')) {
         auto value = environment("HOME");
         if (!value)
@@ -209,7 +211,7 @@ fs::path resolve_host_path(std::string_view requested, const fs::path& workdir) 
             throw Error("Could not resolve the host home directory.");
         const auto home = path_from_utf8(*value);
         const auto first = text.find_first_not_of("/\\", 1);
-        return first == text.npos ? home : home / path_from_utf8(text.substr(first));
+        return (first == text.npos ? home : home / path_from_utf8(text.substr(first))).lexically_normal();
     }
     const auto path = path_from_utf8(text);
     return (path.is_absolute() ? path : workdir / path).lexically_normal();

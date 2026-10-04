@@ -145,6 +145,10 @@ See [cpp-bootstrap/README.md](./cpp-bootstrap/README.md) for Windows and musl bu
 
 ## Requirements
 
+See [runtime dependency profiles](./docs/RUNTIME_DEPENDENCIES.md) for the distinction
+between the native server, managed supervision, optional tools, and a proposed
+smaller deployment profile.
+
 The setup binaries can provision common prerequisites automatically where a supported package manager is available. You can opt out with `--skip-system-packages`.
 
 ### All modes

@@ -3748,6 +3748,20 @@ fn resolve_host_file_path(
             || default_working_dir.to_string_lossy().into_owned(),
             str::to_owned,
         );
+    if !cfg!(windows) {
+        // The legacy tool names address the local host, just like the JavaScript
+        // aliases. Preserve POSIX backslashes except for the portable tilde prefix
+        // syntax in src/host-tools.js, which trims either leading separator.
+        let path = if let Some(rest) = raw.strip_prefix('~') {
+            let home = std::env::var("HOME")
+                .or_else(|_| std::env::var("USERPROFILE"))
+                .map_err(|_| "Could not resolve the host home directory.".to_owned())?;
+            PathBuf::from(home).join(rest.trim_start_matches(['/', '\\']))
+        } else {
+            PathBuf::from(&base).join(raw)
+        };
+        return Ok(crate::files::absolute_lexical_path(&path));
+    }
     let resolved = if let Some(rest) = raw.strip_prefix('~') {
         let home = std::env::var("USERPROFILE")
             .or_else(|_| std::env::var("HOME"))
@@ -4141,6 +4155,12 @@ mod tests {
             }))
             .await;
         assert!(!write.is_error.unwrap_or(false));
+        assert_eq!(
+            tokio::fs::read(temp.path().join("fixture.bin"))
+                .await
+                .expect("host alias must write inside the native fixture directory"),
+            b"alpha"
+        );
 
         let read = server
             .windows_host_read_large_file(Parameters(HostLargeReadRequest {
@@ -4163,7 +4183,40 @@ mod tests {
     }
 
     #[test]
-    fn legacy_windows_host_paths_use_win32_semantics_on_every_platform() {
+    #[cfg(not(windows))]
+    fn host_file_aliases_preserve_native_posix_paths() {
+        let base = std::path::Path::new("/tmp/devbox-host-alias");
+        assert_eq!(
+            resolve_host_file_path("/tmp/alpha/../beta.txt", None, base).unwrap(),
+            PathBuf::from("/tmp/beta.txt")
+        );
+        assert_eq!(
+            resolve_host_file_path("nested/../file.bin", None, base).unwrap(),
+            base.join("file.bin")
+        );
+        assert_eq!(
+            resolve_host_file_path("file.bin", Some("/tmp/other"), base).unwrap(),
+            PathBuf::from("/tmp/other/file.bin")
+        );
+        assert_eq!(
+            resolve_host_file_path(r"literal\name.bin", None, base).unwrap(),
+            base.join(r"literal\name.bin")
+        );
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .expect("host-path fixture needs a home directory");
+        assert_eq!(
+            resolve_host_file_path("~/file.bin", None, base).unwrap(),
+            PathBuf::from(&home).join("file.bin")
+        );
+        assert_eq!(
+            resolve_host_file_path(r"~\literal\name.bin", None, base).unwrap(),
+            PathBuf::from(&home).join(r"literal\name.bin")
+        );
+    }
+
+    #[test]
+    fn win32_path_helpers_preserve_windows_semantics() {
         assert_eq!(win32_normalize("/tmp/alpha/../beta.txt"), "\\tmp\\beta.txt");
         assert_eq!(
             win32_resolve("/tmp/base", "nested/file.bin"),
