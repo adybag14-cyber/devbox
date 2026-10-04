@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,readFile,rm} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,rm,access} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -15,6 +15,10 @@ const port=await new Promise(resolve=>{const server=net.createServer();server.li
 const run=(file,args)=>runCheckedProcess(file,args,{env,cwd:fixture,timeoutMs:120000,label:'Native packaged setup without Node/Git'});
 let configured=false;
 try {
+  assert.equal(JSON.parse((await run(binary,['manage','status','--root',root])).stdout).running,false);
+  await assert.rejects(access(root),'status on an uninitialized root must not create it');
+  await assert.rejects(run(setup,['--native-root',root,'--runtime-binary',binary,'--no-start']),/Signed installation requires/);
+  await assert.rejects(access(root),'rejected proof must leave no partial installation');
   await run(setup,['--native-root',root,'--runtime-binary',binary,'--allow-local-build','--port',String(port),'--no-start']);
   configured=true;
   const config=JSON.parse(await readFile(path.join(root,'run/native/config.json'),'utf8'));

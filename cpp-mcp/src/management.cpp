@@ -964,10 +964,16 @@ int management_main(const std::vector<std::string>& args) {
     if (command == "init") {
         if (fs::exists(root) && !fs::is_empty(root))
             throw Error("Native init requires a new empty root; production migration is separate");
-        ensure_private_state_directory(root);
-        ensure_private_state_directory(root / "run");
-        ensure_private_state_directory(control_root(root));
-        ensure_private_state_directory(root / "workspace");
+        ensure_directory(root.parent_path());
+        const auto staging = root.parent_path() / (".devbox-init-" + uuid());
+        ensure_private_state_directory(staging);
+        ScopeExit discard_staging([&] {
+            std::error_code ec;
+            fs::remove_all(staging, ec);
+        });
+        ensure_private_state_directory(staging / "run");
+        ensure_private_state_directory(control_root(staging));
+        ensure_private_state_directory(staging / "workspace");
         Json config{{"schema", 1},
                     {"root", path_text(root)},
                     {"desired", true},
@@ -1013,8 +1019,20 @@ int management_main(const std::vector<std::string>& args) {
             }
             config["companions"] = std::move(values);
         }
-        config["current"] = prepare_candidate(options, config);
-        config_write(root, config);
+        auto staged_options = options;
+        staged_options.root = staging;
+        config["current"] = prepare_candidate(staged_options, config);
+        const auto release = fs::path("releases") / json_string(config.at("current"), "sha256");
+        config["current"]["file"] = path_text(control_root(root) / release / executable_name());
+        write_json_atomic(control_root(staging) / release / "verification.json", config.at("current"));
+        config_write(staging, config);
+        // Publish only a fully verified configuration. Failed proof leaves the
+        // requested destination empty/absent and can be retried without cleanup.
+        if (fs::exists(root)) {
+            if (!fs::is_empty(root) || !fs::remove(root))
+                throw Error("Native destination changed during initialization");
+        }
+        fs::rename(staging, root);
         std::cout << Json{{"initialized", true},
                           {"root", path_text(root)},
                           {"policy", config.at("policy")},
@@ -1023,6 +1041,11 @@ int management_main(const std::vector<std::string>& args) {
                   << '\n';
         return 0;
     }
+    if (command == "status") {
+        std::cout << management_status(root).dump(2) << '\n';
+        return 0;
+    }
+    (void)config_read(root);
     ensure_private_state_directory(control_root(root));
     if (command == "run" || command == "supervise")
         return supervise(options);
