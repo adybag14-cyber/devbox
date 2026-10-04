@@ -13,6 +13,9 @@ Android/Termux. The installer and TUI now share version 0.6.0 from one source fi
 - C++ and retained Rust host-file aliases now use native POSIX paths on Linux and
   macOS, preserving Windows path behavior on Windows. Parity checks verify the actual
   destination bytes and use identical starting files for both implementations.
+- Docker integration qualification waits for retirement cleanup after both
+  recreations before tearing down its owned containers, avoiding a cleanup race
+  while preserving image and bind-mount identity checks.
 
 ## Included since the previous published bundle
 
