@@ -2,6 +2,7 @@
 #include "devbox/engine.hpp"
 #include "devbox/filesystem_worker.hpp"
 #include "devbox/grants.hpp"
+#include "devbox/management.hpp"
 #include "devbox/run_service.hpp"
 #include "devbox/state_coordinator.hpp"
 #include "server_main.hpp"
@@ -40,6 +41,8 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
 #endif
     try {
         const auto mode = args.empty() ? "" : args.front();
+        if (mode == "manage")
+            return management_main(std::vector<std::string>(args.begin() + 1, args.end()));
         if (mode == "--filesystem-worker") {
             if (args.size() != 1)
                 throw Error("Filesystem worker accepts its bounded request on stdin only");
@@ -95,7 +98,8 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
         }
         if (mode == "--help" || mode == "-h") {
             std::cout << "Devbox C++ MCP " << build_version()
-                      << "\nUsage: devbox-mcp [--build-info|--parity-report|--dump-contract|--job-runner "
+                      << "\nNative management: devbox-mcp manage help\nUsage: devbox-mcp "
+                         "[--build-info|--parity-report|--dump-contract|--job-runner "
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
                          "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|--admission "
                          "drain|resume|status|"

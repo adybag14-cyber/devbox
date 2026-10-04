@@ -52,6 +52,7 @@ node --input-type=module -e '
 '
 npm ci --ignore-scripts --no-audit --no-fund
 node cpp-bootstrap/scripts/fresh-install.mjs
+node cpp-bootstrap/scripts/native-install.mjs
 "$DEVBOX_TUI_TEST_BINARY" --cloudflare-help --no-color > .cpp-build/cloudflare-help.txt
 grep -F 'pkg update && pkg install cloudflared termux-services' .cpp-build/cloudflare-help.txt
 node cpp-mcp/scripts/engine-sdk-smoke.mjs

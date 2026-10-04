@@ -6,6 +6,9 @@ inline constexpr std::string_view installer_version = DEVBOX_SETUP_VERSION;
 enum class PlatformKind { windows, macos, linux, termux, other };
 struct Options {
     std::optional<fs::path> repo, workspace, runtime_binary;
+    std::optional<fs::path> native_root, receipt, provenance;
+    std::optional<std::string> qualified_source, qualified_target;
+    bool allow_local_build = false;
     std::string repo_url = "https://github.com/adybag14-cyber/devbox.git";
     std::optional<std::string> runtime, host, auth, public_url, team_domain, audience, jwks_url;
     std::optional<std::uint16_t> port;

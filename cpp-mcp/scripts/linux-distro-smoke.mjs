@@ -52,6 +52,8 @@ try {
     for (const file of ['build-manifest.json', 'bin/devbox-mcp', 'bin/devbox-setup', 'bin/devbox-tui',
       'dependency-inventory.json','sbom.spdx.json','THIRD_PARTY_NOTICES.txt'])
       await copyFile(path.join(output, file), path.join(destination, file));
+    await run(process.execPath, [path.join(repo, 'cpp-mcp/scripts/minimal-runtime-smoke.mjs'),
+      path.join(destination, 'bin/devbox-mcp'), 'alpine:3.23'], {timeoutMs: 10 * 60 * 1000, stdio: 'inherit'});
   }
   console.log(JSON.stringify({ ok: true, distribution, imageId: imageInfo.Id, source }));
 } finally {
