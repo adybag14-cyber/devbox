@@ -39,7 +39,7 @@ compatible artifact, not a promise that every feature works without OS libraries
 4. **Development:** optional Git, compilers, package managers, Docker or WSL,
    selected for the work the agent is expected to perform.
 
-Native supervision is follow-up work, not part of the 0.6.0 implementation. An OS
+Native supervision is follow-up work, not part of the 0.6.x implementation. An OS
 restart policy alone does not replace artifact verification, admission draining,
 process identity checks, state fencing, public-tunnel diagnostics, or rollback.
 Those behaviors must survive any removal of the current Node layer.
