@@ -11,6 +11,7 @@ const fixture=await mkdtemp(path.join(os.tmpdir(),'devbox-native-install-'));
 const root=path.join(fixture,'installation');const empty=path.join(fixture,'empty-path');await mkdir(empty);
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>['SYSTEMROOT','WINDIR','TEMP','TMP','HOME','USERPROFILE','TMPDIR'].includes(key.toUpperCase())));
 env.PATH=empty;
+if(process.platform==='win32') {env.LOCALAPPDATA=path.join(fixture,'account-profile');await mkdir(env.LOCALAPPDATA);env.APPDATA=env.LOCALAPPDATA;}
 const port=await new Promise(resolve=>{const server=net.createServer();server.listen(0,'127.0.0.1',()=>{const port=server.address().port;server.close(()=>resolve(port));});});
 const run=(file,args)=>runCheckedProcess(file,args,{env,cwd:fixture,timeoutMs:120000,label:'Native packaged setup without Node/Git'});
 let configured=false;

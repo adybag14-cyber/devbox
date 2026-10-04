@@ -8,7 +8,7 @@ import {runCheckedProcess} from '../../src/mcp-implementation.js';
 
 const binary = path.resolve(process.env.DEVBOX_CPP_BINARY || process.argv[2] || '');
 const badCandidate=process.env.DEVBOX_MANAGEMENT_BAD_CANDIDATE||path.join(path.dirname(binary),'devbox-management-bad-candidate'+(process.platform==='win32'?'.exe':''));
-const fixture = await mkdtemp(path.join(os.tmpdir(), 'devbox-native-management-'));
+const fixture = await mkdtemp(path.join(os.tmpdir(), 'devbox-native-management-long-path-regression-'));
 const root = path.join(fixture, 'native root with spaces');
 const emptyPath = path.join(fixture, 'empty-path'); await mkdir(emptyPath);
 const port = await new Promise((resolve, reject) => {
@@ -18,6 +18,10 @@ const port = await new Promise((resolve, reject) => {
 const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
   ['SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'TEMP', 'TMP', 'TMPDIR', 'HOME', 'USERPROFILE', 'LANG', 'LC_ALL'].includes(key.toUpperCase())));
 env.PATH = emptyPath;
+if(process.platform==='win32') {
+  env.LOCALAPPDATA=path.join(fixture,'account-profile');await mkdir(env.LOCALAPPDATA);
+  env.APPDATA=env.LOCALAPPDATA;
+}
 const invoke = async (command, ...args) => {
   const result = await runCheckedProcess(binary, ['manage', command, '--root', root, ...args],
     {env, cwd: fixture, timeoutMs: 120000, maxCaptureChars: 128*1024, label: `Native management ${command}`});

@@ -188,7 +188,7 @@ Json prepare_candidate(ManagementOptions options, const Json& config) {
     options.binary = destination;
     // External downloads are copied into a private verification directory so
     // later changes to the original receipt/bundle cannot change the decision.
-    const auto proof = directory / ("proof-" + uuid());
+    const auto proof = control_root(options.root) / ("proof-" + uuid());
     ensure_private_state_directory(proof);
     ScopeExit remove_proof([&] {
         std::error_code ec;
