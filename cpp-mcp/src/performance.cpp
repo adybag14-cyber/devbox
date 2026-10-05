@@ -1,6 +1,8 @@
 #include "devbox/native.hpp"
 #include "devbox/telemetry.hpp"
 #include <algorithm>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/this_coro.hpp>
 #include <sstream>
 #ifdef _WIN32
 #include <psapi.h>

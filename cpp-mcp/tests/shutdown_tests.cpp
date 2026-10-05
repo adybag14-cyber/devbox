@@ -1,6 +1,7 @@
 #include "../src/server_main.hpp"
 #include "devbox/engine.hpp"
 #include "devbox/filesystem_worker.hpp"
+#include <boost/asio/io_context.hpp>
 #include <csignal>
 #include <future>
 #include <iostream>

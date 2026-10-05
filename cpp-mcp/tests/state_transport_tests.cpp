@@ -4,6 +4,7 @@
 #include "devbox/state_store.hpp"
 #include "devbox/state_transport.hpp"
 #include <algorithm>
+#include <boost/asio/io_context.hpp>
 #include <boost/beast.hpp>
 #include <future>
 #include <iostream>

@@ -1,6 +1,7 @@
 #include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/server.hpp"
+#include <boost/asio/io_context.hpp>
 #include <boost/beast.hpp>
 #include <future>
 #include <iostream>

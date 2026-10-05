@@ -51,7 +51,8 @@ class Transport {
     bool byte_budget_exhausted() const;
     void reset_byte_budget();
 };
-Json extract_document(const Transfer& response);
+enum class ExtractionPurpose { evidence, discovery };
+Json extract_document(const Transfer& response, ExtractionPurpose purpose = ExtractionPurpose::evidence);
 Json extract_offer_records(const Json& schemas, const Json& variants, std::string_view base_url);
 Json offer_view(const Json& document, std::size_t offset = 0, std::size_t limit = 20);
 bool response_requires_challenge(const Transfer& response);
@@ -61,6 +62,8 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
                       const TransportLimits& limits, Clock::time_point deadline, const Cancel& cancel);
 Json exact_term_matches(const Json& document, const std::vector<std::string>& exact_terms);
 std::string evidence_excerpt(std::string_view text, std::string_view query, std::size_t max_chars);
+std::size_t text_characters(std::string_view text);
+Json evidence_excerpt_details(std::string_view text, std::string_view query, std::size_t max_chars);
 bool robots_allowed(std::string_view robots, std::string_view path,
                     std::string_view agent = "devboxresearch");
 

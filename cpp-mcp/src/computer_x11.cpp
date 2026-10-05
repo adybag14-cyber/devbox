@@ -88,15 +88,18 @@ struct Api {
         if (!to)
             throw Error("COMPUTER_X11_DEPENDENCY: missing native XCB symbol");
     }
-    Api() {
+    explicit Api(bool require_input = true) {
         core = dlopen("libxcb.so.1", RTLD_NOW | RTLD_LOCAL);
-        test = dlopen("libxcb-xtest.so.0", RTLD_NOW | RTLD_LOCAL);
-        if (!core || !test) {
+        if (require_input)
+            test = dlopen("libxcb-xtest.so.0", RTLD_NOW | RTLD_LOCAL);
+        if (!core || (require_input && !test)) {
             if (test)
                 dlclose(test);
             if (core)
                 dlclose(core);
-            throw Error("COMPUTER_X11_DEPENDENCY: install libxcb and its XTEST runtime library");
+            throw Error(require_input
+                            ? "COMPUTER_X11_DEPENDENCY: install libxcb and its XTEST runtime library"
+                            : "COMPUTER_X11_DEPENDENCY: install the libxcb runtime library");
         }
         try {
 #define LOAD(name) symbol(name, core, "xcb_" #name)
@@ -141,17 +144,22 @@ struct Api {
             LOAD(get_image_data);
             LOAD(get_image_data_length);
 #undef LOAD
-            symbol(test_get_version, test, "xcb_test_get_version");
-            symbol(test_fake_input_checked, test, "xcb_test_fake_input_checked");
+            if (require_input) {
+                symbol(test_get_version, test, "xcb_test_get_version");
+                symbol(test_fake_input_checked, test, "xcb_test_fake_input_checked");
+            }
         } catch (...) {
-            dlclose(test);
+            if (test)
+                dlclose(test);
             dlclose(core);
             throw;
         }
     }
     ~Api() {
-        dlclose(test);
-        dlclose(core);
+        if (test)
+            dlclose(test);
+        if (core)
+            dlclose(core);
     }
 };
 struct Free {
@@ -178,7 +186,8 @@ class Display {
     Cancel cancel;
     Clock::time_point deadline = Clock::now() + std::chrono::seconds(15);
     std::string name;
-    explicit Display(const Cancel& token) : api(library()), cancel(token) {
+    explicit Display(const Cancel& token, bool require_input = true)
+        : api(library(require_input)), cancel(token) {
         name = env_or("DISPLAY", "");
         if (name.size() < 2 || name.front() != ':' ||
             name.find_first_not_of("0123456789.", 1) != std::string::npos)
@@ -206,7 +215,8 @@ class Display {
             if (!roots.rem)
                 throw Error("COMPUTER_DISPLAY_UNAVAILABLE");
             screen = roots.data;
-            reply<xcb_test_get_version_reply_t>(api.test_get_version(connection, 2, 2));
+            if (require_input)
+                reply<xcb_test_get_version_reply_t>(api.test_get_version(connection, 2, 2));
         } catch (...) {
             api.disconnect(connection);
             connection = nullptr;
@@ -217,9 +227,13 @@ class Display {
         if (connection)
             api.disconnect(connection);
     }
-    static Api& library() {
-        static Api value;
-        return value;
+    static Api& library(bool require_input) {
+        if (require_input) {
+            static Api input(true);
+            return input;
+        }
+        static Api capture(false);
+        return capture;
     }
     void health() {
         check(cancel);
@@ -670,6 +684,55 @@ ImageCapture capture(Display& d, const Window& window, unsigned max_width) {
 bool computer_x11_enabled() {
     return env_or("DEVBOX_COMPUTER_USE_X11", "") == "1" && !env_or("DISPLAY", "").empty();
 }
+ImageCapture capture_x11_native(const std::set<std::uint32_t>& pids, const Cancel& cancel) {
+    Display display(cancel, false);
+    Window window;
+    const bool full_display = pids.empty();
+    if (full_display) {
+        window.handle = display.screen->root;
+        window.bounds = {0, 0, display.screen->width_in_pixels, display.screen->height_in_pixels};
+    } else {
+        bool found = false;
+        for (const auto handle : display.clients()) {
+            try {
+                auto candidate = display.inspect(handle);
+                if (!pids.contains(candidate.pid) || candidate.bounds.width < 32 ||
+                    candidate.bounds.height < 32)
+                    continue;
+                if (!found || static_cast<std::uint64_t>(candidate.bounds.width) * candidate.bounds.height >
+                                  static_cast<std::uint64_t>(window.bounds.width) * window.bounds.height) {
+                    window = std::move(candidate);
+                    found = true;
+                }
+            } catch (const Error&) {
+                display.health();
+            }
+        }
+        if (!found)
+            throw Error(
+                "COMPUTER_WINDOW_UNAVAILABLE: no visible local X11 window for the requested process tree");
+        display.unoccluded(window);
+    }
+    auto result = capture(display, window, static_cast<unsigned>(window.bounds.width));
+    if (!full_display) {
+        const auto current = display.inspect(window.handle);
+        if (current.id != window.id || current.bounds != window.bounds)
+            throw Error("COMPUTER_WINDOW_CHANGED: capture target changed during acquisition");
+        display.unoccluded(current);
+        result.metadata.update(Json{{"window_owner_pid", window.pid},
+                                    {"window_id", std::to_string(window.handle)},
+                                    {"window_identity", window.id},
+                                    {"window_title", window.title},
+                                    {"left", window.bounds.x},
+                                    {"top", window.bounds.y},
+                                    {"occlusion_checked", true}});
+    }
+    result.metadata.update(Json{{"capture_method", "native-xcb"},
+                                {"width", window.bounds.width},
+                                {"height", window.bounds.height},
+                                {"input_events_sent", false}});
+    return result;
+}
 struct ComputerX11::Impl {
     std::mutex operation;
     struct Observation {
@@ -1038,6 +1101,9 @@ ImageCapture ComputerX11::perform(const Json& args, const Cancel& cancel) {
 namespace devbox {
 bool computer_x11_enabled() {
     return false;
+}
+ImageCapture capture_x11_native(const std::set<std::uint32_t>&, const Cancel&) {
+    throw Error("COMPUTER_UNSUPPORTED: native X11 capture is unavailable on this platform");
 }
 struct ComputerX11::Impl {};
 ComputerX11::ComputerX11() : impl_(std::make_unique<Impl>()) {}

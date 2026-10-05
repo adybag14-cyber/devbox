@@ -1,5 +1,6 @@
 #pragma once
 #include "async.hpp"
+#include <boost/asio/io_context.hpp>
 #include <map>
 namespace devbox {
 class BackgroundTasks {

@@ -19,6 +19,7 @@ It omits the installer and TUI. See [CORE_SERVER.md](CORE_SERVER.md).
 | Public Cloudflare routing | Optional `cloudflared` sidecar; not part of the core package |
 | Native Windows computer use | Interactive Windows desktop and the external application being controlled |
 | Native Linux computer use | X11 display, XCB/XTEST libraries, GUI application and fonts, installed only when needed |
+| Read-only capture on a canonical local Linux X11 display (`:N`) | Native XCB path; no screenshot/window command utilities, XTEST extension or input opt-in required |
 | Headed web browsing on a server | Browser and display components; an Oracle deployment can use Chromium, Xvfb and Openbox |
 | Git, Docker, WSL, language tools and user commands | Their executable/platform capability, selected for the requested work |
 
@@ -44,6 +45,17 @@ toolchain, although its MCP contract retains optional capabilities.
 Bundled TLS, SQLite, parser, compression, JSON and networking libraries remain
 dependencies for licensing, vulnerability inventory and security maintenance.
 They have not been replaced by custom implementations to reduce the count.
+
+Bundle 0.8.0 consolidates local X11 display/program capture onto the existing native
+pixel/window backend. It preserves focus, checks process/window identity, and
+refuses an occluded or changing program target instead of returning another
+window's pixels. Wayland, remote-display and macOS compatibility paths retain their
+platform helpers. These are optional capabilities, not core startup dependencies.
+GitHub credential integration also uses the optional `git`/`gh` tools; native
+startup does not. The attestation verifier remains unchanged.
+
+See [DEPENDENCY_RESILIENCE.md](DEPENDENCY_RESILIENCE.md) for measured header and
+compression tradeoffs and the dependencies deliberately retained.
 
 ## Qualification
 

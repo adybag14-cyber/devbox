@@ -1,6 +1,6 @@
 # Native public-web research
 
-The C++23 service adds three research tools to the frozen compatibility and computer-use surface. Contract version 4 advertises 50 tools. Research uses native libcurl networking, Lexbor HTML parsing and pugixml RSS parsing, with no Python, browser farm, embedding model or external LLM in the implementation.
+The C++23 service adds three research tools to the frozen compatibility and computer-use surface. Contract version 9 advertises 53 tools. Research uses native libcurl networking, Lexbor HTML parsing and pugixml RSS parsing, with no Python, browser farm, embedding model or external LLM in the implementation.
 
 ## Research presets
 
@@ -78,6 +78,71 @@ HTML, plain text and structured JSON/XML are read within explicit bounds, withou
 ## Evidence quality and freshness
 
 Records retain their URLs, retrieval/validation times and hashes. Exact content duplicates do not inflate coverage. Reported publication/modification dates remain separate from HTTP Last-Modified and retrieval time. A nested product's date is not promoted to the publication date of a catalogue.
+
+Beginning with bundle 0.8.0, HTML evidence is selected from an identified article,
+post, declared article body, or main region. Explicitly hidden content,
+recommendations, navigation and advertising are excluded from attributed text.
+Visible substantive noscript fallbacks remain readable. Multiple article regions
+without a unique primary identity return `ambiguous_content` rather than borrowing
+another post's text under the page title. `extraction.method`, `confidence`, `scope`
+and warnings describe this structural decision; confidence is not a truth score.
+Search-provider pages use a separate discovery-only extraction path so article
+isolation cannot hide search-result links. Independently scoped structured offers
+remain available even when the surrounding prose is ambiguous.
+
+`retrieved_pages` counts successful HTTP/cache document results. `substantive_documents`
+counts documents passing document-type, topic and entity filters before deduplication.
+`report_clusters` and `usable_sources` count the retained nonduplicate representatives.
+Indexes and teaser-only pages can supply discovery links but cannot fill the source
+target. Broad queries require two distinct nonnumeric topic matches, preventing a
+single geographical word from qualifying an otherwise unrelated page. `exact_terms`
+retains its documented OR semantics; it does not establish factual relevance alone.
+
+Exact deduplication hashes the normalized extracted main text. A conservative
+five-token-shingle similarity check also identifies near copies. Numeric and
+negation-token changes prevent that heuristic from collapsing those reports.
+Similarity is not factual agreement or publisher independence. Every excluded
+document is retained within the extraction limits, with a `source_id` that can be
+inspected; duplicate records identify their representative through `duplicate_of`.
+
+`discovery: "none"` retrieves only supplied URLs, subject to normal permitted
+redirect handling. It does not expand links or structured-product URLs. Other
+discovery modes allow one bounded expansion from initial candidates. In-content
+citations use their anchor and surrounding context, with priority for caller-declared
+primary domains; tag navigation does not displace original-report citations. Primary
+domains remain advisory, not a guarantee that those publishers can be retrieved.
+
+`query` and `excerpt_chars` work in both source-ledger pages and source detail.
+Excerpt length counts Unicode code points, and case-insensitive matching retains
+offsets into the original extracted UTF-8 text. The response reports character and
+byte lengths/offsets, selection mode and truncation. This is not linguistic stemming
+or Unicode normalization. The legacy `max_chars` name continues to bound serialized
+UTF-8 bytes, including metadata; any excerpt reduction to meet that budget is explicit.
+
+Read diagnostics using the same evidence tool:
+
+```json
+{"job_id":"<returned ID>","section":"exclusions","offset":0,"limit":50,"max_chars":64000}
+```
+
+```json
+{"job_id":"<returned ID>","section":"candidates","offset":0,"limit":50,"max_chars":64000}
+```
+
+Retain `section` when following `next_offset`. Exclusions include rejected document
+IDs and reasons. Candidate records include provider/query/rank or parent/anchor/context/
+depth provenance and queue/acceptance decisions. Source-only query/excerpt controls
+are rejected for diagnostic sections. Candidate provenance is bounded and truncation
+is explicit; per-query yield counts become lower bounds when provenance is incomplete.
+Up to 512 diagnostic candidate records and four provenance edges per candidate are
+retained, with a separate byte bound. Two fixed diagnostic snapshot slots and a shared
+read/write lock preserve the previous committed snapshot through interrupted writes.
+Snapshot identity mismatches fail closed rather than combining evidence versions.
+
+Older cached extractions are invalidated. Historical ledgers remain readable and
+receive an explicit legacy-qualification warning; their original source counts and
+content are not silently rewritten. Use a new operation ID to collect evidence under
+the new extraction rules.
 
 Product offers retain their parent name, URL and JSON location. Price, currency, availability and validity fields remain source claims. Exact phrase matching is a relevance filter, not proof of a chip, price or release status. Reconcile conflicting sources and distinguish rumors, announcements, availability, variants, markets and currencies before synthesis.
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,7 @@ const root = await mkdtemp(path.join(os.tmpdir(), 'devbox-cpp-x11-'));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const children = [];
 function child(file, args, env, extraPipe = false) {
-  const handle = spawn(file, args, { env, cwd: root, detached: true,
+  const handle = spawn(file, args, { env, cwd: root, detached: false,
     stdio: extraPipe ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'] });
   let output = ''; for (const stream of [handle.stdout, handle.stderr]) stream.on('data', bytes => { output = (output + bytes).slice(-16000); });
   const exited = new Promise((resolve, reject) => { handle.once('exit', resolve); handle.once('error', reject); });
@@ -24,7 +24,7 @@ const run = (file, args, env = process.env) => runCheckedProcess(file, args, {
   cwd: root, env, timeoutMs: 30000, label: 'Owned X11 capture fixture' });
 try {
   await run('c++', ['-std=c++17', '-O2', path.join(repo, 'cpp-mcp/tests/capture_x11_fixture.cpp'), '-lX11', '-o', path.join(root, 'fixture')]);
-  const display = child('Xvfb', ['-displayfd', '3', '-screen', '0', '800x600x24', '-nolisten', 'tcp', '-noreset'], process.env, true);
+  const display = child('Xvfb', ['-displayfd', '3', '-screen', '0', '800x600x24', '-nolisten', 'tcp', '-noreset', '-extension', 'XTEST'], process.env, true);
   const number = await new Promise((resolve, reject) => {
     let buffer = ''; const timer = setTimeout(() => reject(new Error(`Xvfb startup: ${display.output()}`)), 10000);
     display.handle.stdio[3].on('data', bytes => { buffer += bytes; if (buffer.includes('\n')) { clearTimeout(timer); resolve(buffer.trim()); } });
@@ -37,28 +37,41 @@ try {
   while (!window.output().includes('ready ')) {
     assert.equal(window.handle.exitCode, null, window.output()); assert(Date.now() < deadline); await delay(50);
   }
+  const emptyPath=path.join(root,'empty-path');await mkdir(emptyPath);
+  const nativeEnv={...env,PATH:emptyPath};delete nativeEnv.DEVBOX_COMPUTER_USE_X11;
+  const focusBefore=(await run(path.join(root,'fixture'),['--query-focus'],env)).stdout.trim();
   const checks = [];
-  for (const mode of ['program', 'display']) {
+  for (const mode of ['program', 'tree', 'display']) {
     const output = path.join(root, `${mode}.png`);
-    const args = ['--capture-worker', output, mode, '82'];
+    const args = ['--capture-worker', output, mode==='tree'?'program':mode, '82'];
     if (mode === 'program') args.push(String(window.handle.pid), 'false');
-    const metadata = JSON.parse((await run(binary, args, env)).stdout);
+    if (mode === 'tree') args.push(String(process.pid), 'true');
+    const started=performance.now();
+    const metadata = JSON.parse((await run(binary, args, nativeEnv)).stdout);
+    const elapsedMs=performance.now()-started;
+    assert.equal(metadata.capture_method,'native-xcb');
+    assert.equal(metadata.input_events_sent,false);
     const bytes = await readFile(output);
     assert(bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])));
-    const expected = mode === 'program' ? '360 240' : '800 600';
+    const expected = mode !== 'display' ? '360 240' : '800 600';
     assert.equal((await run('identify', ['-format', '%w %h', output])).stdout.trim(), expected);
-    if (mode === 'program') {
+    if (mode !== 'display') {
       assert.equal(metadata.window_owner_pid, window.handle.pid);
       assert.equal(metadata.width, 360); assert.equal(metadata.height, 240);
-      assert.equal(metadata.process_tree_fallback, false);
+      assert.equal(metadata.process_tree_fallback, mode==='tree');
+      assert.equal(metadata.pid,mode==='tree'?process.pid:window.handle.pid);
       const left = (await run('convert', [output, '-crop', '1x1+40+40', '-depth', '8', 'txt:-'])).stdout;
       const right = (await run('convert', [output, '-crop', '1x1+300+40', '-depth', '8', 'txt:-'])).stdout;
       assert.match(left, /#E6642D/i); assert.match(right, /#2878E6/i);
     }
-    checks.push({ mode, dimensions: expected, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), metadata });
+    checks.push({ mode, dimensions: expected, bytes: bytes.length, elapsedMs, sha256: createHash('sha256').update(bytes).digest('hex'), metadata });
   }
-  await writeFile(path.join(repo, '.cpp-build/x11-capture-result.json'), JSON.stringify({ ok: true, checks }, null, 2));
-  console.log(JSON.stringify({ ok: true, checks }, null, 2));
+  assert.equal((await run(path.join(root,'fixture'),['--query-focus'],env)).stdout.trim(),focusBefore,
+    'read-only native capture must not change focus');
+  await mkdir(path.join(repo,'.cpp-build'),{recursive:true});
+  const report={ok:true,runtimePathEmpty:true,xtestExtensionDisabled:true,focusPreserved:true,checks};
+  await writeFile(path.join(repo, '.cpp-build/x11-capture-result.json'), JSON.stringify(report, null, 2));
+  console.log(JSON.stringify(report, null, 2));
 } finally {
   for (const state of children.reverse()) {
     if (state.handle.exitCode === null && state.handle.signalCode === null) {
