@@ -20,6 +20,9 @@ capture in C++23. Full and core-only archives remain available for qualified tar
   fixture is mapped and managed before testing input.
 - Narrower Boost includes reduce measured preprocessing work. Paired compression
   measurements retain libdeflate's fast path alongside streaming zlib.
+- The retained JavaScript runtime and SDK test clients update to MCP SDK 1.32.1
+  and proxy-addr 2.0.8, resolving the OAuth issuer-binding and proxy trust-subnet
+  advisories detected during qualification.
 
 See [native research](../NATIVE_WEB_RESEARCH.md),
 [dependency tradeoffs](../DEPENDENCY_RESILIENCE.md) and
