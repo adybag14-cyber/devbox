@@ -106,7 +106,13 @@ std::uint64_t directory_bytes(const fs::path& path) {
                     throw Error("JOB_DIRECTORY_UNEXPECTED_ENTRY");
                 pending.push_back(entry.path());
             } else if (fs::is_regular_file(status)) {
-                if (relative.has_parent_path() && relative != fs::path("research") / "ledger.json") {
+                // Research checkpoints retain two fixed candidate snapshots and a persistent lock.
+                // Keep exact names: unfamiliar nested files must never acquire deletion authority.
+                const bool research_checkpoint = relative == fs::path("research") / "ledger.json" ||
+                                                 relative == fs::path("research") / "candidates-0.json" ||
+                                                 relative == fs::path("research") / "candidates-1.json" ||
+                                                 relative == fs::path("research") / ".ledger.lock";
+                if (relative.has_parent_path() && !research_checkpoint) {
                     const auto name = path_text(relative.filename());
                     const auto stem = name.size() > 6 ? name.substr(1, name.size() - 6) : "";
                     if (relative.parent_path() != fs::path("research") / "documents" || name.front() != 's' ||
