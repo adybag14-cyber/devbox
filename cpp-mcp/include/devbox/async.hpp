@@ -1,7 +1,14 @@
 #pragma once
 #include "common.hpp"
 #include "resource_budget.hpp"
-#include <boost/asio.hpp>
+#include <boost/asio/associated_executor.hpp>
+#include <boost/asio/async_result.hpp>
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/executor_work_guard.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/steady_timer.hpp>
+#include <boost/asio/strand.hpp>
+#include <boost/asio/use_awaitable.hpp>
 #include <deque>
 #include <future>
 #include <thread>

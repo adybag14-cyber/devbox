@@ -14,7 +14,7 @@ Json provider_json(const Transfer& response) {
     });
 }
 void duckduckgo(const Transfer& response, const AddSource& add, Json& result) {
-    const auto document = extract_document(response);
+    const auto document = extract_document(response, ExtractionPurpose::discovery);
     if (json_string(document, "status") == "challenge_required") {
         result["status"] = "challenge_required";
         result["error"] = "Search provider requires human verification; automatic requests stopped";

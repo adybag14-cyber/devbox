@@ -369,7 +369,8 @@ Json offer_view(const Json& document, std::size_t offset, std::size_t limit) {
                                               : cache == "network"     ? "network_body_observed"
                                                                        : "not_classified"}};
     if (!document.contains("offers") || !document["offers"].is_array() ||
-        (json_string(document, "status") != "ok" && json_string(document, "status") != "insufficient_text"))
+        (json_string(document, "status") != "ok" && json_string(document, "status") != "insufficient_text" &&
+         json_string(document, "status") != "ambiguous_content"))
         return result;
     const auto& offers = document["offers"];
     result["total_offers"] = offers.size();

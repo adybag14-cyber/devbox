@@ -81,6 +81,7 @@ add_library(devbox_core
   src/search.cpp
   src/web_transport.cpp
   src/web_document.cpp
+  src/web_content.cpp
   src/web_retailers.cpp
   src/web_offers.cpp
   src/web_discovery.cpp
@@ -138,6 +139,16 @@ if(DEVBOX_FUZZING)
 endif()
 target_link_libraries(devbox-mcp PRIVATE devbox_core)
 if(DEVBOX_BUILD_TESTS OR DEVBOX_BUILD_BENCHMARKS)
+  add_executable(devbox-compression-bench benchmarks/compression.cpp)
+  target_link_libraries(devbox-compression-bench PRIVATE nlohmann_json::nlohmann_json ZLIB::ZLIB
+    $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
+  if(MSVC)
+    target_compile_options(devbox-compression-bench PRIVATE /utf-8)
+  endif()
+  if(DEVBOX_BUILD_TESTS)
+    add_test(NAME compression-backends COMMAND devbox-compression-bench --verify)
+    set_tests_properties(compression-backends PROPERTIES TIMEOUT 30)
+  endif()
   add_executable(devbox-state-ipc-bench benchmarks/state_ipc.cpp)
   target_link_libraries(devbox-state-ipc-bench PRIVATE devbox_core)
   if(DEVBOX_BUILD_TESTS)

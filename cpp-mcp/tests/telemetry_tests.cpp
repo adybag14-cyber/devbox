@@ -1,6 +1,7 @@
 #include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/telemetry.hpp"
+#include <boost/asio/io_context.hpp>
 #include <future>
 #include <iostream>
 #ifdef _WIN32

@@ -1,4 +1,7 @@
 #include "devbox/async.hpp"
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/redirect_error.hpp>
+#include <boost/asio/this_coro.hpp>
 namespace devbox {
 WorkPool::WorkPool(std::size_t workers, std::size_t capacity)
     : capacity_(std::max<std::size_t>(1, capacity)), worker_limit_(std::max<std::size_t>(1, workers)) {

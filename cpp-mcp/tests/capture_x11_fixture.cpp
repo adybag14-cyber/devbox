@@ -2,6 +2,7 @@
 #include <X11/Xlib.h>
 #include <csignal>
 #include <iostream>
+#include <string_view>
 #include <unistd.h>
 namespace {
 volatile std::sig_atomic_t stop = 0;
@@ -9,12 +10,20 @@ void interrupted(int) {
     stop = 1;
 }
 } // namespace
-int main() {
+int main(int argc, char** argv) {
     std::signal(SIGTERM, interrupted);
     std::signal(SIGINT, interrupted);
     auto* display = XOpenDisplay(nullptr);
     if (!display)
         return 2;
+    if (argc == 2 && std::string_view(argv[1]) == "--query-focus") {
+        Window focus;
+        int revert;
+        XGetInputFocus(display, &focus, &revert);
+        std::cout << focus << '\n';
+        XCloseDisplay(display);
+        return 0;
+    }
     const auto screen = DefaultScreen(display);
     const auto parent = RootWindow(display, screen);
     const auto pid_key = XInternAtom(display, "_NET_WM_PID", False);
@@ -41,6 +50,7 @@ int main() {
     };
     paint(small, 120, 90);
     paint(large, 360, 240);
+    XSetInputFocus(display, small, RevertToParent, CurrentTime);
     XSync(display, False);
     std::cout << "ready " << pid << '\n' << std::flush;
     while (!stop) {

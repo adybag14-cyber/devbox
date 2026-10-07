@@ -39,6 +39,15 @@ std::string page(std::string id) {
            "</p><table><tr><th>Variant</th><th>Price</th></tr><tr><td>Detector " +
            id + "</td><td>&pound;123.45</td></tr></table></main></body></html>";
 }
+Json retained_candidates(const fs::path& directory) {
+    const auto ledger = read_json(directory / "ledger.json");
+    const auto slot = json_uint(ledger, "candidate_slot", 2);
+    require(slot <= 1, "candidate snapshot slot is bounded");
+    const auto snapshot = read_json(directory / ("candidates-" + std::to_string(slot) + ".json"));
+    require(snapshot["snapshot_id"] == ledger["candidate_snapshot_id"],
+            "candidate snapshot matches its ledger");
+    return snapshot["records"];
+}
 struct HttpFixture {
     asio::io_context io;
     Tcp::acceptor acceptor{io, {asio::ip::make_address("127.0.0.1"), 0}};
@@ -307,6 +316,120 @@ void extraction_tests() {
                                   "photon", 30)
                     .find("photon") != std::string::npos,
             "query-focused actual excerpt");
+}
+void issue88_extraction_tests() {
+    web::Transfer response;
+    response.url = response.final_url = "https://example.org/channel/17919";
+    response.status = 200;
+    response.headers = Json{{"content-type", "text/html; charset=utf-8"}};
+    const std::string article =
+        "The observatory reports photon detector calibration results from its own measurements. "
+        "The report documents uncertainty and instrument settings, and explicitly says that the "
+        "independent follow-up measurement has not yet been completed. ";
+    response.body = "<html><head><title>Observatory statement</title></head><body><nav>MENU</nav><main>"
+                    "<article data-tv-page-type='post'><header><h1>Observatory statement</h1></header><p>" +
+                    article + "</p><p>" + article +
+                    "</p><a href='/original'>reported</a></article>"
+                    "<section aria-label='Похожие посты'><h2>Похожие посты</h2><article><p>" +
+                    std::string(4000, 'x') +
+                    " CONTRADICTORY_RELATED_CLAIM</p></article></section>"
+                    "<div id='nabberScript' style='DISPLAY : none !important'><noscript>"
+                    "window.yaContextCb.push(function(){ADVERTISING_CODE()})</noscript></div>"
+                    "</main></body></html>";
+    const auto main = web::extract_document(response);
+    const auto text = json_string(main, "text");
+    require(text.find("CONTRADICTORY_RELATED_CLAIM") == text.npos &&
+                text.find("window.yaContextCb") == text.npos && text.find("Похожие посты") == text.npos,
+            "issue88: unrelated posts and explicitly hidden advertising cannot become attributed evidence");
+    require(text.find("Observatory statement") != text.npos && text.find(article) != text.npos,
+            "issue88: preserve the selected article headline and body");
+    require(main.contains("extraction") && main["extraction"]["confidence"] != "low",
+            "issue88: selected main-content scope and confidence are explicit");
+    require(main["links"].size() == 1 && main["links"][0]["in_main_content"] == true &&
+                !json_string(main["links"][0], "context").empty(),
+            "issue88: citation links retain their content scope and surrounding context");
+    const auto original_hash = main["content_sha256"];
+    response.body = replace_all(response.body, std::string(4000, 'x'), "DIFFERENT_RECOMMENDATIONS");
+    require(web::extract_document(response)["content_sha256"] == original_hash,
+            "issue88: changing page furniture cannot change the main-content hash");
+    response.body = "<html><title>Visible fallback</title><main><noscript><p>" + article + article +
+                    "</p></noscript></main></html>";
+    require(json_string(web::extract_document(response), "text").find("observatory reports") !=
+                std::string::npos,
+            "issue88: visible substantive noscript fallback is preserved");
+    response.url = response.final_url = "https://example.org/tag/photon";
+    response.body = "<html><title>Photon tag</title><main><h1>Photon tag</h1><article><h2>"
+                    "<a href='/report'>Photon investigation</a></h2><p>" +
+                    article + "</p></article></main></html>";
+    const auto index = web::extract_document(response);
+    require(index["document_type"] == "index" && index["substantive"] == false && !index["links"].empty(),
+            "issue88: indexes remain useful for discovery but are not substantive sources");
+
+    for (const auto* path : {"/magazine/archive/2024/06/observatory-report/", "/archive/statement"}) {
+        response.url = response.final_url = std::string("https://example.org") + path;
+        response.body = "<title>Observatory statement</title><article><h1>Observatory statement</h1><p>" +
+                        article + "</p></article>";
+        const auto archived = web::extract_document(response);
+        require(archived["document_type"] == "article" && archived["substantive"] == true,
+                "identified articles are not indexes because an archive component occurs in the URL");
+    }
+
+    response.url = response.final_url = "https://example.org/updates";
+    response.body = "<title>Latest updates</title><main><article><div class='entry-content'>" + article +
+                    "</div></article><article><div class='entry-content'>" + article +
+                    "</div></article></main>";
+    const auto ambiguous = web::extract_document(response);
+    require(ambiguous["status"] == "ambiguous_content" && json_string(ambiguous, "text").empty(),
+            "issue88: ambiguous collections cannot borrow a title and attribute a selected unrelated post");
+    response.body +=
+        R"(<script type="application/ld+json">{"@type":"Product","name":"Photon sensor 256GB","offers":{"@type":"Offer","price":123,"priceCurrency":"GBP"}}</script>)";
+    const auto scoped_offer = web::extract_document(response);
+    require(scoped_offer["status"] == "ambiguous_content" && json_string(scoped_offer, "text").empty() &&
+                web::offer_view(scoped_offer)["offers"].size() == 1,
+            "issue88: uncertain prose attribution does not suppress independently scoped structured offers");
+    response.body =
+        "<title>Main authority statement</title><main><article><h1>Main authority statement</h1>"
+        "<p>Short statement.</p></article><article><h2>Another account</h2><div class='entry-content'>" +
+        article + article + "</div></article></main>";
+    const auto short_primary = web::extract_document(response);
+    require(json_string(short_primary, "text").find("Short statement.") != std::string::npos &&
+                json_string(short_primary, "text").find("observatory reports") == std::string::npos,
+            "issue88: a short identified primary post cannot be replaced by a longer unrelated article body");
+    response.body = "<title>Observatory statement</title><main><h1>Observatory statement</h1>"
+                    "<p>SITE_PROMOTION_OUTSIDE_ARTICLE</p><article itemprop='articleBody'><p>" +
+                    article + "</p></article></main>";
+    require(json_string(web::extract_document(response), "text").find("SITE_PROMOTION_OUTSIDE_ARTICLE") ==
+                std::string::npos,
+            "issue88: a page-level heading cannot make the containing main element outrank the article");
+
+    const std::string prefix = "Вступление. ";
+    std::string unicode;
+    for (int i = 0; i < 80; ++i)
+        unicode += prefix;
+    unicode += "Санитарно-эпидемиологическая проверка описана в этом сообщении. ";
+    for (int i = 0; i < 80; ++i)
+        unicode += "Продолжение исследования. ";
+    const auto lower_query = web::evidence_excerpt(unicode, "санитарно-эпидемиологическая", 400);
+    const auto upper_query = web::evidence_excerpt(unicode, "САНИТАРНО-ЭПИДЕМИОЛОГИЧЕСКАЯ", 400);
+    require(lower_query == upper_query &&
+                lower_query.find("Санитарно-эпидемиологическая") != std::string::npos,
+            "issue88: Cyrillic case variants select the same original-text passage");
+    const auto characters = [](std::string_view value) {
+        return std::count_if(value.begin(), value.end(), [](unsigned char c) { return (c & 0xc0) != 0x80; });
+    };
+    require(characters(lower_query) == 400 && lower_query.size() > 400,
+            "issue88: excerpt_chars counts Unicode code points independently of UTF-8 byte budgets");
+    std::string latin(500, 'x');
+    latin += " ÉCOLE café detector report ";
+    latin += std::string(500, 'y');
+    require(web::evidence_excerpt(latin, "école", 100).find("ÉCOLE") != std::string::npos,
+            "issue88: non-ASCII Latin case matching preserves source spelling and offsets");
+    std::string astral;
+    for (int i = 0; i < 100; ++i)
+        astral += "😀";
+    const auto clipped = web::evidence_excerpt(astral, "", 40);
+    require(characters(clipped) == 40 && clipped.size() == 160,
+            "issue88: four-byte Unicode characters are not split or charged as four characters");
 }
 void policy_tests() {
     constexpr std::uint64_t reference = 784111777000ULL;
@@ -592,7 +715,218 @@ void research_tests(HttpFixture& server, const fs::path& root) {
     require(fifty["usable_sources"] == 50 && fifty["target_met"] == true, "Fast stops at 50 usable sources");
     std::cout << Json{{"standard", hundred}, {"fast", fifty}, {"partial", result}}.dump() << '\n';
 }
+void issue88_research_tests(HttpFixture& server, const fs::path& root) {
+    auto config = std::make_shared<Config>();
+    config->project_root = root / "issue88";
+    config->jobs_root = config->project_root / "jobs";
+    config->runtime_mode = RuntimeMode::host;
+    web::ResearchService service(config, server.limits());
+    const auto cache = config->project_root / "run" / "web-research-cache";
+    (void)service.fetch(Json{{"urls", {server.url("/cache-version-probe")}}});
+    const auto cache_version =
+        read_json(cache / (sha256(server.url("/cache-version-probe")) + ".json"))["cache_version"];
+    const auto store = [&](std::string_view path, const std::string& body, Json links = Json::array()) {
+        web::Transfer transfer;
+        transfer.url = transfer.final_url = server.url(path);
+        transfer.status = 200;
+        transfer.headers = Json{{"content-type", "text/html; charset=utf-8"}};
+        transfer.body = body;
+        transfer.bytes = body.size();
+        auto doc = web::extract_document(transfer);
+        doc["cache_version"] = cache_version;
+        doc["validated_unix_ms"] = unix_millis();
+        doc["validated_at"] = utc_now();
+        // Fixture-only cache injection preserves production's rejection of private
+        // hyperlinks in HTML while exercising the real bounded loopback transport.
+        doc["links"] = std::move(links);
+        write_json_atomic(cache / (sha256(transfer.url) + ".json"), doc);
+        return doc;
+    };
+    const Json citation{
+        {"url", server.url("/magazine/archive/2024/06/original-citation")},
+        {"text", "выяснили"},
+        {"context", "Photon detector measurements were reported by the original observatory."},
+        {"in_main_content", true},
+        {"rel", "cite"}};
+    const Json tag{{"url", server.url("/tag/photon")},
+                   {"text", "Photon detector research"},
+                   {"context", "Photon detector research tags"},
+                   {"in_main_content", true}};
+    (void)store("/magazine/archive/2024/06/original-citation", page("original-citation"));
+    (void)store("/issue88-seed", page("seed"), Json::array({tag, citation}));
+    Json plan{{"topic", "photon detector research"},
+              {"mode", "fast"},
+              {"discovery", "none"},
+              {"urls", {server.url("/issue88-seed")}},
+              {"max_age_seconds", 3600}};
+    const auto only = service.run(plan, root / "explicit-only", Millis(5000), {});
+    require(only["candidate_count"] == 1 && only["attempted_urls"] == 1 && only["usable_sources"] == 1,
+            "issue88: explicit URL-only mode never expands keyword links or citations");
+
+    const auto old_ddg = server.ddg_mode.load(), old_bing = server.bing_mode.load();
+    ScopeExit restore([&] {
+        server.ddg_mode = old_ddg;
+        server.bing_mode = old_bing;
+    });
+    server.ddg_mode = 3;
+    server.bing_mode = 3;
+    plan["discovery"] = "web";
+    const auto expanded = service.run(plan, root / "citation-expansion", Millis(8000), {});
+    require(expanded["usable_sources"] == 2 && expanded["attempted_urls"] == 2,
+            "issue88: short citation verbs use surrounding content while tag navigation is not fetched");
+    const auto edges = retained_candidates(root / "citation-expansion");
+    require(std::any_of(edges.begin(), edges.end(),
+                        [&](const auto& item) {
+                            return json_string(item, "url") ==
+                                       server.url("/magazine/archive/2024/06/original-citation") &&
+                                   item["provenance"][0]["parent_source_id"] == "s1" &&
+                                   item["provenance"][0]["anchor"] == "выяснили" && item["depth"] == 1;
+                        }),
+            "issue88: expansion provenance preserves parent, anchor and bounded depth");
+    require(std::any_of(edges.begin(), edges.end(),
+                        [](const auto& item) { return json_string(item, "reason") == "index_navigation"; }),
+            "issue88: link rejection decisions remain observable");
+
+    std::string body;
+    for (int i = 0; i < 100; ++i)
+        body += "Photon detector observation " + std::to_string(i) +
+                " records calibrated optics and measured uncertainty for the scientific report. ";
+    body += "The final assessment describes stable observations.";
+    const auto article = [&](const std::string& text) {
+        return "<html><title>Photon field report</title><article><h1>Photon field report</h1><p>" + text +
+               "</p></article></html>";
+    };
+    const auto original = store("/issue88-original", article(body));
+    (void)store("/issue88-syndicated",
+                article(replace_all(body, "stable observations", "consistent observations")));
+    (void)store("/issue88-numeric-change", article(replace_all(body, "observation 99 ", "observation 199 ")));
+    Json urls{server.url("/issue88-original"), server.url("/issue88-syndicated"),
+              server.url("/issue88-numeric-change")};
+    for (int i = 0; i < 12; ++i) {
+        const auto path = "/tag/photon-" + std::to_string(i);
+        (void)store(path, page("index"));
+        urls.push_back(server.url(path));
+    }
+    JobStore jobs(config);
+    const auto id = "job-issue88-evidence";
+    plan["discovery"] = "none";
+    plan["urls"] = urls;
+    const auto paths = jobs.create_job(id, Json{{"id", id}, {"mode", "research"}, {"research", plan}},
+                                       Json{{"id", id}, {"mode", "research"}, {"status", "succeeded"}});
+    const auto clustered = service.run(plan, paths.dir / "research", Millis(8000), {});
+    require(
+        clustered["usable_sources"] == 2 && clustered["substantive_documents"] == 3 &&
+            clustered["index_pages"] == 12 && clustered["near_duplicate_documents"] == 1 &&
+            clustered["report_clusters"] == 2 && clustered["retrieved_pages"] == 15,
+        "issue88: indexes and near copies do not inflate coverage; changed numeric facts remain distinct");
+    std::size_t exclusions = 0;
+    std::uint64_t offset = 0;
+    for (;;) {
+        const auto page = web::research_evidence(jobs, Json{{"job_id", id},
+                                                            {"section", "exclusions"},
+                                                            {"offset", offset},
+                                                            {"limit", 3},
+                                                            {"max_chars", 16000}});
+        require(page.dump().size() <= 16000 && page["section"] == "exclusions",
+                "issue88: diagnostic pages obey serialized byte budgets");
+        exclusions += page["exclusions"].size();
+        if (page["next_offset"].is_null())
+            break;
+        const auto next = page["next_offset"].get<std::uint64_t>();
+        require(next > offset, "issue88: exclusion cursor makes progress");
+        offset = next;
+    }
+    require(exclusions == 13, "issue88: every exclusion beyond the old eight-example limit can be inspected");
+    const auto duplicate = web::research_evidence(jobs, Json{{"job_id", id}, {"source_id", "s2"}});
+    require(duplicate["document"]["duplicate_of"] == "s1" && duplicate["document"]["text_chars"] > 500,
+            "issue88: clustered evidence remains available for comparison, not silently discarded");
+    const auto queried = web::research_evidence(
+        jobs, Json{{"job_id", id}, {"limit", 1}, {"query", "final assessment"}, {"excerpt_chars", 200}});
+    require(json_string(queried["sources"][0], "excerpt").find("final assessment") != std::string::npos &&
+                queried["sources"][0]["excerpt_chars"] <= 200 &&
+                queried["sources"][0]["excerpt_start_char"] > 0,
+            "issue88: ledger-page query and excerpt controls use the original document and expose offsets");
+    const auto diagnostics =
+        web::research_evidence(jobs, Json{{"job_id", id}, {"section", "candidates"}, {"limit", 1}});
+    require(diagnostics["candidates"][0]["provenance"][0]["kind"] == "explicit_seed" &&
+                diagnostics["next_offset"] == 1,
+            "issue88: candidate provenance is pageable");
+    const auto committed = read_json(paths.dir / "research" / "ledger.json");
+    const auto active_slot = json_uint(committed, "candidate_slot");
+    const auto active_path = paths.dir / "research" / ("candidates-" + std::to_string(active_slot) + ".json");
+    const auto active_snapshot = read_json(active_path);
+    write_json_atomic(
+        paths.dir / "research" / ("candidates-" + std::to_string(1 - active_slot) + ".json"),
+        Json{{"version", 1}, {"snapshot_id", "uncommitted-worker-write"}, {"records", Json::array()}});
+    require(web::research_evidence(jobs,
+                                   Json{{"job_id", id}, {"section", "candidates"}})["section_records"] == 15,
+            "issue88: an interrupted inactive-slot write cannot replace committed diagnostic evidence");
+    auto corrupted = active_snapshot;
+    corrupted["snapshot_id"] = "mismatched-snapshot";
+    write_json_atomic(active_path, corrupted);
+    rejects([&] { (void)web::research_evidence(jobs, Json{{"job_id", id}, {"section", "candidates"}}); },
+            "snapshot identity mismatch");
+    write_json_atomic(active_path, active_snapshot);
+    rejects(
+        [&] {
+            (void)web::research_evidence(
+                jobs, Json{{"job_id", id}, {"section", "exclusions"}, {"query", "ignored"}});
+        },
+        "apply only to the sources section");
+
+    auto old_cache = original;
+    old_cache["cache_version"] = 4;
+    old_cache["text"] = "LEGACY_CONTAMINATION";
+    write_json_atomic(cache / (sha256(server.url("/issue88-original")) + ".json"), old_cache);
+    const auto refreshed =
+        service.fetch(Json{{"urls", {server.url("/issue88-original")}}, {"max_age_seconds", 3600}});
+    require(refreshed["documents"][0]["cache_status"] == "network" &&
+                json_string(refreshed["documents"][0], "excerpt").find("LEGACY_CONTAMINATION") ==
+                    std::string::npos,
+            "issue88: old extracted-cache versions cannot retain contaminated evidence");
+    rejects([&] { (void)service.fetch(Json{{"urls", {server.url("/doc/1")}}, {"max_chars", 0}}); },
+            "max_chars");
+    rejects([&] { (void)service.fetch(Json{{"urls", {server.url("/doc/1")}}, {"excerpt_chars", 9000}}); },
+            "excerpt_chars");
+
+    const auto stored_path = paths.dir / "research" / "documents" / "s1.json";
+    const auto saved = read_json(stored_path);
+    auto unicode = saved;
+    std::string symbols;
+    for (unsigned i = 0; i < 4000; ++i)
+        symbols += "😀";
+    unicode["text"] = symbols;
+    write_json_atomic(stored_path, unicode);
+    const auto bounded = web::research_evidence(jobs, Json{{"job_id", id},
+                                                           {"source_id", "s1"},
+                                                           {"query", ""},
+                                                           {"excerpt_chars", 16000},
+                                                           {"max_chars", 16000}});
+    require(
+        bounded.dump().size() <= 16000 && bounded["document"]["excerpt_budget_limited"] == true &&
+            bounded["document"]["excerpt_bytes"] ==
+                bounded["document"]["excerpt_chars"].get<std::size_t>() * 4,
+        "issue88: Unicode output-budget reduction terminates and preserves accurate original-text offsets");
+    auto legacy = saved;
+    legacy.erase("extraction_version");
+    write_json_atomic(stored_path, legacy);
+    auto ledger = read_json(paths.dir / "research" / "ledger.json");
+    ledger["version"] = 1;
+    ledger.erase("candidates");
+    write_json_atomic(paths.dir / "research" / "ledger.json", ledger);
+    const auto old_page = web::research_evidence(jobs, Json{{"job_id", id}});
+    const auto old_detail = web::research_evidence(jobs, Json{{"job_id", id}, {"source_id", "s1"}});
+    require(old_page["legacy_ledger"] == true && old_detail["document"].contains("extraction_warning"),
+            "issue88: historical ledgers stay readable but cannot silently claim the new extraction "
+            "qualification");
+}
 void discovery_tests(HttpFixture& server, const fs::path& root) {
+    {
+        // The issue-88 fixture uses a separate provider-health root. Pacing is
+        // asserted below only for this test's shared provider-health state.
+        std::lock_guard lock(server.search_mutex);
+        server.bing_starts.clear();
+    }
     const auto config_for = [&](std::string_view name) {
         auto config = std::make_shared<Config>();
         config->project_root = root / name;
@@ -617,6 +951,16 @@ void discovery_tests(HttpFixture& server, const fs::path& root) {
                 recovered["providers"][0]["status"] == "challenge_required" &&
                 !recovered["providers"][0]["error"].get<std::string>().empty(),
             "blocked provider is stopped after one request with a useful diagnostic");
+    const auto recovered_ledger = Json{{"candidates", retained_candidates(root / "recovery-result")}};
+    const auto candidate = std::find_if(
+        recovered_ledger["candidates"].begin(), recovered_ledger["candidates"].end(),
+        [&](const auto& item) { return json_string(item, "url") == server.url("/doc/search-0"); });
+    require(candidate != recovered_ledger["candidates"].end() && (*candidate)["provenance"].size() == 2 &&
+                (*candidate)["provenance"][0]["provider"] == "bing_rss" &&
+                (*candidate)["provenance"][0]["rank"] == 1 &&
+                (*candidate)["provenance"][0]["query_index"] == 0 &&
+                (*candidate)["provenance"][1]["query_index"] == 1,
+            "issue88: duplicate provider results retain both query/rank provenance edges");
     web::ResearchService next(config, server.limits());
     plan["queries"] = {"Photon detector current prices"};
     const auto resumed = next.run(plan, root / "recovery-next-job", Millis(10000), {});
@@ -750,18 +1094,48 @@ void search_parser_tests() {
         "<html><a class='extra\tresult__a\nother' href='https://example.org/source'>Result</a></html>";
     require(web::parse_search_response("duckduckgo_html", response)["results"] == 1,
             "result link classes are whitespace-delimited tokens");
+    response.body = "<html><title>Search results</title><main><article><h1>Featured overview</h1><p>" +
+                    std::string(200, 'a') +
+                    "</p></article><div><a class='result__a' href='https://example.org/outside-feature'>"
+                    "Actual search result</a></div></main></html>";
+    const auto separate = web::parse_search_response("duckduckgo_html", response);
+    require(separate["results"] == 1 && separate["urls"][0] == "https://example.org/outside-feature",
+            "issue88: evidence article isolation must not narrow search-provider discovery links");
 }
-int main() {
+int main(int argc, char** argv) {
     const auto root = fs::temp_directory_path() / ("devbox-web-tests-" + uuid());
     try {
+        if (argc == 5 && std::string_view(argv[1]) == "--extract-fixture") {
+            web::Transfer source;
+            source.url = source.final_url = web::normalize_url(argv[2]);
+            source.body = read_file(path_from_utf8(argv[3]), 2 * 1024 * 1024);
+            source.bytes = source.body.size();
+            source.status = 200;
+            source.headers = Json{{"content-type", "text/html; charset=utf-8"}};
+            source.completed_at = "offline_fixture";
+            auto document = web::extract_document(source);
+            document["probe_input"] = "retained_public_html_not_a_new_network_check";
+            write_json_atomic(path_from_utf8(argv[4]), document);
+            std::cout << Json{{"status", document["status"]},
+                              {"document_type", document["document_type"]},
+                              {"text_chars", web::text_characters(json_string(document, "text"))},
+                              {"extraction", document["extraction"]}}
+                             .dump()
+                      << '\n';
+            return 0;
+        }
+        if (argc != 1)
+            throw Error("Usage: devbox-web-research-tests [--extract-fixture URL INPUT_HTML OUTPUT_JSON]");
         ensure_directory(root);
         extraction_tests();
+        issue88_extraction_tests();
         search_parser_tests();
         policy_tests();
         {
             HttpFixture server;
             transport_tests(server);
             research_tests(server, root);
+            issue88_research_tests(server, root);
             discovery_tests(server, root);
         }
         if (root.parent_path() == fs::temp_directory_path() &&

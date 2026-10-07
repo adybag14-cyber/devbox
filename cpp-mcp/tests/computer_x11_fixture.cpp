@@ -1,17 +1,38 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <algorithm>
 #include <iostream>
 #include <poll.h>
 #include <string>
 #include <unistd.h>
+#include <vector>
+
+std::vector<unsigned long> window_property(Display* display, Window window, Atom property) {
+    Atom type = None;
+    int format = 0;
+    unsigned long count = 0, remaining = 0;
+    unsigned char* data = nullptr;
+    const auto status = XGetWindowProperty(display, window, property, 0, 1024, False, XA_WINDOW, &type,
+                                           &format, &count, &remaining, &data);
+    std::vector<unsigned long> values;
+    if (status == Success && type == XA_WINDOW && format == 32 && remaining == 0 && data) {
+        const auto* first = reinterpret_cast<const unsigned long*>(data);
+        values.assign(first, first + count);
+    }
+    if (data)
+        XFree(data);
+    return values;
+}
 
 // A real event receiver, controlled only through an owned pipe by the test harness.
-int main() {
+int main(int argc, char** argv) {
+    const bool require_wm = argc == 2 && std::string_view(argv[1]) == "--wait-for-wm";
     Display* display = XOpenDisplay(nullptr);
     if (!display)
         return 1;
     const auto root = DefaultRootWindow(display);
+    const auto client_list = XInternAtom(display, "_NET_CLIENT_LIST", False);
     const auto window = XCreateSimpleWindow(display, root, 30, 30, 800, 600, 0, 0, 0xfafafa);
     XStoreName(display, window, "Devbox native input fixture");
     XWMHints hints{};
@@ -39,7 +60,7 @@ int main() {
     XSelectInput(display, window,
                  KeyPressMask | KeyReleaseMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
                      ExposureMask | StructureNotifyMask);
-    // The harness maps after the optional window manager and MCP are ready.
+    // The harness maps after the optional window manager's startup hook has run.
     XSync(display, False);
     // Initialize Xlib's keyboard mapping before timed input arrives.
     (void)XKeysymToKeycode(display, 0x61);
@@ -47,7 +68,20 @@ int main() {
     Window overlay = 0;
     Window focus_target = 0;
     bool steal_ping = false;
+    bool map_requested = false, mapped = false;
     for (;;) {
+        // A map request acknowledgement alone does not prove the WM actually
+        // mapped and registered the client. Inspect both on the same connection.
+        if (map_requested && !mapped) {
+            XWindowAttributes attributes{};
+            const auto clients =
+                require_wm ? window_property(display, root, client_list) : std::vector<unsigned long>{window};
+            if (XGetWindowAttributes(display, window, &attributes) && attributes.map_state == IsViewable &&
+                std::find(clients.begin(), clients.end(), window) != clients.end()) {
+                mapped = true;
+                std::cout << "mapped" << std::endl;
+            }
+        }
         while (XPending(display)) {
             XEvent event;
             XNextEvent(display, &event);
@@ -95,8 +129,10 @@ int main() {
                 break;
             if (command == "quit")
                 break;
-            if (command == "map")
+            if (command == "map") {
                 XMapWindow(display, window);
+                map_requested = true;
+            }
             if (command == "steal_ping") {
                 XSetWindowAttributes attr{};
                 attr.override_redirect = True;

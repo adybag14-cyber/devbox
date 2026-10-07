@@ -1,6 +1,7 @@
 #include "devbox/native.hpp"
 #include "devbox/research.hpp"
 #include "devbox/web_retailers.hpp"
+#include "web_content.hpp"
 #include <algorithm>
 #include <cctype>
 #include <lexbor/dom/interfaces/element.h>
@@ -84,10 +85,7 @@ std::string node_text(lxb_dom_node_t* root, std::size_t limit, bool raw = false)
         auto* node = stack.back();
         stack.pop_back();
         if (!raw && node->type == LXB_DOM_NODE_TYPE_ELEMENT &&
-            (skip_tag(node->local_name) ||
-             lxb_dom_element_has_attribute(lxb_dom_interface_element(node),
-                                           reinterpret_cast<const lxb_char_t*>("hidden"), 6) ||
-             lower(attribute(node, "aria-hidden")) == "true"))
+            (skip_tag(node->local_name) || content::excluded(node)))
             continue;
         if (node->type == LXB_DOM_NODE_TYPE_TEXT) {
             const auto& value = lxb_dom_interface_text(node)->char_data.data;
@@ -102,9 +100,7 @@ std::string node_text(lxb_dom_node_t* root, std::size_t limit, bool raw = false)
     return compact(text, limit);
 }
 bool skip_tag(std::uintptr_t tag) {
-    return tag == LXB_TAG_SCRIPT || tag == LXB_TAG_STYLE || tag == LXB_TAG_TEMPLATE || tag == LXB_TAG_SVG ||
-           tag == LXB_TAG_CANVAS || tag == LXB_TAG_NAV || tag == LXB_TAG_FOOTER || tag == LXB_TAG_HEADER ||
-           tag == LXB_TAG_FORM || tag == LXB_TAG_SELECT || tag == LXB_TAG_OPTION || tag == LXB_TAG_BUTTON;
+    return content::non_text_tag(tag);
 }
 Json bounded_json(std::string_view input) {
     return Json::parse(input, [](int depth, Json::parse_event_t, Json&) {
@@ -264,7 +260,7 @@ bool response_requires_challenge(const Transfer& response) {
            RE2::PartialMatch(body, RE2("<title[^>]*>\\s*(?:just a moment|attention required|access denied)"));
 }
 
-Json extract_document(const Transfer& response) {
+Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
     Json result{{"url", response.url},
                 {"final_url", response.final_url.empty() ? response.url : response.final_url},
                 {"http_status", response.status},
@@ -282,6 +278,7 @@ Json extract_document(const Transfer& response) {
                 {"title", ""},
                 {"text", ""},
                 {"links", Json::array()},
+                {"links_truncated", false},
                 {"tables", Json::array()},
                 {"headings", Json::array()},
                 {"structured_metadata", Json::array()},
@@ -289,6 +286,9 @@ Json extract_document(const Transfer& response) {
                 {"published_at_reported", ""},
                 {"modified_at_reported", ""},
                 {"content_truncated", false},
+                {"extraction_version", 2},
+                {"document_type", "document"},
+                {"substantive", false},
                 {"untrusted_source", true}};
     if (!response.error.empty()) {
         result["error"] = response.error;
@@ -361,15 +361,44 @@ Json extract_document(const Transfer& response) {
                                     body.size()) != LXB_STATUS_OK)
             throw Error("Native HTML parsing failed");
         auto* root = lxb_dom_interface_node(document);
-        std::vector<lxb_dom_node_t*> stack{root};
+        auto selected = purpose == ExtractionPurpose::evidence
+                            ? content::select(root, json_string(result, "final_url"))
+                            : content::Selection{};
+        if (purpose == ExtractionPurpose::discovery) {
+            selected = content::Selection{};
+            selected.root = root;
+            selected.type = "search_results";
+            selected.method = "visible_discovery_links";
+        }
+        result["document_type"] = selected.type;
+        result["extraction"] =
+            Json{{"method", selected.method},
+                 {"confidence", selected.confidence},
+                 {"warning", selected.warning},
+                 {"excluded_regions", selected.excluded_regions},
+                 {"main_content_isolated", purpose == ExtractionPurpose::evidence && !selected.ambiguous &&
+                                               selected.method != "body_fallback"},
+                 {"scope", purpose == ExtractionPurpose::discovery ? "discovery_only"
+                           : selected.type == "index"              ? "collection"
+                                                                   : "main_content"},
+                 {"attribution_ambiguous", selected.ambiguous}};
+        struct Pending {
+            lxb_dom_node_t* node;
+            bool scoped;
+        };
+        std::vector<Pending> stack{{root, root == selected.root}};
         std::size_t visited = 0;
         std::size_t table_chars = 0;
+        std::size_t link_bytes = 0;
         std::set<std::string> seen_links;
         std::map<lxb_dom_node_t*, std::size_t> table_indexes;
         while (!stack.empty() && ++visited <= 100000) {
-            auto* node = stack.back();
+            const auto entry = stack.back();
             stack.pop_back();
-            if (node->type == LXB_DOM_NODE_TYPE_TEXT && text.size() < text_limit) {
+            auto* node = entry.node;
+            const bool scoped = entry.scoped || node == selected.root;
+            if (node->type == LXB_DOM_NODE_TYPE_TEXT && scoped && !selected.ambiguous &&
+                text.size() < text_limit) {
                 const auto& value = lxb_dom_interface_text(node)->char_data.data;
                 text += clipped(std::string_view(reinterpret_cast<const char*>(value.data), value.length),
                                 text_limit - text.size());
@@ -378,11 +407,24 @@ Json extract_document(const Transfer& response) {
             }
             if (node->type == LXB_DOM_NODE_TYPE_ELEMENT) {
                 const auto tag = node->local_name;
+                if (tag == LXB_TAG_TIME && scoped) {
+                    const auto field = attribute(node, "itemprop");
+                    const auto value = clipped(attribute(node, "datetime"), 128);
+                    if (field == "datePublished" && json_string(result, "published_at_reported").empty())
+                        result["published_at_reported"] = value;
+                    if (field == "dateModified" && json_string(result, "modified_at_reported").empty())
+                        result["modified_at_reported"] = value;
+                }
+                if (content::excluded(node))
+                    continue;
                 if (tag == LXB_TAG_TITLE) {
-                    result["title"] = node_text(node, 500);
+                    if (json_string(result, "title").empty())
+                        result["title"] = node_text(node, 500);
                     continue;
                 }
                 if (tag == LXB_TAG_SCRIPT) {
+                    if (purpose == ExtractionPurpose::discovery)
+                        continue;
                     if (lower(attribute(node, "type")) == "application/ld+json") {
                         try {
                             const auto raw = node_text(node, 65536, true);
@@ -437,10 +479,7 @@ Json extract_document(const Transfer& response) {
                         result["structured_metadata_parse_warning"] = true;
                     }
                 }
-                if (skip_tag(tag) ||
-                    lxb_dom_element_has_attribute(lxb_dom_interface_element(node),
-                                                  reinterpret_cast<const lxb_char_t*>("hidden"), 6) ||
-                    lower(attribute(node, "aria-hidden")) == "true")
+                if (skip_tag(tag))
                     continue;
                 if (tag == LXB_TAG_DIV) {
                     static const RE2 empty_search_class("(?:^|\\s)no-results__message(?:$|\\s)");
@@ -450,24 +489,41 @@ Json extract_document(const Transfer& response) {
                 }
                 if ((tag == LXB_TAG_H1 || tag == LXB_TAG_H2 || tag == LXB_TAG_H3 || tag == LXB_TAG_H4 ||
                      tag == LXB_TAG_H5 || tag == LXB_TAG_H6) &&
-                    result["headings"].size() < 24)
+                    scoped && !selected.ambiguous && result["headings"].size() < 24)
                     result["headings"].push_back(node_text(node, 500));
-                if (tag == LXB_TAG_A && result["links"].size() < 128) {
+                if (tag == LXB_TAG_A && scoped) {
                     try {
                         auto url = normalize_url(attribute(node, "href"), json_string(result, "final_url"));
-                        if (url.size() <= 2048 && seen_links.insert(url).second)
-                            result["links"].push_back(Json{{"url", url},
-                                                           {"text", node_text(node, 300)},
-                                                           {"class", clipped(attribute(node, "class"), 200)},
-                                                           {"rel", clipped(attribute(node, "rel"), 100)}});
+                        if (url.size() <= 2048 && !seen_links.contains(url)) {
+                            if (result["links"].size() >= 128)
+                                result["links_truncated"] = true;
+                            else {
+                                Json link{{"url", url},
+                                          {"text", node_text(node, 300)},
+                                          {"class", clipped(attribute(node, "class"), 200)},
+                                          {"rel", clipped(attribute(node, "rel"), 100)},
+                                          {"in_main_content",
+                                           !selected.ambiguous && purpose == ExtractionPurpose::evidence},
+                                          {"context", purpose == ExtractionPurpose::evidence
+                                                          ? node_text(node->parent ? node->parent : node, 800)
+                                                          : ""}};
+                                const auto bytes = link.dump().size();
+                                if (link_bytes + bytes <= 128 * 1024) {
+                                    seen_links.insert(url);
+                                    result["links"].push_back(std::move(link));
+                                    link_bytes += bytes;
+                                } else
+                                    result["links_truncated"] = true;
+                            }
+                        }
                     } catch (...) {
                     }
                 }
-                if (tag == LXB_TAG_TABLE && result["tables"].size() < 8) {
+                if (tag == LXB_TAG_TABLE && scoped && !selected.ambiguous && result["tables"].size() < 8) {
                     table_indexes[node] = result["tables"].size();
                     result["tables"].push_back(Json::array());
                 }
-                if (tag == LXB_TAG_TR) {
+                if (tag == LXB_TAG_TR && scoped && !selected.ambiguous) {
                     auto* parent = node->parent;
                     while (parent && parent->local_name != LXB_TAG_TABLE)
                         parent = parent->parent;
@@ -489,11 +545,16 @@ Json extract_document(const Transfer& response) {
                 }
             }
             for (auto* child = node->last_child; child; child = child->prev)
-                stack.push_back(child);
+                stack.push_back({child, scoped});
         }
-        result["content_truncated"] = visited > 100000 || text.size() >= text_limit;
+        result["content_truncated"] = selected.truncated || visited > 100000 || text.size() >= text_limit;
         text = compact(text);
     } else {
+        result["extraction"] = Json{{"method", "full_text"},
+                                    {"confidence", "high"},
+                                    {"scope", "document"},
+                                    {"main_content_isolated", true},
+                                    {"attribution_ambiguous", false}};
         text = clipped(body, text_limit);
         result["content_truncated"] = body.size() > text_limit;
         if (type.find("json") != type.npos) {
@@ -510,7 +571,7 @@ Json extract_document(const Transfer& response) {
             }
         }
     }
-    for (const auto& item : result["structured_metadata"]) {
+    for (auto& item : result["structured_metadata"]) {
         const auto kind = item.contains("@type") ? item["@type"].dump() : "";
         if (kind.find("Article") == kind.npos && kind.find("WebPage") == kind.npos &&
             kind.find("BlogPosting") == kind.npos)
@@ -523,6 +584,7 @@ Json extract_document(const Transfer& response) {
             } catch (...) {
             }
         }
+        item["attributed_to_document"] = document_scope;
         if (!document_scope)
             continue;
         if (json_string(result, "published_at_reported").empty() && item.contains("datePublished"))
@@ -542,6 +604,8 @@ Json extract_document(const Transfer& response) {
     result["body_sha256"] = sha256(response.body);
     result["content_sha256"] = sha256(text);
     result["status"] = challenge ? "challenge_required" : text.size() < 120 ? "insufficient_text" : "ok";
+    if (!challenge && json_bool(result.value("extraction", Json::object()), "attribution_ambiguous"))
+        result["status"] = "ambiguous_content";
     result["source_kind"] = html ? "html" : type.find("json") != type.npos ? "structured_data" : "text";
     const auto offers = extract_offer_records(schemas, variants, json_string(result, "final_url"));
     result["offers"] = offers["records"];
@@ -549,25 +613,74 @@ Json extract_document(const Transfer& response) {
         result["offers"] = retailer_offer_records(result);
     result["offers_truncated"] = json_bool(result, "offers_truncated") || json_bool(offers, "truncated");
     result["ambiguous_offer_reference_ids"] = offers["ambiguous_reference_ids"];
+    if (!result["offers"].empty() && json_string(result, "document_type") != "index")
+        result["document_type"] = "product";
+    result["substantive"] = purpose == ExtractionPurpose::evidence && json_string(result, "status") == "ok" &&
+                            json_string(result, "document_type") != "index" &&
+                            json_string(result, "document_type") != "teaser" &&
+                            (text_characters(text) >= 80 || !result["offers"].empty());
     return result;
 }
 
+std::size_t text_characters(std::string_view text) {
+    return static_cast<std::size_t>(
+        std::count_if(text.begin(), text.end(), [](unsigned char c) { return (c & 0xc0) != 0x80; }));
+}
+Json evidence_excerpt_details(std::string_view text, std::string_view query, std::size_t max_chars) {
+    // Source text and MCP strings have already been validated as UTF-8. Keep offsets
+    // into those original bytes: case folding a copy can change its byte length.
+    std::vector<std::size_t> offsets;
+    offsets.reserve(text.size() + 1);
+    for (std::size_t i = 0; i < text.size(); ++i)
+        if ((static_cast<unsigned char>(text[i]) & 0xc0) != 0x80)
+            offsets.push_back(i);
+    offsets.push_back(text.size());
+    const auto count = offsets.size() - 1;
+    std::size_t best = text.npos;
+    const auto find = [&](std::string_view term) {
+        const RE2 pattern("(?i)" + RE2::QuoteMeta(std::string(term)));
+        re2::StringPiece match;
+        if (pattern.ok() && pattern.Match(re2::StringPiece(text.data(), text.size()), 0, text.size(),
+                                          RE2::UNANCHORED, &match, 1))
+            best = std::min(best, static_cast<std::size_t>(match.data() - text.data()));
+    };
+    if (!query.empty() && count > max_chars) {
+        find(query);
+        if (best == text.npos) {
+            const RE2 words("([\\p{L}\\p{N}][\\p{L}\\p{N}_-]*)");
+            re2::StringPiece input(query.data(), query.size());
+            std::string word;
+            for (unsigned n = 0; n < 64 && RE2::FindAndConsume(&input, words, &word); ++n)
+                if (text_characters(word) >= 3 ||
+                    std::any_of(word.begin(), word.end(), [](unsigned char c) { return c >= 128; }))
+                    find(word);
+        }
+    }
+    const auto match_index =
+        best == text.npos ? 0
+                          : static_cast<std::size_t>(std::lower_bound(offsets.begin(), offsets.end(), best) -
+                                                     offsets.begin());
+    auto begin = match_index > max_chars / 4 ? match_index - max_chars / 4 : 0;
+    begin = std::min(begin, count > max_chars ? count - max_chars : 0);
+    const auto end = begin + std::min(max_chars, count - begin);
+    return Json{{"excerpt", std::string(text.substr(offsets[begin], offsets[end] - offsets[begin]))},
+                {"excerpt_chars", end - begin},
+                {"excerpt_bytes", offsets[end] - offsets[begin]},
+                {"excerpt_start_char", begin},
+                {"excerpt_end_char", end},
+                {"excerpt_start_byte", offsets[begin]},
+                {"excerpt_end_byte", offsets[end]},
+                {"excerpt_truncated", begin != 0 || end != count},
+                {"excerpt_selection", count <= max_chars  ? "full_text"
+                                      : best != text.npos ? "query_match"
+                                                          : "lead"},
+                {"excerpt_offsets_scope", "stored_extracted_text"},
+                {"excerpt_character_unit", "unicode_code_points"}};
+}
 std::string evidence_excerpt(std::string_view text, std::string_view query, std::size_t max_chars) {
     if (text.size() <= max_chars)
         return std::string(text);
-    const auto haystack = lower(std::string(text));
-    std::size_t best = text.npos;
-    for (const auto& word : split(lower(std::string(query)), ' ', false)) {
-        if (word.size() < 3)
-            continue;
-        const auto found = haystack.find(word);
-        if (found != haystack.npos)
-            best = std::min(best, found);
-    }
-    std::size_t begin = best == text.npos || best < max_chars / 4 ? 0 : best - max_chars / 4;
-    while (begin && (static_cast<unsigned char>(text[begin]) & 0xc0) == 0x80)
-        --begin;
-    return clipped(text.substr(begin), max_chars);
+    return json_string(evidence_excerpt_details(text, query, max_chars), "excerpt");
 }
 
 bool robots_allowed(std::string_view robots, std::string_view path, std::string_view agent) {

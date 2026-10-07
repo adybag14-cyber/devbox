@@ -189,7 +189,7 @@ Json parse_search_response(std::string_view provider, const Transfer& response,
 
 Json discover_sources(Transport& transport, const Json& plan, const fs::path& health_root,
                       const TransportLimits& limits, Clock::time_point deadline, const Cancel& cancel) {
-    Json result{{"urls", Json::array()}, {"providers", Json::array()}};
+    Json result{{"urls", Json::array()}, {"candidates", Json::array()}, {"providers", Json::array()}};
     const auto mode = json_string(plan, "discovery", "web");
     const auto queries = mode == "none" ? std::vector<std::string>{} : json_strings(plan, "queries");
     Json summary{{"status", mode == "none" ? "disabled" : "complete"},
@@ -264,8 +264,20 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
                         found = true;
                         if (choice > 0)
                             ++fallback;
-                        for (const auto& candidate : urls)
+                        std::size_t rank = 0;
+                        for (const auto& candidate : urls) {
                             result["urls"].push_back(candidate);
+                            if (result["candidates"].size() < 1600)
+                                result["candidates"].push_back(
+                                    Json{{"url", candidate},
+                                         {"provenance", Json{{"kind", "search"},
+                                                             {"provider", provider},
+                                                             {"query_index", index},
+                                                             {"rank", ++rank},
+                                                             {"depth", 0}}}});
+                            else
+                                result["candidate_provenance_truncated"] = true;
+                        }
                     }
                 } else if (status == "budget_exhausted") {
                     exhausted = true;

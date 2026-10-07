@@ -1,4 +1,5 @@
 #include "devbox/capture.hpp"
+#include "devbox/computer_x11.hpp"
 #ifndef _WIN32
 #include "devbox/native.hpp"
 #include <algorithm>
@@ -216,6 +217,33 @@ ImageCapture native_capture(std::optional<std::uint32_t> pid, unsigned quality, 
         throw Error("quality must be between 1 and 100.");
     if (pid && *pid == 0)
         throw Error("pid must be a positive process ID.");
+#if defined(__linux__) && !defined(__ANDROID__)
+    // Keep Wayland and remote-display compatibility paths below. Local X11 uses
+    // the same native pixel/window implementation as computer use, without input.
+    if (!environment("WAYLAND_DISPLAY") && env_or("DISPLAY", "").starts_with(':')) {
+        std::set<std::uint32_t> pids;
+        std::string process_name;
+        if (pid) {
+            const auto processes = process_table(cancel);
+            const auto found = processes.find(*pid);
+            if (found == processes.end())
+                throw Error("Linux process " + std::to_string(*pid) + " does not exist.");
+            pids = process_tree(processes, *pid, include_tree);
+            process_name = found->second.name;
+        }
+        auto captured = capture_x11_native(pids, cancel);
+        captured.metadata["capture_mode"] = pid ? "program_pid" : "full_display";
+        captured.metadata["quality"] = quality;
+        if (pid) {
+            captured.metadata["pid"] = *pid;
+            captured.metadata["process_name"] = process_name;
+            captured.metadata["candidate_pid_count"] = pids.size();
+            captured.metadata["process_tree_fallback"] =
+                json_uint(captured.metadata, "window_owner_pid") != *pid;
+        }
+        return captured;
+    }
+#endif
 #ifndef __APPLE__
     if (!environment("DISPLAY") && !environment("WAYLAND_DISPLAY"))
         throw Error("No DISPLAY or WAYLAND_DISPLAY is available for Linux screen capture.");
