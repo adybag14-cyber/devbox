@@ -365,6 +365,15 @@ void issue88_extraction_tests() {
     require(index["document_type"] == "index" && index["substantive"] == false && !index["links"].empty(),
             "issue88: indexes remain useful for discovery but are not substantive sources");
 
+    for (const auto* path : {"/magazine/archive/2024/06/observatory-report/", "/archive/statement"}) {
+        response.url = response.final_url = std::string("https://example.org") + path;
+        response.body = "<title>Observatory statement</title><article><h1>Observatory statement</h1><p>" +
+                        article + "</p></article>";
+        const auto archived = web::extract_document(response);
+        require(archived["document_type"] == "article" && archived["substantive"] == true,
+                "identified articles are not indexes because an archive component occurs in the URL");
+    }
+
     response.url = response.final_url = "https://example.org/updates";
     response.body = "<title>Latest updates</title><main><article><div class='entry-content'>" + article +
                     "</div></article><article><div class='entry-content'>" + article +
@@ -734,7 +743,7 @@ void issue88_research_tests(HttpFixture& server, const fs::path& root) {
         return doc;
     };
     const Json citation{
-        {"url", server.url("/doc/original-citation")},
+        {"url", server.url("/magazine/archive/2024/06/original-citation")},
         {"text", "выяснили"},
         {"context", "Photon detector measurements were reported by the original observatory."},
         {"in_main_content", true},
@@ -743,6 +752,7 @@ void issue88_research_tests(HttpFixture& server, const fs::path& root) {
                    {"text", "Photon detector research"},
                    {"context", "Photon detector research tags"},
                    {"in_main_content", true}};
+    (void)store("/magazine/archive/2024/06/original-citation", page("original-citation"));
     (void)store("/issue88-seed", page("seed"), Json::array({tag, citation}));
     Json plan{{"topic", "photon detector research"},
               {"mode", "fast"},
@@ -767,7 +777,8 @@ void issue88_research_tests(HttpFixture& server, const fs::path& root) {
     const auto edges = retained_candidates(root / "citation-expansion");
     require(std::any_of(edges.begin(), edges.end(),
                         [&](const auto& item) {
-                            return json_string(item, "url") == server.url("/doc/original-citation") &&
+                            return json_string(item, "url") ==
+                                       server.url("/magazine/archive/2024/06/original-citation") &&
                                    item["provenance"][0]["parent_source_id"] == "s1" &&
                                    item["provenance"][0]["anchor"] == "выяснили" && item["depth"] == 1;
                         }),

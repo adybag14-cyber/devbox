@@ -219,12 +219,14 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
         native_window_test(io, service);
 #elif !defined(__APPLE__)
-        const auto display = environment("DISPLAY"), wayland = environment("WAYLAND_DISPLAY");
+        const auto display = environment("DISPLAY"), wayland = environment("WAYLAND_DISPLAY"),
+                   runtime_path = environment("PATH");
         set_environment("DISPLAY", {});
         set_environment("WAYLAND_DISPLAY", {});
         ScopeExit restore([&] {
             set_environment("DISPLAY", display);
             set_environment("WAYLAND_DISPLAY", wayland);
+            set_environment("PATH", runtime_path);
         });
         try {
             (void)native_capture({}, 70, true);
@@ -233,6 +235,19 @@ int main(int argc, char** argv) {
             require(std::string(e.what()).find("No DISPLAY or WAYLAND_DISPLAY") != std::string::npos,
                     e.what());
         }
+#if defined(__linux__) && !defined(__ANDROID__)
+        // Exercise the real capture dispatch with both a Wayland display and an
+        // unusable Xwayland display. The fixture helper identifies the selected
+        // backend without requiring access to the developer's desktop.
+        write_file(root / "grim", "#!/bin/sh\nprintf '\\211PNG\\r\\n\\032\\n' > \"$1\"\n");
+        fs::permissions(root / "grim", fs::perms::owner_all);
+        set_environment("DISPLAY", ":65530");
+        set_environment("WAYLAND_DISPLAY", "wayland-fixture");
+        set_environment("PATH", path_text(root));
+        const auto wayland_capture = native_capture({}, 70, true);
+        require(wayland_capture.metadata["capture_method"] == "grim",
+                "Wayland full-display capture takes precedence over Xwayland");
+#endif
 #endif
         std::cout << "capture tests passed\n";
         return 0;

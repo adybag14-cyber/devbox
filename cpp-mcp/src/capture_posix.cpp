@@ -220,7 +220,7 @@ ImageCapture native_capture(std::optional<std::uint32_t> pid, unsigned quality, 
 #if defined(__linux__) && !defined(__ANDROID__)
     // Keep Wayland and remote-display compatibility paths below. Local X11 uses
     // the same native pixel/window implementation as computer use, without input.
-    if (env_or("DISPLAY", "").starts_with(':')) {
+    if (!environment("WAYLAND_DISPLAY") && env_or("DISPLAY", "").starts_with(':')) {
         std::set<std::uint32_t> pids;
         std::string process_name;
         if (pid) {

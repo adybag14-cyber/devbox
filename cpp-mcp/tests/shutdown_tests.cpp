@@ -2,6 +2,7 @@
 #include "devbox/engine.hpp"
 #include "devbox/filesystem_worker.hpp"
 #include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <csignal>
 #include <future>
 #include <iostream>

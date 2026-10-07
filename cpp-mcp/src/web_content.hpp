@@ -14,5 +14,6 @@ struct Selection {
 };
 bool excluded(lxb_dom_node_t* node);
 bool non_text_tag(std::uintptr_t tag);
+bool index_path(std::string_view path);
 Selection select(lxb_dom_node_t* document, std::string_view url);
 } // namespace devbox::web::content

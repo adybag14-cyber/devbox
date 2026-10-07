@@ -41,12 +41,18 @@ try {
   delete env.WAYLAND_DISPLAY;delete env.DEVBOX_COMPUTER_USE_PIPE;
   delete env.SESSION_MANAGER;delete env.DBUS_SESSION_BUS_ADDRESS;
   env.HOME=path.join(root,'home');await mkdir(env.HOME);
-  if(process.env.DEVBOX_X11_TEST_WM==='1') {
-    const wm=child('openbox',['--sm-disable'],env);
-    await until(async()=>{const value=await run('xprop',['-root','_NET_SUPPORTING_WM_CHECK'],env);return value.stdout.includes('window id #');},()=>wm.output());
+  const requireWm=process.env.DEVBOX_X11_TEST_WM==='1';
+  if(requireWm) {
+    // Openbox invokes this hook after installing its event handlers. Polling
+    // _NET_SUPPORTING_WM_CHECK can observe an earlier, incomplete startup state
+    // and repeatedly opens X connections during that sensitive phase.
+    const wm=child('openbox',['--sm-disable','--startup','/usr/bin/printf DEVBOX_WM_READY'],env);
+    await until(()=>wm.output().includes('DEVBOX_WM_READY'),()=>wm.output());
   }
-  const window=child(path.join(root,'fixture'),[],env);
+  const window=child(path.join(root,'fixture'),requireWm?['--wait-for-wm']:[],env);
   await until(()=>window.output().includes('ready '),()=>window.output());
+  window.handle.stdin.write('map\n');
+  await until(()=>window.output().includes('mapped\n'),()=>window.output());
   const port=await new Promise(resolve=>{const socket=net.createServer();socket.listen(0,'127.0.0.1',()=>{const p=socket.address().port;socket.close(()=>resolve(p));});});
   const workspace=path.join(root,'workspace');await mkdir(workspace);
   Object.assign(env,{DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),MCP_AUTH_MODE:'none',PUBLIC_BASE_URL:'',DEVBOX_RUNTIME_MODE:'host',ENABLE_HOST_EXEC:'true',DEVBOX_AUTO_START:'false',HOST_WORKSPACE_PATH:workspace,DEVBOX_WORKSPACE_PATH:workspace,HOST_DEFAULT_WORKDIR:workspace,HOST_SHELL:'/bin/sh',MCP_STATE_ROOT:path.join(root,'run/state'),MCP_JOBS_ROOT:path.join(root,'jobs'),MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE:'1'});
@@ -64,8 +70,6 @@ try {
   assert.equal(capability.data.computer_use.supported,true);
   assert.equal(capability.data.platform_availability.desktop_input,'permission_probe_on_use');
   const reject=async(args,pattern)=>{const value=await client.callTool({name:'host_computer_use',arguments:args});assert.equal(value.isError,true);assert.match(JSON.stringify(value),pattern);};
-  window.handle.stdin.write('map\n');
-  await until(()=>window.output().includes('ack map'),()=>window.output());
   let inventory;
   try {
     await until(async()=>{inventory=await invoke('host_computer_windows',{title_contains:'Devbox native input fixture'});return inventory.data.windows.length===1;},()=>JSON.stringify(inventory)+server.output()+window.output());

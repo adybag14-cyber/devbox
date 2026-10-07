@@ -73,6 +73,13 @@ bool self_link(lxb_dom_node_t* node, std::string_view url) {
     return link->get_href() == parent->get_href();
 }
 } // namespace
+bool index_path(std::string_view path) {
+    // An archive/category component within a dated article path is not itself
+    // evidence that the URL is a listing. Keep discovery and extraction aligned.
+    static const RE2 pattern(
+        "(?i)(?:^|/)(?:tags?|categor(?:y|ies)|topics?|search|archives?|authors?)(?:/[^/]+)?/?$");
+    return RE2::PartialMatch(path, pattern);
+}
 bool non_text_tag(std::uintptr_t tag) {
     return tag == LXB_TAG_SCRIPT || tag == LXB_TAG_STYLE || tag == LXB_TAG_TEMPLATE || tag == LXB_TAG_SVG ||
            tag == LXB_TAG_CANVAS || tag == LXB_TAG_NAV || tag == LXB_TAG_FOOTER || tag == LXB_TAG_FORM ||
@@ -243,10 +250,11 @@ Selection select(lxb_dom_node_t* document, std::string_view url) {
     std::string path;
     if (const auto parsed = ada::parse<ada::url_aggregator>(url))
         path = std::string(parsed->get_pathname());
-    static const RE2 index_path(
-        "(?i)(?:^|/)(?:tags?|categor(?:y|ies)|topics?|search|archives?|authors?)(?:/|$)");
     const auto& selected = nodes[chosen];
-    const bool known_index = RE2::PartialMatch(path, index_path);
+    const bool identified_article =
+        result.type == "article" &&
+        (selected.headline || selected.permalink || attribute(selected.node, "data-tv-page-type") == "post");
+    const bool known_index = !identified_article && index_path(path);
     if (known_index || unresolved || (selected.links >= 6 && selected.linked_bytes * 2 > selected.bytes)) {
         chosen = main != none ? main : body != none ? body : chosen;
         result.type = "index";

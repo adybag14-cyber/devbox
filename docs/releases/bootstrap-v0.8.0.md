@@ -14,6 +14,10 @@ capture in C++23. Full and core-only archives remain available for qualified tar
 - Old extraction caches are invalidated, and historical ledgers are marked explicitly.
 - Local X11 display/program/process-tree capture uses native XCB without screenshot
   utilities, XTEST or focus changes. Existing computer-use input safeguards remain.
+- Wayland capture retains priority over Xwayland. Archived articles keep their
+  article identity, and citations with dated archive paths remain discoverable.
+- X11 qualification waits for Openbox's completed startup and verifies that the
+  fixture is mapped and managed before testing input.
 - Narrower Boost includes reduce measured preprocessing work. Paired compression
   measurements retain libdeflate's fast path alongside streaming zlib.
 

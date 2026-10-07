@@ -3,6 +3,7 @@
 #include "devbox/result.hpp"
 #include "devbox/storage.hpp"
 #include "devbox/web_retailers.hpp"
+#include "web_content.hpp"
 #include <algorithm>
 #include <iomanip>
 #include <map>
@@ -162,9 +163,7 @@ bool source_candidate(std::string_view url) {
     return true;
 }
 bool index_link(std::string_view url) {
-    static const RE2 pattern(
-        "(?i)(?:^|/)(?:tags?|categor(?:y|ies)|topics?|search|archives?|authors?)(?:/|$)");
-    return RE2::PartialMatch(Url::parse(url).path, pattern);
+    return content::index_path(Url::parse(url).path);
 }
 struct TextSignature {
     std::vector<std::uint64_t> shingles;
