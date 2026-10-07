@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
     config->jobs_root = root / "jobs";
     config->state_root = root / "state";
     config->state_backend = "sqlite";
-    config->job_retention_hours = 0;
+    config->job_retention_hours = 1;
     config->job_store_max_terminal_jobs = 4;
     config->job_store_max_bytes = 1000000;
     ScopeExit clean([&] {
@@ -46,13 +46,46 @@ int main(int argc, char** argv) {
         for (int i = 0; i < 140; ++i) {
             const auto id = "job-test-" + std::to_string(10000 + i);
             const Json request{{"id", id}, {"agent", {{"taskId", "fixture"}}}};
-            const Json status{{"id", id}, {"status", "succeeded"}, {"completedAtUtc", utc_now()}};
+            const Json status{{"id", id},
+                              {"status", "succeeded"},
+                              {"completedAtUtc", i == 1 ? "2000-01-01T00:00:00Z" : utc_now()}};
             const auto paths = initial.create_job(id, request, status);
             write_file(paths.stdout_log, std::string(1000, 'x'));
-            if (i == 0) {
+            if (i <= 1) {
                 ensure_directory(paths.dir / "research" / "documents");
                 write_file(paths.dir / "research" / "ledger.json", "{}");
+                write_file(paths.dir / "research" / "candidates-0.json", std::string(12000, 'a'));
+                write_file(paths.dir / "research" / "candidates-1.json", std::string(13000, 'b'));
+                {
+                    FileLock ledger_lock(paths.dir / "research" / ".ledger.lock", Millis(1000), {}, true);
+                }
                 write_file(paths.dir / "research" / "documents" / "s1.json", std::string(30000, 'x'));
+                const Json inspect{{"root", path_text(config->jobs_root)}, {"id", id}};
+                for (const auto& unexpected : {"candidates-2.json", "candidates-00.json", "other.json"}) {
+                    const auto file = paths.dir / "research" / unexpected;
+                    write_file(file, "must remain");
+                    bool rejected = false;
+                    try {
+                        auto removal = inspect;
+                        removal["remove"] = true;
+                        (void)job_filesystem_operation(removal);
+                    } catch (const Error& error) {
+                        rejected = std::string(error.what()).find("JOB_DIRECTORY_UNEXPECTED_ENTRY") !=
+                                   std::string::npos;
+                    }
+                    require(rejected && fs::exists(file), "unknown research files deny all reclamation");
+                    fs::remove(file);
+                }
+                const auto saved_status = read_json(paths.status);
+                auto active_status = saved_status;
+                active_status["status"] = "running";
+                write_json_atomic(paths.status, active_status);
+                auto removal = inspect;
+                removal["remove"] = true;
+                require(!json_bool(job_filesystem_operation(removal), "deleted") &&
+                            fs::exists(paths.dir / "research" / "candidates-1.json"),
+                        "recognized checkpoint files do not authorize active-job deletion");
+                write_json_atomic(paths.status, saved_status);
             }
         }
         initial.write_operation_receipt("job-test-10000", Json{{"fingerprint", "retained-effect"},
@@ -65,6 +98,9 @@ int main(int argc, char** argv) {
         const auto first = initial.reconcile_maintenance(7);
         require(first["scanned"] == 7 && first["errors"] == 0 && first["batchLimited"] == true,
                 "indexed maintenance visits exactly a bounded page, not unrelated directories");
+        require(first["deleted"] == 1 && !fs::exists(initial.paths("job-test-10001").dir) &&
+                    initial.get_status("job-test-10001")["artifactsAvailable"] == false,
+                "expired research snapshots are reclaimed while terminal identity remains readable");
         const auto store = initial.index();
         const auto cursor = json_string(store->get("maintenance", "job-usage")->data, "after");
         require(!cursor.empty() && store->count("job_usage") == 7,
@@ -73,8 +109,8 @@ int main(int argc, char** argv) {
         require(restarted.reconcile_maintenance(5)["scanned"] == 5 && store->count("job_usage") == 12 &&
                     json_string(store->get("maintenance", "job-usage")->data, "after") > cursor,
                 "new frontend resumes the durable maintenance cursor without a directory index rebuild");
-        require(json_uint(store->get("job_usage", "job-test-10000")->data, "bytes") > 30000,
-                "research ledger and document bytes are included in quota accounting");
+        require(json_uint(store->get("job_usage", "job-test-10000")->data, "bytes") > 55000,
+                "research ledger, both candidate snapshots and document bytes are charged");
         Json result;
         std::uint64_t injected_errors = 0;
         bool pending_observed = false;
