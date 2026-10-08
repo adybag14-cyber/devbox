@@ -940,6 +940,14 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
                             CaptureAccumulator& err, bool& process_started) {
     auto input_pipe = make_pipe(), stdout_pipe = make_pipe(), stderr_pipe = make_pipe();
+#ifdef __APPLE__
+    // Darwin sends pipe EPIPE signals to the process, not necessarily this
+    // writing thread. A thread mask alone cannot protect an unblocked sibling.
+    // Suppress only this owned descriptor's signal; retain EPIPE reporting and
+    // leave the application's process-wide SIGPIPE disposition unchanged.
+    if (::fcntl(input_pipe.write.get(), F_SETNOSIGPIPE, 1) < 0)
+        throw Error(std::strerror(errno));
+#endif
     const auto checked = [](int result) {
         if (result)
             throw Error(std::strerror(result));

@@ -36,6 +36,8 @@ The process suite verifies exact byte length and SHA-256 at and around pipe-buff
 
 The wider native suite must pass on the exact source being proposed. Native desktop tests belong in a controlled desktop/CI session; timing probes must not operate unrelated user windows.
 
+The pending-stdin regression also exposed a macOS correctness issue: Darwin's non-socket `EPIPE` path signals the process, so blocking SIGPIPE only on the writing thread cannot protect another unblocked thread. The parent now sets `F_SETNOSIGPIPE` on its owned stdin write descriptor before launching the child. This retains `EPIPE` error reporting without changing the application's global signal disposition. The original regression remains enabled. See Apple's [write signal path](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/sys_generic.c) and [descriptor-specific suppression](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_descrip.c).
+
 ## Interpret agent-facing timings separately
 
 Correlate each measured client call with its tool invocation and HTTP request ID. Report server HTTP duration and the remaining client interval separately. That remaining interval includes connector, network and orchestration overhead; it is not a Cloudflare-only measurement. Group independent read operations concurrently when their semantics allow it, retaining sequential order for dependencies and serialized desktop input.
