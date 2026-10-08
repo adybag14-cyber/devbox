@@ -83,9 +83,13 @@ int child(int argc, char** argv) {
         while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
         }
 #endif
-    } else if (mode == "stdin") {
+    } else if (mode == "stdin" || mode == "stdin-hash" || mode == "stdin-delayed") {
+        if (mode == "stdin-delayed")
+            std::this_thread::sleep_for(Millis(50));
         const std::string input((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
         std::cout << input.size();
+        if (mode != "stdin")
+            std::cout << ':' << sha256(input);
     } else if (mode == "exit") {
         std::cout << "out";
         std::cerr << "err";
@@ -174,6 +178,57 @@ int test_main(int argc, char** argv) {
                         "0",
                     "absent and empty stdin reach EOF without hanging the child");
         }
+        for (const auto size : {1U, 4096U, 65535U, 65536U, 65537U, 131072U, 1048593U}) {
+            ProcessOptions options;
+            std::string bytes(size, '\0');
+            for (std::size_t i = 0; i < bytes.size(); ++i)
+                bytes[i] = static_cast<char>(i % 251);
+            options.input = bytes;
+            options.timeout = Millis(5000);
+            const auto value =
+                spawn_process(path_text(executable_path()), {"--child", "stdin-hash"}, options);
+            require(value.stdout_text == std::to_string(bytes.size()) + ':' + sha256(bytes),
+                    "stdin EOF preserves every byte across pipe buffer and write chunk boundaries");
+        }
+        for (const auto size : {1U, 65536U, 65537U}) {
+            ProcessOptions options;
+            options.input = std::string(size, 'd');
+            options.timeout = Millis(5000);
+            const auto value =
+                spawn_process(path_text(executable_path()), {"--child", "stdin-delayed"}, options);
+            require(value.stdout_text == std::to_string(size) + ':' + sha256(*options.input),
+                    "closing completed stdin preserves buffered data for a delayed reader");
+        }
+        for (const bool cancel_pending : {false, true}) {
+            ProcessOptions options;
+            options.input = std::string(2 * 1024 * 1024, 'p');
+            options.timeout = Millis(cancel_pending ? 5000 : 200);
+            options.termination_grace = Millis(1000);
+            auto cancel = std::make_shared<Cancellation>();
+            std::uint32_t owned_pid = 0;
+            std::optional<std::uint64_t> owned_instance;
+            options.on_pid = [&](std::uint32_t pid) {
+                owned_pid = pid;
+                owned_instance = process_instance(pid);
+            };
+            options.on_output = [&](OutputStream stream, std::string_view bytes) {
+                if (cancel_pending && stream == OutputStream::stdout_stream &&
+                    bytes.find("ready") != bytes.npos)
+                    cancel->cancel();
+            };
+            bool stopped = false;
+            const auto start = Clock::now();
+            try {
+                // This child never reads stdin, leaving a pipe write pending.
+                spawn_process(path_text(executable_path()), {"--child", "sleep"}, options, cancel);
+            } catch (const ProcessError& error) {
+                stopped = cancel_pending ? error.aborted : error.timed_out;
+            }
+            require(stopped && owned_pid && owned_instance &&
+                        !process_matches_instance(owned_pid, owned_instance) &&
+                        Clock::now() - start < Millis(3000),
+                    "deadline and cancellation complete with a pending stdin write and no live owned child");
+        }
         CaptureAccumulator capture(6);
         capture.push("a\xf0\x9f");
         capture.push("\x98\x80"
@@ -193,6 +248,28 @@ int test_main(int argc, char** argv) {
         require(zero.snapshot().text.empty() && zero.snapshot().original_chars == 4 &&
                     zero.snapshot().truncated,
                 "zero capture bound");
+        {
+            const std::string bytes = "A😀\xe0\x80\x80\xff\n\xed\xa0\x80Z\xf0\x9f";
+            for (std::size_t chunk = 1; chunk <= 7; ++chunk) {
+                CaptureAccumulator counted(0), reference(std::nullopt);
+                for (std::size_t at = 0; at < bytes.size(); at += chunk) {
+                    const auto part = std::string_view(bytes).substr(at, chunk);
+                    counted.push(part);
+                    reference.push(part);
+                }
+                counted.finish();
+                reference.finish();
+                const auto result = counted.snapshot();
+                require(result.text.empty() && result.truncated &&
+                            result.original_chars == reference.snapshot().original_chars,
+                        "zero capture preserves malformed and split Unicode scalar counts");
+            }
+            CaptureAccumulator empty(0);
+            empty.push("");
+            empty.finish();
+            require(!empty.snapshot().truncated && empty.snapshot().original_chars == 0,
+                    "empty zero capture is not truncated");
+        }
         const auto self = path_text(executable_path());
 #ifdef _WIN32
         {

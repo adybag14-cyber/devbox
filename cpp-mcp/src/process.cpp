@@ -62,6 +62,14 @@ void check_string(std::string_view value) {
 }
 } // namespace
 void CaptureAccumulator::push_text(std::string_view text) {
+    // Workers with an on_output sink retain their bounded raw bytes separately.
+    // A zero capture limit still counts sanitized Unicode scalars, but creating
+    // one string/deque entry per discarded scalar adds no observable value.
+    if (limit_ == 0) {
+        count_ += scalar_count(text);
+        truncated_ = count_ != 0;
+        return;
+    }
     for (auto&& scalar : characters(text)) {
         ++count_;
         if (!limit_ || (!truncated_ && count_ <= *limit_)) {
@@ -81,6 +89,15 @@ void CaptureAccumulator::push_text(std::string_view text) {
     }
 }
 void CaptureAccumulator::push(std::string_view bytes) {
+    // ASCII is already valid UTF-8 and each byte is one scalar. With no
+    // incomplete preceding sequence and no retained text, even the sanitizer
+    // copies are unnecessary (notably for raw base64 worker responses).
+    if (limit_ == 0 && pending_.empty() &&
+        std::all_of(bytes.begin(), bytes.end(), [](unsigned char c) { return c < 0x80; })) {
+        count_ += bytes.size();
+        truncated_ = count_ != 0;
+        return;
+    }
     pending_.append(bytes);
     auto boundary = pending_.size();
     if (!pending_.empty()) {
@@ -547,35 +564,38 @@ Pipe empty_input() {
         throw Error(windows_error());
     return {NativeHandle(), std::move(child)};
 }
-void read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
+bool read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
                     const ProcessOptions& options) {
     std::vector<char> buffer(16384);
+    bool progressed = false;
     // Bound each pass so continuously chatty children cannot starve cancellation or stderr.
     for (int pass = 0; pipe && pass < 16; ++pass) {
         DWORD available = 0;
         if (!PeekNamedPipe(pipe.get(), nullptr, 0, nullptr, &available, nullptr)) {
             if (GetLastError() == ERROR_BROKEN_PIPE) {
                 pipe.reset();
-                return;
+                return progressed;
             }
             throw Error(windows_error());
         }
         if (!available)
-            return;
+            return progressed;
         DWORD count = 0;
         if (!ReadFile(pipe.get(), buffer.data(),
                       std::min<DWORD>(available, static_cast<DWORD>(buffer.size())), &count, nullptr)) {
             if (GetLastError() == ERROR_BROKEN_PIPE) {
                 pipe.reset();
-                return;
+                return progressed;
             }
             throw Error(windows_error());
         }
+        progressed = progressed || count != 0;
         const std::string_view bytes(buffer.data(), count);
         capture.push(bytes);
         if (options.on_output)
             options.on_output(stream, bytes);
     }
+    return progressed;
 }
 RawProcessResult run_native(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
@@ -773,34 +793,53 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     result.pid = information.dwProcessId;
     std::optional<Clock::time_point> exited, forced;
     while (true) {
-        read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options);
-        read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options);
-        if (stdin_pipe.parent) {
+        const auto stdout_progress =
+            read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options);
+        const auto stderr_progress =
+            read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options);
+        // Advance immediately while the pipe accepts input. The bounded pass
+        // preserves stdout/stderr and cancellation service between write bursts.
+        for (int pass = 0; stdin_pipe.parent && pass < 16; ++pass) {
             DWORD written = 0;
-            if (write_pending && GetOverlappedResult(stdin_pipe.parent.get(), &writer, &written, FALSE)) {
-                write_pending = false;
-                input_offset += written;
-            } else if (write_pending && GetLastError() != ERROR_IO_INCOMPLETE) {
-                write_pending = false;
-                stdin_pipe.parent.reset();
-            }
-            if (!write_pending && stdin_pipe.parent) {
-                if (input_offset >= input.size())
+            if (write_pending) {
+                if (!GetOverlappedResult(stdin_pipe.parent.get(), &writer, &written, FALSE)) {
+                    if (GetLastError() == ERROR_IO_INCOMPLETE)
+                        break;
+                    write_pending = false;
                     stdin_pipe.parent.reset();
-                else {
-                    ResetEvent(writer.hEvent);
-                    const auto count =
-                        static_cast<DWORD>(std::min<std::size_t>(65536, input.size() - input_offset));
-                    if (WriteFile(stdin_pipe.parent.get(), input.data() + input_offset, count, &written,
-                                  &writer))
-                        input_offset += written;
-                    else if (GetLastError() == ERROR_IO_PENDING)
-                        write_pending = true;
-                    else
-                        stdin_pipe.parent.reset();
+                    break;
                 }
+                write_pending = false;
+                if (!written || written > input.size() - input_offset)
+                    throw Error("Child stdin completion made invalid progress");
+                input_offset += written;
+            }
+            if (input_offset >= input.size()) {
+                stdin_pipe.parent.reset();
+                break;
+            }
+            ResetEvent(writer.hEvent);
+            const auto count = static_cast<DWORD>(std::min<std::size_t>(65536, input.size() - input_offset));
+            if (WriteFile(stdin_pipe.parent.get(), input.data() + input_offset, count, nullptr, &writer)) {
+                // An overlapped handle may complete synchronously. Its completion
+                // record is authoritative even in that case (WriteFile contract).
+                if (!GetOverlappedResult(stdin_pipe.parent.get(), &writer, &written, FALSE))
+                    throw Error(windows_error());
+                if (!written || written > count)
+                    throw Error("Child stdin write made invalid progress");
+                input_offset += written;
+            } else {
+                if (GetLastError() == ERROR_IO_PENDING)
+                    write_pending = true;
+                else
+                    stdin_pipe.parent.reset();
+                break;
             }
         }
+        // EOF is part of request delivery: EOF-reading workers cannot start
+        // their operation until this handle closes. Never defer it to a timer.
+        if (stdin_pipe.parent && !write_pending && input_offset == input.size())
+            stdin_pipe.parent.reset();
         const auto now = Clock::now();
         if (!exited && WaitForSingleObject(process.get(), 0) == WAIT_OBJECT_0) {
             DWORD code = 0;
@@ -825,10 +864,17 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
         if (forced && !exited && now - *forced >= options.termination_grace)
             break;
         if (!exited) {
+            // Poll only when no pipe made progress. A full bounded output pass
+            // can leave the child blocked behind more readable bytes; sleeping
+            // here throttles large responses by the Windows timer quantum.
+            if (stdout_progress || stderr_progress || (stdin_pipe.parent && !write_pending))
+                continue;
             // A process handle signals as soon as the owned child exits. Avoid
             // delaying a completed child until the next coarse Windows timer
             // tick; retain the bounded interval for pipe and cancellation work.
-            const auto waited = WaitForSingleObject(process.get(), 5);
+            // A pending stdin completion also makes work ready immediately.
+            const HANDLE waits[]{process.get(), writer.hEvent};
+            const auto waited = WaitForMultipleObjects(write_pending ? 2 : 1, waits, FALSE, 5);
             if (waited == WAIT_FAILED)
                 throw Error(windows_error());
         } else if (cancel && !cancel->cancelled())
