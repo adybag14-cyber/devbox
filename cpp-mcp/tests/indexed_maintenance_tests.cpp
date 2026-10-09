@@ -12,6 +12,13 @@ void require(bool value, const char* message) {
 int main(int argc, char** argv) {
     if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
         return run_filesystem_worker([](std::string_view op, const Json& args) {
+            if (op == "job_files_read_batch") {
+                const auto root = path_from_utf8(json_string(args, "root"));
+                if (fs::exists(root / ".fail-read-batch")) {
+                    write_file(root / ".read-batch-failure-observed", "owned fixture");
+                    throw Error("INJECTED_READ_BATCH_FAILURE");
+                }
+            }
             if (op == "job_files" && json_bool(args, "remove") &&
                 json_string(args, "id") == "job-test-10000") {
                 const auto root = path_from_utf8(json_string(args, "root"));
@@ -91,6 +98,47 @@ int main(int argc, char** argv) {
         initial.write_operation_receipt("job-test-10000", Json{{"fingerprint", "retained-effect"},
                                                                {"submitted", true},
                                                                {"agent", {{"taskId", "fixture"}}}});
+        {
+            const auto first = initial.paths("job-test-10002"), second = initial.paths("job-test-10003");
+            const auto old_status = read_file(first.status), old_log = read_file(first.stdout_log);
+            const Json request{{"root", path_text(config->jobs_root)},
+                               {"ids", Json::array({"job-test-10002", "job-test-10003"})}};
+            auto batch = filesystem_operation("job_files_read_batch", request);
+            require(batch.size() == 2 && json_bool(batch[0]["observation"], "exists") &&
+                        json_uint(batch[0]["observation"], "bytes") >= 1000 &&
+                        read_file(first.status) == old_status && read_file(first.stdout_log) == old_log,
+                    "read batch observes exact retained bytes without mutating status or logs");
+            for (const auto* field : {"remove", "compact", "prior_prune_intent"}) {
+                auto mutating = request;
+                mutating[field] = true;
+                bool rejected = false;
+                try {
+                    (void)filesystem_operation("job_files_read_batch", mutating);
+                } catch (const Error&) {
+                    rejected = true;
+                }
+                require(rejected && read_file(first.stdout_log) == old_log,
+                        "read batch refuses every mutation control");
+            }
+            for (const auto& ids : {Json::array(), Json::array({"job-test-10002", "job-test-10002"}),
+                                    Json(std::vector<std::string>(65, "job-test-10002"))}) {
+                auto invalid = request;
+                invalid["ids"] = ids;
+                bool rejected = false;
+                try {
+                    (void)filesystem_operation("job_files_read_batch", invalid);
+                } catch (const Error&) {
+                    rejected = true;
+                }
+                require(rejected, "read batch enforces nonempty, unique, bounded identifiers");
+            }
+            fs::create_directory(first.dir / "unexpected-batch-entry");
+            batch = filesystem_operation("job_files_read_batch", request);
+            require(batch[0].contains("error") && batch[1].contains("observation") &&
+                        fs::exists(first.dir / "unexpected-batch-entry") && fs::exists(second.dir),
+                    "one invalid directory does not hide other observations or authorize cleanup");
+            fs::remove(first.dir / "unexpected-batch-entry");
+        }
         // This unindexed directory would be invalid if maintenance still discovered arbitrary filesystem
         // jobs.
         fs::create_directory(config->jobs_root / "job-unindexed-poison");
@@ -135,6 +183,23 @@ int main(int argc, char** argv) {
                 "pruned terminal metadata remains readable and explicitly lacks artifacts");
         require(fs::exists(config->jobs_root / "job-unindexed-poison"),
                 "unindexed files are not adopted or deleted");
+        {
+            write_file(config->jobs_root / ".fail-read-batch", "owned fixture");
+            const auto before = store->get("maintenance", "job-usage")->data;
+            Json result;
+            for (int i = 0; i < 4; ++i) {
+                result = restarted.enforce_store_quota();
+                require(json_uint(result, "errors") == 0,
+                        "read-batch failure falls back to the original per-job inspection path");
+                if (!json_bool(result, "quotaCyclePending"))
+                    break;
+            }
+            require(fs::exists(config->jobs_root / ".read-batch-failure-observed") &&
+                        json_uint(result, "storeBytes") == json_uint(before, "bytes") &&
+                        json_uint(result, "terminalRetained") == json_uint(before, "terminal_retained"),
+                    "failed batch fallback preserves exact sampled accounting");
+            fs::remove(config->jobs_root / ".fail-read-batch");
+        }
         const auto retained =
             store->list(StateQuery{"job_usage", "operator", {}, "retained_terminal", {}, 1}).records;
         require(!retained.empty(), "one retained fixture for accounting replay");

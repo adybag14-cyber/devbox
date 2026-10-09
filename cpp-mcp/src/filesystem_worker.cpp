@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <set>
 namespace devbox {
 namespace {
 Json path_state(const fs::path& path) {
@@ -77,6 +78,34 @@ std::optional<std::string> optional_text(const Json& value, const char* key) {
 Json filesystem_operation(std::string_view operation, const Json& args) {
     if (operation == "job_files")
         return job_filesystem_operation(args);
+    if (operation == "job_files_read_batch") {
+        if (!args.is_object() || args.size() != 2 || !args.contains("root") || !args.contains("ids") ||
+            !args["ids"].is_array() || args["ids"].empty() || args["ids"].size() > 64)
+            throw Error("JOB_READ_BATCH_INVALID");
+        const auto root = json_string(args, "root");
+        std::set<std::string> seen;
+        std::vector<std::string> ids;
+        for (const auto& value : args["ids"]) {
+            if (!value.is_string())
+                throw Error("JOB_READ_BATCH_INVALID");
+            const auto id = validate_job_id(value.get<std::string>());
+            if (!seen.insert(id).second)
+                throw Error("JOB_READ_BATCH_INVALID");
+            ids.push_back(id);
+        }
+        Json observations = Json::array();
+        for (const auto& id : ids) {
+            try {
+                // Construct the only accepted per-item request here. This batch
+                // cannot delegate removal, compaction or prior prune intent.
+                auto value = job_filesystem_operation(Json{{"root", root}, {"id", id}});
+                observations.push_back(Json{{"id", id}, {"observation", std::move(value)}});
+            } catch (const std::exception& error) {
+                observations.push_back(Json{{"id", id}, {"error", error.what()}});
+            }
+        }
+        return observations;
+    }
     if (operation == "artifact_upload") {
         // The frontend validates its layout and starts the coordinator first.
         // This killable worker may connect, but cannot create a detached owner.
