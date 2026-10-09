@@ -2,6 +2,7 @@
 #include "jobs_internal.hpp"
 #include <algorithm>
 #include <fstream>
+#include <map>
 #include <set>
 namespace devbox {
 namespace {
@@ -246,6 +247,27 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
                                              {},
                                              cursor.empty() ? std::nullopt : std::optional(cursor),
                                              std::clamp<std::size_t>(maximum, 1, 64)});
+    std::map<std::string, StateRecord, std::less<>> sampled_usage;
+    if (!page.records.empty()) {
+        try {
+            // Reuse the existing bounded list protocol. The usage index may be
+            // sparse or shifted relative to jobs, so missing IDs still use get.
+            const auto usage_page =
+                store->list(StateQuery{"job_usage",
+                                       {},
+                                       {},
+                                       {},
+                                       cursor.empty() ? std::nullopt : std::optional(cursor),
+                                       page.records.size()});
+            for (const auto& usage : usage_page.records)
+                if (usage.kind != "job_usage" || !sampled_usage.emplace(usage.id, usage).second)
+                    throw Error("JOB_USAGE_PAGE_INVALID");
+        } catch (const Cancelled&) {
+            throw;
+        } catch (...) {
+            sampled_usage.clear();
+        }
+    }
     auto bytes = json_uint(meter.data, "bytes"), retained = json_uint(meter.data, "terminal_retained");
     auto summary = empty_summary();
     std::vector<StateMutation> mutations;
@@ -315,9 +337,12 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
             const auto status = record.data.at("status");
             const bool terminal = terminal_status(record.status);
             increment(summary, terminal ? "terminal" : "active");
-            auto usage = store->get("job_usage", record.id)
-                             .value_or(StateRecord{"job_usage", record.id, "operator", "", "unknown", 0,
-                                                   Json::object()});
+            const auto sampled = sampled_usage.find(record.id);
+            auto usage = sampled != sampled_usage.end()
+                             ? sampled->second
+                             : store->get("job_usage", record.id)
+                                   .value_or(StateRecord{"job_usage", record.id, "operator", "", "unknown", 0,
+                                                         Json::object()});
             const auto old_bytes = json_uint(usage.data, "bytes");
             const auto completed = completed_time(status);
             const auto now = static_cast<std::int64_t>(unix_millis());

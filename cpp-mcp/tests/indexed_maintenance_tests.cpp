@@ -29,6 +29,20 @@ void batch_bounds(const fs::path& root) {
     require(json_uint(jobs.reconcile_maintenance(2), "errors") == 0,
             "bounded batch fixture establishes complete sampled accounting");
     const auto store = jobs.index();
+    {
+        // Shift the first usage page so it cannot cover both job IDs. Existing
+        // charges outside that page must be loaded individually, not replaced
+        // with a default charge or a neighbouring row.
+        const StateMutation extra{
+            {"job_usage", "job-bounds-09999", "operator", "", "unknown", 0, Json{{"bytes", 0}}}, 0};
+        store->apply({&extra, 1});
+        const auto second = *store->get("job_usage", "job-bounds-10001");
+        const auto result = jobs.reconcile_maintenance(2);
+        require(json_uint(result, "errors") == 0 && json_uint(result, "scanned") == 2 &&
+                    json_uint(result, "terminalRetained") == 2 &&
+                    store->get("job_usage", second.id)->revision == second.revision + 1,
+                "shifted usage pages retain per-ID fallback for unlisted existing charges");
+    }
     const auto receipt = config->jobs_root / ".read-batch-worker.json";
     const auto dead = [&] {
         const auto owner = read_json(receipt);
@@ -74,6 +88,38 @@ void batch_bounds(const fs::path& root) {
                 read_file(jobs.paths("job-bounds-10001").stdout_log) == std::string(1000, 'b'),
             "batch timeout and cancellation leave retained artifacts byte-identical");
     fs::remove(config->jobs_root / ".stall-read-batch");
+    fs::remove(receipt);
+    const auto hold = config->jobs_root / ".hold-read-batch";
+    write_file(hold, "owned fixture");
+    ScopeExit release([&] {
+        std::error_code error;
+        fs::remove(hold, error);
+    });
+    const auto before_race = *store->get("maintenance", "job-usage");
+    auto raced_usage = *store->get("job_usage", "job-bounds-10000");
+    auto raced = std::async(std::launch::async, [&] {
+        try {
+            (void)jobs.reconcile_maintenance(2);
+        } catch (const Error& error) {
+            return std::string_view(error.what()) == "STATE_REVISION_CONFLICT";
+        }
+        return false;
+    });
+    const auto admitted_deadline = Clock::now() + Millis(3000);
+    while (!fs::exists(receipt) && Clock::now() < admitted_deadline)
+        std::this_thread::sleep_for(Millis(5));
+    require(fs::exists(receipt), "batch worker admitted after usage-page prefetch");
+    raced_usage.data["checked_at"] = "independent-fixture-update";
+    const StateMutation concurrent{raced_usage, raced_usage.revision};
+    store->apply({&concurrent, 1});
+    fs::remove(hold);
+    require(raced.get(), "prefetched charges remain protected by the transaction revision comparison");
+    const auto after_race = *store->get("maintenance", "job-usage");
+    require(after_race.revision == before_race.revision && after_race.data == before_race.data &&
+                store->get("job_usage", raced_usage.id)->data == raced_usage.data,
+            "a stale usage page cannot overwrite a concurrent charge or advance the durable cursor");
+    require(json_uint(jobs.reconcile_maintenance(2), "errors") == 0,
+            "a fresh page recovers after the concurrent-revision conflict");
     require(stop_state_coordinator(config->state_root), "bounded batch coordinator shutdown acknowledged");
 }
 } // namespace
@@ -92,6 +138,13 @@ int main(int argc, char** argv) {
                                       Json{{"pid", pid}, {"instance", *process_instance(pid)}});
                     for (;;)
                         std::this_thread::sleep_for(Millis(1000));
+                }
+                if (fs::exists(root / ".hold-read-batch")) {
+                    const auto pid = process_id();
+                    write_json_atomic(root / ".read-batch-worker.json",
+                                      Json{{"pid", pid}, {"instance", *process_instance(pid)}});
+                    while (fs::exists(root / ".hold-read-batch"))
+                        std::this_thread::sleep_for(Millis(5));
                 }
             }
             if (op == "job_files" && json_bool(args, "remove") &&
