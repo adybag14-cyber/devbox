@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { assertClientNativeContract, extensionNames } from "../../cpp-mcp/scripts/native-contract.mjs";
 import { readCompleteJsonl } from "./read-complete-jsonl.mjs";
+import { versionSmokeCacheMs, waitForVersionRefresh } from "./version-refresh-smoke.mjs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -207,10 +208,17 @@ try {
   );
   assert.ok(Date.now() - processCancelStarted < 4_000, "cancelled child process should terminate promptly");
 
-  // The smoke server uses a 2s version TTL. Waiting beyond the TTL proves the
-  // supervised refresher keeps status populated without status launching probes.
-  await new Promise((resolve) => setTimeout(resolve, 32_000));
-  const status = await client.callTool({ name: "devbox_status", arguments: {} });
+  // Establish a published cache, then cross its 31s TTL and require a newer
+  // successful supervised publication. The refresher waits 30s between probes;
+  // probe duration can leave a legitimate expired-cache window at a fixed 32s.
+  const readVersionStatus = (timeout) => client.callTool(
+    { name: "devbox_status", arguments: {} }, undefined, { timeout },
+  );
+  const initialVersionStatus = await waitForVersionRefresh(readVersionStatus);
+  const initialVersionSuccess = initialVersionStatus.structuredContent.data
+    .backgroundTasks["version-refresh"].lastSuccessUnixMs;
+  await new Promise((resolve) => setTimeout(resolve, versionSmokeCacheMs + 1_000));
+  const status = await waitForVersionRefresh(readVersionStatus, { newerThan: initialVersionSuccess });
   assert.equal(status.isError, false);
   assert.equal(status.structuredContent?.ok, true);
   const statusData = status.structuredContent?.data || {};

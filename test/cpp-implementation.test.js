@@ -6,6 +6,44 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { createHash } from "node:crypto";
 import { runCheckedProcess, resolveMcpImplementation } from "../src/mcp-implementation.js";
 import { getCppMcpBinaryPath, readCppSourceIdentity, prepareCppImplementation, promoteCppImplementation } from "../src/cpp-implementation.js";
+import { waitForVersionRefresh } from "../rust-mcp/scripts/version-refresh-smoke.mjs";
+
+const versionStatus = (cached, success, changes = {}) => ({
+  isError: false,
+  structuredContent: { ok: true, data: {
+    versionsCached: cached, versions: cached ? ["node=fixture"] : null,
+    backgroundTasks: { "version-refresh": { running: true, consecutiveFailures: 0, lastSuccessUnixMs: success, ...changes } },
+  } },
+});
+
+test("version smoke waits through expiry and rejects an unchanged successful publication", async () => {
+  let time = 0;
+  const frames = [versionStatus(true, 10), versionStatus(false, 10), versionStatus(false, 11), versionStatus(true, 11)];
+  let calls = 0;
+  const result = await waitForVersionRefresh(async (timeout) => {
+    assert(timeout > 0 && timeout <= 5_000);
+    return frames[calls++];
+  }, { newerThan: 10, timeoutMs: 100, pollMs: 10, now: () => time, wait: async (ms) => { time += ms; } });
+  assert.equal(result, frames[3]);
+  assert.equal(calls, 4);
+});
+
+test("version smoke preserves stopped and failed refresher failures", async () => {
+  for (const changes of [{ running: false }, { consecutiveFailures: 1 }]) {
+    await assert.rejects(waitForVersionRefresh(async () => versionStatus(true, 20, changes)), /refresher (?:stopped|failed)/);
+  }
+});
+
+test("version smoke has a bounded failure with the last observed cache state", async () => {
+  let time = 0;
+  let calls = 0;
+  await assert.rejects(waitForVersionRefresh(async () => {
+    calls++;
+    return versionStatus(false, 10);
+  }, { newerThan: 10, timeoutMs: 20, pollMs: 10, now: () => time, wait: async (ms) => { time += ms; } }), /deadline.*"cached":false.*"lastSuccessUnixMs":10/);
+  assert.equal(time, 20);
+  assert.equal(calls, 2);
+});
 
 const fixture = async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "devbox-cpp-preflight-"));
