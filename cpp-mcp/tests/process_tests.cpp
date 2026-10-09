@@ -267,6 +267,35 @@ int test_main(int argc, char** argv) {
                 }
             }
         }
+        {
+            const std::vector<std::string> pattern{"a", "é", "漢", "😀", std::string(1, '\0'), "\n", "z"};
+            std::vector<std::string> scalars;
+            for (std::size_t i = 0; i < 8193; ++i)
+                scalars.push_back(pattern[(i + i / 17) % pattern.size()]);
+            for (const std::size_t limit : {1, 2, 3, 7, 64, 4000, 8192}) {
+                CaptureAccumulator bounded(limit);
+                for (std::size_t n = 1; n <= scalars.size(); ++n) {
+                    bounded.push(scalars[n - 1]);
+                    if (n % 113 && n != limit && n != limit + 1 && n != scalars.size())
+                        continue;
+                    std::string expected;
+                    const auto head = n <= limit ? n : limit / 2;
+                    for (std::size_t i = 0; i < head; ++i)
+                        expected += scalars[i];
+                    if (n > limit) {
+                        expected +=
+                            "\n... middle capture omitted " + std::to_string(n - limit) + " characters ...\n";
+                        for (std::size_t i = n - (limit - head); i < n; ++i)
+                            expected += scalars[i];
+                    }
+                    const auto observed = bounded.snapshot();
+                    require(observed.text == expected && observed.original_chars == n &&
+                                observed.truncated == (n > limit) && bounded.snapshot().text == expected,
+                            "repeated streaming snapshots retain exact mixed-width and NUL scalars across "
+                            "many tail wraps without moving the cursor");
+                }
+            }
+        }
         CaptureAccumulator partial(20);
         partial.push("\xf0\x9f");
         partial.finish();

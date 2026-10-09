@@ -1,6 +1,6 @@
 #pragma once
 #include "common.hpp"
-#include <deque>
+#include <array>
 #include <map>
 
 namespace devbox {
@@ -15,8 +15,10 @@ struct CaptureResult {
 class CaptureAccumulator {
     std::optional<std::size_t> limit_;
     std::string pending_;
-    std::deque<std::string> head_, tail_;
-    std::size_t count_ = 0;
+    // A sanitized UTF-8 scalar occupies at most four bytes. Contiguous scalar
+    // storage avoids a string and deque allocation for every retained value.
+    std::vector<std::array<char, 4>> head_, tail_;
+    std::size_t count_ = 0, tail_next_ = 0;
     bool truncated_ = false;
     void push_text(std::string_view text);
 

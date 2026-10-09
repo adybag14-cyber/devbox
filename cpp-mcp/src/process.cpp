@@ -39,11 +39,14 @@ struct ProcessProbeTiming {
         }
     }
 };
+std::size_t scalar_width(char byte) {
+    const auto first = static_cast<unsigned char>(byte);
+    return first < 0x80 ? 1 : first < 0xe0 ? 2 : first < 0xf0 ? 3 : 4;
+}
 std::vector<std::string> characters(std::string_view text) {
     std::vector<std::string> values;
     for (std::size_t i = 0; i < text.size();) {
-        const auto c = static_cast<unsigned char>(text[i]);
-        const std::size_t n = c < 0x80 ? 1 : c < 0xe0 ? 2 : c < 0xf0 ? 3 : 4;
+        const auto n = scalar_width(text[i]);
         values.emplace_back(text.substr(i, n));
         i += n;
     }
@@ -73,35 +76,39 @@ void CaptureAccumulator::push_text(std::string_view text) {
     // text has already been sanitized. Visit each scalar directly instead of
     // allocating a temporary vector of strings for every incoming chunk.
     for (std::size_t at = 0; at < text.size();) {
-        const auto first = static_cast<unsigned char>(text[at]);
-        const std::size_t width = first < 0x80 ? 1 : first < 0xe0 ? 2 : first < 0xf0 ? 3 : 4;
-        std::string scalar(text.substr(at, width));
+        const auto width = scalar_width(text[at]);
+        std::array<char, 4> scalar{};
+        std::copy_n(text.data() + at, width, scalar.data());
         at += width;
         ++count_;
         if (!limit_ || (!truncated_ && count_ <= *limit_)) {
             head_.push_back(std::move(scalar));
             continue;
         }
-        truncated_ = true;
-        const auto head_limit = *limit_ / 2;
-        const auto tail_limit = *limit_ - head_limit;
-        while (head_.size() > head_limit) {
-            tail_.push_front(std::move(head_.back()));
-            head_.pop_back();
+        if (!truncated_) {
+            const auto head_limit = *limit_ / 2;
+            tail_.assign(head_.begin() + static_cast<std::ptrdiff_t>(head_limit), head_.end());
+            head_.resize(head_limit);
+            truncated_ = true;
         }
-        tail_.push_back(std::move(scalar));
-        while (tail_.size() > tail_limit)
-            tail_.pop_front();
+        // The zero limit is handled above, so the tail has at least one slot.
+        // Overwrite the oldest scalar, then advance the oldest-slot cursor.
+        tail_[tail_next_] = scalar;
+        if (++tail_next_ == tail_.size())
+            tail_next_ = 0;
     }
 }
 void CaptureAccumulator::push(std::string_view bytes) {
     // ASCII is already valid UTF-8 and each byte is one scalar. With no
-    // incomplete preceding sequence and no retained text, even the sanitizer
-    // copies are unnecessary (notably for raw base64 worker responses).
-    if (limit_ == 0 && pending_.empty() &&
+    // incomplete preceding sequence, neither pending storage nor sanitization
+    // copies are needed. Zero capture also avoids the retention walk.
+    if (pending_.empty() &&
         std::all_of(bytes.begin(), bytes.end(), [](unsigned char c) { return c < 0x80; })) {
-        count_ += bytes.size();
-        truncated_ = count_ != 0;
+        if (limit_ == 0) {
+            count_ += bytes.size();
+            truncated_ = count_ != 0;
+        } else
+            push_text(bytes);
         return;
     }
     pending_.append(bytes);
@@ -139,12 +146,17 @@ CaptureResult CaptureAccumulator::snapshot() const {
     if (truncated_ && limit_ == 0)
         return result;
     for (const auto& part : head_)
-        result.text += part;
+        result.text.append(part.data(), scalar_width(part[0]));
     if (truncated_) {
         result.text += "\n... middle capture omitted " +
                        std::to_string(count_ - head_.size() - tail_.size()) + " characters ...\n";
-        for (const auto& part : tail_)
-            result.text += part;
+        auto next = tail_next_;
+        for (std::size_t i = 0; i < tail_.size(); ++i) {
+            const auto& part = tail_[next];
+            result.text.append(part.data(), scalar_width(part[0]));
+            if (++next == tail_.size())
+                next = 0;
+        }
     }
     return result;
 }
