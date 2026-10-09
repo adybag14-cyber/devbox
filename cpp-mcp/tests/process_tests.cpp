@@ -238,6 +238,35 @@ int test_main(int argc, char** argv) {
         require(snapshot.original_chars == 7 && snapshot.truncated &&
                     snapshot.text == "a😀b\n... middle capture omitted 1 characters ...\ndef",
                 "streaming Unicode capture");
+        {
+            const std::string input = "A😀\xe0\x80\x80\xff\n\xed\xa0\x80Z\xf0\x9f";
+            const std::vector<std::string> scalars{"A",  "😀", "�", "�", "�", "�",
+                                                   "\n", "�",  "�", "�", "Z", "�"};
+            for (std::size_t limit = 0; limit <= scalars.size() + 2; ++limit) {
+                std::string expected;
+                if (limit >= scalars.size())
+                    expected = join(scalars, "");
+                else if (limit) {
+                    const auto head = limit / 2, tail = limit - head;
+                    for (std::size_t i = 0; i < head; ++i)
+                        expected += scalars[i];
+                    expected += "\n... middle capture omitted " + std::to_string(scalars.size() - limit) +
+                                " characters ...\n";
+                    for (std::size_t i = scalars.size() - tail; i < scalars.size(); ++i)
+                        expected += scalars[i];
+                }
+                for (std::size_t chunk = 1; chunk <= 7; ++chunk) {
+                    CaptureAccumulator bounded(limit);
+                    for (std::size_t at = 0; at < input.size(); at += chunk)
+                        bounded.push(std::string_view(input).substr(at, chunk));
+                    bounded.finish();
+                    const auto result = bounded.snapshot();
+                    require(result.text == expected && result.original_chars == scalars.size() &&
+                                result.truncated == (limit < scalars.size()),
+                            "all capture limits preserve explicit malformed/split Unicode scalar oracle");
+                }
+            }
+        }
         CaptureAccumulator partial(20);
         partial.push("\xf0\x9f");
         partial.finish();
