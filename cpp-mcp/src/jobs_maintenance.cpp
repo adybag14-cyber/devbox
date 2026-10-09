@@ -2,6 +2,7 @@
 #include "jobs_internal.hpp"
 #include <algorithm>
 #include <fstream>
+#include <map>
 #include <set>
 namespace devbox {
 namespace {
@@ -246,6 +247,27 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
                                              {},
                                              cursor.empty() ? std::nullopt : std::optional(cursor),
                                              std::clamp<std::size_t>(maximum, 1, 64)});
+    std::map<std::string, StateRecord, std::less<>> sampled_usage;
+    if (!page.records.empty()) {
+        try {
+            // Reuse the existing bounded list protocol. The usage index may be
+            // sparse or shifted relative to jobs, so missing IDs still use get.
+            const auto usage_page =
+                store->list(StateQuery{"job_usage",
+                                       {},
+                                       {},
+                                       {},
+                                       cursor.empty() ? std::nullopt : std::optional(cursor),
+                                       page.records.size()});
+            for (const auto& usage : usage_page.records)
+                if (usage.kind != "job_usage" || !sampled_usage.emplace(usage.id, usage).second)
+                    throw Error("JOB_USAGE_PAGE_INVALID");
+        } catch (const Cancelled&) {
+            throw;
+        } catch (...) {
+            sampled_usage.clear();
+        }
+    }
     auto bytes = json_uint(meter.data, "bytes"), retained = json_uint(meter.data, "terminal_retained");
     auto summary = empty_summary();
     std::vector<StateMutation> mutations;
@@ -254,6 +276,53 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
                (config_->job_store_max_terminal_jobs && retained > config_->job_store_max_terminal_jobs);
     };
     const bool was_pressure = pressure();
+    Json inspected = Json::object(), inspect_ids = Json::array();
+    for (const auto& record : page.records) {
+        if (cancel)
+            cancel->check();
+        if (was_pressure || !terminal_status(record.status) || record.status == "cancelled" ||
+            json_bool(record.data, "artifacts_pruned"))
+            continue;
+        try {
+            const auto& status = record.data.at("status");
+            const auto completed = completed_time(status);
+            const auto now = static_cast<std::int64_t>(unix_millis());
+            if (config_->job_retention_hours && completed > 0 && now >= completed &&
+                static_cast<std::uint64_t>(now - completed) / 3600000 >= config_->job_retention_hours)
+                continue;
+            if (!owner_process_alive(
+                    Json{{"pid", status.value("runnerPid", Json())},
+                         {"processInstance", status.value("runnerProcessInstance", Json())}}))
+                inspect_ids.push_back(record.id);
+        } catch (...) {
+            // Leave malformed records to the existing per-job validation path.
+        }
+    }
+    if (inspect_ids.size() > 1) {
+        try {
+            const auto values = isolated_filesystem(
+                "job_files_read_batch", Json{{"root", path_text(config_->jobs_root)}, {"ids", inspect_ids}},
+                Millis(5000), cancel);
+            if (!values.is_array() || values.size() != inspect_ids.size())
+                throw Error("JOB_READ_BATCH_RESPONSE_INVALID");
+            const auto requested = inspect_ids.get<std::vector<std::string>>();
+            std::set<std::string> remaining(requested.begin(), requested.end());
+            for (const auto& value : values) {
+                const auto id = json_string(value, "id");
+                const bool observed = value.contains("observation") && value["observation"].is_object();
+                const bool failed = value.contains("error") && value["error"].is_string();
+                if (!remaining.erase(id) || observed == failed)
+                    throw Error("JOB_READ_BATCH_RESPONSE_INVALID");
+                inspected[id] = value;
+            }
+        } catch (const Cancelled&) {
+            throw;
+        } catch (...) {
+            // The batch is read-only. Preserve the bounded per-job recovery
+            // path if one filesystem stalls or the worker response is lost.
+            inspected = Json::object();
+        }
+    }
     mutations.reserve(page.records.size() * 2 + 1);
     for (auto record : page.records) {
         const auto before_bytes = bytes, before_retained = retained;
@@ -268,9 +337,12 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
             const auto status = record.data.at("status");
             const bool terminal = terminal_status(record.status);
             increment(summary, terminal ? "terminal" : "active");
-            auto usage = store->get("job_usage", record.id)
-                             .value_or(StateRecord{"job_usage", record.id, "operator", "", "unknown", 0,
-                                                   Json::object()});
+            const auto sampled = sampled_usage.find(record.id);
+            auto usage = sampled != sampled_usage.end()
+                             ? sampled->second
+                             : store->get("job_usage", record.id)
+                                   .value_or(StateRecord{"job_usage", record.id, "operator", "", "unknown", 0,
+                                                         Json::object()});
             const auto old_bytes = json_uint(usage.data, "bytes");
             const auto completed = completed_time(status);
             const auto now = static_cast<std::int64_t>(unix_millis());
@@ -294,17 +366,25 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
                 ++record.revision;
             }
             Json observation{{"exists", false}, {"bytes", 0}, {"deleted", false}};
-            if (!json_bool(record.data, "artifacts_pruned"))
-                observation =
-                    isolated_filesystem("job_files",
-                                        Json{{"root", path_text(config_->jobs_root)},
-                                             {"id", record.id},
-                                             {"remove", remove},
-                                             {"prior_prune_intent",
-                                              json_string(record.data, "artifacts_prune_state") == "pending"},
-                                             {"compact", terminal && !json_bool(usage.data, "compacted")},
-                                             {"log_limit", config_->job_log_max_bytes}},
-                                        Millis(5000), cancel);
+            if (!json_bool(record.data, "artifacts_pruned")) {
+                const bool compact = terminal && !json_bool(usage.data, "compacted");
+                if (!remove && !compact && inspected.contains(record.id)) {
+                    const auto& value = inspected[record.id];
+                    if (value.contains("error"))
+                        throw Error(json_string(value, "error"));
+                    observation = value.at("observation");
+                } else
+                    observation = isolated_filesystem(
+                        "job_files",
+                        Json{{"root", path_text(config_->jobs_root)},
+                             {"id", record.id},
+                             {"remove", remove},
+                             {"prior_prune_intent",
+                              json_string(record.data, "artifacts_prune_state") == "pending"},
+                             {"compact", compact},
+                             {"log_limit", config_->job_log_max_bytes}},
+                        Millis(5000), cancel);
+            }
             const auto observed = json_uint(observation, "bytes");
             if (old_bytes > bytes || observed > UINT64_MAX - (bytes - old_bytes))
                 throw Error("JOB_USAGE_ACCOUNTING_INTEGRITY");
