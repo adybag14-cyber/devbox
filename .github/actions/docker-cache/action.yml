@@ -3,6 +3,9 @@ description: Prefer the public Google cache on isolated GitHub-hosted Linux runn
 runs:
   using: composite
   steps:
+    - name: Verify configuration preservation
+      shell: bash
+      run: node --test "$GITHUB_ACTION_PATH/configure.test.mjs"
     - name: Configure and verify the public registry cache
       shell: bash
       run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS "$(command -v node)" "$GITHUB_ACTION_PATH/configure.mjs"

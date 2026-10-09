@@ -22,6 +22,8 @@ async function configure() {
   assert.equal(process.env.GITHUB_ACTIONS, 'true');
   assert.equal(process.env.RUNNER_ENVIRONMENT, 'github-hosted');
   assert.equal(process.env.RUNNER_OS, 'Linux');
+  const running = execFileSync('docker', ['ps', '--quiet'], { timeout: 10000, encoding: 'utf8' }).trim();
+  assert.equal(running, '', 'Cache activation requires an empty dedicated CI Docker daemon');
   const file = '/etc/docker/daemon.json';
   await mkdir(path.dirname(file), { recursive: true });
   let prior = {}, mode = 0o644;
@@ -43,15 +45,18 @@ async function configure() {
   } finally {
     if (created) await rm(temporary, { force: true });
   }
-  // Registry mirrors support reload. Preserve running containers and all other
-  // daemon settings; the canonical Hub remains Docker's cache-miss fallback.
-  execFileSync('systemctl', ['reload', 'docker'], { timeout: 15000, stdio: 'inherit' });
+  // The hosted runner acknowledged a reload while its pull resolver continued
+  // to hit Hub. Activate the setting from startup on this verified empty,
+  // dedicated runner; never restart a developer or self-hosted daemon.
+  execFileSync('systemctl', ['restart', 'docker'], { timeout: 30000, stdio: 'inherit' });
   const deadline = Date.now() + 10000;
   while (Date.now() < deadline) {
     const mirrors = JSON.parse(execFileSync('docker', ['info', '--format', '{{json .RegistryConfig.Mirrors}}'],
       { timeout: 3000, encoding: 'utf8' }));
     if (Array.isArray(mirrors) && mirrors.some(value => value.replace(/\/$/, '') === mirror)) {
-      console.log(JSON.stringify({ configured: true, mirror, daemonRestarted: false,
+      const version = execFileSync('docker', ['version', '--format', '{{.Server.Version}}'],
+        { timeout: 5000, encoding: 'utf8' }).trim();
+      console.log(JSON.stringify({ configured: true, mirror, daemonRestarted: true, version,
         imageReferencesChanged: false, credentialsRequired: false }));
       return;
     }
