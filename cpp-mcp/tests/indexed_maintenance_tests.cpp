@@ -1,12 +1,80 @@
 #include "devbox/filesystem_worker.hpp"
 #include "devbox/jobs.hpp"
 #include <cstdlib>
+#include <future>
 #include <iostream>
 using namespace devbox;
 namespace {
 void require(bool value, const char* message) {
     if (!value)
         throw Error(message);
+}
+void batch_bounds(const fs::path& root) {
+    auto config = std::make_shared<Config>();
+    config->project_root = root;
+    config->jobs_root = root / "jobs";
+    config->state_root = root / "state";
+    config->state_backend = "sqlite";
+    config->job_retention_hours = 0;
+    config->job_store_max_terminal_jobs = 0;
+    config->job_store_max_bytes = 0;
+    ScopeExit clean([&] { (void)stop_state_coordinator(config->state_root); });
+    JobStore jobs(config);
+    for (const auto* id : {"job-bounds-10000", "job-bounds-10001"}) {
+        const auto paths =
+            jobs.create_job(id, Json{{"id", id}, {"agent", {{"taskId", "bounded-batch"}}}},
+                            Json{{"id", id}, {"status", "succeeded"}, {"completedAtUtc", utc_now()}});
+        write_file(paths.stdout_log, std::string(1000, 'b'));
+    }
+    require(json_uint(jobs.reconcile_maintenance(2), "errors") == 0,
+            "bounded batch fixture establishes complete sampled accounting");
+    const auto store = jobs.index();
+    const auto receipt = config->jobs_root / ".read-batch-worker.json";
+    const auto dead = [&] {
+        const auto owner = read_json(receipt);
+        require(!process_matches_instance(json_uint(owner, "pid"), json_uint(owner, "instance")),
+                "stalled batch worker is dead after timeout or cancellation acknowledgement");
+    };
+    const auto before = store->get("maintenance", "job-usage")->data;
+    write_file(config->jobs_root / ".stall-read-batch", "owned fixture");
+    const auto started = Clock::now();
+    const auto result = jobs.reconcile_maintenance(2);
+    require(Clock::now() - started < Millis(15000) && json_uint(result, "errors") == 0 &&
+                json_uint(result, "storeBytes") == json_uint(before, "bytes") &&
+                json_uint(result, "terminalRetained") == 2,
+            "timed-out read batch recovers through bounded per-job inspections with exact accounting");
+    dead();
+    fs::remove(receipt);
+    const auto before_cancel = *store->get("maintenance", "job-usage");
+    const auto first_usage = *store->get("job_usage", "job-bounds-10000");
+    const auto second_usage = *store->get("job_usage", "job-bounds-10001");
+    auto cancel = std::make_shared<Cancellation>();
+    auto work = std::async(std::launch::async, [&] {
+        try {
+            (void)jobs.reconcile_maintenance(2, cancel);
+        } catch (const Cancelled&) {
+            return true;
+        }
+        return false;
+    });
+    const auto ready_deadline = Clock::now() + Millis(3000);
+    while (!fs::exists(receipt) && Clock::now() < ready_deadline)
+        std::this_thread::sleep_for(Millis(5));
+    const auto cancelled_at = Clock::now();
+    cancel->cancel();
+    require(work.get() && Clock::now() - cancelled_at < Millis(3000),
+            "cancelling a live batch propagates without starting fallback inspections");
+    dead();
+    const auto after_cancel = *store->get("maintenance", "job-usage");
+    require(after_cancel.revision == before_cancel.revision && after_cancel.data == before_cancel.data &&
+                store->get("job_usage", first_usage.id)->revision == first_usage.revision &&
+                store->get("job_usage", second_usage.id)->revision == second_usage.revision,
+            "batch cancellation preserves the durable cursor and all sampled charges");
+    require(read_file(jobs.paths("job-bounds-10000").stdout_log) == std::string(1000, 'b') &&
+                read_file(jobs.paths("job-bounds-10001").stdout_log) == std::string(1000, 'b'),
+            "batch timeout and cancellation leave retained artifacts byte-identical");
+    fs::remove(config->jobs_root / ".stall-read-batch");
+    require(stop_state_coordinator(config->state_root), "bounded batch coordinator shutdown acknowledged");
 }
 } // namespace
 int main(int argc, char** argv) {
@@ -17,6 +85,13 @@ int main(int argc, char** argv) {
                 if (fs::exists(root / ".fail-read-batch")) {
                     write_file(root / ".read-batch-failure-observed", "owned fixture");
                     throw Error("INJECTED_READ_BATCH_FAILURE");
+                }
+                if (fs::exists(root / ".stall-read-batch")) {
+                    const auto pid = process_id();
+                    write_json_atomic(root / ".read-batch-worker.json",
+                                      Json{{"pid", pid}, {"instance", *process_instance(pid)}});
+                    for (;;)
+                        std::this_thread::sleep_for(Millis(1000));
                 }
             }
             if (op == "job_files" && json_bool(args, "remove") &&
@@ -234,6 +309,7 @@ int main(int argc, char** argv) {
             cancelled = true;
         }
         require(cancelled, "maintenance honors cancellation before filesystem effects");
+        batch_bounds(root / "batch-bounds");
         std::cout
             << "Indexed maintenance pages, durable accounting, pruning receipts and cancellation passed\n";
         return 0;
