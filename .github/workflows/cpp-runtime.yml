@@ -102,6 +102,9 @@ jobs:
       - name: Native packaged setup without development tools
         if: matrix.sanitizers == '0'
         run: node cpp-bootstrap/scripts/native-install.mjs
+      - name: Prefer the public cache for container qualification
+        if: matrix.name == 'Linux GCC'
+        uses: ./.github/actions/docker-cache
       - name: Core runtime in a clean container without interpreters or desktop packages
         if: matrix.name == 'Linux GCC'
         run: node cpp-mcp/scripts/minimal-runtime-smoke.mjs
@@ -298,6 +301,8 @@ jobs:
         with:
           name: cpp-android-x86_64
           path: .cpp-build/termux-artifact
+      - name: Prefer the public cache for container qualification
+        uses: ./.github/actions/docker-cache
       - name: Validate native Android binaries in real Termux userspace
         run: node cpp-mcp/scripts/termux-docker-smoke.mjs .cpp-build/termux-artifact
 
@@ -324,6 +329,8 @@ jobs:
         with:
           name: cpp-native-ubuntu-24.04-0
           path: .cpp-build/distro-artifact
+      - name: Prefer the public cache for container qualification
+        uses: ./.github/actions/docker-cache
       - name: Validate packaged binaries and installer in the distro
         run: node cpp-mcp/scripts/linux-distro-smoke.mjs ${{ matrix.distribution }}
 
@@ -339,6 +346,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: 24
+      - name: Prefer the public cache for container qualification
+        uses: ./.github/actions/docker-cache
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         id: alpine-dependencies
         with:

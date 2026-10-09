@@ -1,6 +1,6 @@
 #pragma once
 #include "common.hpp"
-#include <deque>
+#include <array>
 #include <map>
 
 namespace devbox {
@@ -15,13 +15,21 @@ struct CaptureResult {
 class CaptureAccumulator {
     std::optional<std::size_t> limit_;
     std::string pending_;
-    std::deque<std::string> head_, tail_;
-    std::size_t count_ = 0;
+    // A sanitized UTF-8 scalar occupies at most four bytes. Contiguous scalar
+    // storage avoids a string and deque allocation for every retained value.
+    std::vector<std::array<char, 4>> head_, tail_;
+    std::size_t count_ = 0, tail_next_ = 0;
     bool truncated_ = false;
     void push_text(std::string_view text);
 
   public:
     explicit CaptureAccumulator(std::optional<std::size_t> limit) : limit_(limit) {}
+    CaptureAccumulator(const CaptureAccumulator&) = default;
+    CaptureAccumulator& operator=(const CaptureAccumulator&) = default;
+    // Moving transfers the stream state and leaves an empty, reusable source
+    // with its original capture limit.
+    CaptureAccumulator(CaptureAccumulator&& other) noexcept;
+    CaptureAccumulator& operator=(CaptureAccumulator&& other) noexcept;
     void push(std::string_view bytes);
     void finish();
     CaptureResult snapshot() const;

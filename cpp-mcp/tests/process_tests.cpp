@@ -267,6 +267,72 @@ int test_main(int argc, char** argv) {
                 }
             }
         }
+        {
+            const std::vector<std::string> pattern{"a", "é", "漢", "😀", std::string(1, '\0'), "\n", "z"};
+            std::vector<std::string> scalars;
+            for (std::size_t i = 0; i < 8193; ++i)
+                scalars.push_back(pattern[(i + i / 17) % pattern.size()]);
+            for (const std::size_t limit : {1, 2, 3, 7, 64, 4000, 8192}) {
+                CaptureAccumulator bounded(limit);
+                for (std::size_t n = 1; n <= scalars.size(); ++n) {
+                    bounded.push(scalars[n - 1]);
+                    if (n % 113 && n != limit && n != limit + 1 && n != scalars.size())
+                        continue;
+                    std::string expected;
+                    const auto head = n <= limit ? n : limit / 2;
+                    for (std::size_t i = 0; i < head; ++i)
+                        expected += scalars[i];
+                    if (n > limit) {
+                        expected +=
+                            "\n... middle capture omitted " + std::to_string(n - limit) + " characters ...\n";
+                        for (std::size_t i = n - (limit - head); i < n; ++i)
+                            expected += scalars[i];
+                    }
+                    const auto observed = bounded.snapshot();
+                    require(observed.text == expected && observed.original_chars == n &&
+                                observed.truncated == (n > limit) && bounded.snapshot().text == expected,
+                            "repeated streaming snapshots retain exact mixed-width and NUL scalars across "
+                            "many tail wraps without moving the cursor");
+                }
+            }
+        }
+        {
+            CaptureAccumulator source(3);
+            source.push("a😀bcd");
+            const auto before = source.snapshot();
+            CaptureAccumulator moved(std::move(source));
+            require(moved.snapshot().text == before.text && source.snapshot().text.empty() &&
+                        source.snapshot().original_chars == 0 && !source.snapshot().truncated,
+                    "moving a truncated capture transfers its ring and resets the source");
+            source.push("WXYZ");
+            source.finish();
+            require(source.snapshot().text == "W\n... middle capture omitted 1 characters ...\nYZ",
+                    "moved-from capture safely reuses its original limit");
+            moved.push("e");
+            require(moved.snapshot().text == "a\n... middle capture omitted 3 characters ...\nde",
+                    "moved ring preserves its next-slot position");
+            CaptureAccumulator assigned(20);
+            assigned.push("old");
+            assigned = std::move(moved);
+            require(assigned.snapshot().original_chars == 6 && moved.snapshot().text.empty(),
+                    "move assignment replaces prior state and resets its source");
+            moved.push("new");
+            require(moved.snapshot().text == "new", "move-assigned source remains reusable");
+            CaptureAccumulator pending(20);
+            pending.push("\xf0\x9f");
+            CaptureAccumulator resumed(std::move(pending));
+            resumed.push("\x98\x80");
+            resumed.finish();
+            pending.push("A");
+            pending.finish();
+            require(resumed.snapshot().text == "😀" && pending.snapshot().text == "A",
+                    "moving transfers incomplete UTF-8 without leaving it in the source");
+            auto copied = assigned;
+            copied.push("f");
+            require(assigned.snapshot().text == "a\n... middle capture omitted 3 characters ...\nde" &&
+                        copied.snapshot().text == "a\n... middle capture omitted 4 characters ...\nef",
+                    "capture copies retain independent ring state");
+        }
         CaptureAccumulator partial(20);
         partial.push("\xf0\x9f");
         partial.finish();
