@@ -238,6 +238,10 @@ Json isolated_filesystem(std::string_view operation, const Json& args, Millis ti
     };
     options.env = worker_environment();
 #ifdef _WIN32
+    // This worker speaks exclusively through the three explicit inherited pipes.
+    // A hidden console creates an unnecessary console host for every request;
+    // detached creation preserves pipe I/O and the per-request Job Object bounds.
+    options.windows_detached_console = true;
     options.memory_limit_bytes = 256 * 1024 * 1024;
     options.process_limit = operation == "inspect" ? 2 : 1;
 #endif
