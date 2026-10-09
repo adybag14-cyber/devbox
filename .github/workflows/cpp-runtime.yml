@@ -15,6 +15,11 @@ jobs:
         with:
           node-version: 24
       - uses: ./.github/actions/docker-cache
+      - name: Use isolated anonymous credentials for public images
+        run: |
+          public_config_dir=$(mktemp -d "${RUNNER_TEMP}/devbox-public-docker.XXXXXX")
+          printf '{"auths":{}}\n' > "${public_config_dir}/config.json"
+          printf 'DOCKER_CONFIG=%s\n' "$public_config_dir" >> "$GITHUB_ENV"
       - name: Record registry configuration
         run: |
           docker version
