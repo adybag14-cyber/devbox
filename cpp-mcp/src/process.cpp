@@ -8,6 +8,7 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
+#include <utility>
 #ifdef _WIN32
 #include <sddl.h>
 #include <tlhelp32.h>
@@ -64,6 +65,24 @@ void check_string(std::string_view value) {
         throw Error("Process arguments cannot contain NUL bytes.");
 }
 } // namespace
+CaptureAccumulator::CaptureAccumulator(CaptureAccumulator&& other) noexcept : limit_(other.limit_) {
+    *this = std::move(other);
+}
+CaptureAccumulator& CaptureAccumulator::operator=(CaptureAccumulator&& other) noexcept {
+    if (this == &other)
+        return *this;
+    limit_ = other.limit_;
+    pending_ = std::move(other.pending_);
+    head_ = std::move(other.head_);
+    tail_ = std::move(other.tail_);
+    count_ = std::exchange(other.count_, 0);
+    tail_next_ = std::exchange(other.tail_next_, 0);
+    truncated_ = std::exchange(other.truncated_, false);
+    other.pending_.clear();
+    other.head_.clear();
+    other.tail_.clear();
+    return *this;
+}
 void CaptureAccumulator::push_text(std::string_view text) {
     // Workers with an on_output sink retain their bounded raw bytes separately.
     // A zero capture limit still counts sanitized Unicode scalars, but creating

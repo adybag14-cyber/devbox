@@ -24,6 +24,12 @@ class CaptureAccumulator {
 
   public:
     explicit CaptureAccumulator(std::optional<std::size_t> limit) : limit_(limit) {}
+    CaptureAccumulator(const CaptureAccumulator&) = default;
+    CaptureAccumulator& operator=(const CaptureAccumulator&) = default;
+    // Moving transfers the stream state and leaves an empty, reusable source
+    // with its original capture limit.
+    CaptureAccumulator(CaptureAccumulator&& other) noexcept;
+    CaptureAccumulator& operator=(CaptureAccumulator&& other) noexcept;
     void push(std::string_view bytes);
     void finish();
     CaptureResult snapshot() const;
