@@ -1,0 +1,8 @@
+name: Public Docker Hub cache
+description: Prefer the public Google cache on isolated GitHub-hosted Linux runners
+runs:
+  using: composite
+  steps:
+    - name: Configure and verify the public registry cache
+      shell: bash
+      run: sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT,RUNNER_OS "$(command -v node)" "$GITHUB_ACTION_PATH/configure.mjs"
