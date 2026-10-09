@@ -70,7 +70,13 @@ void CaptureAccumulator::push_text(std::string_view text) {
         truncated_ = count_ != 0;
         return;
     }
-    for (auto&& scalar : characters(text)) {
+    // text has already been sanitized. Visit each scalar directly instead of
+    // allocating a temporary vector of strings for every incoming chunk.
+    for (std::size_t at = 0; at < text.size();) {
+        const auto first = static_cast<unsigned char>(text[at]);
+        const std::size_t width = first < 0x80 ? 1 : first < 0xe0 ? 2 : first < 0xf0 ? 3 : 4;
+        std::string scalar(text.substr(at, width));
+        at += width;
         ++count_;
         if (!limit_ || (!truncated_ && count_ <= *limit_)) {
             head_.push_back(std::move(scalar));
