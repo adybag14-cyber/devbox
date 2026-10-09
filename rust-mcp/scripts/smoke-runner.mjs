@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
+import { versionSmokeCacheMs } from "./version-refresh-smoke.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDir, "..", "..");
@@ -115,7 +116,7 @@ const serverEnv = {
   HOST_DEFAULT_WORKDIR: projectRoot,
   MCP_JOBS_ROOT: path.join(runtimeDir, "jobs"),
   MCP_EXEC_SLOT_ROOT: path.join(runtimeDir, "execution-slots"),
-  DEVBOX_VERSION_CACHE_MS: "31000",
+  DEVBOX_VERSION_CACHE_MS: String(versionSmokeCacheMs),
 };
 
 let stdout = "";
