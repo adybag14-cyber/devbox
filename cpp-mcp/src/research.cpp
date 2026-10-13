@@ -551,6 +551,9 @@ Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
                offer_limit = json_uint(args, "offer_limit", 20);
     if ((view != "evidence" && view != "offers") || offer_offset > 255 || !offer_limit || offer_limit > 64)
         throw Error("Invalid offer view or pagination");
+    const auto excerpt_limit = view == "offers" && !args.contains("excerpt_chars")
+                                   ? std::size_t{350}
+                                   : static_cast<std::size_t>(requested_excerpt);
     auto urls = json_strings(args, "urls");
     if (urls.empty() || urls.size() > 16)
         throw Error("web_fetch requires 1-16 URLs");
@@ -571,8 +574,7 @@ Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
     const auto output_budget = json_uint(args, "max_chars", 32000);
     std::size_t output_size = 1024;
     for (const auto& doc : docs) {
-        auto item = brief(doc, json_string(args, "query"),
-                          view == "offers" ? 350 : json_uint(args, "excerpt_chars", 2000));
+        auto item = brief(doc, json_string(args, "query"), excerpt_limit);
         if (view == "offers")
             item.update(offer_view(doc, offer_offset, offer_limit));
         if (view != "offers" && doc.contains("tables"))

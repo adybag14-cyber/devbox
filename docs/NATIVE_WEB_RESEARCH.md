@@ -1,6 +1,6 @@
 # Native public-web research
 
-The C++23 service adds three research tools to the frozen compatibility and computer-use surface. Contract version 9 advertises 53 tools. Research uses native libcurl networking, Lexbor HTML parsing and pugixml RSS parsing, with no Python, browser farm, embedding model or external LLM in the implementation.
+The C++23 service includes three research tools alongside its compatibility and computer-use tools; see the generated [tool manifest](TOOL_MANIFEST.md) for the current contract and inventory. Research uses native libcurl networking, Lexbor HTML parsing and pugixml RSS parsing, with no Python, browser farm, embedding model or external LLM in the implementation.
 
 ## Research presets
 
@@ -44,6 +44,8 @@ Read `devbox_web_evidence` and follow `next_offset` until all source briefs have
 ```
 
 For known sources, `devbox_web_fetch` retrieves up to 16 URLs in one call, with excerpts, bounded tables/metadata and explicit failures. Duplicate input URLs are fetched once. `remaining_url_indexes` identifies omitted records by zero-based index in the original input. Increase `max_chars` or request a smaller batch for more detail; research jobs preserve immutable evidence for later drill-down.
+
+The default excerpt is 2,000 Unicode code points in evidence view and 350 in offers view. An explicit `excerpt_chars` value overrides either default within the supported 200–8,000 range. The separate `max_chars` limit still bounds the serialized UTF-8 response; a record that does not fit is explicitly omitted with its input index retained for a follow-up request.
 
 ## Live product prices
 

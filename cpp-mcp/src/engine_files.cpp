@@ -34,6 +34,33 @@ Json large_result(const std::string& summary, Json data, bool read) {
 Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
     const bool host = name.starts_with("windows_host_");
     const bool docker = !host && config_->runtime_mode == RuntimeMode::docker;
+    if (name == "devbox_read_files") {
+        if (docker)
+            return result_error(
+                "Batched native text reads require host mode; use devbox_read_file for Docker files.");
+        try {
+            auto value = isolated_filesystem("read_text_batch", args, Millis(30000), cancel);
+            const auto summary = "Read " + std::to_string(json_uint(value, "read_files")) + " of " +
+                                 std::to_string(json_uint(value, "requested_files")) +
+                                 " files in one native batch.";
+            const bool partial = json_uint(value, "errors") || json_uint(value, "skipped_files");
+            const bool truncated = json_uint(value, "truncated_files") || json_uint(value, "skipped_files");
+            Json result;
+            if (partial)
+                result = result_error(summary + " Inspect the per-file errors and skipped entries.",
+                                      std::move(value));
+            else {
+                auto text = json_dump(value);
+                result = result_explicit(summary, std::move(value), std::move(text));
+            }
+            result["structuredContent"]["truncated"] = truncated;
+            return result;
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception& error) {
+            return result_error(error.what());
+        }
+    }
     if (host && !config_->host_exec_enabled)
         return result_error(name == "windows_host_inspect_file" ? "Host execution is disabled."
                                                                 : "Windows host execution is disabled.");

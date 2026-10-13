@@ -615,6 +615,80 @@ std::string read_text(const fs::path& path, std::size_t max_bytes) {
         static_cast<std::size_t>(std::min<std::uint64_t>(file.size(), std::max<std::size_t>(max_bytes, 1)));
     return sanitize_utf8(read_exact(file, count));
 }
+Json read_text_batch(std::span<const std::string> paths, std::size_t max_bytes_per_file,
+                     std::size_t max_total_bytes, const Cancel& cancel) {
+    if (paths.empty() || paths.size() > 16 || !max_bytes_per_file || max_bytes_per_file > 65536 ||
+        !max_total_bytes || max_total_bytes > 262144)
+        throw Error("READ_BATCH_LIMIT: use 1-16 paths, 1-65536 bytes per file and 1-262144 total bytes");
+    std::set<std::string> seen;
+    for (const auto& path : paths) {
+        if (path.empty() || path.size() > 16384 || path.find('\0') != std::string::npos ||
+            !path_from_utf8(path).is_absolute() || !seen.insert(path).second)
+            throw Error("READ_BATCH_PATH: paths must be unique, absolute and contain no NUL bytes");
+    }
+    Json files = Json::array();
+    std::size_t bytes = 0, succeeded = 0, failed = 0, skipped = 0, truncated = 0, replaced_files = 0;
+    for (const auto& requested : paths) {
+        if (cancel)
+            cancel->check();
+        if (bytes == max_total_bytes) {
+            files.push_back(
+                Json{{"path", requested},
+                     {"ok", false},
+                     {"status", "skipped"},
+                     {"error", "READ_BATCH_BUDGET_EXHAUSTED: request the remaining paths separately"}});
+            ++skipped;
+            continue;
+        }
+        try {
+            DiskFile file(path_from_utf8(requested));
+            if (file.missing)
+                throw Error("ENOENT: no such file or directory");
+            const auto size = file.size();
+            const auto maximum = std::min(max_bytes_per_file, max_total_bytes - bytes);
+            const auto raw =
+                read_exact(file, static_cast<std::size_t>(std::min<std::uint64_t>(size, maximum)));
+            bytes += raw.size();
+            if (cancel)
+                cancel->check();
+            auto text = sanitize_utf8(raw);
+            const bool replaced = text != raw, limited = raw.size() < size;
+            Json item{{"path", requested},
+                      {"ok", true},
+                      {"status", "read"},
+                      {"sampled_file_bytes", size},
+                      {"bytes_read", raw.size()},
+                      {"next_offset_bytes", raw.size()},
+                      {"truncated", limited},
+                      {"read_bytes_sha256", sha256(raw)},
+                      {"invalid_utf8_replaced", replaced}};
+            item["text"] = std::move(text);
+            files.push_back(std::move(item));
+            ++succeeded;
+            truncated += limited;
+            replaced_files += replaced;
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception& error) {
+            files.push_back(
+                Json{{"path", requested}, {"ok", false}, {"status", "error"}, {"error", error.what()}});
+            ++failed;
+        }
+    }
+    Json result{{"requested_files", paths.size()},
+                {"read_files", succeeded},
+                {"errors", failed},
+                {"skipped_files", skipped},
+                {"truncated_files", truncated},
+                {"bytes_read", bytes},
+                {"max_bytes_per_file", max_bytes_per_file},
+                {"max_total_bytes", max_total_bytes},
+                {"utf8_replaced_files", replaced_files},
+                {"complete", !failed && !skipped && !truncated && !replaced_files},
+                {"atomic_snapshot", false}};
+    result["files"] = std::move(files);
+    return result;
+}
 Json read_large(const fs::path& path, std::uint64_t offset, std::size_t max_bytes) {
     DiskFile file(path);
     if (file.missing)

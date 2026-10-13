@@ -170,6 +170,20 @@ int main(int argc, char** argv) {
         require(invoke(base, "devbox_read_file",
                        Json{{"path", path_text(file)}})["structuredContent"]["stdout"] == "alpha\nbeta\n",
                 "text file MCP roundtrip");
+        const auto batch =
+            data(invoke(base, "devbox_read_files", Json{{"paths", Json::array({path_text(file)})}}));
+        require(batch["complete"] == true && batch["files"][0]["text"] == "alpha\nbeta\n" &&
+                    batch["files"][0]["read_bytes_sha256"] == sha256("alpha\nbeta\n"),
+                "native batched file read reaches the isolated worker through MCP");
+        const auto partial_batch =
+            invoke(base, "devbox_read_files",
+                   Json{{"paths", Json::array({path_text(root / "missing-batch"), path_text(file)})}});
+        require(json_bool(partial_batch, "isError") &&
+                    partial_batch["structuredContent"]["data"]["errors"] == 1 &&
+                    partial_batch["structuredContent"]["data"]["files"][1]["text"] == "alpha\nbeta\n",
+                "partial batched reads are errors with successful file evidence retained");
+        require(json_bool(invoke(base, "devbox_read_files", Json{{"paths", Json::array()}}), "isError"),
+                "batch schema rejects an empty path list");
         require(data(invoke(base, "devbox_read_large_file",
                             Json{{"path", path_text(file)},
                                  {"offset_bytes", 6},

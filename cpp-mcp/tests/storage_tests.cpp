@@ -20,6 +20,74 @@ template <class F> void rejects(F&& operation, std::string_view part) {
     }
     throw Error("Expected rejection: " + std::string(part));
 }
+void batch_read_checks(const fs::path& root) {
+    const auto directory = root / "batch-read";
+    ensure_directory(directory);
+    const auto first = directory / "first.txt", unicode = directory / "unicode.txt",
+               empty = directory / "empty.txt", invalid = directory / "invalid.txt";
+    const std::string utf8 = "A\xf0\x9f\xa6\x80Z";
+    const std::string bad = std::string("bad") + char(0xff);
+    write_file(first, "alpha\n");
+    write_file(unicode, utf8);
+    write_file(empty, "");
+    write_file(invalid, bad);
+    const std::vector<std::string> paths{path_text(first), path_text(unicode), path_text(empty)};
+    auto result = read_text_batch(paths);
+    require(result["complete"] == true && result["atomic_snapshot"] == false && result["read_files"] == 3 &&
+                result["bytes_read"] == 6 + utf8.size() && result["files"][0]["text"] == "alpha\n" &&
+                result["files"][1]["text"] == utf8 && result["files"][2]["text"] == "" &&
+                result["files"][1]["read_bytes_sha256"] == sha256(utf8) &&
+                result["files"][2]["read_bytes_sha256"] == sha256(""),
+            "batch reads preserve input order, Unicode, empty files and exact raw-byte digests");
+    result = read_text_batch(paths, 4, 5);
+    require(result["complete"] == false && result["bytes_read"] == 5 && result["truncated_files"] == 2 &&
+                result["skipped_files"] == 1 && result["files"][0]["text"] == "alph" &&
+                result["files"][1]["text"] == "A" && result["files"][2]["status"] == "skipped",
+            "aggregate byte budget bounds later files and explicitly skips the remaining paths");
+    const std::vector<std::string> partial{path_text(directory / "missing"), path_text(first)};
+    result = read_text_batch(partial);
+    require(result["errors"] == 1 && result["read_files"] == 1 && result["complete"] == false &&
+                result["files"][0]["status"] == "error" && result["files"][1]["text"] == "alpha\n",
+            "one missing file retains a later successful read and explicit partial status");
+    const std::vector<std::string> nonregular{path_text(directory), path_text(first)};
+    require(read_text_batch(nonregular)["errors"] == 1, "directories are not read as regular files");
+    const std::vector<std::string> malformed{path_text(invalid)};
+    result = read_text_batch(malformed);
+    require(result["utf8_replaced_files"] == 1 && result["complete"] == false &&
+                result["files"][0]["invalid_utf8_replaced"] == true &&
+                result["files"][0]["text"] == sanitize_utf8(bad) &&
+                result["files"][0]["read_bytes_sha256"] == sha256(bad),
+            "invalid UTF8 replacement is explicit and does not change the raw-byte digest");
+    const std::vector<std::string> cut_unicode{path_text(unicode)};
+    result = read_text_batch(cut_unicode, 2);
+    require(result["files"][0]["bytes_read"] == 2 && result["files"][0]["truncated"] == true &&
+                result["files"][0]["invalid_utf8_replaced"] == true &&
+                result["files"][0]["read_bytes_sha256"] == sha256(utf8.substr(0, 2)),
+            "a byte boundary inside UTF8 retains exact source offsets and honest replacement metadata");
+    const std::vector<std::string> none, duplicate{paths[0], paths[0]}, relative{"relative.txt"},
+        nul{paths[0] + std::string(1, '\0') + "tail"}, too_many(17, paths[0]);
+    rejects([&] { read_text_batch(none); }, "READ_BATCH_LIMIT");
+    rejects([&] { read_text_batch(too_many); }, "READ_BATCH_LIMIT");
+    rejects([&] { read_text_batch(duplicate); }, "READ_BATCH_PATH");
+    rejects([&] { read_text_batch(relative); }, "READ_BATCH_PATH");
+    rejects([&] { read_text_batch(nul); }, "READ_BATCH_PATH");
+    rejects([&] { read_text_batch(paths, 0); }, "READ_BATCH_LIMIT");
+    rejects([&] { read_text_batch(paths, 65537); }, "READ_BATCH_LIMIT");
+    rejects([&] { read_text_batch(paths, 8192, 0); }, "READ_BATCH_LIMIT");
+    rejects([&] { read_text_batch(paths, 8192, 262145); }, "READ_BATCH_LIMIT");
+    auto cancel = std::make_shared<Cancellation>();
+    cancel->cancel();
+    bool cancelled = false;
+    try {
+        (void)read_text_batch(paths, 8192, 65536, cancel);
+    } catch (const Cancelled&) {
+        cancelled = true;
+    }
+    require(cancelled, "batch read honours pre-existing cancellation");
+    require(read_file(first) == "alpha\n" && read_file(unicode) == utf8 && read_file(invalid) == bad &&
+                read_file(empty).empty(),
+            "all batch operations preserve source bytes");
+}
 #ifndef _WIN32
 void small_stack_file_io(const fs::path& root) {
     struct State {
@@ -80,6 +148,7 @@ int run(int argc, char** argv) {
         fs::remove_all(root, ec);
     });
     try {
+        batch_read_checks(root);
 #ifndef _WIN32
         small_stack_file_io(root);
 #endif
