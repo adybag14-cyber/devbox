@@ -109,6 +109,13 @@ try {
   client = new Client({ name: 'cpp-live-docker-certification', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`)));
   await assertClientNativeContract(client);
+  const hostOnlyPath = path.join(root, 'host-only-batch-fixture.txt');
+  const hostOnlyText = 'host-only batch fixture must not be read in Docker mode';
+  await writeFile(hostOnlyPath, hostOnlyText);
+  const unsupportedBatch = await invoke('devbox_read_files', { paths: [hostOnlyPath] }, false);
+  assert.match(unsupportedBatch.summary, /require host mode/);
+  assert(!JSON.stringify(unsupportedBatch).includes(hostOnlyText), 'Docker batch denial does not expose host file contents');
+  outputs.push('Host-only batched text reads explicitly denied in Docker mode');
   assert.equal((await invoke('devbox_start')).data.running, true);
   const program = await invoke('devbox_run_program', { program: 'node', args: ['-e',
     'process.stdout.write(JSON.stringify({platform:process.platform,cwd:process.cwd(),args:process.argv.slice(1)}))',

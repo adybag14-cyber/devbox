@@ -53,6 +53,25 @@ try {
   assert.deepEqual(Buffer.from((await invoke('devbox_read_large_file',{path:pathName})).data.content_base64,'base64'),bytes);
   const uploadBytes=Buffer.concat([Buffer.alloc(65536,17),Buffer.alloc(65536,203)]);
   const hash=value=>createHash('sha256').update(value).digest('hex');
+  const textPaths=[path.join(workspace,'batch-a.txt'),path.join(workspace,'batch-b.txt')];
+  const textValues=['alpha\n','beta\n'];
+  await Promise.all(textPaths.map((file,index)=>writeFile(file,textValues[index])));
+  const batch=(await invoke('devbox_read_files',{paths:textPaths})).data;
+  assert.equal(batch.complete,true);assert.equal(batch.atomic_snapshot,false);
+  assert.deepEqual(batch.files.map(file=>file.path),textPaths);
+  assert.deepEqual(batch.files.map(file=>file.text),textValues);
+  assert.deepEqual(batch.files.map(file=>file.read_bytes_sha256),textValues.map(hash));
+  const partialBatch=await client.callTool({name:'devbox_read_files',arguments:{paths:[path.join(workspace,'missing-batch'),textPaths[1]]}});
+  assert.equal(partialBatch.isError,true,'batch errors remain explicit through the SDK');
+  assert.equal(partialBatch.structuredContent.data.errors,1);
+  assert.equal(partialBatch.structuredContent.data.files[1].text,textValues[1]);
+  const limitedBatch=await client.callTool({name:'devbox_read_files',arguments:{paths:textPaths,max_bytes_per_file:4,max_total_bytes:4}});
+  assert.equal(limitedBatch.isError,true,'aggregate exhaustion explicitly skips remaining files');
+  assert.equal(limitedBatch.structuredContent.truncated,true);
+  assert.equal(limitedBatch.structuredContent.data.bytes_read,4);
+  assert.equal(limitedBatch.structuredContent.data.files[0].text,'alph');
+  assert.equal(limitedBatch.structuredContent.data.files[1].status,'skipped');
+  assert.deepEqual(await Promise.all(textPaths.map(file=>readFile(file,'utf8'))),textValues,'batch reads never modify inputs');
   const upload={upload_id:'sdk_upload'};
   const begin={...upload,action:'begin',path:'uploaded.bin',total_bytes:uploadBytes.length,sha256:hash(uploadBytes),expected_file_sha256:'missing'};
   if(capabilities.data.artifact_uploads.supported){
