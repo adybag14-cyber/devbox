@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, lstat, writeFile, rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { setTimeout as pause } from 'node:timers/promises';
+import { waitForRegistryCache } from './readiness.mjs';
 
 const mirror = 'https://mirror.gcr.io';
 
@@ -49,20 +49,13 @@ async function configure() {
   // to hit Hub. Activate the setting from startup on this verified empty,
   // dedicated runner; never restart a developer or self-hosted daemon.
   execFileSync('systemctl', ['restart', 'docker'], { timeout: 30000, stdio: 'inherit' });
-  const deadline = Date.now() + 10000;
-  while (Date.now() < deadline) {
-    const mirrors = JSON.parse(execFileSync('docker', ['info', '--format', '{{json .RegistryConfig.Mirrors}}'],
-      { timeout: 3000, encoding: 'utf8' }));
-    if (Array.isArray(mirrors) && mirrors.some(value => value.replace(/\/$/, '') === mirror)) {
-      const version = execFileSync('docker', ['version', '--format', '{{.Server.Version}}'],
-        { timeout: 5000, encoding: 'utf8' }).trim();
-      console.log(JSON.stringify({ configured: true, mirror, daemonRestarted: true, version,
-        imageReferencesChanged: false, credentialsRequired: false }));
-      return;
-    }
-    await pause(250);
-  }
-  throw new Error('Docker did not acknowledge the registry cache configuration');
+  const version = await waitForRegistryCache(mirror,
+    timeout => JSON.parse(execFileSync('docker', ['info', '--format', '{{json .RegistryConfig.Mirrors}}'],
+      { timeout, encoding: 'utf8' })),
+    timeout => execFileSync('docker', ['version', '--format', '{{.Server.Version}}'],
+      { timeout, encoding: 'utf8' }));
+  console.log(JSON.stringify({ configured: true, mirror, daemonRestarted: true, version,
+    imageReferencesChanged: false, credentialsRequired: false }));
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await configure();

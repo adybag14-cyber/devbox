@@ -1,4 +1,5 @@
 #include "devbox/capture.hpp"
+#include "devbox/capture_pixels.hpp"
 #include "devbox/computer_use.hpp"
 #ifdef _WIN32
 #include "devbox/native.hpp"
@@ -70,7 +71,8 @@ std::optional<Rect> intersect(Rect a, Rect b) {
         return {};
     return Rect{left, top, static_cast<int>(right - left), static_cast<int>(bottom - top)};
 }
-std::optional<Frame> copy_frame(Rect rect, HWND window = nullptr, UINT flags = 0) {
+std::optional<Frame> copy_frame(Rect rect, HWND window = nullptr, UINT flags = 0,
+                                std::optional<unsigned> max_width = {}, const Cancel& cancel = {}) {
     const auto pixels = validate_dimensions(rect.width, rect.height);
     const auto screen = GetDC(nullptr);
     if (!screen)
@@ -115,13 +117,17 @@ std::optional<Frame> copy_frame(Rect rect, HWND window = nullptr, UINT flags = 0
     if (lines != rect.height)
         throw Error("GetDIBits returned " + std::to_string(lines) + " scanlines for a " +
                     std::to_string(rect.height) + "-line capture.");
-    Frame frame{static_cast<unsigned>(rect.width), static_cast<unsigned>(rect.height),
-                std::vector<std::uint8_t>(pixels * 3)};
-    for (std::size_t i = 0; i < pixels; ++i) {
-        frame.rgb[i * 3] = bgra[i * 4 + 2];
-        frame.rgb[i * 3 + 1] = bgra[i * 4 + 1];
-        frame.rgb[i * 3 + 2] = bgra[i * 4];
+    auto width = static_cast<unsigned>(rect.width), height = static_cast<unsigned>(rect.height);
+    if (max_width && width > *max_width) {
+        height = std::max(1u, static_cast<unsigned>(static_cast<std::uint64_t>(height) * *max_width / width));
+        width = *max_width;
     }
+    Frame frame{width, height, std::vector<std::uint8_t>(static_cast<std::size_t>(width) * height * 3)};
+    sample_bgra_to_rgb(bgra, static_cast<unsigned>(rect.width), static_cast<unsigned>(rect.height), frame.rgb,
+                       width, height, [&] {
+                           if (cancel)
+                               cancel->check();
+                       });
     return frame;
 }
 Analysis analyze(const Frame& frame) {
@@ -296,25 +302,7 @@ ImageCapture native_capture_region(int left, int top, int width, int height, uns
                                    unsigned quality, const Cancel& cancel) {
     if (cancel)
         cancel->check();
-    auto frame = *copy_frame(Rect{left, top, width, height});
-    if (frame.width > max_width) {
-        const auto new_height = std::max(
-            1u, static_cast<unsigned>(static_cast<std::uint64_t>(frame.height) * max_width / frame.width));
-        Frame scaled{max_width, new_height,
-                     std::vector<std::uint8_t>(static_cast<std::size_t>(max_width) * new_height * 3)};
-        for (unsigned y = 0; y < new_height; ++y) {
-            if (cancel)
-                cancel->check();
-            const auto source_y = static_cast<std::uint64_t>(y) * frame.height / new_height;
-            for (unsigned x = 0; x < max_width; ++x) {
-                const auto source_x = static_cast<std::uint64_t>(x) * frame.width / max_width;
-                const auto source = static_cast<std::size_t>(source_y * frame.width + source_x) * 3;
-                const auto target = (static_cast<std::size_t>(y) * max_width + x) * 3;
-                std::copy_n(frame.rgb.data() + source, 3, scaled.rgb.data() + target);
-            }
-        }
-        frame = std::move(scaled);
-    }
+    auto frame = *copy_frame(Rect{left, top, width, height}, nullptr, 0, max_width, cancel);
     return {encode_jpeg(frame, quality), "image/jpeg",
             Json{{"image_width", frame.width},
                  {"image_height", frame.height},
