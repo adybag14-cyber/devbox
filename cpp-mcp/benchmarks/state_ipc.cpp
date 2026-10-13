@@ -8,10 +8,13 @@ thread_local const char* benchmark_phase = "startup";
 int run(int argc, char** argv) {
     if (argc == 3 && std::string_view(argv[1]) == "--state-coordinator")
         return run_state_coordinator(path_from_utf8(argv[2]), [] { return false; });
-    const auto samples = argc == 3 && std::string_view(argv[1]) == "--samples" ? std::stoul(argv[2]) : 64UL;
-    if ((argc != 1 && (argc != 3 || std::string_view(argv[1]) != "--samples")) || samples < 32 ||
-        samples > 1000)
-        throw Error("Usage: devbox-state-ipc-bench [--samples 32..1000]");
+    const bool recovery_fixture = argc == 4 && std::string_view(argv[3]) == "--seed-recovered-ack";
+    const auto samples = (argc == 3 || recovery_fixture) && std::string_view(argv[1]) == "--samples"
+                             ? std::stoul(argv[2])
+                             : 64UL;
+    if ((argc != 1 && ((argc != 3 && !recovery_fixture) || std::string_view(argv[1]) != "--samples")) ||
+        samples < 32 || samples > 1000)
+        throw Error("Usage: devbox-state-ipc-bench [--samples 32..1000 [--seed-recovered-ack]]");
     const auto root = fs::canonical(fs::temp_directory_path()) / ("devbox-state-ipc-bench-" + uuid());
     ensure_private_state_directory(root);
     ScopeExit cleanup([&] {
@@ -33,6 +36,7 @@ int run(int argc, char** argv) {
     benchmark_phase = "seed-write-record";
     setup->apply({&write_seed, 1});
     unsigned committed = 0;
+    unsigned recovered_writes = 0;
     Json write_trials = Json::array();
     Json trials = Json::array();
     for (bool reuse : {false, true, true, false, false, true, true, false}) {
@@ -66,24 +70,47 @@ int run(int argc, char** argv) {
         for (const bool replay : {false, true}) {
             std::vector<double> values;
             values.reserve(write_samples);
+            unsigned recovered_in_trial = 0;
             for (unsigned i = 0; i < write_samples; ++i) {
                 if (!replay) {
                     mutation.expected_revision = ++committed;
                     mutation.record.data["value"] = committed;
                     event.data["value"] = committed;
                     batch = "batch-" + std::to_string(committed);
+                    // Qualification-only reproduction: discard an admitted
+                    // write's acknowledgement before the measured client sees
+                    // it. The real transport's lost-reply path is independently
+                    // exercised by state_coordinator_tests.cpp.
+                    if (recovery_fixture && committed == 1)
+                        (void)setup->apply_once(batch, {&mutation, 1}, {&event, 1});
                 }
                 benchmark_phase = replay ? "receipt-replay" : "durable-write";
                 const auto begin = Clock::now();
-                if (client->apply_once(batch, {&mutation, 1}, {&event, 1}) != replay)
-                    throw Error("Incorrect durable write/replay acknowledgement");
+                const auto was_replayed = client->apply_once(batch, {&mutation, 1}, {&event, 1});
                 values.push_back(std::chrono::duration<double, std::micro>(Clock::now() - begin).count());
+                if (replay && !was_replayed)
+                    throw Error("Explicit receipt replay was not acknowledged as replayed");
+                if (!replay && recovery_fixture && committed == 1 && !was_replayed)
+                    throw Error("Seeded recovery did not return its existing receipt");
+                if (!replay && was_replayed) {
+                    ++recovered_writes;
+                    ++recovered_in_trial;
+                    // apply_once may internally recover a lost acknowledgement
+                    // with the same batch ID. Verify its durable effect instead
+                    // of assuming that the first caller invocation is never a
+                    // receipt replay. Keep this read outside the timed sample.
+                    const auto recovered = client->get("task", "write-fixed");
+                    if (!recovered || recovered->revision != committed + 1 ||
+                        recovered->data["value"] != committed)
+                        throw Error("Recovered receipt did not confirm the expected durable write");
+                }
             }
             auto ranked = values;
             std::sort(ranked.begin(), ranked.end());
             write_trials.push_back(Json{{"reuse", reuse},
                                         {"operation", replay ? "receipt_replay" : "durable_write"},
                                         {"samples", write_samples},
+                                        {"recovered_acknowledgements", recovered_in_trial},
                                         {"p50_us", ranked[write_samples / 2]},
                                         {"p95_us", ranked[write_samples * 95 / 100]},
                                         {"p99_us", ranked[write_samples * 99 / 100]},
@@ -123,10 +150,13 @@ int run(int argc, char** argv) {
                       {"write_trials", write_trials},
                       {"durable_commits", committed},
                       {"events", events},
+                      {"recovered_write_acknowledgements", recovered_writes},
+                      {"seeded_recovery_fixture", recovery_fixture},
                       {"build", build_snapshot()},
                       {"production_requests", 0},
                       {"scope", "native coordinated read including encryption, proof checks, HTTP and "
-                                "SQLite; no external MCP frontend"}}
+                                "SQLite; durable-write samples include any verified acknowledgement "
+                                "recovery; no external MCP frontend"}}
                      .dump()
               << '\n';
     return 0;
