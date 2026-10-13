@@ -1,6 +1,6 @@
 # Native public-web research
 
-The C++23 service adds three research tools to the frozen compatibility and computer-use surface. Contract version 9 advertises 53 tools. Research uses native libcurl networking, Lexbor HTML parsing and pugixml RSS parsing, with no Python, browser farm, embedding model or external LLM in the implementation.
+The C++23 service includes three research tools alongside its compatibility and computer-use tools; see the generated [tool manifest](TOOL_MANIFEST.md) for the current contract and inventory. Research uses native libcurl networking, Lexbor HTML parsing and pugixml RSS parsing, with no Python, browser farm, embedding model or external LLM in the implementation.
 
 ## Research presets
 

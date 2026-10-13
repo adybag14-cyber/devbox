@@ -76,6 +76,13 @@ std::optional<std::string> optional_text(const Json& value, const char* key) {
 }
 } // namespace
 Json filesystem_operation(std::string_view operation, const Json& args) {
+    if (operation == "read_text_batch") {
+        if (!args.is_object() || !args.contains("paths") || !args["paths"].is_array())
+            throw Error("READ_BATCH_PATH: paths must be an array");
+        const auto paths = json_strings(args, "paths");
+        return read_text_batch(paths, json_uint(args, "max_bytes_per_file", 8192),
+                               json_uint(args, "max_total_bytes", 65536));
+    }
     if (operation == "job_files")
         return job_filesystem_operation(args);
     if (operation == "job_files_read_batch") {

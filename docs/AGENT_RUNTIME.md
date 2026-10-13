@@ -17,6 +17,7 @@ CMD inline commands are limited to 8,000 UTF-16 units and return a clear error b
 | Tool | Purpose |
 | --- | --- |
 | `devbox_capabilities` | Contract version, schema hash, tool names, source identity and effective limits; pass `tool_name` to inspect one complete schema |
+| `devbox_read_files` | Read 1-16 related text files in one bounded native worker and tool call, with per-file status and exact read-byte digests |
 | `devbox_file_state` | Complete file SHA-256 and byte length before a conditional write |
 | `devbox_write_file_atomic` | Atomic replacement or append with previous-content/offset checks and equivalent-result retry detection |
 | `devbox_job_submit` | Durable task/operation identity and duplicate-safe submission |
@@ -26,6 +27,16 @@ CMD inline commands are limited to 8,000 UTF-16 units and return a clear error b
 | `devbox_task_list` | Discover task IDs and revisions after a lost conversation or reconnect |
 
 File state, atomic file writes and durable job submission operate on the host runtime. Task metadata is stored by the service under `run/tasks`; it is data and never grants execution permissions. OAuth read/exec scopes apply to the corresponding native tools. The default broad `mcp:tools` scope remains compatible. Task and operation IDs use 1-80 lowercase ASCII letters, digits, hyphens or underscores, avoiding platform-dependent case collisions.
+
+For several related files, prefer `devbox_read_files` in host mode. Supply unique absolute paths; the defaults are 8 KiB per file and 64 KiB total, with hard ceilings of 64 KiB per file and 256 KiB total. Results stay in input order. A missing or unreadable file produces a per-file error while retaining other successful reads. Exhausting the total budget explicitly skips remaining paths; errors or skips set the overall tool error flag. Truncated reads remain successful but report `complete=false`, and UTF-8 replacement is also explicit. The digest covers the original bytes that were read, not a repaired text representation or an unread remainder. Use `devbox_read_large_file` for exact binary data or byte-range continuation. Each file is read independently; the batch is not an atomic snapshot. Docker mode retains the existing individual file tools.
+
+```json
+{
+  "paths": ["C:/workspace/project/README.md", "C:/workspace/project/CMakeLists.txt"],
+  "max_bytes_per_file": 8192,
+  "max_total_bytes": 16384
+}
+```
 
 ## Submission and recovery
 
