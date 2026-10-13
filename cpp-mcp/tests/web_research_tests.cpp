@@ -144,6 +144,21 @@ struct HttpFixture {
                         } else if (target == "/transient" && ++transient_calls == 1) {
                             response.result(http::status::bad_gateway);
                             response.body() = "temporary upstream failure";
+                        } else if (target == "/offer-context") {
+                            response.body() =
+                                "<html><head><title>Photon Phone 256GB delivery conditions</title>"
+                                "</head><body><main><h1>Photon Phone 256GB</h1>";
+                            for (unsigned i = 0; i < 80; ++i)
+                                response.body() +=
+                                    "<p>Delivery condition " + std::to_string(i) +
+                                    ": this new unlocked phone includes standard shipping. "
+                                    "The buyer can read the full policy and r&eacute;sum&eacute; "
+                                    "of the available delivery choices before ordering.</p>";
+                            response.body() +=
+                                "</main><script type='application/ld+json'>"
+                                "{\"@type\":\"Product\",\"name\":\"Photon Phone 256GB\","
+                                "\"offers\":{\"@type\":\"Offer\",\"price\":599,\"priceCurrency\":\"GBP\"}}"
+                                "</script></body></html>";
                         } else if (target == "/phone-price" && price_failed) {
                             response.result(http::status::forbidden);
                             response.body() = "Price access currently unavailable";
@@ -622,6 +637,34 @@ void research_tests(HttpFixture& server, const fs::path& root) {
                 price_unchanged["documents"][0]["offers"][0]["price"] == "549.00",
             "304 retains offer evidence");
     require(price_unchanged.dump().size() <= 4000, "compact offer response respects output budget");
+    const Json context_args{{"urls", {server.url("/offer-context")}},
+                            {"view", "offers"},
+                            {"max_age_seconds", 3600},
+                            {"max_chars", 64000}};
+    const auto compact_context = service.fetch(context_args);
+    require(compact_context["documents"][0]["excerpt_chars"] == 350,
+            "offers retain their compact excerpt default when the caller supplies no override");
+    for (const auto limit : {200, 4000}) {
+        auto requested_context = context_args;
+        requested_context["excerpt_chars"] = limit;
+        const auto context = service.fetch(requested_context);
+        require(context["documents"][0]["excerpt_chars"] == limit &&
+                    context["documents"][0]["excerpt_bytes"].get<std::size_t>() >
+                        static_cast<std::size_t>(limit) &&
+                    context["documents"][0]["offers"][0]["price"] == "599.00" &&
+                    context["documents"][0]["content_sha256"] ==
+                        compact_context["documents"][0]["content_sha256"],
+                "explicit offer excerpts honor smaller and larger Unicode limits without changing offer "
+                "evidence");
+    }
+    auto bounded_context = context_args;
+    bounded_context["excerpt_chars"] = 8000;
+    bounded_context["max_chars"] = 4000;
+    const auto budgeted_context = service.fetch(bounded_context);
+    require(
+        budgeted_context.dump().size() <= 4000 && budgeted_context["output_truncated"] == true &&
+            !budgeted_context["remaining_url_indexes"].empty(),
+        "a larger requested excerpt cannot exceed the serialized response budget; omission stays explicit");
     const auto cache_path =
         config->project_root / "run" / "web-research-cache" / (sha256(server.url("/phone-price")) + ".json");
     auto old_cache = read_json(cache_path);

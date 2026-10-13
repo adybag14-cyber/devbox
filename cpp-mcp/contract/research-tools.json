@@ -52,7 +52,7 @@
           "type": "integer",
           "minimum": 200,
           "maximum": 8000,
-          "description": "Maximum Unicode code points of source text, independently of the serialized UTF-8 byte budget. Original character/byte offsets and truncation are returned. Fetch defaults to 2000; evidence ledger to 500; evidence detail to 12000. Output-budget reductions are explicit."
+          "description": "Maximum Unicode code points of source text, independently of the serialized UTF-8 byte budget. Original character/byte offsets and truncation are returned. Fetch evidence view defaults to 2000 and offers view to 350 unless explicitly requested; evidence ledger defaults to 500 and evidence detail to 12000. Output-budget reductions are explicit."
         },
         "max_chars": {
           "type": "integer",
@@ -262,7 +262,7 @@
           "type": "integer",
           "minimum": 200,
           "maximum": 16000,
-          "description": "Maximum Unicode code points of source text, independently of the serialized UTF-8 byte budget. Original character/byte offsets and truncation are returned. Fetch defaults to 2000; evidence ledger to 500; evidence detail to 12000. Output-budget reductions are explicit."
+          "description": "Maximum Unicode code points of source text, independently of the serialized UTF-8 byte budget. Original character/byte offsets and truncation are returned. Fetch evidence view defaults to 2000 and offers view to 350 unless explicitly requested; evidence ledger defaults to 500 and evidence detail to 12000. Output-budget reductions are explicit."
         },
         "max_chars": {
           "type": "integer",
