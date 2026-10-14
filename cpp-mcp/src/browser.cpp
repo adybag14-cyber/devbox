@@ -4,6 +4,7 @@
 #include "devbox/process.hpp"
 #include "devbox/research.hpp"
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <thread>
 #ifndef _WIN32
@@ -12,6 +13,17 @@
 #endif
 
 namespace devbox {
+std::string browser_normalize_url(std::string_view supplied) {
+    auto result = web::normalize_url(supplied);
+    // Fragment routes matter to a rendered application even though they are not
+    // part of an HTTP fetch. Apply the public-network policy before preserving it.
+    const auto fragment = supplied.find('#');
+    if (fragment != supplied.npos)
+        result.append(supplied.substr(fragment));
+    if (result.size() > 4096)
+        throw Error("WEB_INVALID_URL: normalized browser URL exceeds 4096 bytes");
+    return result;
+}
 std::string browser_page_status(const Json& observation, int http_status) {
     const auto title = lower(json_string(observation, "title"));
     const auto text = lower(json_string(observation, "text").substr(0, 8000));
@@ -236,7 +248,7 @@ struct BrowserService::State {
                 parsed.port == std::to_string(*options.fixture_port) && parsed.userinfo.empty())
                 return std::string(supplied);
         }
-        return web::normalize_url(supplied);
+        return browser_normalize_url(supplied);
     }
     Json command(std::string_view method, Json args, Clock::time_point deadline, const Cancel& cancel,
                  bool browser = false) {
@@ -581,12 +593,22 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
     }
     if (action != "scroll" && action != "click" && action != "type")
         throw Error("BROWSER_INVALID_ACTION");
-    if (json_string(args, "observation_id") != session.observation ||
+    if (session.observation.empty() || json_string(args, "observation_id") != session.observation ||
         !json_bool(session.last, "navigation_stable"))
         throw Error("BROWSER_STALE_OBSERVATION: observe the page again before input");
+    if (action == "click" && (!args.contains("x") || !args.contains("y")))
+        throw Error("BROWSER_INPUT_REQUIRED: click requires explicit x and y coordinates");
+    if (action == "type") {
+        const auto text = json_string(args, "text");
+        if (text.empty() || text.size() > 2000)
+            throw Error("BROWSER_TEXT_BOUNDS");
+    }
+    const auto dy = json_number(args, "delta_y", 600);
+    if (action == "scroll" && (!std::isfinite(dy) || dy < -2000 || dy > 2000 || dy == 0.0))
+        throw Error("BROWSER_SCROLL_BOUNDS");
     const auto current = state.evaluate(observe_script, deadline, cancel);
     const auto x = json_number(args, "x", 640), y = json_number(args, "y", 400);
-    if (x < 0 || x >= 1280 || y < 0 || y >= 800)
+    if (!std::isfinite(x) || !std::isfinite(y) || x < 0 || x >= 1280 || y < 0 || y >= 800)
         throw Error("BROWSER_INPUT_BOUNDS");
     bool stale = current["url"] != session.last["url"];
     for (const auto key : {"width", "height", "scroll_x", "scroll_y"})
@@ -613,9 +635,6 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         throw Error("BROWSER_STALE_OBSERVATION: page or targets changed; observe again");
     session.observation.clear();
     if (action == "scroll") {
-        const auto dy = json_number(args, "delta_y", 600);
-        if (dy < -2000 || dy > 2000 || dy == 0.0)
-            throw Error("BROWSER_SCROLL_BOUNDS");
         state.command("Input.dispatchMouseEvent",
                       {{"type", "mouseWheel"}, {"x", x}, {"y", y}, {"deltaX", 0}, {"deltaY", dy}}, deadline,
                       cancel);
@@ -628,8 +647,6 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
                       deadline, cancel);
     } else {
         const auto text = json_string(args, "text");
-        if (text.empty() || text.size() > 2000)
-            throw Error("BROWSER_TEXT_BOUNDS");
         const auto focused =
             state.evaluate("({tag:document.activeElement?.tagName,type:document.activeElement?.type,editable:"
                            "document.activeElement?.isContentEditable})",

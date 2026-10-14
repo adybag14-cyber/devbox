@@ -58,6 +58,10 @@ void send(auto& socket, const Json& j) {
     socket.write(asio::buffer(s));
 }
 void protocol_tests() {
+    require(browser_normalize_url("HTTPS://Example.COM:443/shop?q=phone#/product/blue") ==
+                "https://example.com/shop?q=phone#/product/blue",
+            "browser preserves fragment routes");
+    rejects([] { browser_normalize_url("http://127.0.0.1/#public"); }, "PRIVATE");
     require(browser_page_status(
                 {{"title", "Attention Required! | Cloudflare"}, {"text", "Sorry, you have been blocked"}},
                 403) == "access_denied",
@@ -228,6 +232,12 @@ void browser_tests(bool headed = false) {
             "real JPEG screenshot");
     const auto id = json_string(value.data, "session_id"),
                observation = json_string(value.data, "observation_id");
+    rejects(
+        [&] {
+            browser.perform({{"action", "click"}, {"session_id", id}, {"observation_id", observation}},
+                            "test");
+        },
+        "INPUT_REQUIRED");
     const auto profile = fs::temp_directory_path() / ("devbox-browser-" + id);
     require(fs::is_directory(profile), "owned private browser profile exists");
     std::vector<std::pair<std::uint32_t, std::optional<std::uint64_t>>> owned_processes;
@@ -297,6 +307,18 @@ void browser_tests(bool headed = false) {
                                   "test");
     require(json_number(nested.data["scroll_regions"][0], "scroll_top") > 200,
             "nested pane scrolling moved the intended container");
+    rejects(
+        [&] {
+            browser.perform({{"action", "type"},
+                             {"session_id", id},
+                             {"observation_id", nested.data["observation_id"]},
+                             {"text", "unused"}},
+                            "test");
+        },
+        "TEXT_TARGET");
+    rejects(
+        [&] { browser.perform({{"action", "scroll"}, {"session_id", id}, {"observation_id", ""}}, "test"); },
+        "STALE");
     rejects(
         [&] {
             browser.perform({{"action", "navigate"}, {"session_id", id}, {"url", "http://169.254.169.254/"}},
