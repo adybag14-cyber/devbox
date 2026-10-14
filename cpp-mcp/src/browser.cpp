@@ -753,9 +753,16 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         throw Error("BROWSER_STALE_OBSERVATION: page or targets changed; observe again");
     session.observation.clear();
     if (action == "scroll") {
-        state.command("Input.dispatchMouseEvent",
-                      {{"type", "mouseWheel"}, {"x", x}, {"y", y}, {"deltaX", 0}, {"deltaY", dy}}, deadline,
-                      cancel);
+        // Wait for Chromium's bounded mouse-scroll gesture to finish. A raw
+        // wheel dispatch acknowledgement does not establish compositor movement.
+        state.command("Input.synthesizeScrollGesture",
+                      {{"x", x},
+                       {"y", y},
+                       {"yDistance", -dy},
+                       {"gestureSourceType", "mouse"},
+                       {"preventFling", true},
+                       {"speed", 8000}},
+                      deadline, cancel);
     } else if (action == "click") {
         state.command("Input.dispatchMouseEvent",
                       {{"type", "mousePressed"}, {"x", x}, {"y", y}, {"button", "left"}, {"clickCount", 1}},
@@ -776,7 +783,7 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
             throw Error("BROWSER_TEXT_TARGET: focus a non-sensitive editable control first");
         state.command("Input.insertText", {{"text", text}}, deadline, cancel);
     }
-    cancel->wait_for(Millis(200));
+    cancel->wait_for(Millis(action == "scroll" ? 50 : 200));
     cancel->check();
     auto observed = state.observe(args, deadline, cancel);
     if (action == "scroll") {

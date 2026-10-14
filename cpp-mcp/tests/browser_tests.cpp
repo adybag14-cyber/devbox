@@ -153,9 +153,9 @@ struct PageFixture {
     std::atomic_bool stop{false};
     std::atomic_uint requests{0};
     std::thread worker;
-    PageFixture() {
+    explicit PageFixture(bool storage = false) {
         listener.non_blocking(true);
-        worker = std::thread([this] {
+        worker = std::thread([this, storage] {
             while (!stop) {
                 Tcp::socket socket(io);
                 boost::system::error_code ec;
@@ -174,7 +174,8 @@ struct PageFixture {
                     response.keep_alive(false);
                     response.body() =
                         R"HTML(<!doctype html><title>Native dynamic phone fixture</title><style>body{font:20px sans-serif}#panel{height:250px;overflow:auto;width:500px}#inside{height:1800px;background:linear-gradient(white,lightblue)}</style><h1>Fixture Phone 256GB Blue</h1><p id="price">Loading price</p><button onclick="this.innerText='Clicked'">Choose variant</button><input aria-label="Search fixture"><div id="panel"><div id="inside">Scrollable panel<div style="padding-top:1400px">Panel bottom</div></div></div><div style="height:2500px">Long page</div><p>Page bottom</p><script>setTimeout(()=>{document.querySelector('#price').innerText='Live fixture price GBP 649.00';let s=document.createElement('script');s.type='application/ld+json';s.textContent=JSON.stringify({'@context':'https://schema.org','@type':'Product',name:'Fixture Phone 256GB Blue',offers:{'@type':'Offer',price:'649.00',priceCurrency:'GBP',availability:'https://schema.org/InStock'}});document.head.appendChild(s);},150)</script>)HTML";
-                    response.body() += R"HTML(<script>
+                    if (storage)
+                        response.body() += R"HTML(<script>
 const state=document.createElement('p');state.id='storage-state';document.body.prepend(state);
 function showStorage(){state.innerText='Cookie: '+(document.cookie||'empty')+'; Storage: '+(localStorage.getItem('devbox-fixture')||'empty');}
 const save=document.createElement('button');save.innerText='Store fixture state';save.onclick=()=>{document.cookie='devboxFixture=stored; SameSite=Lax; path=/';localStorage.setItem('devbox-fixture','stored');showStorage();};document.querySelector('button').after(save);showStorage();
@@ -310,6 +311,14 @@ void browser_tests(bool headed = false) {
                                    {"y", json_number(panel, "y") + 100},
                                    {"delta_y", 500}},
                                   "test");
+    if (json_number(nested.data["scroll_regions"][0], "scroll_top") <= 200)
+        std::cerr << Json{{"before_panes", click.data["scroll_regions"]},
+                          {"after_panes", nested.data["scroll_regions"]},
+                          {"before_viewport", click.data["viewport"]},
+                          {"after_viewport", nested.data["viewport"]},
+                          {"movement", nested.data["scroll_result"]}}
+                         .dump()
+                  << '\n';
     require(json_number(nested.data["scroll_regions"][0], "scroll_top") > 200,
             "nested pane scrolling moved the intended container");
     rejects(
@@ -344,7 +353,7 @@ void browser_tests(bool headed = false) {
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
 void shared_browser_tests(bool headed) {
-    PageFixture page;
+    PageFixture page(true);
     auto config = std::make_shared<Config>();
     config->runtime_mode = RuntimeMode::host;
     config->host_exec_enabled = true;
