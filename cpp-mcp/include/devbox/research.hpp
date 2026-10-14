@@ -30,7 +30,8 @@ Json evidence_quality(const Json& sources, const std::vector<std::string>& decla
 struct DiscoveryProvider {
     std::string id, coverage, terms_url, use_notice;
     std::function<std::string(std::string_view)> endpoint;
-    std::function<void(const Transfer&, const std::function<void(const std::string&)>&, Json&)> extract;
+    std::function<void(const Transfer&, const std::function<void(const std::string&, const Json&)>&, Json&)>
+        extract;
 };
 const DiscoveryProvider& discovery_provider(std::string_view id);
 Json discovery_provider_catalog();
@@ -75,6 +76,7 @@ class ResearchService {
     explicit ResearchService(std::shared_ptr<const Config> config, TransportLimits limits = {});
     ~ResearchService();
     Json fetch(const Json& args, const Cancel& cancel = {});
+    Json search(const Json& args, const Cancel& cancel = {});
     Json run(const Json& plan, const fs::path& directory, Millis budget, const Cancel& cancel);
 };
 Json validate_plan(const Json& args, std::optional<unsigned short> fixture_loopback_port = {});

@@ -80,6 +80,7 @@ add_library(devbox_core
   src/docker_files.cpp
   src/search.cpp
   src/web_transport.cpp
+  src/browser_protocol.cpp src/browser_proxy.cpp src/browser.cpp
   src/web_document.cpp
   src/web_content.cpp
   src/web_retailers.cpp
@@ -333,6 +334,10 @@ if(DEVBOX_BUILD_TESTS)
   add_test(NAME web-offers COMMAND devbox-web-offer-tests)
   set_tests_properties(web-offers PROPERTIES TIMEOUT 15)
   add_executable(devbox-web-research-tests tests/web_research_tests.cpp)
+  add_executable(devbox-browser-tests tests/browser_tests.cpp)
+  target_link_libraries(devbox-browser-tests PRIVATE devbox_core)
+  add_test(NAME browser-protocol COMMAND devbox-browser-tests)
+  set_tests_properties(browser-protocol PROPERTIES TIMEOUT 30)
   target_link_libraries(devbox-web-research-tests PRIVATE devbox_core)
   if(MSVC)
     target_compile_options(devbox-web-research-tests PRIVATE /utf-8)

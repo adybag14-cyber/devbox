@@ -96,6 +96,15 @@ jobs:
         run: node cpp-mcp/scripts/ci-native.mjs
       - name: Fresh packaged installer and TUI discovery
         run: node cpp-bootstrap/scripts/fresh-install.mjs
+      - name: Real isolated Chromium rendering and input fixtures
+        if: matrix.name == 'Windows MSVC' || matrix.name == 'Linux GCC'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium
+          else
+            .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium
+          fi
       - name: Native supervision without Node or Git on runtime PATH
         if: matrix.sanitizers == '0'
         run: node cpp-mcp/scripts/native-management-smoke.mjs

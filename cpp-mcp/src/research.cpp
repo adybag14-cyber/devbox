@@ -537,6 +537,99 @@ struct ResearchService::State {
 ResearchService::ResearchService(std::shared_ptr<const Config> config, TransportLimits limits)
     : state_(std::make_unique<State>(std::move(config), std::move(limits))) {}
 ResearchService::~ResearchService() = default;
+Json ResearchService::search(const Json& args, const Cancel& cancel) {
+    auto queries = json_strings(args, "queries");
+    if (queries.empty() || queries.size() > 4)
+        throw Error("web_search requires 1-4 focused queries");
+    for (auto& query : queries) {
+        query = trim(query);
+        if (query.empty() || query.size() > 1000)
+            throw Error("Each search query must be 1-1000 UTF-8 bytes");
+    }
+    const auto mode = json_string(args, "discovery", "web");
+    if (mode != "web" && mode != "scholarly" && mode != "encyclopedia")
+        throw Error("Unknown search discovery mode");
+    const auto limit = json_uint(args, "max_results", 20);
+    const auto budget = json_uint(args, "max_chars", 16000);
+    if (!limit || limit > 40 || budget < 4000 || budget > 64000)
+        throw Error("Search requires 1-40 results and a 4000-64000 UTF-8 byte output budget");
+    auto domains = json_strings(args, "domains");
+    if (domains.size() > 8)
+        throw Error("At most eight search domains are supported");
+    for (auto& domain : domains) {
+        if (domain.empty() || domain.find_first_of("/:@?#\\ ") != domain.npos)
+            throw Error("Search domains must be host names only");
+        domain = host_of(normalize_url("https://" + domain));
+    }
+    const auto began = Clock::now();
+    state_->transport.reset_byte_budget();
+    const Json plan{{"queries", queries}, {"discovery", mode}, {"domains", domains}};
+    auto found = discover_sources(state_->transport, plan, state_->cache / "discovery", state_->limits,
+                                  began + Millis(25000), cancel);
+    for (auto& provider : found["providers"]) {
+        provider.erase("query");
+        provider.erase("url");
+    }
+    Json hits = Json::array();
+    std::map<std::string, std::size_t> retained;
+    std::size_t outside_domains = 0;
+    for (auto& candidate : found["candidates"]) {
+        const auto url = json_string(candidate, "url");
+        const auto host = host_of(url);
+        if (!domains.empty() && std::none_of(domains.begin(), domains.end(), [&](const auto& domain) {
+                return host == domain || host.ends_with("." + domain);
+            })) {
+            ++outside_domains;
+            continue;
+        }
+        const auto previous = retained.find(url);
+        if (previous != retained.end()) {
+            auto& edges = hits[previous->second]["provenance"];
+            if (edges.size() < 8)
+                edges.push_back(candidate["provenance"]);
+            continue;
+        }
+        retained.emplace(url, hits.size());
+        candidate["provenance"] = Json::array({candidate["provenance"]});
+        hits.push_back(std::move(candidate));
+    }
+    const auto available = hits.size();
+    while (hits.size() > limit)
+        hits.erase(hits.end() - 1);
+    Json result{{"results", std::move(hits)},
+                {"discovery", found["summary"]},
+                {"providers", found["providers"]},
+                {"searched_at", utc_now()},
+                {"query_count", queries.size()},
+                {"available_unique_results", available},
+                {"excluded_outside_domains", outside_domains},
+                {"fetched_source_documents", 0},
+                {"content_is_untrusted", true},
+                {"metadata_is_source_evidence", false},
+                {"elapsed_ms", std::chrono::duration_cast<Millis>(Clock::now() - began).count()},
+                {"note",
+                 "These are discovery links and provider-reported titles/snippets. Open the relevant "
+                 "pages with web_fetch or the browser before claiming live prices or consulted "
+                 "sources. Use web_research for the standard 100-source or fast 50-source workflow."}};
+    result["returned_results"] = result["results"].size();
+    result["omitted_results"] = available - result["results"].size();
+    result["output_truncated"] = result["omitted_results"] != 0;
+    while (result.dump().size() > budget && !result["results"].empty()) {
+        result["results"].erase(result["results"].end() - 1);
+        result["returned_results"] = result["results"].size();
+        result["omitted_results"] = available - result["results"].size();
+        result["output_truncated"] = true;
+    }
+    if (result.dump().size() > budget) {
+        // Keep status/counts and retry guidance even when repeated provider errors
+        // use the result budget. Detailed diagnostics are optional, never hidden success.
+        result["providers"] = Json::array();
+        result["provider_details_omitted"] = true;
+    }
+    if (result.dump().size() > budget)
+        throw Error("Search metadata exceeds the requested output budget");
+    return result;
+}
 Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
     const auto requested_output = json_uint(args, "max_chars", 32000);
     const auto requested_excerpt = json_uint(args, "excerpt_chars", 2000);

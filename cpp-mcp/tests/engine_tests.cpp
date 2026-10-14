@@ -89,6 +89,11 @@ int main(int argc, char** argv) {
         require(capability_manifest(*config).size() == contract.all().size(), "one manifest entry per tool");
         require(contract.all().size() == cpp_tool_count,
                 "embedded authoritative tool count plus native computer use");
+        require(contract.tool("devbox_browser")["inputSchema"]["properties"]["max_bytes"]["maximum"] == 64000,
+                "browser artifact bound is not enlarged by legacy file-transfer configuration");
+        require(required_tool_scope("devbox_browser") == "mcp:host:exec" &&
+                    contract.tool("devbox_browser")["annotations"]["readOnlyHint"] == false,
+                "browser input retains execution authorization");
         require(contract.tool("host_computer_windows")["annotations"]["readOnlyHint"] == true &&
                     contract.tool("host_computer_use")["annotations"]["readOnlyHint"] == false &&
                     contract.tool("host_computer_use")["annotations"]["idempotentHint"] == false,

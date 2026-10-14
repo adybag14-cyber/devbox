@@ -1,5 +1,6 @@
 #pragma once
 #include "admission.hpp"
+#include "browser.hpp"
 #include "capture.hpp"
 #include "computer_use.hpp"
 #include "contract.hpp"
@@ -26,6 +27,8 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     SearchService search_;
     web::ResearchService research_;
     WorkPool research_workers_{1, 8};
+    BrowserService browser_;
+    WorkPool browser_workers_{1, 4};
     LifecycleService lifecycle_;
     GithubAuthService github_;
     CaptureService capture_;

@@ -1090,7 +1090,7 @@ void search_parser_tests() {
     response.url = response.final_url = "https://www.bing.com/search?format=rss";
     response.status = 200;
     response.body = R"(<rss><channel><title>Search</title>
-      <item><link>https://example.org/one?a=1&amp;b=2</link><pubDate>Fri, 1 Jan 2000</pubDate></item>
+      <item><title>Exact phone 256GB</title><description><![CDATA[<p>Live <b>retailer</b> link.</p><script>PRIVATE_SCRIPT</script>]]></description><link>https://example.org/one?a=1&amp;b=2</link><pubDate>Fri, 1 Jan 2000</pubDate></item>
       <item><link><![CDATA[https://example.org/two]]></link></item>
       <item><link>https://example.org/two</link></item>
       <item><link>javascript:alert(1)</link></item></channel></rss>)";
@@ -1099,6 +1099,13 @@ void search_parser_tests() {
                 parsed["urls"][0] == "https://example.org/one?a=1&b=2" && !parsed.contains("pubDate") &&
                 parsed.contains("use_notice"),
             "RSS extracts bounded unique URLs and preserves notice without promoting feed dates");
+    require(parsed["items"].size() == 2 && parsed["items"][0]["title"] == "Exact phone 256GB" &&
+                parsed["items"][0]["metadata_only"] == true &&
+                json_string(parsed["items"][0], "snippet").find("retailer") != std::string::npos &&
+                json_string(parsed["items"][0], "snippet").find("PRIVATE_SCRIPT") == std::string::npos &&
+                !parsed["items"][0].contains("published_at"),
+            "search summaries preserve useful titles and inert visible snippets without asserting source "
+            "freshness");
     for (const auto* body : {"<rss><channel>", "<html>Unexpected search markup</html>",
                              "<!DOCTYPE rss [<!ENTITY e SYSTEM 'file:///private'>]><rss><channel/></rss>",
                              "<rss><channel><item><link>javascript:alert(1)</link></item></channel></rss>"}) {
@@ -1144,6 +1151,46 @@ void search_parser_tests() {
     const auto separate = web::parse_search_response("duckduckgo_html", response);
     require(separate["results"] == 1 && separate["urls"][0] == "https://example.org/outside-feature",
             "issue88: evidence article isolation must not narrow search-provider discovery links");
+    require(separate["items"][0]["title"] == "Actual search result",
+            "HTML discovery retains the result anchor instead of only its URL");
+}
+void search_service_tests(HttpFixture& server, const fs::path& root) {
+    auto config = std::make_shared<Config>();
+    config->project_root = root / "standalone-search";
+    config->runtime_mode = RuntimeMode::host;
+    web::ResearchService service(config, server.limits());
+    server.ddg_mode = 1;
+    server.bing_mode = 0;
+    const auto before = server.requests.load();
+    const auto result = service.search(Json{{"queries", {"Photon detector one", "Photon detector two"}},
+                                            {"max_results", 2},
+                                            {"max_chars", 4000}});
+    require(result["returned_results"] == 2 && result["available_unique_results"] == 3 &&
+                result["omitted_results"] == 1 && result["output_truncated"] == true &&
+                result["fetched_source_documents"] == 0 && result["metadata_is_source_evidence"] == false &&
+                result["discovery"]["queries_completed"] == 2 && result.dump().size() <= 4000,
+            "standalone search returns bounded discovery metadata and explicit partial output");
+    require(server.requests.load() - before == 3 && result["results"][0]["provenance"].size() == 2 &&
+                result["results"][0]["title"] == "Photon detector",
+            "standalone search preserves both query ranks without fetching source pages");
+    const auto excluded =
+        service.search(Json{{"queries", {"Photon detector"}}, {"domains", {"example.org"}}});
+    require(excluded["returned_results"] == 0 && excluded["excluded_outside_domains"] == 3,
+            "requested domain boundaries are applied to returned links");
+    for (const auto& args :
+         {Json{{"queries", Json::array()}}, Json{{"queries", {"x"}}, {"domains", {"example.org:443"}}},
+          Json{{"queries", {"x"}}, {"max_results", 41}}, Json{{"queries", {"x"}}, {"discovery", "none"}}}) {
+        bool rejected = false;
+        try {
+            (void)service.search(args);
+        } catch (const Error&) {
+            rejected = true;
+        }
+        require(rejected, "invalid search arguments are rejected before provider access");
+    }
+    auto cancelled = std::make_shared<Cancellation>();
+    cancelled->cancel();
+    rejects([&] { (void)service.search(Json{{"queries", {"cancelled"}}}, cancelled); }, "cancelled");
 }
 int main(int argc, char** argv) {
     const auto root = fs::temp_directory_path() / ("devbox-web-tests-" + uuid());
@@ -1179,6 +1226,7 @@ int main(int argc, char** argv) {
             transport_tests(server);
             research_tests(server, root);
             issue88_research_tests(server, root);
+            search_service_tests(server, root);
             discovery_tests(server, root);
         }
         if (root.parent_path() == fs::temp_directory_path() &&
