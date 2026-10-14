@@ -59,6 +59,14 @@ void send(auto& socket, const Json& j) {
     socket.write(asio::buffer(s));
 }
 void protocol_tests() {
+    require(browser_cgroup_headroom(536870912, 383205376, 182263808) == 335929344,
+            "observed Oracle inactive file cache is reclaimable headroom");
+    require(browser_cgroup_headroom(512, 400, 0) == 112,
+            "missing cache data retains conservative accounting");
+    require(browser_cgroup_headroom(512, 400, 500) == 112, "inconsistent cache counters receive no credit");
+    require(browser_cgroup_headroom(512, 700, 50) == 0, "over-limit working set has no headroom");
+    require(browser_cgroup_headroom(512, 600, 200) == 112,
+            "reclaimable cache can restore over-limit headroom");
     const std::string executable = "/usr/lib/chromium/chromium", profile = "/tmp/devbox-desktop/browser";
     const std::vector<std::string> args{executable,
                                         "--ozone-platform=x11",

@@ -14,6 +14,13 @@
 #endif
 
 namespace devbox {
+std::uint64_t browser_cgroup_headroom(std::uint64_t limit, std::uint64_t usage,
+                                      std::uint64_t inactive_file_cache) {
+    // Match Linux working-set accounting: inactive file cache can be reclaimed.
+    // Inconsistent/non-atomic counters receive no cache credit; swap is never credited.
+    const auto working = inactive_file_cache < usage ? usage - inactive_file_cache : usage;
+    return limit > working ? limit - working : 0;
+}
 bool browser_process_arguments_match(std::string_view command, std::string_view executable,
                                      std::string_view profile) {
     if (command.empty() || command.size() >= 16384)
@@ -199,7 +206,16 @@ std::optional<std::uint64_t> available_memory() {
         std::ifstream cap(pair.first), used(pair.second);
         std::uint64_t limit = 0, current = 0;
         if ((cap >> limit) && (used >> current) && limit < (1ULL << 60)) {
-            const auto left = limit > current ? limit - current : 0;
+            std::ifstream stats(fs::path(pair.first).parent_path() / "memory.stat");
+            const std::string_view field = std::string_view(pair.first).ends_with("memory.max")
+                                               ? "inactive_file"
+                                               : "total_inactive_file";
+            std::string key;
+            std::uint64_t count = 0, inactive = 0;
+            while (stats >> key >> count)
+                if (key == field)
+                    inactive = count;
+            const auto left = browser_cgroup_headroom(limit, current, inactive);
             available = available ? std::min(*available, left) : left;
         }
     }
@@ -377,8 +393,15 @@ struct BrowserService::State {
     }
     Json command(std::string_view method, Json args, Clock::time_point deadline, const Cancel& cancel,
                  bool browser = false) {
-        return session->protocol->call(method, std::move(args), deadline, cancel,
-                                       browser ? "" : session->cdp_session);
+        try {
+            return session->protocol->call(method, std::move(args), deadline, cancel,
+                                           browser ? "" : session->cdp_session);
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception& error) {
+            // Identify the stalled protocol phase without disclosing page data or arguments.
+            throw Error(std::string(error.what()) + " [CDP " + std::string(method) + "]");
+        }
     }
     Json frame(Clock::time_point deadline, const Cancel& cancel) {
         return command("Page.getFrameTree", Json::object(), deadline, cancel).at("frameTree").at("frame");

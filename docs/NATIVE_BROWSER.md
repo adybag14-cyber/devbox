@@ -30,6 +30,8 @@ Shared mode overrides desktop browser autostart and waits up to 180 seconds for 
 
 The native proxy admits at most 48 connections and 64 MiB of traffic per session. Protocol messages, JSON complexity, HTML, text, controls, artifacts and operation durations are bounded. Linux startup checks host and container memory headroom; idle checks close the owned session under severe memory pressure. These checks are not a hard aggregate RSS guarantee. A small VM still needs enough memory for Chromium and its other services.
 
+Container headroom accounts for reclaimable inactive file cache (`total_inactive_file` on cgroup v1 and `inactive_file` on v2), following the [Docker working-set convention](https://docs.docker.com/reference/cli/docker/container/stats/). Host `MemAvailable` still caps the result. Swap is not treated as free RAM; missing or inconsistent cache counters receive no credit. The existing 192 MiB opening threshold and 64 MiB idle-pressure threshold remain unchanged.
+
 Linux process launch also handles kernels or container policies that reject `close_range`. Its fallback enumerates the child's own open descriptors with allocation-free kernel calls, then retains the original close loop if enumeration is unavailable. This avoids scanning a million unused descriptor numbers and closes descriptors still open above a lowered soft limit. A separate CI target forces this fallback and exercises both foreground and detached descriptor isolation.
 
 ## Reproducible validation
