@@ -3,6 +3,8 @@
 namespace devbox {
 std::string browser_page_status(const Json& observation, int http_status = 0);
 std::string browser_normalize_url(std::string_view supplied);
+bool browser_process_arguments_match(std::string_view command, std::string_view executable,
+                                     std::string_view profile);
 struct BrowserOptions {
     // Native qualification injection only. Neither is an MCP argument.
     std::optional<fs::path> executable;

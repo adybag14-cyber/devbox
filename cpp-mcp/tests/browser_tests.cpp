@@ -59,6 +59,35 @@ void send(auto& socket, const Json& j) {
     socket.write(asio::buffer(s));
 }
 void protocol_tests() {
+    const std::string executable = "/usr/lib/chromium/chromium", profile = "/tmp/devbox-desktop/browser";
+    const std::vector<std::string> args{executable,
+                                        "--ozone-platform=x11",
+                                        "--user-data-dir=" + profile,
+                                        "--remote-debugging-address=127.0.0.1",
+                                        "--remote-debugging-port=0",
+                                        "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+                                        "about:blank"};
+    std::string nul, flat;
+    for (const auto& arg : args) {
+        nul += arg + '\0';
+        if (!flat.empty())
+            flat += ' ';
+        flat += arg;
+    }
+    require(browser_process_arguments_match(nul, executable, profile), "structured Chromium argv accepted");
+    require(browser_process_arguments_match(flat, executable, profile),
+            "Alpine flattened process title accepted");
+    require(!browser_process_arguments_match(flat, executable, profile + "-different"),
+            "profile prefix is insufficient");
+    require(!browser_process_arguments_match(flat + " --no-sandbox=1", executable, profile),
+            "valued sandbox-disabling flag rejected");
+    require(!browser_process_arguments_match(flat + " --user-data-dir=/another-profile", executable, profile),
+            "conflicting profile flag rejected");
+    require(!browser_process_arguments_match(flat, "/another/executable", profile),
+            "flattened executable prefix must match");
+    require(
+        !browser_process_arguments_match(flat + " --remote-debugging-address=0.0.0.0", executable, profile),
+        "conflicting public debug listener rejected");
     require(browser_normalize_url("HTTPS://Example.COM:443/shop?q=phone#/product/blue") ==
                 "https://example.com/shop?q=phone#/product/blue",
             "browser preserves fragment routes");

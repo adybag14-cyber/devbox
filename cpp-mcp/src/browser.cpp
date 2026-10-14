@@ -14,6 +14,46 @@
 #endif
 
 namespace devbox {
+bool browser_process_arguments_match(std::string_view command, std::string_view executable,
+                                     std::string_view profile) {
+    if (command.empty() || command.size() >= 16384)
+        return false;
+    auto args = split(std::string(command), '\0');
+    while (!args.empty() && args.back().empty())
+        args.pop_back();
+    if (args.size() == 1 && args.front() != executable) {
+        // Alpine Chromium replaces argv with a single, space-separated process
+        // title. Only accept complete switch tokens for the fixed managed profile;
+        // the caller separately verifies /proc/exe and the boot-bound PID identity.
+        if (profile.find_first_of(" \t\r\n") != profile.npos ||
+            args.front().find_first_of("\"'\t\r\n") != std::string::npos ||
+            !args.front().starts_with(std::string(executable) + " "))
+            return false;
+        std::istringstream words(args.front());
+        args.clear();
+        std::string word;
+        while (words >> word)
+            args.push_back(std::move(word));
+    }
+    if (args.empty() || args.front() != executable)
+        return false;
+    const auto option = [](std::string_view arg) { return arg.substr(0, arg.find('=')); };
+    for (const auto& arg : args)
+        if (option(arg) == "--no-sandbox")
+            return false;
+    const auto unique = [&](std::string_view name, std::string_view value) {
+        unsigned count = 0;
+        bool matches = false;
+        for (const auto& arg : args)
+            if (option(arg) == name) {
+                ++count;
+                matches = arg == std::string(name) + "=" + std::string(value);
+            }
+        return count == 1 && matches;
+    };
+    return unique("--user-data-dir", profile) && unique("--remote-debugging-address", "127.0.0.1") &&
+           unique("--remote-debugging-port", "0");
+}
 std::string browser_normalize_url(std::string_view supplied) {
     auto result = web::normalize_url(supplied);
     // Fragment routes matter to a rendered application even though they are not
@@ -112,8 +152,10 @@ std::optional<fs::path> chromium_path(const BrowserOptions& options) {
     // AppArmor policy. Prefer it over an unrelated developer Chromium on PATH;
     // never disable the browser sandbox or the host's namespace restrictions.
 #ifdef __linux__
-    if (fs::is_regular_file("/opt/google/chrome/chrome"))
-        return fs::path("/opt/google/chrome/chrome");
+    for (const auto path : {"/opt/google/chrome/chrome", "/usr/lib/chromium/chromium",
+                            "/usr/lib/chromium-browser/chromium-browser"})
+        if (fs::is_regular_file(path))
+            return fs::path(path);
 #endif
     for (const auto name : {"google-chrome", "chromium", "chromium-browser", "chrome", "msedge"})
         if (auto found = find_program(name))
@@ -258,7 +300,7 @@ struct BrowserService::State {
                 break;
             const auto instance = process_instance(static_cast<std::uint32_t>(pid));
             if (!instance)
-                break;
+                throw Error("BROWSER_SHARED_IDENTITY: managed process identity is unavailable");
 #ifdef __linux__
             // The desktop supervisor publishes Linux start ticks. Native process
             // identities also bind the boot ID; they are not the raw tick count.
@@ -275,19 +317,18 @@ struct BrowserService::State {
                     break;
                 }
             if (!valid_ticks || ticks != text)
-                break;
+                throw Error("BROWSER_SHARED_IDENTITY: supervisor start ticks do not match the process");
             std::ifstream stream(fs::path("/proc") / std::to_string(pid) / "cmdline", std::ios::binary);
             std::string command(16384, '\0');
             stream.read(command.data(), static_cast<std::streamsize>(command.size()));
             command.resize(static_cast<std::size_t>(stream.gcount()));
-            const auto args = split(command, '\0');
-            const auto has = [&](const std::string& value) {
-                return std::find(args.begin(), args.end(), value) != args.end();
-            };
-            if (!has("--user-data-dir=" + path_text(*options.shared_profile)) ||
-                !has("--remote-debugging-address=127.0.0.1") || !has("--remote-debugging-port=0") ||
-                has("--no-sandbox"))
-                break;
+            const auto executable = chromium_path(options);
+            const auto proc_exe = fs::path("/proc") / std::to_string(pid) / "exe";
+            if (!executable || !fs::equivalent(proc_exe, *executable))
+                throw Error("BROWSER_SHARED_IDENTITY: executable is not the configured Chromium binary");
+            if (!browser_process_arguments_match(command, path_text(fs::read_symlink(proc_exe)),
+                                                 path_text(*options.shared_profile)))
+                throw Error("BROWSER_SHARED_IDENTITY: process arguments do not match the managed profile");
 #else
             if (std::stoull(text) != *instance)
                 break;
