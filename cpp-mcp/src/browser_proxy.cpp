@@ -22,7 +22,7 @@ struct BrowserProxy::State {
     Tcp::acceptor acceptor{io, {asio::ip::make_address("127.0.0.1"), 0}};
     std::optional<std::uint16_t> fixture;
     const std::uint16_t port = acceptor.local_endpoint().port();
-    std::jthread worker;
+    std::thread worker;
     struct Connection : std::enable_shared_from_this<Connection> {
         State& owner;
         Tcp::socket client, remote;
@@ -100,8 +100,8 @@ struct BrowserProxy::State {
                     (tunnel &&
                      (url.path != "/" || url.has_query || url.has_fragment || !url.userinfo.empty())))
                     throw Error("BROWSER_PROXY_TARGET_DENIED");
-                const auto port = url.port.empty() ? (tunnel ? "443" : "80") : url.port;
-                auto endpoints = co_await resolver.async_resolve(url.host, port, asio::use_awaitable);
+                const auto remote_port = url.port.empty() ? (tunnel ? "443" : "80") : url.port;
+                auto endpoints = co_await resolver.async_resolve(url.host, remote_port, asio::use_awaitable);
                 if (endpoints.empty())
                     throw Error("BROWSER_PROXY_DNS_EMPTY");
                 for (const auto& entry : endpoints)
@@ -160,7 +160,7 @@ struct BrowserProxy::State {
                 }
             },
             asio::detached);
-        worker = std::jthread([this] { io.run(); });
+        worker = std::thread([this] { io.run(); });
     }
     ~State() {
         io.stop();

@@ -95,7 +95,14 @@ std::optional<fs::path> chromium_path(const BrowserOptions& options) {
             return path;
         return {};
     }
-    for (const auto name : {"chromium", "chromium-browser", "google-chrome", "chrome", "msedge"})
+    // Ubuntu's installed Chrome path has the distribution's scoped user-namespace
+    // AppArmor policy. Prefer it over an unrelated developer Chromium on PATH;
+    // never disable the browser sandbox or the host's namespace restrictions.
+#ifdef __linux__
+    if (fs::is_regular_file("/opt/google/chrome/chrome"))
+        return fs::path("/opt/google/chrome/chrome");
+#endif
+    for (const auto name : {"google-chrome", "chromium", "chromium-browser", "chrome", "msedge"})
         if (auto found = find_program(name))
             return found;
 #ifdef _WIN32
@@ -151,7 +158,7 @@ struct BrowserService::State {
     BrowserOptions options;
     std::mutex mutex;
     Cancel stopping = std::make_shared<Cancellation>();
-    std::jthread janitor;
+    std::thread janitor;
     struct Session {
         std::string id = uuid(), owner, target, cdp_session, observation, html, html_hash, main_frame;
         int http_status = 0;
@@ -165,8 +172,16 @@ struct BrowserService::State {
         std::unique_ptr<BrowserProxy> proxy;
         std::unique_ptr<BrowserProtocol> protocol;
         Json last = Json::object();
-        std::jthread runner;
+        std::thread runner;
         ~Session() {
+            // Let Chromium close its own helpers and profile before enforcing the
+            // supervisor's process-group/Job Object deadline.
+            if (protocol) {
+                try {
+                    protocol->call("Browser.close", Json::object(), Clock::now() + Millis(1000));
+                } catch (...) {
+                }
+            }
             lifetime->cancel();
             if (runner.joinable())
                 runner.join();
@@ -175,8 +190,15 @@ struct BrowserService::State {
             // Only the freshly created, exact profile owned by this session.
             std::error_code error;
             if (!profile.empty() && profile.filename() == "devbox-browser-" + id &&
-                fs::is_directory(profile, error) && !fs::is_symlink(fs::symlink_status(profile, error)))
-                fs::remove_all(profile, error);
+                fs::is_directory(profile, error) && !fs::is_symlink(fs::symlink_status(profile, error))) {
+                for (unsigned attempt = 0; attempt < 5; ++attempt) {
+                    error.clear();
+                    fs::remove_all(profile, error);
+                    if (!error)
+                        break;
+                    std::this_thread::sleep_for(Millis(50));
+                }
+            }
         }
     };
     std::unique_ptr<Session> session;
@@ -186,7 +208,7 @@ struct BrowserService::State {
     void start_reaper() {
         if (janitor.joinable())
             return;
-        janitor = std::jthread([this] {
+        janitor = std::thread([this] {
             while (!stopping->wait_for(Millis(500))) {
                 std::unique_lock lock(mutex, std::try_to_lock);
                 if (lock && session &&
@@ -322,7 +344,7 @@ struct BrowserService::State {
         process.max_capture_chars = 4096;
         process.windows_detached_console = true;
         process.on_pid = [pointer](std::uint32_t pid) { pointer->pid = pid; };
-        owned->runner = std::jthread([pointer, executable = *executable, args = std::move(args), process] {
+        owned->runner = std::thread([pointer, executable = *executable, args = std::move(args), process] {
             try {
                 spawn_process(path_text(executable), args, process, pointer->lifetime);
             } catch (const std::exception& error) {
@@ -592,7 +614,7 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
     session.observation.clear();
     if (action == "scroll") {
         const auto dy = json_number(args, "delta_y", 600);
-        if (dy < -2000 || dy > 2000 || !dy)
+        if (dy < -2000 || dy > 2000 || dy == 0.0)
             throw Error("BROWSER_SCROLL_BOUNDS");
         state.command("Input.dispatchMouseEvent",
                       {{"type", "mouseWheel"}, {"x", x}, {"y", y}, {"deltaX", 0}, {"deltaY", dy}}, deadline,

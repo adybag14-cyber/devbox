@@ -4,6 +4,7 @@
 #include "devbox/process.hpp"
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <thread>
@@ -112,7 +113,7 @@ void protocol_tests() {
     BrowserProtocol cancellable;
     cancellable.connect(cancelled.port(), "/devtools/browser/test", Clock::now() + Millis(2000));
     auto stop = std::make_shared<Cancellation>();
-    std::jthread abort([stop] {
+    auto abort = std::async(std::launch::async, [stop] {
         std::this_thread::sleep_for(Millis(40));
         stop->cancel();
     });
@@ -147,10 +148,10 @@ struct PageFixture {
     Tcp::acceptor listener{io, {asio::ip::make_address("127.0.0.1"), 0}};
     std::atomic_bool stop{false};
     std::atomic_uint requests{0};
-    std::jthread worker;
+    std::thread worker;
     PageFixture() {
         listener.non_blocking(true);
-        worker = std::jthread([this] {
+        worker = std::thread([this] {
             while (!stop) {
                 Tcp::socket socket(io);
                 boost::system::error_code ec;
@@ -227,6 +228,25 @@ void browser_tests(bool headed = false) {
             "real JPEG screenshot");
     const auto id = json_string(value.data, "session_id"),
                observation = json_string(value.data, "observation_id");
+    const auto profile = fs::temp_directory_path() / ("devbox-browser-" + id);
+    require(fs::is_directory(profile), "owned private browser profile exists");
+    std::vector<std::pair<std::uint32_t, std::optional<std::uint64_t>>> owned_processes;
+#ifdef __linux__
+    for (const auto& entry : fs::directory_iterator("/proc")) {
+        const auto name = entry.path().filename().string();
+        if (name.empty() || name.find_first_not_of("0123456789") != std::string::npos)
+            continue;
+        std::ifstream stream(entry.path() / "cmdline", std::ios::binary);
+        std::string command(8192, '\0');
+        stream.read(command.data(), command.size());
+        command.resize(static_cast<std::size_t>(stream.gcount()));
+        if (command.find(path_text(profile)) != command.npos) {
+            const auto pid = static_cast<std::uint32_t>(std::stoul(name));
+            owned_processes.emplace_back(pid, process_instance(pid));
+        }
+    }
+    require(!owned_processes.empty(), "observed owned Chromium processes before close");
+#endif
     rejects([&] { browser.perform({{"action", "observe"}, {"session_id", id}}, "other"); },
             "SESSION_NOT_FOUND");
     rejects([&] { browser.perform({{"action", "open"}, {"url", "http://example.com/"}}, "test"); }, "BUSY");
@@ -287,6 +307,13 @@ void browser_tests(bool headed = false) {
             "explicit close completed");
     require(!json_bool(browser.perform({{"action", "status"}}, "test").data, "active_session"),
             "owned browser cleared");
+    require(!fs::exists(profile), "private browser profile removed after close");
+    for (const auto& [pid, instance] : owned_processes) {
+        const auto gone_by = Clock::now() + Millis(2000);
+        while (process_matches_instance(pid, instance) && Clock::now() < gone_by)
+            std::this_thread::sleep_for(Millis(20));
+        require(!process_matches_instance(pid, instance), "owned Chromium process terminated after close");
+    }
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
 int main(int argc, char** argv) {
