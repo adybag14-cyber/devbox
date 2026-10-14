@@ -650,6 +650,8 @@ struct BrowserService::State {
             }
         }
         session->last = data;
+        // Slow navigation/rendering must not consume the caller's idle allowance.
+        session->touched = Clock::now();
         return {std::move(data), std::move(image)};
     }
 };
@@ -687,6 +689,8 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
              {"managed_ready", managed_ready},
              {"reason", reason},
              {"active_session", static_cast<bool>(state.session)},
+             {"session_id",
+              state.session && state.session->owner == principal ? Json(state.session->id) : Json()},
              {"session_limit", 1},
              {"headed", state.options.headed},
              {"idle_timeout_ms", state.options.idle_timeout.count()},

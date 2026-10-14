@@ -454,6 +454,7 @@ void shared_browser_tests(bool headed) {
     shared_options.fixture_port = page.port();
     shared_options.shared_profile = profile;
     shared_options.shared_status_file = status_path;
+    shared_options.idle_timeout = Millis(3000);
     {
         BrowserService shared(config, shared_options);
         status["children"][0]["startTicks"] = std::to_string(std::stoull(supervisor_birth) + 1);
@@ -466,12 +467,22 @@ void shared_browser_tests(bool headed) {
         write_json_atomic(status_path, status);
         auto first = shared.perform(open, "first");
         require(contexts().size() == 1, "one isolated browser context created");
+        require(shared.perform({{"action", "status"}}, "first").data.at("session_id") ==
+                    first.data.at("session_id"),
+                "owner can recover its session after a lost response");
+        require(shared.perform({{"action", "status"}}, "another").data.at("session_id").is_null(),
+                "status does not disclose another principal's session identifier");
         require(json_string(first.data.at("browser"), "mode") == "managed_process_isolated_context",
                 "observation identifies shared process mode");
         require(json_uint(first.data.at("network"), "accepted_connections") > 0,
                 "context traffic passes through its own bounded egress proxy");
         require(json_string(first.data, "text").find("Cookie: empty; Storage: empty") != std::string::npos,
                 "private context does not inherit default profile state");
+        first = shared.perform(
+            {{"action", "observe"}, {"session_id", first.data.at("session_id")}, {"wait_ms", 3000}}, "first");
+        std::this_thread::sleep_for(Millis(600));
+        first = shared.perform({{"action", "observe"}, {"session_id", first.data.at("session_id")}}, "first");
+        require(contexts().size() == 1, "idle allowance starts after a slow observation completes");
         store_state(shared, first, "first");
         shared.perform({{"action", "close"}, {"session_id", first.data.at("session_id")}}, "first");
         require(contexts().empty(), "explicit close disposes the private context");
