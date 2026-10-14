@@ -26,6 +26,8 @@ For an Oracle deployment using the existing desktop supervisor, `DEVBOX_DESKTOP_
 
 The native proxy admits at most 48 connections and 64 MiB of traffic per session. Protocol messages, JSON complexity, HTML, text, controls, artifacts and operation durations are bounded. Linux startup checks host and container memory headroom; idle checks close the owned session under severe memory pressure. These checks are not a hard aggregate RSS guarantee. A small VM still needs enough memory for Chromium and its other services.
 
+Linux process launch also handles kernels or container policies that reject `close_range`. Its fallback enumerates the child's own open descriptors with allocation-free kernel calls, then retains the original close loop if enumeration is unavailable. This avoids scanning a million unused descriptor numbers and closes descriptors still open above a lowered soft limit. A separate CI target forces this fallback and exercises both foreground and detached descriptor isolation.
+
 ## Reproducible validation
 
 `devbox-browser-tests` tests protocol framing, nested/out-of-order replies, command-error recovery, cancellation, deadlines, oversized replies and private-address denial. Add `--chromium` for real JavaScript price rendering, JPEG output, HTML hash integrity, page/nested-pane scrolling, click, principal ownership, stale-input rejection and explicit cleanup. Windows and Linux CI run the real browser fixture.

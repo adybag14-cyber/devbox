@@ -74,8 +74,12 @@ try{
   }
   report.results.push(row);await writeFile(path.join(root,'result.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({id:row.id,http_ok:row.http.ok,browser_ok:row.browser.ok,browser_ms:row.browser.elapsed_ms,content_candidate:row.browser.content_candidate,error:row.browser.error??(row.browser.ok?null:row.browser.summary)}));
+  if(!row.browser.ok&&/BROWSER_(STARTUP|LAUNCH|RESOURCE|UNAVAILABLE|STOPPED)/u.test(row.browser.error??row.browser.summary??'')){
+   report.environment_failure=true;report.unattempted=corpus.slice(report.results.length);break;
+  }
  }
- report.completed_at=new Date().toISOString();report.completed=true;
+ report.completed_at=new Date().toISOString();report.completed=report.results.length===corpus.length;
+ if(report.environment_failure)process.exitCode=2;
 }finally{
  await client?.close().catch(()=>{});
  if(child.exitCode===null&&child.signalCode===null){child.kill();await Promise.race([exited,pause(10000)]);}

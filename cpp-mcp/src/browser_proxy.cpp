@@ -57,7 +57,9 @@ struct BrowserProxy::State {
                 throw Error("BROWSER_NETWORK_BYTE_BUDGET");
         }
         asio::awaitable<void> copy(Tcp::socket& from, Tcp::socket& to) {
-            std::array<char, 16384> buffer;
+            // Keep the transfer bound without a large coroutine stack frame on
+            // MSVC's instrumented build. The buffer lives across async reads.
+            std::vector<char> buffer(16384);
             try {
                 for (;;) {
                     const auto n = co_await from.async_read_some(asio::buffer(buffer), asio::use_awaitable);
