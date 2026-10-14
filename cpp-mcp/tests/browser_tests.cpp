@@ -7,6 +7,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <sstream>
 #include <thread>
 using namespace devbox;
 namespace asio = boost::asio;
@@ -370,6 +371,17 @@ void shared_browser_tests(bool headed) {
     const auto profile = fs::temp_directory_path() / ("devbox-browser-" + managed_id);
     const auto instance = process_instance(pid.load());
     require(instance.has_value(), "managed process identity is observable");
+    std::string supervisor_birth = std::to_string(*instance);
+#ifdef __linux__
+    // Match the real Node supervisor receipt, rather than accidentally feeding
+    // the native boot-bound fingerprint back into the controller as start ticks.
+    const auto proc_stat = read_file(fs::path("/proc") / std::to_string(pid.load()) / "stat", 8192);
+    std::istringstream proc_fields(proc_stat.substr(proc_stat.rfind(')') + 1));
+    for (unsigned i = 0; i < 20; ++i)
+        require(static_cast<bool>(proc_fields >> supervisor_birth), "Linux supervisor start ticks");
+    require(supervisor_birth != std::to_string(*instance),
+            "raw ticks differ from native boot-bound identity");
+#endif
     auto store_state = [](BrowserService& browser, const BrowserObservation& observation,
                           std::string_view owner) {
         for (const auto& control : observation.data.at("controls")) {
@@ -396,7 +408,7 @@ void shared_browser_tests(bool headed) {
                 {"browser_profile", path_text(profile)},
                 {"children", Json::array({{{"name", "chromium"},
                                            {"pid", pid.load()},
-                                           {"startTicks", std::to_string(*instance)},
+                                           {"startTicks", supervisor_birth},
                                            {"running", true}}})}};
     write_json_atomic(status_path, status);
     const auto endpoint = split(read_file(profile / "DevToolsActivePort", 512), '\n');
@@ -415,13 +427,13 @@ void shared_browser_tests(bool headed) {
     shared_options.shared_status_file = status_path;
     {
         BrowserService shared(config, shared_options);
-        status["children"][0]["startTicks"] = std::to_string(*instance + 1);
+        status["children"][0]["startTicks"] = std::to_string(std::stoull(supervisor_birth) + 1);
         write_json_atomic(status_path, status);
         require(!json_bool(shared.perform({{"action", "status"}}, "first").data, "available"),
                 "changed process identity is unavailable");
         rejects([&] { shared.perform(open, "first"); }, "SHARED_IDENTITY");
         require(contexts().empty(), "rejected identity does not create a context");
-        status["children"][0]["startTicks"] = std::to_string(*instance);
+        status["children"][0]["startTicks"] = supervisor_birth;
         write_json_atomic(status_path, status);
         auto first = shared.perform(open, "first");
         require(contexts().size() == 1, "one isolated browser context created");

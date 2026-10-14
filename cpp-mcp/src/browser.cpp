@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <sstream>
 #include <thread>
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -255,10 +256,26 @@ struct BrowserService::State {
             const auto text = json_string(child, "startTicks");
             if (text.empty() || text.size() > 20 || text.find_first_not_of("0123456789") != text.npos)
                 break;
-            const auto instance = std::stoull(text);
-            if (!instance || !process_matches_instance(static_cast<std::uint32_t>(pid), instance))
+            const auto instance = process_instance(static_cast<std::uint32_t>(pid));
+            if (!instance)
                 break;
 #ifdef __linux__
+            // The desktop supervisor publishes Linux start ticks. Native process
+            // identities also bind the boot ID; they are not the raw tick count.
+            const auto stat = read_file(fs::path("/proc") / std::to_string(pid) / "stat", 8192);
+            const auto close = stat.rfind(')');
+            if (close == std::string::npos)
+                break;
+            std::istringstream fields(stat.substr(close + 1));
+            std::string ticks;
+            bool valid_ticks = true;
+            for (unsigned i = 0; i < 20; ++i)
+                if (!(fields >> ticks)) {
+                    valid_ticks = false;
+                    break;
+                }
+            if (!valid_ticks || ticks != text)
+                break;
             std::ifstream stream(fs::path("/proc") / std::to_string(pid) / "cmdline", std::ios::binary);
             std::string command(16384, '\0');
             stream.read(command.data(), static_cast<std::streamsize>(command.size()));
@@ -271,10 +288,14 @@ struct BrowserService::State {
                 !has("--remote-debugging-address=127.0.0.1") || !has("--remote-debugging-port=0") ||
                 has("--no-sandbox"))
                 break;
-#endif
-            if (!fs::is_regular_file(*options.shared_profile / "DevToolsActivePort"))
+#else
+            if (std::stoull(text) != *instance)
                 break;
-            return {{"pid", pid}, {"instance", text}};
+#endif
+            if (!fs::is_regular_file(*options.shared_profile / "DevToolsActivePort") ||
+                !process_matches_instance(static_cast<std::uint32_t>(pid), instance))
+                break;
+            return {{"pid", pid}, {"instance", std::to_string(*instance)}};
         }
         throw Error("BROWSER_SHARED_IDENTITY: managed browser process changed");
     }
