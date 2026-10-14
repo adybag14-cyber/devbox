@@ -7,6 +7,9 @@ struct BrowserOptions {
     // Native qualification injection only. Neither is an MCP argument.
     std::optional<fs::path> executable;
     std::optional<std::uint16_t> fixture_port;
+    // Native test/operator configuration only; never supplied by an MCP caller.
+    std::optional<fs::path> shared_profile, shared_status_file;
+    std::function<void(std::uint32_t)> pid_observer;
     bool headed = false;
     Millis lifetime{300000}, idle_timeout{60000};
 };

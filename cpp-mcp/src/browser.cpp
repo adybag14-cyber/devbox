@@ -173,6 +173,9 @@ struct BrowserService::State {
     std::thread janitor;
     struct Session {
         std::string id = uuid(), owner, target, cdp_session, observation, html, html_hash, main_frame;
+        std::string context;
+        bool shared = false;
+        std::optional<std::uint64_t> instance;
         int http_status = 0;
         Json browser_version = Json::object();
         fs::path profile;
@@ -190,7 +193,12 @@ struct BrowserService::State {
             // supervisor's process-group/Job Object deadline.
             if (protocol) {
                 try {
-                    protocol->call("Browser.close", Json::object(), Clock::now() + Millis(1000));
+                    if (shared) {
+                        if (!context.empty())
+                            protocol->call("Target.disposeBrowserContext", {{"browserContextId", context}},
+                                           Clock::now() + Millis(2000));
+                    } else
+                        protocol->call("Browser.close", Json::object(), Clock::now() + Millis(1000));
                 } catch (...) {
                 }
             }
@@ -216,6 +224,59 @@ struct BrowserService::State {
     std::unique_ptr<Session> session;
     State(std::shared_ptr<const Config> c, BrowserOptions o) : config(std::move(c)), options(std::move(o)) {
         options.headed = env_bool("DEVBOX_BROWSER_HEADED", options.headed);
+        if (env_bool("DEVBOX_BROWSER_SHARED", false)) {
+            if (!config->platform.is_linux)
+                throw Error("BROWSER_SHARED_UNSUPPORTED: managed shared mode requires Linux");
+            options.headed = true;
+            options.shared_profile = fs::path("/tmp/devbox-desktop/browser");
+            options.shared_status_file = config->project_root / "run/desktop/status.json";
+        }
+        if (options.shared_profile.has_value() != options.shared_status_file.has_value())
+            throw Error("BROWSER_SHARED_CONFIGURATION");
+    }
+    Json shared_owner() const {
+        if (!options.shared_profile)
+            return Json::object();
+        if (fs::is_symlink(fs::symlink_status(*options.shared_profile)) ||
+            fs::is_symlink(fs::symlink_status(*options.shared_profile / "DevToolsActivePort")))
+            throw Error("BROWSER_SHARED_IDENTITY: symbolic profile or endpoint rejected");
+        const auto status = read_json_optional(*options.shared_status_file, 16384);
+        if (!status || !json_bool(*status, "ready") ||
+            json_string(*status, "browser_mode") != "shared_native")
+            throw Error("BROWSER_WARMING: managed Chromium is not ready; check status before retrying");
+        if (json_string(*status, "browser_profile") != path_text(*options.shared_profile))
+            throw Error("BROWSER_SHARED_IDENTITY: profile mismatch");
+        for (const auto& child : status->at("children")) {
+            if (json_string(child, "name") != "chromium" || !json_bool(child, "running"))
+                continue;
+            const auto pid = json_uint(child, "pid");
+            if (!pid || pid > UINT32_MAX)
+                break;
+            const auto text = json_string(child, "startTicks");
+            if (text.empty() || text.size() > 20 || text.find_first_not_of("0123456789") != text.npos)
+                break;
+            const auto instance = std::stoull(text);
+            if (!instance || !process_matches_instance(static_cast<std::uint32_t>(pid), instance))
+                break;
+#ifdef __linux__
+            std::ifstream stream(fs::path("/proc") / std::to_string(pid) / "cmdline", std::ios::binary);
+            std::string command(16384, '\0');
+            stream.read(command.data(), static_cast<std::streamsize>(command.size()));
+            command.resize(static_cast<std::size_t>(stream.gcount()));
+            const auto args = split(command, '\0');
+            const auto has = [&](const std::string& value) {
+                return std::find(args.begin(), args.end(), value) != args.end();
+            };
+            if (!has("--user-data-dir=" + path_text(*options.shared_profile)) ||
+                !has("--remote-debugging-address=127.0.0.1") || !has("--remote-debugging-port=0") ||
+                has("--no-sandbox"))
+                break;
+#endif
+            if (!fs::is_regular_file(*options.shared_profile / "DevToolsActivePort"))
+                break;
+            return {{"pid", pid}, {"instance", text}};
+        }
+        throw Error("BROWSER_SHARED_IDENTITY: managed browser process changed");
     }
     void start_reaper() {
         if (janitor.joinable())
@@ -224,7 +285,9 @@ struct BrowserService::State {
             while (!stopping->wait_for(Millis(500))) {
                 std::unique_lock lock(mutex, std::try_to_lock);
                 if (lock && session &&
-                    (session->exited || Clock::now() - session->touched >= options.idle_timeout ||
+                    (session->exited ||
+                     (session->shared && !process_matches_instance(session->pid.load(), session->instance)) ||
+                     Clock::now() - session->touched >= options.idle_timeout ||
                      Clock::now() - session->created >= options.lifetime ||
                      available_memory().value_or(UINT64_MAX) < 64 * 1024 * 1024))
                     session.reset();
@@ -309,71 +372,87 @@ struct BrowserService::State {
         start_reaper();
         auto owned = std::make_unique<Session>();
         owned->owner = owner;
-        owned->profile = fs::temp_directory_path() / ("devbox-browser-" + owned->id);
-        if (!fs::create_directory(owned->profile))
-            throw Error("BROWSER_PROFILE_CREATE_FAILED");
-#ifndef _WIN32
-        if (chmod(owned->profile.c_str(), 0700) != 0)
-            throw Error("BROWSER_PROFILE_PERMISSIONS");
-#endif
+        owned->shared = options.shared_profile.has_value();
         owned->proxy = std::make_unique<BrowserProxy>(options.fixture_port);
-        std::vector<std::string> args{options.headed ? "--ozone-platform=x11" : "--headless=new",
-                                      "--remote-debugging-address=127.0.0.1",
-                                      "--remote-debugging-port=0",
-                                      "--user-data-dir=" + path_text(owned->profile),
-                                      "--no-first-run",
-                                      "--no-default-browser-check",
-                                      "--disable-background-networking",
-                                      "--disable-component-update",
-                                      "--disable-sync",
-                                      "--disable-extensions",
-                                      "--disable-quic",
-                                      "--disable-breakpad",
-                                      "--disable-crash-reporter",
-                                      "--disable-default-apps",
-                                      "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                                      "--proxy-server=http://127.0.0.1:" +
-                                          std::to_string(owned->proxy->port()),
-                                      "--proxy-bypass-list=<-loopback>",
-                                      "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
-                                      "--renderer-process-limit=2",
-                                      "--js-flags=--max-old-space-size=128",
-                                      "--window-size=1280,800",
-                                      "--password-store=basic",
-                                      "about:blank"};
-        auto* pointer = owned.get();
-        ProcessOptions process;
-        process.env = worker_environment();
-        if (options.headed) {
-            if (!config->platform.is_linux || !environment("DISPLAY") || !environment("XAUTHORITY"))
-                throw Error("BROWSER_HEADED_UNAVAILABLE: an authorized Linux X11 display is required");
-            for (const auto key : {"DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"})
-                if (const auto value = environment(key))
-                    (*process.env)[key] = *value;
-        }
-        process.timeout = options.lifetime;
-        process.termination_grace = Millis(1000);
-        process.max_capture_chars = 4096;
-        process.windows_detached_console = true;
-        process.on_pid = [pointer](std::uint32_t pid) { pointer->pid = pid; };
-        owned->runner = std::thread([pointer, executable = *executable, args = std::move(args), process] {
-            try {
-                spawn_process(path_text(executable), args, process, pointer->lifetime);
-            } catch (const std::exception& error) {
-                pointer->launch_error = std::string(error.what()).substr(0, 1024);
+        fs::path endpoint_profile;
+        if (owned->shared) {
+            const auto daemon = shared_owner();
+            owned->pid = static_cast<std::uint32_t>(json_uint(daemon, "pid"));
+            owned->instance = std::stoull(json_string(daemon, "instance"));
+            endpoint_profile = *options.shared_profile;
+            session = std::move(owned);
+        } else {
+            owned->profile = fs::temp_directory_path() / ("devbox-browser-" + owned->id);
+            if (!fs::create_directory(owned->profile))
+                throw Error("BROWSER_PROFILE_CREATE_FAILED");
+#ifndef _WIN32
+            if (chmod(owned->profile.c_str(), 0700) != 0)
+                throw Error("BROWSER_PROFILE_PERMISSIONS");
+#endif
+            std::vector<std::string> args{options.headed ? "--ozone-platform=x11" : "--headless=new",
+                                          "--remote-debugging-address=127.0.0.1",
+                                          "--remote-debugging-port=0",
+                                          "--user-data-dir=" + path_text(owned->profile),
+                                          "--no-first-run",
+                                          "--no-default-browser-check",
+                                          "--disable-background-networking",
+                                          "--disable-component-update",
+                                          "--disable-sync",
+                                          "--disable-extensions",
+                                          "--disable-quic",
+                                          "--disable-breakpad",
+                                          "--disable-crash-reporter",
+                                          "--disable-default-apps",
+                                          "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                                          "--proxy-server=http://127.0.0.1:" +
+                                              std::to_string(owned->proxy->port()),
+                                          "--proxy-bypass-list=<-loopback>",
+                                          "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+                                          "--renderer-process-limit=2",
+                                          "--js-flags=--max-old-space-size=128",
+                                          "--window-size=1280,800",
+                                          "--password-store=basic",
+                                          "about:blank"};
+            auto* pointer = owned.get();
+            ProcessOptions process;
+            process.env = worker_environment();
+            if (options.headed) {
+                if (!config->platform.is_linux || !environment("DISPLAY") || !environment("XAUTHORITY"))
+                    throw Error("BROWSER_HEADED_UNAVAILABLE: an authorized Linux X11 display is required");
+                for (const auto key :
+                     {"DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"})
+                    if (const auto value = environment(key))
+                        (*process.env)[key] = *value;
             }
-            pointer->exited.store(true, std::memory_order_release);
-        });
-        session = std::move(owned);
-        while (!fs::is_regular_file(session->profile / "DevToolsActivePort")) {
-            cancel->check();
-            if (session->exited.load(std::memory_order_acquire))
-                throw Error("BROWSER_LAUNCH_FAILED: " + session->launch_error);
-            if (Clock::now() >= deadline)
-                throw Error("BROWSER_STARTUP_DEADLINE");
-            cancel->wait_for(Millis(25));
+            process.timeout = options.lifetime;
+            process.termination_grace = Millis(1000);
+            process.max_capture_chars = 4096;
+            process.windows_detached_console = true;
+            process.on_pid = [pointer, observer = options.pid_observer](std::uint32_t pid) {
+                pointer->pid = pid;
+                if (observer)
+                    observer(pid);
+            };
+            owned->runner = std::thread([pointer, executable = *executable, args = std::move(args), process] {
+                try {
+                    spawn_process(path_text(executable), args, process, pointer->lifetime);
+                } catch (const std::exception& error) {
+                    pointer->launch_error = std::string(error.what()).substr(0, 1024);
+                }
+                pointer->exited.store(true, std::memory_order_release);
+            });
+            session = std::move(owned);
+            while (!fs::is_regular_file(session->profile / "DevToolsActivePort")) {
+                cancel->check();
+                if (session->exited.load(std::memory_order_acquire))
+                    throw Error("BROWSER_LAUNCH_FAILED: " + session->launch_error);
+                if (Clock::now() >= deadline)
+                    throw Error("BROWSER_STARTUP_DEADLINE");
+                cancel->wait_for(Millis(25));
+            }
+            endpoint_profile = session->profile;
         }
-        const auto endpoint = split(read_file(session->profile / "DevToolsActivePort", 512), '\n');
+        const auto endpoint = split(read_file(endpoint_profile / "DevToolsActivePort", 512), '\n');
         if (endpoint.size() < 2)
             throw Error("BROWSER_ENDPOINT_INVALID");
         unsigned long port = std::stoul(endpoint[0]);
@@ -384,13 +463,35 @@ struct BrowserService::State {
         const auto version = command("Browser.getVersion", Json::object(), deadline, cancel, true);
         session->browser_version = {{"product", json_string(version, "product")},
                                     {"protocol_version", json_string(version, "protocolVersion")}};
-        command("Browser.setDownloadBehavior", {{"behavior", "deny"}}, deadline, cancel, true);
-        const auto targets = command("Target.getTargets", Json::object(), deadline, cancel, true);
-        for (const auto& target : targets.at("targetInfos"))
-            if (json_string(target, "type") == "page") {
-                session->target = json_string(target, "targetId");
-                break;
+        if (session->shared) {
+            session->context = json_string(
+                command("Target.createBrowserContext",
+                        {{"disposeOnDetach", true},
+                         {"proxyServer", "http://127.0.0.1:" + std::to_string(session->proxy->port())},
+                         {"proxyBypassList", "<-loopback>"}},
+                        deadline, cancel, true),
+                "browserContextId");
+            if (session->context.empty())
+                throw Error("BROWSER_CONTEXT_MISSING");
+            command("Browser.setDownloadBehavior",
+                    {{"behavior", "deny"}, {"browserContextId", session->context}}, deadline, cancel, true);
+            Json target_args{{"url", "about:blank"}, {"browserContextId", session->context}};
+            if (options.headed) {
+                target_args["newWindow"] = true;
+                target_args["width"] = 1280;
+                target_args["height"] = 800;
             }
+            session->target =
+                json_string(command("Target.createTarget", target_args, deadline, cancel, true), "targetId");
+        } else {
+            command("Browser.setDownloadBehavior", {{"behavior", "deny"}}, deadline, cancel, true);
+            const auto targets = command("Target.getTargets", Json::object(), deadline, cancel, true);
+            for (const auto& target : targets.at("targetInfos"))
+                if (json_string(target, "type") == "page") {
+                    session->target = json_string(target, "targetId");
+                    break;
+                }
+        }
         if (session->target.empty())
             throw Error("BROWSER_PAGE_MISSING");
         session->cdp_session =
@@ -447,6 +548,7 @@ struct BrowserService::State {
                                    "them. Refresh before acting on changed content.";
         data["network"] = session->proxy->metrics();
         data["browser"] = session->browser_version;
+        data["browser"]["mode"] = session->shared ? "managed_process_isolated_context" : "owned_process";
         data["http_status"] = session->http_status ? Json(session->http_status) : Json();
         data["untrusted_page_content"] = true;
         data["image_mime_type"] = image.empty() ? Json() : Json("image/jpeg");
@@ -504,17 +606,32 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
     auto& state = *state_;
     std::lock_guard lock(state.mutex);
     const auto action = json_string(args, "action");
-    if (action == "status")
-        return {{{"available", chromium_path(state.options).has_value() &&
-                                   state.config->runtime_mode == RuntimeMode::host &&
-                                   state.config->host_exec_enabled},
-                 {"active_session", static_cast<bool>(state.session)},
-                 {"session_limit", 1},
-                 {"headed", state.options.headed},
-                 {"idle_timeout_ms", state.options.idle_timeout.count()},
-                 {"hard_lifetime_ms", state.options.lifetime.count()},
-                 {"available_host_memory_bytes", available_memory().value_or(0)}},
-                {}};
+    if (action == "status") {
+        bool managed_ready = true;
+        std::string reason;
+        if (state.options.shared_profile) {
+            try {
+                (void)state.shared_owner();
+            } catch (const std::exception& e) {
+                managed_ready = false;
+                reason = e.what();
+            }
+        }
+        return {
+            {{"available", managed_ready && chromium_path(state.options).has_value() &&
+                               state.config->runtime_mode == RuntimeMode::host &&
+                               state.config->host_exec_enabled},
+             {"mode", state.options.shared_profile ? "managed_process_isolated_context" : "owned_process"},
+             {"managed_ready", managed_ready},
+             {"reason", reason},
+             {"active_session", static_cast<bool>(state.session)},
+             {"session_limit", 1},
+             {"headed", state.options.headed},
+             {"idle_timeout_ms", state.options.idle_timeout.count()},
+             {"hard_lifetime_ms", state.options.lifetime.count()},
+             {"available_host_memory_bytes", available_memory().value_or(0)}},
+            {}};
+    }
     if (state.config->runtime_mode != RuntimeMode::host || !state.config->host_exec_enabled)
         throw Error("BROWSER_UNAVAILABLE: enabled host runtime is required");
     const auto deadline = Clock::now() + Millis(40000);
@@ -545,7 +662,8 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         state.session.reset();
         return {{{"closed", true}}, {}};
     }
-    if (session.exited) {
+    if (session.exited ||
+        (session.shared && !process_matches_instance(session.pid.load(), session.instance))) {
         state.session.reset();
         throw Error("BROWSER_EXITED");
     }

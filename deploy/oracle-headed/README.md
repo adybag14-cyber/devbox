@@ -20,10 +20,20 @@ Do not restore old data over work accepted after promotion.
 
 The profile starts Xvfb at `:99`, 1280x800x24, Openbox, a private session bus, and
 headed Chromium. It creates a private Xauthority cookie, exposes no X11 TCP or
-remote-debugging listener, and retains Chromium's namespace and seccomp sandbox.
+public remote-debugging listener, and retains Chromium's namespace and seccomp sandbox.
 Set `DISPLAY=:99`, `XAUTHORITY=/tmp/devbox-desktop/authority`,
 `XDG_RUNTIME_DIR=/tmp/devbox-desktop/runtime` and `DEVBOX_COMPUTER_USE_X11=1` in the
 MCP container environment. The launcher script also supplies them to its children.
+
+For the qualified native browser controller, `DEVBOX_BROWSER_SHARED=1` opts into
+one warmed, managed Chromium with a private loopback CDP endpoint and a temporary
+profile. Each `devbox_browser open` receives an isolated incognito context and its
+own C++ public-only egress proxy. This mode leaves the old saved browser profile
+untouched. The default blank context cannot browse; native X11 tools operate on
+the window opened by `devbox_browser`. Status reports warming until Chromium's
+endpoint is ready (up to 180 seconds). Session teardown disposes its context;
+the desktop supervisor retains and restarts only its own managed process.
+See [native browser limits and validation](../../docs/NATIVE_BROWSER.md).
 
 For the approximately 1 GB Oracle VM, the qualified deployment should use a
 512 MiB container memory limit, 1 GiB combined memory/swap limit, 1.25 CPU quota,

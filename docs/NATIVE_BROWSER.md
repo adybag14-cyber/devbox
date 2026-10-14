@@ -18,11 +18,15 @@ For prices, keep the model, capacity, colour, currency, payment/trade-in conditi
 
 ## Limits and isolation
 
-The controller launches a fresh temporary profile, retains Chromium's sandbox and owns its process tree through the existing native process supervisor. It does not attach to an existing logged-in browser. Chromium/CDP and its egress proxy listen only on loopback. DNS answers and connected peers must pass the public-address policy. Local networks, cloud metadata, URL credentials and nonstandard web ports are rejected. Fixed observation scripts run in an isolated world; MCP arguments cannot supply JavaScript or CDP methods.
+By default the controller launches a fresh temporary profile, retains Chromium's sandbox and owns its process tree through the existing native process supervisor. It does not attach to an existing logged-in browser. Chromium/CDP and its egress proxy listen only on loopback. DNS answers and connected peers must pass the public-address policy. Local networks, cloud metadata, URL credentials and nonstandard web ports are rejected. Fixed observation scripts run in an isolated world; MCP arguments cannot supply JavaScript or CDP methods.
 
 There is no CAPTCHA solver, TLS-warning bypass, credential/profile import, download flow or proxy-identity rotation. Normal website access restrictions can still prevent retrieval, particularly from cloud IP addresses. The controller defaults to Chrome's unified headless mode. An operator can set `DEVBOX_BROWSER_HEADED=1` on Linux with an authorized `DISPLAY` and `XAUTHORITY` to use a visible X11 window instead. This is not an MCP argument.
 
 For an Oracle deployment using the existing desktop supervisor, `DEVBOX_DESKTOP_BROWSER_AUTOSTART=0` keeps Xvfb, session D-Bus and Openbox available while the C++ controller owns the on-demand headed browser. This avoids a second permanently resident Chromium. The default remains unchanged; deployments must opt in after qualification. The prior persistent browser profile is preserved. The native desktop tools can observe the new window while its browser session is active.
+
+Alternatively, `DEVBOX_BROWSER_SHARED=1` lets that supervisor keep one managed, sandboxed Chromium warm on Linux. This avoids repeated executable loading on a small VM. The browser uses a private temporary profile at `/tmp/devbox-desktop/browser`, never the operator's saved profile. C++ verifies the supervisor receipt, exact PID/start identity, command-line profile and private CDP endpoint before attaching. Each session creates a new incognito browser context with its own bounded public-only proxy. Cookies, local storage and pages are disposed on close, expiry or controller disconnect; closing a session does not terminate the managed browser. Process reuse is not browser-state reuse.
+
+Shared mode overrides desktop browser autostart and waits up to 180 seconds for the private endpoint before marking the desktop ready. `devbox_browser status` reports warming/unavailable until then. The default blank browser context has no web egress; open a session with `devbox_browser` before using native X11 tools on its window. Native tools see the same headed page, and the session's normal expiry still applies. Warm reuse reduces startup work but does not remove the VM's memory limits or make blocked sites accessible.
 
 The native proxy admits at most 48 connections and 64 MiB of traffic per session. Protocol messages, JSON complexity, HTML, text, controls, artifacts and operation durations are bounded. Linux startup checks host and container memory headroom; idle checks close the owned session under severe memory pressure. These checks are not a hard aggregate RSS guarantee. A small VM still needs enough memory for Chromium and its other services.
 
@@ -30,7 +34,7 @@ Linux process launch also handles kernels or container policies that reject `clo
 
 ## Reproducible validation
 
-`devbox-browser-tests` tests protocol framing, nested/out-of-order replies, command-error recovery, cancellation, deadlines, oversized replies and private-address denial. Add `--chromium` for real JavaScript price rendering, JPEG output, HTML hash integrity, page/nested-pane scrolling, click, principal ownership, stale-input rejection and explicit cleanup. Windows and Linux CI run the real browser fixture.
+`devbox-browser-tests` tests protocol framing, nested/out-of-order replies, command-error recovery, cancellation, deadlines, oversized replies and private-address denial. Add `--chromium` for real JavaScript price rendering, JPEG output, HTML hash integrity, page/nested-pane scrolling, click, principal ownership, stale-input rejection and explicit cleanup. The managed-process fixture also verifies context proxy use, cookie/local-storage isolation from the default profile and preceding session, PID-identity rejection, context disposal, and survival of the managed browser. Windows and Linux CI run the real browser fixture; Linux also runs it headed under Xvfb.
 
 The opt-in comparison uses actual MCP calls against an isolated server root:
 

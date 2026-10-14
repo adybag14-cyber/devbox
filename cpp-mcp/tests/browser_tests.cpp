@@ -174,6 +174,11 @@ struct PageFixture {
                     response.keep_alive(false);
                     response.body() =
                         R"HTML(<!doctype html><title>Native dynamic phone fixture</title><style>body{font:20px sans-serif}#panel{height:250px;overflow:auto;width:500px}#inside{height:1800px;background:linear-gradient(white,lightblue)}</style><h1>Fixture Phone 256GB Blue</h1><p id="price">Loading price</p><button onclick="this.innerText='Clicked'">Choose variant</button><input aria-label="Search fixture"><div id="panel"><div id="inside">Scrollable panel<div style="padding-top:1400px">Panel bottom</div></div></div><div style="height:2500px">Long page</div><p>Page bottom</p><script>setTimeout(()=>{document.querySelector('#price').innerText='Live fixture price GBP 649.00';let s=document.createElement('script');s.type='application/ld+json';s.textContent=JSON.stringify({'@context':'https://schema.org','@type':'Product',name:'Fixture Phone 256GB Blue',offers:{'@type':'Offer',price:'649.00',priceCurrency:'GBP',availability:'https://schema.org/InStock'}});document.head.appendChild(s);},150)</script>)HTML";
+                    response.body() += R"HTML(<script>
+const state=document.createElement('p');state.id='storage-state';document.body.prepend(state);
+function showStorage(){state.innerText='Cookie: '+(document.cookie||'empty')+'; Storage: '+(localStorage.getItem('devbox-fixture')||'empty');}
+const save=document.createElement('button');save.innerText='Store fixture state';save.onclick=()=>{document.cookie='devboxFixture=stored; SameSite=Lax; path=/';localStorage.setItem('devbox-fixture','stored');showStorage();};document.querySelector('button').after(save);showStorage();
+</script>)HTML";
                     response.prepare_payload();
                     http::write(socket, response);
                 } catch (...) {
@@ -338,13 +343,113 @@ void browser_tests(bool headed = false) {
     }
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
+void shared_browser_tests(bool headed) {
+    PageFixture page;
+    auto config = std::make_shared<Config>();
+    config->runtime_mode = RuntimeMode::host;
+    config->host_exec_enabled = true;
+    config->platform = Platform::detect();
+    std::atomic_uint32_t pid{0};
+    BrowserOptions owned_options;
+    owned_options.headed = headed;
+    owned_options.fixture_port = page.port();
+    owned_options.pid_observer = [&](std::uint32_t value) { pid = value; };
+    BrowserService managed(config, owned_options);
+    const Json open{{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"}};
+    auto initial = managed.perform(open, "operator");
+    const auto managed_id = json_string(initial.data, "session_id");
+    const auto profile = fs::temp_directory_path() / ("devbox-browser-" + managed_id);
+    const auto instance = process_instance(pid.load());
+    require(instance.has_value(), "managed process identity is observable");
+    auto store_state = [](BrowserService& browser, const BrowserObservation& observation,
+                          std::string_view owner) {
+        for (const auto& control : observation.data.at("controls")) {
+            if (json_string(control, "name") != "Store fixture state")
+                continue;
+            auto result =
+                browser.perform({{"action", "click"},
+                                 {"session_id", observation.data.at("session_id")},
+                                 {"observation_id", observation.data.at("observation_id")},
+                                 {"x", json_number(control, "x") + json_number(control, "width") / 2},
+                                 {"y", json_number(control, "y") + json_number(control, "height") / 2}},
+                                owner);
+            const auto text = json_string(result.data, "text");
+            require(text.find("Cookie: devboxFixture=stored; Storage: stored") != text.npos,
+                    "real click stores cookie and local storage");
+            return;
+        }
+        throw Error("Storage fixture control missing");
+    };
+    store_state(managed, initial, "operator");
+    const auto status_path = profile / "supervisor-fixture.json";
+    Json status{{"ready", true},
+                {"browser_mode", "shared_native"},
+                {"browser_profile", path_text(profile)},
+                {"children", Json::array({{{"name", "chromium"},
+                                           {"pid", pid.load()},
+                                           {"startTicks", std::to_string(*instance)},
+                                           {"running", true}}})}};
+    write_json_atomic(status_path, status);
+    const auto endpoint = split(read_file(profile / "DevToolsActivePort", 512), '\n');
+    BrowserProtocol probe;
+    probe.connect(static_cast<std::uint16_t>(std::stoul(endpoint.at(0))), trim(endpoint.at(1)),
+                  Clock::now() + Millis(5000));
+    auto contexts = [&] {
+        return probe.call("Target.getBrowserContexts", Json::object(), Clock::now() + Millis(5000))
+            .at("browserContextIds");
+    };
+    require(contexts().empty(), "managed default browser has no private contexts");
+    BrowserOptions shared_options;
+    shared_options.headed = headed;
+    shared_options.fixture_port = page.port();
+    shared_options.shared_profile = profile;
+    shared_options.shared_status_file = status_path;
+    {
+        BrowserService shared(config, shared_options);
+        status["children"][0]["startTicks"] = std::to_string(*instance + 1);
+        write_json_atomic(status_path, status);
+        require(!json_bool(shared.perform({{"action", "status"}}, "first").data, "available"),
+                "changed process identity is unavailable");
+        rejects([&] { shared.perform(open, "first"); }, "SHARED_IDENTITY");
+        require(contexts().empty(), "rejected identity does not create a context");
+        status["children"][0]["startTicks"] = std::to_string(*instance);
+        write_json_atomic(status_path, status);
+        auto first = shared.perform(open, "first");
+        require(contexts().size() == 1, "one isolated browser context created");
+        require(json_string(first.data.at("browser"), "mode") == "managed_process_isolated_context",
+                "observation identifies shared process mode");
+        require(json_uint(first.data.at("network"), "accepted_connections") > 0,
+                "context traffic passes through its own bounded egress proxy");
+        require(json_string(first.data, "text").find("Cookie: empty; Storage: empty") != std::string::npos,
+                "private context does not inherit default profile state");
+        store_state(shared, first, "first");
+        shared.perform({{"action", "close"}, {"session_id", first.data.at("session_id")}}, "first");
+        require(contexts().empty(), "explicit close disposes the private context");
+        require(process_matches_instance(pid.load(), instance) && fs::is_directory(profile),
+                "closing a session preserves its managed browser and profile");
+        auto second = shared.perform(open, "second");
+        require(json_string(second.data, "text").find("Cookie: empty; Storage: empty") != std::string::npos,
+                "new principal receives neither cookies nor local storage from prior context");
+    }
+    require(contexts().empty(), "service destruction disposes active private context");
+    auto retained = managed.perform({{"action", "observe"}, {"session_id", managed_id}}, "operator");
+    require(json_string(retained.data, "text").find("Cookie: devboxFixture=stored; Storage: stored") !=
+                std::string::npos,
+            "managed default page survives session teardown");
+    probe.close();
+    managed.perform({{"action", "close"}, {"session_id", managed_id}}, "operator");
+    require(!fs::exists(profile), "fixture owner removes only its own managed profile");
+    std::cout << "managed browser context, proxy, cookie/storage isolation, identity and disposal passed\n";
+}
 int main(int argc, char** argv) {
     try {
         protocol_tests();
         proxy_tests();
         if (argc > 1 &&
-            (std::string_view(argv[1]) == "--chromium" || std::string_view(argv[1]) == "--chromium-headed"))
+            (std::string_view(argv[1]) == "--chromium" || std::string_view(argv[1]) == "--chromium-headed")) {
             browser_tests(std::string_view(argv[1]) == "--chromium-headed");
+            shared_browser_tests(std::string_view(argv[1]) == "--chromium-headed");
+        }
         std::cout << "browser checks passed\n";
         return 0;
     } catch (const std::exception& e) {
