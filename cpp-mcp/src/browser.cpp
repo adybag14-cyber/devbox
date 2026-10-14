@@ -180,7 +180,9 @@ struct BrowserService::State {
         }
     };
     std::unique_ptr<Session> session;
-    State(std::shared_ptr<const Config> c, BrowserOptions o) : config(std::move(c)), options(std::move(o)) {}
+    State(std::shared_ptr<const Config> c, BrowserOptions o) : config(std::move(c)), options(std::move(o)) {
+        options.headed = env_bool("DEVBOX_BROWSER_HEADED", options.headed);
+    }
     void start_reaper() {
         if (janitor.joinable())
             return;
@@ -281,7 +283,7 @@ struct BrowserService::State {
             throw Error("BROWSER_PROFILE_PERMISSIONS");
 #endif
         owned->proxy = std::make_unique<BrowserProxy>(options.fixture_port);
-        std::vector<std::string> args{"--headless=new",
+        std::vector<std::string> args{options.headed ? "--ozone-platform=x11" : "--headless=new",
                                       "--remote-debugging-address=127.0.0.1",
                                       "--remote-debugging-port=0",
                                       "--user-data-dir=" + path_text(owned->profile),
@@ -308,6 +310,13 @@ struct BrowserService::State {
         auto* pointer = owned.get();
         ProcessOptions process;
         process.env = worker_environment();
+        if (options.headed) {
+            if (!config->platform.is_linux || !environment("DISPLAY") || !environment("XAUTHORITY"))
+                throw Error("BROWSER_HEADED_UNAVAILABLE: an authorized Linux X11 display is required");
+            for (const auto key : {"DISPLAY", "XAUTHORITY", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"})
+                if (const auto value = environment(key))
+                    (*process.env)[key] = *value;
+        }
         process.timeout = options.lifetime;
         process.termination_grace = Millis(1000);
         process.max_capture_chars = 4096;
@@ -467,7 +476,7 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
                                    state.config->host_exec_enabled},
                  {"active_session", static_cast<bool>(state.session)},
                  {"session_limit", 1},
-                 {"headed", false},
+                 {"headed", state.options.headed},
                  {"idle_timeout_ms", state.options.idle_timeout.count()},
                  {"hard_lifetime_ms", state.options.lifetime.count()},
                  {"available_host_memory_bytes", available_memory().value_or(0)}},

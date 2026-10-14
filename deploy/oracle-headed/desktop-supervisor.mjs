@@ -12,6 +12,8 @@ await mkdir(logs,{recursive:true,mode:0o700});
 await mkdir(env.XDG_RUNTIME_DIR,{recursive:true,mode:0o700});
 await chmod(env.XDG_RUNTIME_DIR,0o700);
 const children=new Map();let stopping=false;
+// The C++ controller can own the single on-demand headed Chromium process.
+const browserAutostart=process.env.DEVBOX_DESKTOP_BROWSER_AUTOSTART!=='0';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function birth(pid){try{const s=await readFile(`/proc/${pid}/stat`,'utf8');return s.slice(s.lastIndexOf(')')+2).split(' ')[19];}catch{return null;}}
 async function child(name,file,args,{pipe=false}={}){
@@ -34,7 +36,7 @@ async function stop(state){
 }
 async function status(ready,error=''){
   const value={ready,updatedAt:new Date().toISOString(),display:env.DISPLAY,
-    browser:'headed Chromium',backend:'native C++23 XCB/XTEST',
+    browser:browserAutostart?'headed Chromium':'on-demand native browser',backend:'native C++23 XCB/XTEST',
     children:[...children.values()].map(s=>({name:s.name,pid:s.p.pid,startTicks:s.birth,running:s.p.exitCode===null&&s.p.signalCode===null})),error};
   const file=path.join(logs,'status.json');await writeFile(file+'.tmp',JSON.stringify(value,null,2),{mode:0o600});await rename(file+'.tmp',file);
 }
@@ -62,14 +64,14 @@ try{
    while(!await probe('xdpyinfo',[])){if(stopping||Date.now()>readyBy)throw Error('X11 desktop did not become ready');await pause(200);}
    await child('dbus','dbus-daemon',['--session','--nofork',`--address=${env.DBUS_SESSION_BUS_ADDRESS}`]);
    await child('openbox','openbox',['--sm-disable']);
-   await child('chromium','chromium',chromiumArgs);
+   if(browserAutostart)await child('chromium','chromium',chromiumArgs);
    await status(true);
    while(!stopping){
     for(const name of ['xvfb','dbus','openbox']){
      const s=children.get(name);if(s.p.exitCode!==null||s.p.signalCode!==null)throw Error(`${name} exited`);
     }
     const browser=children.get('chromium');
-    if(browser.p.exitCode!==null||browser.p.signalCode!==null){await stop(browser);await pause(1500);await child('chromium','chromium',chromiumArgs);await status(true);}
+    if(browser&&(browser.p.exitCode!==null||browser.p.signalCode!==null)){await stop(browser);await pause(1500);await child('chromium','chromium',chromiumArgs);await status(true);}
     await pause(1000);
    }
   }catch(error){await status(false,String(error.message));}

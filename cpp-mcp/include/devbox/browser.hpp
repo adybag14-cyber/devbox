@@ -6,6 +6,7 @@ struct BrowserOptions {
     // Native qualification injection only. Neither is an MCP argument.
     std::optional<fs::path> executable;
     std::optional<std::uint16_t> fixture_port;
+    bool headed = false;
     Millis lifetime{300000}, idle_timeout{60000};
 };
 struct BrowserObservation {

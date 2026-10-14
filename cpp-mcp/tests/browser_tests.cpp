@@ -203,13 +203,14 @@ void proxy_tests() {
     request("http://localhost/");
     require(json_uint(gate.metrics(), "accepted_connections") == 0, "no private connections admitted");
 }
-void browser_tests() {
+void browser_tests(bool headed = false) {
     PageFixture page;
     auto config = std::make_shared<Config>();
     config->runtime_mode = RuntimeMode::host;
     config->host_exec_enabled = true;
     config->platform = Platform::detect();
     BrowserOptions options;
+    options.headed = headed;
     options.fixture_port = page.port();
     options.lifetime = Millis(60000);
     options.idle_timeout = Millis(30000);
@@ -292,8 +293,9 @@ int main(int argc, char** argv) {
     try {
         protocol_tests();
         proxy_tests();
-        if (argc > 1 && std::string_view(argv[1]) == "--chromium")
-            browser_tests();
+        if (argc > 1 &&
+            (std::string_view(argv[1]) == "--chromium" || std::string_view(argv[1]) == "--chromium-headed"))
+            browser_tests(std::string_view(argv[1]) == "--chromium-headed");
         std::cout << "browser checks passed\n";
         return 0;
     } catch (const std::exception& e) {
