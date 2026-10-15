@@ -310,7 +310,7 @@ void proxy_tests() {
     request("http://localhost/");
     require(json_uint(gate.metrics(), "accepted_connections") == 0, "no private connections admitted");
 }
-void browser_tests(bool headed = false) {
+void browser_tests(bool headed = false, bool compatibility = false) {
 #ifdef _WIN32
     const auto shadow = fs::temp_directory_path() / ("devbox-browser-path-" + uuid());
     require(fs::create_directory(shadow), "owned discovery fixture directory");
@@ -340,7 +340,7 @@ void browser_tests(bool headed = false) {
     config->platform = Platform::detect();
     BrowserOptions options;
     options.headed = headed;
-    options.compatibility = headed;
+    options.compatibility = compatibility;
     options.launch_diagnostics = browser_diagnostics;
     options.fixture_port = page.port();
     options.lifetime = Millis(60000);
@@ -358,9 +358,9 @@ void browser_tests(bool headed = false) {
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
             "real JPEG screenshot");
     std::cerr << "[browser] initial owned screenshot passed\n" << std::flush;
-    require(json_string(value.data, "text").find(headed ? "Fixture webdriver=false" : "Fixture webdriver=true") != std::string::npos,
+    require(json_string(value.data, "text").find(compatibility ? "Fixture webdriver=false" : "Fixture webdriver=true") != std::string::npos,
             "operator compatibility choice reaches the real browser without page-script patching");
-    require(json_bool(value.data.at("browser"), "compatibility_requested") == headed,
+    require(json_bool(value.data.at("browser"), "compatibility_requested") == compatibility,
             "observations disclose the requested compatibility mode");
     const auto id = json_string(value.data, "session_id"),
                observation = json_string(value.data, "observation_id");
@@ -478,7 +478,7 @@ void browser_tests(bool headed = false) {
     }
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
-void shared_browser_tests(bool headed) {
+void shared_browser_tests(bool headed, bool compatibility) {
     PageFixture page(true);
     auto config = std::make_shared<Config>();
     config->runtime_mode = RuntimeMode::host;
@@ -487,7 +487,7 @@ void shared_browser_tests(bool headed) {
     std::atomic_uint32_t pid{0};
     BrowserOptions owned_options;
     owned_options.headed = headed;
-    owned_options.compatibility = headed;
+    owned_options.compatibility = compatibility;
     owned_options.launch_diagnostics = browser_diagnostics;
     owned_options.fixture_port = page.port();
     owned_options.pid_observer = [&](std::uint32_t value) { pid = value; };
@@ -557,7 +557,7 @@ void shared_browser_tests(bool headed) {
     require(contexts().empty(), "managed default browser has no private contexts");
     BrowserOptions shared_options;
     shared_options.headed = headed;
-    shared_options.compatibility = headed;
+    shared_options.compatibility = compatibility;
     shared_options.fixture_port = page.port();
     shared_options.shared_profile = profile;
     shared_options.shared_status_file = status_path;
@@ -665,10 +665,14 @@ int main(int argc, char** argv) {
     try {
         protocol_tests();
         proxy_tests();
-        if (argc > 1 &&
-            (std::string_view(argv[1]) == "--chromium" || std::string_view(argv[1]) == "--chromium-headed")) {
-            browser_tests(std::string_view(argv[1]) == "--chromium-headed");
-            shared_browser_tests(std::string_view(argv[1]) == "--chromium-headed");
+        if (argc > 1) {
+            const auto mode = std::string_view(argv[1]);
+            require(mode == "--chromium" || mode == "--chromium-headed", "unknown browser fixture mode");
+            require(argc <= 3 && (argc == 2 || std::string_view(argv[2]) == "--compatibility"),
+                    "unknown browser fixture option");
+            const bool headed = mode == "--chromium-headed", compatibility = argc == 3;
+            browser_tests(headed, compatibility);
+            shared_browser_tests(headed, compatibility);
         }
         std::cout << "browser checks passed\n";
         return 0;

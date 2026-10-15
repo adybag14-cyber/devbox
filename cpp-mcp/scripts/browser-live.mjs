@@ -9,6 +9,7 @@ import net from 'node:net';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {assertNativeContract} from './native-contract.mjs';
+import {settleBrowserObservation} from './browser-observation.mjs';
 assert.equal(process.env.DEVBOX_BROWSER_LIVE,'1','Explicit live network opt-in required');
 const renderMode=process.env.DEVBOX_BROWSER_LIVE_RENDER_MODE||'full';
 assert(['full','text'].includes(renderMode),'Live render mode must be full or text');
@@ -59,20 +60,22 @@ try{
     let data=unpack(result);session=mode==='browser'?data?.session_id:session;
     row[mode]={ok:!result.isError,elapsed_ms:Math.round(performance.now()-began),output_bytes:Buffer.byteLength(JSON.stringify(result)),data,summary:result.structuredContent?.summary};
     if(mode==='browser'&&session){
-     let observed=result;row.browser.initial_page_status=data.page_status;row.browser.settle_observations=[];
-     for(let attempt=0;attempt<4&&['loading','insufficient_content','navigation_unstable'].includes(data.page_status);attempt++){
-      observed=await call('devbox_browser',{action:'observe',session_id:session,wait_ms:1500,include_html:true});
-      row.browser.settle_observations.push({ok:!observed.isError,status:unpack(observed)?.page_status,observed_at:unpack(observed)?.observed_at});
-      if(observed.isError){row.browser.settle_error=observed.structuredContent?.summary;break;}
-      data=unpack(observed);
-     }
+     row.browser.initial_page_status=data.page_status;
+     const settled=await settleBrowserObservation(result,call);
+     let observed=settled.response,img=settled.image;data=settled.data;
+     row.browser.settle_observations=settled.observations;
+     row.browser.screenshot_observation_id=settled.imageObservationId;
+     row.browser.screenshot_observed_at=settled.imageObservedAt;
+     row.browser.screenshot_retained_after_error=!!settled.error;
+     if(settled.error){row.browser.ok=false;row.browser.settle_error=settled.error;row.browser.summary=settled.error;}
      row.browser.data=data;
-     const img=observed.content.find(c=>c.type==='image');if(img)await writeFile(path.join(root,item.id+'.jpg'),Buffer.from(img.data,'base64'));
+     if(img)await writeFile(path.join(root,item.id+'.jpg'),Buffer.from(img.data,'base64'));
      row.browser.screenshot=!!img;row.browser.readable_characters=data.text?.length??0;
-     row.browser.content_candidate=data.page_status==='content_available';
+     row.browser.content_candidate=!settled.error&&data.page_status==='content_available';
      row.browser.page_status=data.page_status;
      row.browser.price_verified=false;
-     if(data.html_artifact){const part=await call('devbox_browser',{action:'read_html',session_id:session,html_sha256:data.html_artifact.sha256,max_bytes:64000});await writeFile(path.join(root,item.id+'.html.txt'),unpack(part)?.text??'');}
+     if(settled.error)continue;
+     if(data.html_artifact){const part=await call('devbox_browser',{action:'read_html',session_id:session,html_sha256:data.html_artifact.sha256,max_bytes:64000});row.browser.html={ok:!part.isError,sha256:unpack(part)?.sha256,bytes:unpack(part)?.bytes,error:part.isError?part.structuredContent?.summary:null};if(!part.isError)await writeFile(path.join(root,item.id+'.html.txt'),unpack(part)?.text??'');}
      const scrolled=await call('devbox_browser',{action:'scroll',session_id:session,observation_id:data.observation_id,x:1100,y:600,delta_y:600,screenshot:false});
      row.browser.scroll={ok:!scrolled.isError,before:data.viewport,after:unpack(scrolled)?.viewport,movement_observed:unpack(scrolled)?.scroll_result?.movement_observed,error:scrolled.isError?scrolled.structuredContent?.summary:null};
      if(data.page_status==='consent_required'&&!scrolled.isError){
