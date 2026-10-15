@@ -146,6 +146,18 @@ constexpr auto observe_script = R"JS((() => {
 })())JS";
 constexpr auto html_script =
     R"JS((() => {const s=document.documentElement?.outerHTML||'';return {html:s.slice(0,524288),original_utf16_units:s.length,truncated:s.length>524288};})())JS";
+void connect_browser(BrowserProtocol& protocol, const fs::path& profile, Clock::time_point deadline,
+                     const Cancel& cancel) {
+    const auto endpoint = split(read_file(profile / "DevToolsActivePort", 512), '\n');
+    const auto port_text = endpoint.empty() ? std::string() : trim(endpoint[0]);
+    if (endpoint.size() < 2 || port_text.empty() || port_text.size() > 5 ||
+        port_text.find_first_not_of("0123456789") != std::string::npos)
+        throw Error("BROWSER_ENDPOINT_INVALID");
+    const auto port = std::stoul(port_text);
+    if (!port || port > 65535)
+        throw Error("BROWSER_ENDPOINT_INVALID");
+    protocol.connect(static_cast<std::uint16_t>(port), trim(endpoint[1]), deadline, cancel);
+}
 std::optional<fs::path> chromium_path(const BrowserOptions& options) {
     if (options.executable && fs::is_regular_file(*options.executable))
         return options.executable;
@@ -356,6 +368,28 @@ struct BrowserService::State {
         }
         throw Error("BROWSER_SHARED_IDENTITY: managed browser process changed");
     }
+    void check_shared_health(const Cancel& cancel) const {
+        const auto owner = shared_owner();
+        try {
+            // A live PID and an old endpoint file survive some Chromium crashes.
+            // Probe the browser process, without opening a page, changing inputs,
+            // or attaching to any caller's context. One deadline bounds the whole probe.
+            BrowserProtocol probe;
+            const auto deadline = Clock::now() + Millis(2000);
+            connect_browser(probe, *options.shared_profile, deadline, cancel);
+            const auto version = probe.call("Browser.getVersion", Json::object(), deadline, cancel);
+            if (json_string(version, "product").empty() || json_string(version, "protocolVersion").empty())
+                throw Error("invalid browser version response");
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception& error) {
+            throw Error("BROWSER_SHARED_UNRESPONSIVE: managed Chromium did not answer its health probe; "
+                        "operator recovery is required (" +
+                        std::string(error.what()).substr(0, 200) + ")");
+        }
+        if (shared_owner() != owner)
+            throw Error("BROWSER_SHARED_IDENTITY: managed browser changed during health probe");
+    }
     void start_reaper() {
         if (janitor.joinable())
             return;
@@ -537,15 +571,11 @@ struct BrowserService::State {
             }
             endpoint_profile = session->profile;
         }
-        const auto endpoint = split(read_file(endpoint_profile / "DevToolsActivePort", 512), '\n');
-        if (endpoint.size() < 2)
-            throw Error("BROWSER_ENDPOINT_INVALID");
-        unsigned long port = std::stoul(endpoint[0]);
-        if (!port || port > 65535)
-            throw Error("BROWSER_ENDPOINT_INVALID");
         session->protocol = std::make_unique<BrowserProtocol>();
-        session->protocol->connect(static_cast<std::uint16_t>(port), trim(endpoint[1]), deadline, cancel);
-        const auto version = command("Browser.getVersion", Json::object(), deadline, cancel, true);
+        // A stale endpoint must not consume the entire navigation allowance.
+        const auto connection_deadline = std::min(deadline, Clock::now() + Millis(3000));
+        connect_browser(*session->protocol, endpoint_profile, connection_deadline, cancel);
+        const auto version = command("Browser.getVersion", Json::object(), connection_deadline, cancel, true);
         session->browser_version = {{"product", json_string(version, "product")},
                                     {"protocol_version", json_string(version, "protocolVersion")}};
         if (session->shared) {
@@ -698,7 +728,9 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         std::string reason;
         if (state.options.shared_profile) {
             try {
-                (void)state.shared_owner();
+                state.check_shared_health(cancel);
+            } catch (const Cancelled&) {
+                throw;
             } catch (const std::exception& e) {
                 managed_ready = false;
                 reason = e.what();

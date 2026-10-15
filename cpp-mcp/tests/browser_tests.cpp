@@ -473,6 +473,33 @@ void shared_browser_tests(bool headed) {
         require(contexts().empty(), "rejected identity does not create a context");
         status["children"][0]["startTicks"] = supervisor_birth;
         write_json_atomic(status_path, status);
+        const auto endpoint_file = profile / "DevToolsActivePort";
+        const auto original_endpoint = read_file(endpoint_file, 512);
+        {
+            ProtocolFixture stalled([](auto& socket) {
+                const auto request = receive(socket);
+                require(json_string(request, "method") == "Browser.getVersion",
+                        "health probe only requests browser version");
+                // Wait for the probe's deadline to close the socket, not an arbitrary sleep.
+                beast::flat_buffer ignored;
+                boost::system::error_code error;
+                socket.read(ignored, error);
+                require(static_cast<bool>(error), "health probe closes its stalled connection");
+            });
+            write_file(endpoint_file, std::to_string(stalled.port()) + "\n/devtools/browser/stalled\n");
+            const auto before = Clock::now();
+            const auto health = shared.perform({{"action", "status"}}, "first").data;
+            write_file(endpoint_file, original_endpoint);
+            stalled.finish();
+            require(!json_bool(health, "available") && !json_bool(health, "managed_ready") &&
+                        json_string(health, "reason").find("BROWSER_SHARED_UNRESPONSIVE") == 0,
+                    "live process and stale endpoint cannot report a healthy browser");
+            require(Clock::now() - before < Millis(6000), "health failure is bounded below action timeout");
+            require(process_matches_instance(pid.load(), instance) && contexts().empty(),
+                    "readiness failure preserves managed process and creates no context");
+        }
+        require(json_bool(shared.perform({{"action", "status"}}, "first").data, "available"),
+                "readiness recovers after browser answers again");
         auto first = shared.perform(open, "first");
         require(contexts().size() == 1, "one isolated browser context created");
         require(shared.perform({{"action", "status"}}, "first").data.at("session_id") ==
