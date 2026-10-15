@@ -34,6 +34,10 @@ Container headroom accounts for reclaimable inactive file cache (`total_inactive
 
 Managed-browser status also performs a read-only `Browser.getVersion` probe with a two-second total deadline and rechecks the process identity afterward. A surviving PID and stale endpoint file are insufficient readiness evidence. An unresponsive process reports `BROWSER_SHARED_UNRESPONSIVE`; the probe preserves existing contexts and never restarts another caller's browser. Opening a session bounds connection establishment and its initial version exchange to three seconds within the normal action deadline.
 
+`open` accepts `render_mode: "auto" | "full" | "text"`. Text mode rejects network Image and Media requests through native C++ CDP interception before download/decode. JavaScript, styles, fonts, readable text, controls, HTML and screenshots remain available; screenshots explicitly represent a reduced page. Inline graphics may remain. Each observation reports `render_mode`, `omitted_network_resources` and the reduced-rendering note. Full mode restores normal image loading for a new session, including when the managed process is reused.
+
+Operators can set `DEVBOX_BROWSER_TEXT_ONLY=1` for the `auto` default on a constrained host; `status.default_render_mode` exposes the choice. The default without this setting is full rendering. This is a resource policy, not an access-control bypass. Prefer native `devbox_web_fetch` for structured prices, then text rendering when scripts or interactions are necessary, and full rendering for image-dependent work. The native interception queue and per-command drain are bounded and share the existing operation deadline.
+
 Linux process launch also handles kernels or container policies that reject `close_range`. Its fallback enumerates the child's own open descriptors with allocation-free kernel calls, then retains the original close loop if enumeration is unavailable. This avoids scanning a million unused descriptor numbers and closes descriptors still open above a lowered soft limit. A separate CI target forces this fallback and exercises both foreground and detached descriptor isolation.
 
 ## Reproducible validation

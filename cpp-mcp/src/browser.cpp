@@ -5,6 +5,7 @@
 #include "devbox/research.hpp"
 #include <algorithm>
 #include <cmath>
+#include <deque>
 #include <fstream>
 #include <sstream>
 #include <thread>
@@ -246,6 +247,9 @@ struct BrowserService::State {
         std::string id = uuid(), owner, target, cdp_session, observation, html, html_hash, main_frame;
         std::string context;
         bool shared = false;
+        bool text_only = false;
+        std::deque<std::pair<std::string, bool>> intercepted_resources;
+        std::size_t omitted_resources = 0;
         std::optional<std::uint64_t> instance;
         int http_status = 0;
         Json browser_version = Json::object();
@@ -295,6 +299,7 @@ struct BrowserService::State {
     std::unique_ptr<Session> session;
     State(std::shared_ptr<const Config> c, BrowserOptions o) : config(std::move(c)), options(std::move(o)) {
         options.headed = env_bool("DEVBOX_BROWSER_HEADED", options.headed);
+        options.text_only = env_bool("DEVBOX_BROWSER_TEXT_ONLY", options.text_only);
         if (env_bool("DEVBOX_BROWSER_SHARED", false)) {
             if (!config->platform.is_linux)
                 throw Error("BROWSER_SHARED_UNSUPPORTED: managed shared mode requires Linux");
@@ -428,8 +433,34 @@ struct BrowserService::State {
     Json command(std::string_view method, Json args, Clock::time_point deadline, const Cancel& cancel,
                  bool browser = false) {
         try {
-            return session->protocol->call(method, std::move(args), deadline, cancel,
-                                           browser ? "" : session->cdp_session);
+            auto result = session->protocol->call(method, std::move(args), deadline, cancel,
+                                                  browser ? "" : session->cdp_session);
+            // Drain after receiving the requested reply. Calling back recursively
+            // from each Fetch event would exhaust the protocol nesting budget on
+            // an image-heavy page. Each drain shares the caller's deadline.
+            unsigned processed = 0;
+            while (!session->intercepted_resources.empty()) {
+                if (++processed > 512)
+                    throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
+                auto [request, omit] = std::move(session->intercepted_resources.front());
+                session->intercepted_resources.pop_front();
+                Json params{{"requestId", request}};
+                if (omit)
+                    params["errorReason"] = "BlockedByClient";
+                try {
+                    session->protocol->call(omit ? "Fetch.failRequest" : "Fetch.continueRequest",
+                                            std::move(params), deadline, cancel, session->cdp_session);
+                    if (omit)
+                        ++session->omitted_resources;
+                } catch (const Error& error) {
+                    // A navigation can cancel an intercepted resource before the
+                    // queued rejection is sent. Other protocol errors remain fatal.
+                    if (std::string_view(error.what()).find("Invalid InterceptionId") ==
+                        std::string_view::npos)
+                        throw;
+                }
+            }
+            return result;
         } catch (const Cancelled&) {
             throw;
         } catch (const std::exception& error) {
@@ -473,7 +504,7 @@ struct BrowserService::State {
             throw Error("BROWSER_EVALUATION_FAILED: page observation is unavailable");
         return result["result"]["value"];
     }
-    void open(const std::string& owner, Clock::time_point deadline, const Cancel& cancel) {
+    void open(const std::string& owner, bool text_only, Clock::time_point deadline, const Cancel& cancel) {
         if (session)
             throw Error("BROWSER_BUSY: close the existing session or wait for its idle expiry");
         if (stopping->cancelled())
@@ -491,6 +522,7 @@ struct BrowserService::State {
         start_reaper();
         auto owned = std::make_unique<Session>();
         owned->owner = owner;
+        owned->text_only = text_only;
         owned->shared = options.shared_profile.has_value();
         owned->proxy = std::make_unique<BrowserProxy>(options.fixture_port);
         fs::path endpoint_profile;
@@ -619,6 +651,16 @@ struct BrowserService::State {
             [owned = session.get()](const Json& event, Clock::time_point, const Cancel&) {
                 if (json_string(event, "sessionId") != owned->cdp_session)
                     return;
+                if (owned->text_only && json_string(event, "method") == "Fetch.requestPaused" &&
+                    event.contains("params")) {
+                    const auto& params = event["params"];
+                    auto request = json_string(params, "requestId");
+                    if (request.empty() || request.size() > 256 || owned->intercepted_resources.size() >= 256)
+                        throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
+                    const auto type = json_string(params, "resourceType");
+                    owned->intercepted_resources.emplace_back(std::move(request),
+                                                              type == "Image" || type == "Media");
+                }
                 if (json_string(event, "method") == "Network.responseReceived" && event.contains("params")) {
                     const auto& p = event["params"];
                     if (json_string(p, "type") == "Document" &&
@@ -626,6 +668,13 @@ struct BrowserService::State {
                         owned->http_status = static_cast<int>(json_number(p["response"], "status"));
                 }
             });
+        if (session->text_only)
+            command("Fetch.enable",
+                    {{"patterns",
+                      Json::array(
+                          {{{"urlPattern", "*"}, {"resourceType", "Image"}, {"requestStage", "Request"}},
+                           {{"urlPattern", "*"}, {"resourceType", "Media"}, {"requestStage", "Request"}}})}},
+                    deadline, cancel);
         command("Network.enable",
                 {{"maxTotalBufferSize", 1024 * 1024}, {"maxResourceBufferSize", 256 * 1024}}, deadline,
                 cancel);
@@ -664,6 +713,12 @@ struct BrowserService::State {
         data["network"] = session->proxy->metrics();
         data["browser"] = session->browser_version;
         data["browser"]["mode"] = session->shared ? "managed_process_isolated_context" : "owned_process";
+        data["render_mode"] = session->text_only ? "text" : "full";
+        data["omitted_network_resources"] = session->omitted_resources;
+        if (session->text_only)
+            data["render_note"] = "Network images and media are omitted to reduce memory and bandwidth. "
+                                  "Layout, scripts, text and controls remain enabled; inline graphics may "
+                                  "remain. This is a reduced visual rendering, not a complete page image.";
         data["http_status"] = session->http_status ? Json(session->http_status) : Json();
         data["untrusted_page_content"] = true;
         data["image_mime_type"] = image.empty() ? Json() : Json("image/jpeg");
@@ -748,6 +803,7 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
               state.session && state.session->owner == principal ? Json(state.session->id) : Json()},
              {"session_limit", 1},
              {"headed", state.options.headed},
+             {"default_render_mode", state.options.text_only ? "text" : "full"},
              {"idle_timeout_ms", state.options.idle_timeout.count()},
              {"hard_lifetime_ms", state.options.lifetime.count()},
              {"available_host_memory_bytes", available_memory().value_or(0)}},
@@ -760,8 +816,12 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         if (state.session)
             throw Error("BROWSER_BUSY: close the existing session or wait for its idle expiry");
         const auto target = state.url(json_string(args, "url"));
+        const auto render_mode = json_string(args, "render_mode", "auto");
+        if (render_mode != "auto" && render_mode != "full" && render_mode != "text")
+            throw Error("BROWSER_RENDER_MODE: expected auto, full or text");
+        const bool text_only = render_mode == "text" || (render_mode == "auto" && state.options.text_only);
         try {
-            state.open(std::string(principal), deadline, cancel);
+            state.open(std::string(principal), text_only, deadline, cancel);
             auto nav = state.command("Page.navigate", {{"url", target}}, deadline, cancel);
             if (nav.contains("errorText"))
                 throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));

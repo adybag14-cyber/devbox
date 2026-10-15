@@ -190,6 +190,7 @@ struct PageFixture {
     Tcp::acceptor listener{io, {asio::ip::make_address("127.0.0.1"), 0}};
     std::atomic_bool stop{false};
     std::atomic_uint requests{0};
+    std::atomic_uint picture_requests{0};
     std::thread worker;
     explicit PageFixture(bool storage = false) {
         listener.non_blocking(true);
@@ -218,6 +219,15 @@ const state=document.createElement('p');state.id='storage-state';document.body.p
 function showStorage(){state.innerText='Cookie: '+(document.cookie||'empty')+'; Storage: '+(localStorage.getItem('devbox-fixture')||'empty');}
 const save=document.createElement('button');save.innerText='Store fixture state';save.onclick=()=>{document.cookie='devboxFixture=stored; SameSite=Lax; path=/';localStorage.setItem('devbox-fixture','stored');showStorage();};document.querySelector('button').after(save);showStorage();
 </script>)HTML";
+                    response.body() += R"HTML(<p id="image-state">Fixture image pending</p><script>
+for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>document.querySelector('#image-state').innerText='Fixture image loaded';image.onerror=()=>document.querySelector('#image-state').innerText='Fixture image omitted';}image.src='/fixture-picture?i='+n;document.body.appendChild(image);}
+</script>)HTML";
+                    if (request.target().starts_with("/fixture-picture")) {
+                        ++picture_requests;
+                        response.set(http::field::content_type, "image/svg+xml");
+                        response.body() =
+                            R"(<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="blue"/></svg>)";
+                    }
                     response.prepare_payload();
                     http::write(socket, response);
                 } catch (...) {
@@ -462,6 +472,7 @@ void shared_browser_tests(bool headed) {
     shared_options.fixture_port = page.port();
     shared_options.shared_profile = profile;
     shared_options.shared_status_file = status_path;
+    shared_options.text_only = true;
     shared_options.idle_timeout = Millis(3000);
     {
         BrowserService shared(config, shared_options);
@@ -500,7 +511,15 @@ void shared_browser_tests(bool headed) {
         }
         require(json_bool(shared.perform({{"action", "status"}}, "first").data, "available"),
                 "readiness recovers after browser answers again");
-        auto first = shared.perform(open, "first");
+        const auto pictures_before = page.picture_requests.load();
+        auto text_open = open;
+        text_open["render_mode"] = "auto";
+        auto first = shared.perform(text_open, "first");
+        require(first.data.at("render_mode") == "text" &&
+                    json_uint(first.data, "omitted_network_resources") >= 33 &&
+                    json_string(first.data, "text").find("Fixture image omitted") != std::string::npos &&
+                    page.picture_requests == pictures_before,
+                "text mode rejects image bursts before network access while rendering live text");
         require(contexts().size() == 1, "one isolated browser context created");
         require(shared.perform({{"action", "status"}}, "first").data.at("session_id") ==
                     first.data.at("session_id"),
@@ -523,7 +542,13 @@ void shared_browser_tests(bool headed) {
         require(contexts().empty(), "explicit close disposes the private context");
         require(process_matches_instance(pid.load(), instance) && fs::is_directory(profile),
                 "closing a session preserves its managed browser and profile");
-        auto second = shared.perform(open, "second");
+        auto full_open = open;
+        full_open["render_mode"] = "full";
+        auto second = shared.perform(full_open, "second");
+        require(second.data.at("render_mode") == "full" &&
+                    json_string(second.data, "text").find("Fixture image loaded") != std::string::npos &&
+                    page.picture_requests >= pictures_before + 33,
+                "full mode in a new context restores image loading without inheriting interception");
         require(json_string(second.data, "text").find("Cookie: empty; Storage: empty") != std::string::npos,
                 "new principal receives neither cookies nor local storage from prior context");
     }

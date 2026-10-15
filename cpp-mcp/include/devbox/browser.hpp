@@ -15,6 +15,7 @@ struct BrowserOptions {
     std::optional<fs::path> shared_profile, shared_status_file;
     std::function<void(std::uint32_t)> pid_observer;
     bool headed = false;
+    bool text_only = false;
     Millis lifetime{300000}, idle_timeout{60000};
 };
 struct BrowserObservation {

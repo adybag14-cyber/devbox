@@ -10,6 +10,8 @@ import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StreamableHTTPClientTransport} from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import {assertNativeContract} from './native-contract.mjs';
 assert.equal(process.env.DEVBOX_BROWSER_LIVE,'1','Explicit live network opt-in required');
+const renderMode=process.env.DEVBOX_BROWSER_LIVE_RENDER_MODE||'full';
+assert(['full','text'].includes(renderMode),'Live render mode must be full or text');
 const [binaryArg,corpusArg,evidenceArg]=process.argv.slice(2);
 assert(binaryArg&&corpusArg&&evidenceArg,'Pass exact binary, fixed corpus JSON and NEW evidence directory');
 const binary=path.resolve(binaryArg),root=path.resolve(evidenceArg);
@@ -29,7 +31,7 @@ const env={...clean,DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),
 const child=spawn(binary,[],{cwd:root,env,windowsHide:true,stdio:['ignore','pipe','pipe']});
 let log='';for(const s of[child.stdout,child.stderr])s.on('data',b=>{log=(log+b.toString()).slice(-12000);});
 const exited=new Promise((resolve,reject)=>{child.once('exit',(code,signal)=>resolve({code,signal}));child.once('error',reject);});
-const report={started_at:new Date().toISOString(),pid:child.pid,binarySha256:hash,corpus,results:[],environment:'local private canary; not Oracle',warnings:['Usable content is not verified selected-variant price accuracy.','Fixed denominator includes all failures. No replacement URLs or paid proxies.']};
+const report={started_at:new Date().toISOString(),pid:child.pid,binarySha256:hash,render_mode:renderMode,corpus,results:[],environment:'local private canary; not Oracle',warnings:['Usable content is not verified selected-variant price accuracy.','Fixed denominator includes all failures. No replacement URLs or paid proxies.','Text mode intentionally omits network images and media; its screenshots are reduced renderings.']};
 await writeFile(path.join(root,'owner.json'),JSON.stringify({pid:child.pid,executable:binary,started_at:report.started_at,binarySha256:hash,port},null,2));
 let client,session;
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
@@ -48,7 +50,7 @@ try{
   for(const mode of['http','browser']){
    const began=performance.now();
    try{
-    const result=mode==='http'?await call('devbox_web_fetch',{urls:[item.url],max_age_seconds:0,view:'offers',max_chars:12000,excerpt_chars:4000}):await call('devbox_browser',{action:'open',url:item.url,include_html:true});
+    const result=mode==='http'?await call('devbox_web_fetch',{urls:[item.url],max_age_seconds:0,view:'offers',max_chars:12000,excerpt_chars:4000}):await call('devbox_browser',{action:'open',url:item.url,include_html:true,render_mode:renderMode});
     let data=unpack(result);session=mode==='browser'?data?.session_id:session;
     row[mode]={ok:!result.isError,elapsed_ms:Math.round(performance.now()-began),output_bytes:Buffer.byteLength(JSON.stringify(result)),data,summary:result.structuredContent?.summary};
     if(mode==='browser'&&session){
@@ -66,11 +68,25 @@ try{
        const consent=await call('devbox_browser',{action:'click',session_id:session,observation_id:fresh.observation_id,x:reject.x+reject.width/2,y:reject.y+reject.height/2,include_html:true});
        row.browser.consent={action:'Reject all',ok:!consent.isError,data:unpack(consent),error:consent.isError?consent.structuredContent?.summary:null};
        const consentImage=consent.content.find(c=>c.type==='image');if(consentImage)await writeFile(path.join(root,item.id+'-after-consent.jpg'),Buffer.from(consentImage.data,'base64'));
+       if(!consent.isError){
+        let settled=consent;row.browser.consent_observations=[];
+        for(let attempt=0;attempt<4&&['loading','insufficient_content','navigation_unstable'].includes(unpack(settled)?.page_status);attempt++){
+         settled=await call('devbox_browser',{action:'observe',session_id:session,wait_ms:3000,screenshot:false});
+         row.browser.consent_observations.push({ok:!settled.isError,status:unpack(settled)?.page_status,observed_at:unpack(settled)?.observed_at});
+         if(settled.isError)break;
+        }
+        if(!settled.isError&&unpack(settled)?.page_status==='content_available'){
+         settled=await call('devbox_browser',{action:'observe',session_id:session,include_html:true});
+         row.browser.content_candidate=!settled.isError&&unpack(settled)?.page_status==='content_available';
+         const im=settled.content.find(c=>c.type==='image');if(im)await writeFile(path.join(root,item.id+'-settled.jpg'),Buffer.from(im.data,'base64'));
+        }
+        row.browser.after_consent={ok:!settled.isError,data:unpack(settled),error:settled.isError?settled.structuredContent?.summary:null};
+       }
       }
      }
     }
    }catch(e){row[mode]={ok:false,elapsed_ms:Math.round(performance.now()-began),error:String(e)};}
-   finally{if(mode==='browser'&&session){const closed=await call('devbox_browser',{action:'close',session_id:session});assert.equal(closed.isError,false,JSON.stringify(closed));session=undefined;}}
+   finally{if(mode==='browser'&&session){const closed=await call('devbox_browser',{action:'close',session_id:session});assert.equal(closed.isError,false,JSON.stringify(closed));session=undefined;}if(mode==='browser')row.browser.workflow_elapsed_ms=Math.round(performance.now()-began);}
   }
   report.results.push(row);await writeFile(path.join(root,'result.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({id:row.id,http_ok:row.http.ok,browser_ok:row.browser.ok,browser_ms:row.browser.elapsed_ms,content_candidate:row.browser.content_candidate,error:row.browser.error??(row.browser.ok?null:row.browser.summary)}));
