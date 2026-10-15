@@ -23,7 +23,7 @@ std::uint64_t browser_cgroup_headroom(std::uint64_t limit, std::uint64_t usage,
     return limit > working ? limit - working : 0;
 }
 bool browser_process_arguments_match(std::string_view command, std::string_view executable,
-                                     std::string_view profile) {
+                                     std::string_view profile, bool require_compatibility) {
     if (command.empty() || command.size() >= 16384)
         return false;
     auto args = split(std::string(command), '\0');
@@ -59,7 +59,8 @@ bool browser_process_arguments_match(std::string_view command, std::string_view 
             }
         return count == 1 && matches;
     };
-    return unique("--user-data-dir", profile) && unique("--remote-debugging-address", "127.0.0.1") &&
+    return (!require_compatibility || unique("--disable-blink-features", "AutomationControlled")) &&
+           unique("--user-data-dir", profile) && unique("--remote-debugging-address", "127.0.0.1") &&
            unique("--remote-debugging-port", "0");
 }
 std::string browser_normalize_url(std::string_view supplied) {
@@ -306,6 +307,7 @@ struct BrowserService::State {
     State(std::shared_ptr<const Config> c, BrowserOptions o) : config(std::move(c)), options(std::move(o)) {
         options.headed = env_bool("DEVBOX_BROWSER_HEADED", options.headed);
         options.text_only = env_bool("DEVBOX_BROWSER_TEXT_ONLY", options.text_only);
+        options.compatibility = env_bool("DEVBOX_BROWSER_COMPATIBILITY", options.compatibility);
         if (env_bool("DEVBOX_BROWSER_SHARED", false)) {
             if (!config->platform.is_linux)
                 throw Error("BROWSER_SHARED_UNSUPPORTED: managed shared mode requires Linux");
@@ -366,7 +368,7 @@ struct BrowserService::State {
             if (!executable || !fs::equivalent(proc_exe, *executable))
                 throw Error("BROWSER_SHARED_IDENTITY: executable is not the configured Chromium binary");
             if (!browser_process_arguments_match(command, path_text(fs::read_symlink(proc_exe)),
-                                                 path_text(*options.shared_profile)))
+                                                 path_text(*options.shared_profile), options.compatibility))
                 throw Error("BROWSER_SHARED_IDENTITY: process arguments do not match the managed profile");
 #else
             if (std::stoull(text) != *instance)
@@ -576,6 +578,8 @@ struct BrowserService::State {
                 args.insert(args.begin(), "--headless=new");
             else if (config->platform.is_linux)
                 args.insert(args.begin(), "--ozone-platform=x11");
+            if (options.compatibility)
+                args.insert(args.begin(), "--disable-blink-features=AutomationControlled");
 #ifdef _WIN32
             // The controlled window is intentionally hidden in headless mode.
             // Native occlusion must not suspend the compositor needed for capture.
@@ -751,6 +755,7 @@ struct BrowserService::State {
         data["network"] = session->proxy->metrics();
         data["browser"] = session->browser_version;
         data["browser"]["mode"] = session->shared ? "managed_process_isolated_context" : "owned_process";
+        data["browser"]["compatibility_requested"] = options.compatibility;
         data["render_mode"] = session->text_only ? "text" : "full";
         data["omitted_network_resources"] = session->omitted_resources;
         if (session->text_only)
@@ -841,6 +846,7 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
               state.session && state.session->owner == principal ? Json(state.session->id) : Json()},
              {"session_limit", 1},
              {"headed", state.options.headed},
+             {"compatibility_requested", state.options.compatibility},
              {"default_render_mode", state.options.text_only ? "text" : "full"},
              {"idle_timeout_ms", state.options.idle_timeout.count()},
              {"hard_lifetime_ms", state.options.lifetime.count()},

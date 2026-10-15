@@ -98,6 +98,15 @@ void protocol_tests() {
             "conflicting profile flag rejected");
     require(!browser_process_arguments_match(flat, "/another/executable", profile),
             "flattened executable prefix must match");
+    require(!browser_process_arguments_match(flat, executable, profile, true),
+            "requested compatibility cannot silently use an incompatible managed process");
+    require(browser_process_arguments_match(flat + " --disable-blink-features=AutomationControlled",
+                                            executable, profile, true),
+            "managed compatibility requires its exact launch switch");
+    require(!browser_process_arguments_match(flat + " --disable-blink-features=AutomationControlled"
+                                                   " --disable-blink-features=OtherFeature",
+                                             executable, profile, true),
+            "conflicting compatibility switches are rejected");
     require(
         !browser_process_arguments_match(flat + " --remote-debugging-address=0.0.0.0", executable, profile),
         "conflicting public debug listener rejected");
@@ -253,6 +262,7 @@ const state=document.createElement('p');state.id='storage-state';document.body.p
 function showStorage(){state.innerText='Cookie: '+(document.cookie||'empty')+'; Storage: '+(localStorage.getItem('devbox-fixture')||'empty');}
 const save=document.createElement('button');save.innerText='Store fixture state';save.onclick=()=>{document.cookie='devboxFixture=stored; SameSite=Lax; path=/';localStorage.setItem('devbox-fixture','stored');showStorage();};document.querySelector('button').after(save);showStorage();
 </script>)HTML";
+                    response.body() += R"HTML(<script>const flag=document.createElement('p');flag.textContent='Fixture webdriver='+navigator.webdriver;document.body.appendChild(flag);</script>)HTML";
                     response.body() += R"HTML(<p id="image-state">Fixture image pending</p><script>
 for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>document.querySelector('#image-state').innerText='Fixture image loaded';image.onerror=()=>document.querySelector('#image-state').innerText='Fixture image omitted';}image.src='/fixture-picture?i='+n;document.body.appendChild(image);}
 </script>)HTML";
@@ -312,6 +322,7 @@ void browser_tests(bool headed = false) {
     config->platform = Platform::detect();
     BrowserOptions options;
     options.headed = headed;
+    options.compatibility = headed;
     options.launch_diagnostics = browser_diagnostics;
     options.fixture_port = page.port();
     options.lifetime = Millis(60000);
@@ -329,6 +340,10 @@ void browser_tests(bool headed = false) {
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
             "real JPEG screenshot");
     std::cerr << "[browser] initial owned screenshot passed\n" << std::flush;
+    require(json_string(value.data, "text").find(headed ? "Fixture webdriver=false" : "Fixture webdriver=true") != std::string::npos,
+            "operator compatibility choice reaches the real browser without page-script patching");
+    require(json_bool(value.data.at("browser"), "compatibility_requested") == headed,
+            "observations disclose the requested compatibility mode");
     const auto id = json_string(value.data, "session_id"),
                observation = json_string(value.data, "observation_id");
     rejects(
@@ -454,6 +469,7 @@ void shared_browser_tests(bool headed) {
     std::atomic_uint32_t pid{0};
     BrowserOptions owned_options;
     owned_options.headed = headed;
+    owned_options.compatibility = headed;
     owned_options.launch_diagnostics = browser_diagnostics;
     owned_options.fixture_port = page.port();
     owned_options.pid_observer = [&](std::uint32_t value) { pid = value; };
@@ -523,6 +539,7 @@ void shared_browser_tests(bool headed) {
     require(contexts().empty(), "managed default browser has no private contexts");
     BrowserOptions shared_options;
     shared_options.headed = headed;
+    shared_options.compatibility = headed;
     shared_options.fixture_port = page.port();
     shared_options.shared_profile = profile;
     shared_options.shared_status_file = status_path;
