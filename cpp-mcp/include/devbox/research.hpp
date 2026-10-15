@@ -16,9 +16,12 @@ struct Transfer {
 struct Request {
     std::string url;
     Json headers = Json::object();
+    // Discovery and policy responses retain the small default. Explicit source
+    // documents can request more, always clamped by the transport-wide ceiling.
+    std::size_t max_body_bytes = 2 * 1024 * 1024;
 };
 struct TransportLimits {
-    std::size_t concurrency = 4, per_origin = 1, max_body_bytes = 2 * 1024 * 1024;
+    std::size_t concurrency = 4, per_origin = 1, max_body_bytes = 8 * 1024 * 1024;
     std::size_t max_total_bytes = 64 * 1024 * 1024;
     Millis request_timeout{12000};
     // Native fixture injection only. No CLI, environment variable or MCP field exposes it.
@@ -30,7 +33,8 @@ Json evidence_quality(const Json& sources, const std::vector<std::string>& decla
 struct DiscoveryProvider {
     std::string id, coverage, terms_url, use_notice;
     std::function<std::string(std::string_view)> endpoint;
-    std::function<void(const Transfer&, const std::function<void(const std::string&)>&, Json&)> extract;
+    std::function<void(const Transfer&, const std::function<void(const std::string&, const Json&)>&, Json&)>
+        extract;
 };
 const DiscoveryProvider& discovery_provider(std::string_view id);
 Json discovery_provider_catalog();
@@ -75,6 +79,7 @@ class ResearchService {
     explicit ResearchService(std::shared_ptr<const Config> config, TransportLimits limits = {});
     ~ResearchService();
     Json fetch(const Json& args, const Cancel& cancel = {});
+    Json search(const Json& args, const Cancel& cancel = {});
     Json run(const Json& plan, const fs::path& directory, Millis budget, const Cancel& cancel);
 };
 Json validate_plan(const Json& args, std::optional<unsigned short> fixture_loopback_port = {});

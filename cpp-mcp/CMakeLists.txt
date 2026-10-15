@@ -80,6 +80,7 @@ add_library(devbox_core
   src/docker_files.cpp
   src/search.cpp
   src/web_transport.cpp
+  src/browser_protocol.cpp src/browser_proxy.cpp src/browser.cpp
   src/web_document.cpp
   src/web_content.cpp
   src/web_retailers.cpp
@@ -333,6 +334,10 @@ if(DEVBOX_BUILD_TESTS)
   add_test(NAME web-offers COMMAND devbox-web-offer-tests)
   set_tests_properties(web-offers PROPERTIES TIMEOUT 15)
   add_executable(devbox-web-research-tests tests/web_research_tests.cpp)
+  add_executable(devbox-browser-tests tests/browser_tests.cpp)
+  target_link_libraries(devbox-browser-tests PRIVATE devbox_core)
+  add_test(NAME browser-protocol COMMAND devbox-browser-tests)
+  set_tests_properties(browser-protocol PROPERTIES TIMEOUT 30)
   target_link_libraries(devbox-web-research-tests PRIVATE devbox_core)
   if(MSVC)
     target_compile_options(devbox-web-research-tests PRIVATE /utf-8)
@@ -383,6 +388,15 @@ if(DEVBOX_BUILD_TESTS)
   add_test(NAME core COMMAND devbox-core-tests)
   add_executable(devbox-process-tests tests/process_tests.cpp)
   target_link_libraries(devbox-process-tests PRIVATE devbox_core)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # Supply this launch object directly so the archive's normal implementation
+    # is not selected. Exercise the musl/old-kernel/seccomp-denied path on CI.
+    add_executable(devbox-process-fd-fallback-tests tests/process_tests.cpp src/posix_process.cpp)
+    target_compile_definitions(devbox-process-fd-fallback-tests PRIVATE DEVBOX_FORCE_FORK_EXEC=1 DEVBOX_TEST_NO_CLOSE_RANGE=1)
+    target_link_libraries(devbox-process-fd-fallback-tests PRIVATE devbox_core)
+    add_test(NAME process-fd-fallback COMMAND devbox-process-fd-fallback-tests)
+    set_tests_properties(process-fd-fallback PROPERTIES TIMEOUT 60)
+  endif()
   if(MSVC)
     target_compile_options(devbox-process-tests PRIVATE /utf-8)
   endif()

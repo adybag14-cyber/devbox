@@ -94,6 +94,7 @@ struct Transport::State {
         Json headers;
         std::string current, origin;
         std::size_t index = 0, redirects = 0, retries = 0;
+        std::size_t max_body_bytes = 0;
         bool denied_address = false, too_large = false;
         Clock::time_point started;
         Clock::time_point ready_at{};
@@ -169,7 +170,7 @@ struct Transport::State {
             item.owner->byte_budget_exhausted = true;
             return 0;
         }
-        if (length > item.owner->limits.max_body_bytes - item.response.body.size()) {
+        if (length > item.max_body_bytes - item.response.body.size()) {
             item.too_large = true;
             return 0;
         }
@@ -281,6 +282,7 @@ std::vector<Transfer> Transport::get(const std::vector<Request>& requests, Clock
         item->index = i;
         item->response.url = requests[i].url;
         item->headers = requests[i].headers;
+        item->max_body_bytes = std::min(requests[i].max_body_bytes, state.limits.max_body_bytes);
         item->started = Clock::now();
         try {
             item->current = state.checked_url(requests[i].url);

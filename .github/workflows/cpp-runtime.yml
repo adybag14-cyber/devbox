@@ -96,6 +96,15 @@ jobs:
         run: node cpp-mcp/scripts/ci-native.mjs
       - name: Fresh packaged installer and TUI discovery
         run: node cpp-bootstrap/scripts/fresh-install.mjs
+      - name: Real isolated Chromium rendering and input fixtures
+        if: matrix.name == 'Windows MSVC' || matrix.name == 'Linux GCC'
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium
+          else
+            .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium
+          fi
       - name: Native supervision without Node or Git on runtime PATH
         if: matrix.sanitizers == '0'
         run: node cpp-mcp/scripts/native-management-smoke.mjs
@@ -188,10 +197,11 @@ jobs:
         if: matrix.name == 'Linux GCC'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libx11-dev xvfb xdotool x11-utils imagemagick openbox
+          sudo apt-get install -y libx11-dev xvfb xauth xdotool x11-utils imagemagick openbox
           node cpp-mcp/scripts/x11-capture-smoke.mjs
           node cpp-mcp/scripts/x11-computer-smoke.mjs
           DEVBOX_X11_TEST_WM=1 node cpp-mcp/scripts/x11-computer-smoke.mjs
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24 -nolisten tcp' .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium-headed
       - name: Capture owned native Cocoa windows and display
         if: runner.os == 'macOS'
         run: node cpp-mcp/scripts/macos-capture-smoke.mjs

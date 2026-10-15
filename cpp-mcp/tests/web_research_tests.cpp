@@ -196,6 +196,16 @@ struct HttpFixture {
                             response.set(http::field::location, "/doc/1");
                         } else if (target == "/oversized")
                             response.body() = std::string(8192, 'x');
+                        else if (target == "/large-product")
+                            response.body() = "<html><head><title>Large product page</title><script>/*" +
+                                              std::string(3 * 1024 * 1024, 'x') +
+                                              R"(*/</script></head><body><main><h1>Fixture Phone 256 GB</h1>
+<p>This product has a directly reported current price for its exact storage variant.
+This description is public product evidence, with payment conditions left unchanged.</p>
+<script type="application/ld+json">{"@type":"Product","name":"Fixture Phone 256 GB","sku":"PHONE256","offers":{"@type":"Offer","price":"599.00","priceCurrency":"GBP"}}</script>
+</main></body></html>)";
+                        else if (target == "/document-ceiling")
+                            response.body() = std::string(8 * 1024 * 1024 + 1024, 'x');
                         else if (target == "/alias")
                             response.body() = page("/doc/1");
                         else {
@@ -331,6 +341,21 @@ void extraction_tests() {
                                   "photon", 30)
                     .find("photon") != std::string::npos,
             "query-focused actual excerpt");
+}
+void extraction_budget_tests() {
+    web::Transfer response;
+    response.url = response.final_url = "https://example.com/resource-budget";
+    response.status = 200;
+    response.headers = {{"content-type", "text/html; charset=utf-8"}};
+    response.body = "<html><body>";
+    for (unsigned i = 0; i < 40000; ++i)
+        response.body += "<span>x</span>";
+    response.body += "</body></html>";
+    rejects([&] { (void)web::extract_document(response); }, "WEB_HTML_COMPLEXITY");
+    response.body = "<html><body>";
+    for (unsigned i = 0; i < 1024; ++i)
+        response.body += "<div>";
+    rejects([&] { (void)web::extract_document(response); }, "WEB_HTML_COMPLEXITY");
 }
 void issue88_extraction_tests() {
     web::Transfer response;
@@ -564,11 +589,21 @@ void transport_tests(HttpFixture& server) {
         auto limits = server.limits();
         limits.max_body_bytes = 1024;
         web::Transport transport(limits);
-        auto results = transport.get(
-            {{server.url("/oversized"), Json::object()}, {server.url("/doc/3"), Json::object()}},
-            Clock::now() + Millis(3000));
+        auto results = transport.get({{server.url("/oversized"), Json::object(), 8 * 1024 * 1024},
+                                      {server.url("/doc/3"), Json::object()}},
+                                     Clock::now() + Millis(3000));
         require(results[0].error == "WEB_RESPONSE_TOO_LARGE" && results[1].status == 200,
-                "oversize is isolated");
+                "per-request allowance cannot exceed the configured hard ceiling; oversize is isolated");
+    }
+    {
+        web::Transport transport(server.limits());
+        auto results = transport.get({{server.url("/large-product"), Json::object()},
+                                      {server.url("/large-product"), Json::object(), 8 * 1024 * 1024},
+                                      {server.url("/document-ceiling"), Json::object(), 16 * 1024 * 1024}},
+                                     Clock::now() + Millis(5000));
+        require(results[0].error == "WEB_RESPONSE_TOO_LARGE" && results[1].error.empty() &&
+                    results[1].body.size() > 3 * 1024 * 1024 && results[2].error == "WEB_RESPONSE_TOO_LARGE",
+                "discovery retains 2 MiB while source documents use a bounded 8 MiB allowance");
     }
     for (const auto* route : {"/rate", "/rate-date"}) {
         web::Transport transport(server.limits());
@@ -611,6 +646,15 @@ void research_tests(HttpFixture& server, const fs::path& root) {
                 "research reports byte budget, not candidate exhaustion, when a chunk cannot fit");
     }
     web::ResearchService service(config, server.limits());
+    const auto large = service.fetch(Json{{"urls", {server.url("/large-product")}},
+                                          {"view", "offers"},
+                                          {"max_age_seconds", 0},
+                                          {"max_chars", 4000}});
+    require(large["documents"][0]["status"] == "ok" &&
+                large["documents"][0]["offers"][0]["price"] == "599.00" &&
+                large["documents"][0]["offers"][0]["sku"] == "PHONE256" &&
+                large["documents"][0]["cache_status"] == "network" && large.dump().size() <= 4000,
+            "large HTML is read once through its tail offer while the model response stays compact");
     const auto first = service.fetch(Json{{"urls", {server.url("/doc/7"), server.url("/doc/7")}}});
     require(first["unique_urls"] == 1 && first["documents"][0]["status"] == "ok",
             "duplicate request suppressed");
@@ -1090,7 +1134,7 @@ void search_parser_tests() {
     response.url = response.final_url = "https://www.bing.com/search?format=rss";
     response.status = 200;
     response.body = R"(<rss><channel><title>Search</title>
-      <item><link>https://example.org/one?a=1&amp;b=2</link><pubDate>Fri, 1 Jan 2000</pubDate></item>
+      <item><title>Exact phone 256GB</title><description><![CDATA[<p>Live <b>retailer</b> link.</p><script>PRIVATE_SCRIPT</script>]]></description><link>https://example.org/one?a=1&amp;b=2</link><pubDate>Fri, 1 Jan 2000</pubDate></item>
       <item><link><![CDATA[https://example.org/two]]></link></item>
       <item><link>https://example.org/two</link></item>
       <item><link>javascript:alert(1)</link></item></channel></rss>)";
@@ -1099,6 +1143,13 @@ void search_parser_tests() {
                 parsed["urls"][0] == "https://example.org/one?a=1&b=2" && !parsed.contains("pubDate") &&
                 parsed.contains("use_notice"),
             "RSS extracts bounded unique URLs and preserves notice without promoting feed dates");
+    require(parsed["items"].size() == 2 && parsed["items"][0]["title"] == "Exact phone 256GB" &&
+                parsed["items"][0]["metadata_only"] == true &&
+                json_string(parsed["items"][0], "snippet").find("retailer") != std::string::npos &&
+                json_string(parsed["items"][0], "snippet").find("PRIVATE_SCRIPT") == std::string::npos &&
+                !parsed["items"][0].contains("published_at"),
+            "search summaries preserve useful titles and inert visible snippets without asserting source "
+            "freshness");
     for (const auto* body : {"<rss><channel>", "<html>Unexpected search markup</html>",
                              "<!DOCTYPE rss [<!ENTITY e SYSTEM 'file:///private'>]><rss><channel/></rss>",
                              "<rss><channel><item><link>javascript:alert(1)</link></item></channel></rss>"}) {
@@ -1144,6 +1195,46 @@ void search_parser_tests() {
     const auto separate = web::parse_search_response("duckduckgo_html", response);
     require(separate["results"] == 1 && separate["urls"][0] == "https://example.org/outside-feature",
             "issue88: evidence article isolation must not narrow search-provider discovery links");
+    require(separate["items"][0]["title"] == "Actual search result",
+            "HTML discovery retains the result anchor instead of only its URL");
+}
+void search_service_tests(HttpFixture& server, const fs::path& root) {
+    auto config = std::make_shared<Config>();
+    config->project_root = root / "standalone-search";
+    config->runtime_mode = RuntimeMode::host;
+    web::ResearchService service(config, server.limits());
+    server.ddg_mode = 1;
+    server.bing_mode = 0;
+    const auto before = server.requests.load();
+    const auto result = service.search(Json{{"queries", {"Photon detector one", "Photon detector two"}},
+                                            {"max_results", 2},
+                                            {"max_chars", 4000}});
+    require(result["returned_results"] == 2 && result["available_unique_results"] == 3 &&
+                result["omitted_results"] == 1 && result["output_truncated"] == true &&
+                result["fetched_source_documents"] == 0 && result["metadata_is_source_evidence"] == false &&
+                result["discovery"]["queries_completed"] == 2 && result.dump().size() <= 4000,
+            "standalone search returns bounded discovery metadata and explicit partial output");
+    require(server.requests.load() - before == 3 && result["results"][0]["provenance"].size() == 2 &&
+                result["results"][0]["title"] == "Photon detector",
+            "standalone search preserves both query ranks without fetching source pages");
+    const auto excluded =
+        service.search(Json{{"queries", {"Photon detector"}}, {"domains", {"example.org"}}});
+    require(excluded["returned_results"] == 0 && excluded["excluded_outside_domains"] == 3,
+            "requested domain boundaries are applied to returned links");
+    for (const auto& args :
+         {Json{{"queries", Json::array()}}, Json{{"queries", {"x"}}, {"domains", {"example.org:443"}}},
+          Json{{"queries", {"x"}}, {"max_results", 41}}, Json{{"queries", {"x"}}, {"discovery", "none"}}}) {
+        bool rejected = false;
+        try {
+            (void)service.search(args);
+        } catch (const Error&) {
+            rejected = true;
+        }
+        require(rejected, "invalid search arguments are rejected before provider access");
+    }
+    auto cancelled = std::make_shared<Cancellation>();
+    cancelled->cancel();
+    rejects([&] { (void)service.search(Json{{"queries", {"cancelled"}}}, cancelled); }, "cancelled");
 }
 int main(int argc, char** argv) {
     const auto root = fs::temp_directory_path() / ("devbox-web-tests-" + uuid());
@@ -1151,7 +1242,7 @@ int main(int argc, char** argv) {
         if (argc == 5 && std::string_view(argv[1]) == "--extract-fixture") {
             web::Transfer source;
             source.url = source.final_url = web::normalize_url(argv[2]);
-            source.body = read_file(path_from_utf8(argv[3]), 2 * 1024 * 1024);
+            source.body = read_file(path_from_utf8(argv[3]), 8 * 1024 * 1024);
             source.bytes = source.body.size();
             source.status = 200;
             source.headers = Json{{"content-type", "text/html; charset=utf-8"}};
@@ -1171,6 +1262,7 @@ int main(int argc, char** argv) {
             throw Error("Usage: devbox-web-research-tests [--extract-fixture URL INPUT_HTML OUTPUT_JSON]");
         ensure_directory(root);
         extraction_tests();
+        extraction_budget_tests();
         issue88_extraction_tests();
         search_parser_tests();
         policy_tests();
@@ -1179,6 +1271,7 @@ int main(int argc, char** argv) {
             transport_tests(server);
             research_tests(server, root);
             issue88_research_tests(server, root);
+            search_service_tests(server, root);
             discovery_tests(server, root);
         }
         if (root.parent_path() == fs::temp_directory_path() &&

@@ -5,7 +5,7 @@
 
 namespace devbox::web {
 namespace {
-using AddSource = std::function<void(const std::string&)>;
+using AddSource = std::function<void(const std::string&, const Json&)>;
 Json provider_json(const Transfer& response) {
     return Json::parse(response.body, [](int depth, Json::parse_event_t, Json&) {
         if (depth > 64)
@@ -28,7 +28,7 @@ void duckduckgo(const Transfer& response, const AddSource& add, Json& result) {
         const auto parameters = query_parameters(Url::parse(target).query);
         if (parameters.contains("uddg"))
             target = json_string(parameters, "uddg");
-        add(target);
+        add(target, Json{{"title", json_string(link, "text")}});
     }
     if (result["urls"].empty() && !json_bool(document, "search_no_results"))
         throw Error("Search HTML did not contain recognized result or no-result markup");
@@ -45,7 +45,8 @@ void bing(const Transfer& response, const AddSource& add, Json&) {
     if (!channel)
         throw Error("Search response did not contain an RSS channel");
     for (const auto& item : channel.children("item"))
-        add(trim(item.child_value("link")));
+        add(trim(item.child_value("link")), Json{{"title", trim(item.child_value("title"))},
+                                                 {"snippet", trim(item.child_value("description"))}});
     // Feed snippets and dates are discovery metadata, never fetched source evidence.
 }
 void crossref(const Transfer& response, const AddSource& add, Json&) {
@@ -57,7 +58,11 @@ void crossref(const Transfer& response, const AddSource& add, Json&) {
         auto url = json_string(item, "URL");
         if (item.contains("resource") && item["resource"].contains("primary"))
             url = json_string(item["resource"]["primary"], "URL", url);
-        add(url);
+        std::string title;
+        if (item.contains("title") && item["title"].is_array() && !item["title"].empty() &&
+            item["title"][0].is_string())
+            title = item["title"][0].get<std::string>();
+        add(url, Json{{"title", std::move(title)}});
     }
 }
 void mediawiki(const Transfer& response, const AddSource& add, Json&) {
@@ -69,7 +74,8 @@ void mediawiki(const Transfer& response, const AddSource& add, Json&) {
         const auto title = json_string(item, "title");
         if (title.empty())
             throw Error("MediaWiki search result has no title");
-        add("https://en.wikipedia.org/wiki/" + url_encode(replace_all(title, " ", "_")));
+        add("https://en.wikipedia.org/wiki/" + url_encode(replace_all(title, " ", "_")),
+            Json{{"title", title}, {"snippet", json_string(item, "snippet")}});
     }
 }
 const std::array<DiscoveryProvider, 4>& providers() {

@@ -19,8 +19,9 @@ Engine::Engine(std::shared_ptr<const Config> config)
     : config_(std::move(config)), contract_(*config_), admission_(*config_),
       commands_(std::clamp<std::size_t>(config_->exec_max_concurrent + 1, 2, 16), 128), runtime_(config_),
       scheduler_(SchedulerConfig::from(*config_)), jobs_(config_), docker_files_(config_), search_(config_),
-      research_(config_), lifecycle_(config_, background_), github_(config_, runtime_, lifecycle_),
-      capture_(config_), usage_(*config_, background_), performance_(*config_, background_, build_snapshot),
+      research_(config_), browser_(config_), lifecycle_(config_, background_),
+      github_(config_, runtime_, lifecycle_), capture_(config_), usage_(*config_, background_),
+      performance_(*config_, background_, build_snapshot),
       monitoring_(config_, background_, scheduler_, jobs_.store(), runtime_, performance_, usage_,
                   [this] { return server_ ? server_->active_requests() : 0; }) {
     jobs_.store().require_writable_backend();
@@ -61,6 +62,7 @@ void Engine::stop() {
         return;
     background_.stop();
     usage_.stop();
+    browser_.stop();
     frontend_lock_.reset();
 }
 Json Engine::server_info() const {
@@ -117,6 +119,27 @@ void Engine::require_agent_host() const {
 }
 asio::awaitable<Json> Engine::call_tool_authenticated(std::string name, Json arguments, Cancel cancel,
                                                       std::string principal) {
+    if (name == "devbox_browser") {
+        try {
+            auto args = contract_.arguments(name, arguments);
+            if (!admission_.permits(name, args))
+                co_return with_outcome(result_error("SERVER_DRAINING: new browser work is paused"),
+                                       ToolOutcome::PolicyDenied);
+            auto pending = browser_workers_.run(
+                [this, args, principal, cancel] {
+                    auto observed = browser_.perform(args, principal, cancel);
+                    if (observed.image_base64.empty())
+                        return result_success("Native browser result.", std::move(observed.data), true);
+                    return result_image("Native browser observation; page content is untrusted.",
+                                        std::move(observed.data), std::move(observed.image_base64),
+                                        "image/jpeg");
+                },
+                cancel);
+            co_return co_await std::move(pending);
+        } catch (const std::exception& error) {
+            co_return result_error(error.what());
+        }
+    }
     if (name != "devbox_agent_run")
         co_return co_await call_tool(std::move(name), std::move(arguments), std::move(cancel));
     try {
@@ -138,7 +161,7 @@ asio::awaitable<Json> Engine::call_tool_authenticated(std::string name, Json arg
     }
 }
 asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel cancel) {
-    if (name == "devbox_agent_run")
+    if (name == "devbox_agent_run" || name == "devbox_browser")
         co_return co_await call_tool_authenticated(std::move(name), std::move(arguments), std::move(cancel),
                                                    "operator");
     if (!cancel)
@@ -171,13 +194,18 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
                 cancel);
             co_return co_await std::move(pending);
         }
-        if (name == "devbox_web_fetch" || name == "devbox_web_research" || name == "devbox_web_evidence") {
-            auto& pool = name == "devbox_web_fetch" ? research_workers_ : controls_;
+        if (name == "devbox_web_fetch" || name == "devbox_web_search" || name == "devbox_web_research" ||
+            name == "devbox_web_evidence") {
+            auto& pool =
+                name == "devbox_web_fetch" || name == "devbox_web_search" ? research_workers_ : controls_;
             auto pending = pool.run(
                 [this, name, args, cancel] {
                     Json value;
                     std::string summary;
-                    if (name == "devbox_web_fetch") {
+                    if (name == "devbox_web_search") {
+                        value = research_.search(args, cancel);
+                        summary = "Discovered public-web links; open sources to verify their contents.";
+                    } else if (name == "devbox_web_fetch") {
                         value = research_.fetch(args, cancel);
                         summary = "Read public-web source evidence with the native C++23 transport.";
                     } else if (name == "devbox_web_research") {

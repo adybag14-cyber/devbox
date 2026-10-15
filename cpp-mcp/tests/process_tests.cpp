@@ -12,6 +12,9 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#ifdef __linux__
+#include <sys/resource.h>
+#endif
 #endif
 using namespace devbox;
 void require(bool condition, const char* message) {
@@ -442,28 +445,51 @@ int test_main(int argc, char** argv) {
                 "child working directory");
         require(environment("DEVBOX_PROCESS_TEST") != "isolated=child é", "parent environment unchanged");
 #ifndef _WIN32
-        const auto private_path = root / "parent-private-descriptor";
-        write_file(private_path, "parent-only");
-        NativeHandle private_fd(::open(private_path.c_str(), O_RDONLY));
-        struct stat private_info{};
-        require(private_fd && ::fstat(private_fd.get(), &private_info) == 0, "private descriptor fixture");
-        const std::vector<std::string> descriptor_args{
-            "--child", "fd-identity", std::to_string(private_fd.get()), std::to_string(private_info.st_dev),
-            std::to_string(private_info.st_ino)};
-        const auto descriptor = spawn_process(self, descriptor_args, options);
-        require(!json_bool(Json::parse(descriptor.stdout_text), "inherited"),
-                "foreground child inherited an unrelated parent descriptor");
-        auto detached_args = descriptor_args;
-        const auto report = root / "detached-fd-report.json";
-        detached_args.push_back(path_text(report));
-        const auto detached = spawn_detached(executable_path(), detached_args, root, options.env);
-        const auto descriptor_deadline = Clock::now() + Millis(3000);
-        while ((!fs::exists(report) || process_alive(detached)) && Clock::now() < descriptor_deadline)
-            std::this_thread::sleep_for(Millis(10));
-        require(!process_alive(detached), "descriptor fixture child did not finish");
-        require(!json_bool(read_json(report), "inherited"),
-                "detached child inherited an unrelated parent descriptor");
-        std::cout << "PASS child descriptor isolation\n";
+        {
+            const auto private_path = root / "parent-private-descriptor";
+            write_file(private_path, "parent-only");
+            NativeHandle private_fd(::open(private_path.c_str(), O_RDONLY));
+            struct stat private_info{};
+            require(private_fd && ::fstat(private_fd.get(), &private_info) == 0,
+                    "private descriptor fixture");
+            int reported_fd = private_fd.get();
+#ifdef __linux__
+            // A valid inherited descriptor can remain above a newly lowered soft
+            // limit. Scanning only RLIMIT_NOFILE both wastes work and misses it.
+            struct rlimit original_limit{};
+            require(::getrlimit(RLIMIT_NOFILE, &original_limit) == 0, "read descriptor fixture limit");
+            ScopeExit restore_limit([&] { ::setrlimit(RLIMIT_NOFILE, &original_limit); });
+            auto expanded = original_limit;
+            expanded.rlim_cur = std::min<rlim_t>(original_limit.rlim_max, 1048576);
+            require(expanded.rlim_cur >= 4096 && ::setrlimit(RLIMIT_NOFILE, &expanded) == 0,
+                    "expand private fixture limit");
+            NativeHandle high_fd(::fcntl(private_fd.get(), F_DUPFD,
+                                         static_cast<int>(std::min<rlim_t>(65535, expanded.rlim_cur - 1))));
+            require(static_cast<bool>(high_fd), "create sparse high descriptor");
+            reported_fd = high_fd.get();
+            auto lowered = expanded;
+            lowered.rlim_cur = 1024;
+            require(::setrlimit(RLIMIT_NOFILE, &lowered) == 0,
+                    "lower soft limit while high descriptor remains open");
+#endif
+            const std::vector<std::string> descriptor_args{
+                "--child", "fd-identity", std::to_string(reported_fd), std::to_string(private_info.st_dev),
+                std::to_string(private_info.st_ino)};
+            const auto descriptor = spawn_process(self, descriptor_args, options);
+            require(!json_bool(Json::parse(descriptor.stdout_text), "inherited"),
+                    "foreground child inherited an unrelated parent descriptor");
+            auto detached_args = descriptor_args;
+            const auto report = root / "detached-fd-report.json";
+            detached_args.push_back(path_text(report));
+            const auto detached = spawn_detached(executable_path(), detached_args, root, options.env);
+            const auto descriptor_deadline = Clock::now() + Millis(3000);
+            while ((!fs::exists(report) || process_alive(detached)) && Clock::now() < descriptor_deadline)
+                std::this_thread::sleep_for(Millis(10));
+            require(!process_alive(detached), "descriptor fixture child did not finish");
+            require(!json_bool(read_json(report), "inherited"),
+                    "detached child inherited an unrelated parent descriptor");
+            std::cout << "PASS child descriptor isolation\n";
+        }
 #endif
         std::cout << "PASS identity, arguments, cwd, environment\n" << std::flush;
         options.input = std::string(1024 * 1024, 'i');

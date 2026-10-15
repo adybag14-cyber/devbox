@@ -12,7 +12,7 @@ const extensionTools = registry.tools.filter(tool => tool.family !== 'legacy').m
 export const extensionNames = extensionTools.map(tool => tool.name);
 const legacyNames = Object.values(frozen.profiles)[0].map(tool => tool.name).sort();
 assert.equal(legacyNames.length, 45, 'unchanged frozen reference contract');
-assert.equal(computerNames.length, 2, 'explicit C++ computer-use extension');
+assert.deepEqual(computerNames, ['devbox_browser', 'host_computer_use', 'host_computer_windows'], 'explicit C++ browser and desktop extensions');
 
 export function assertCppExtensions(tools) {
   const actual = tools.filter(tool => computerNames.includes(tool.name)).sort((a, b) => a.name.localeCompare(b.name));

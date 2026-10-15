@@ -2,6 +2,7 @@
 #ifndef _WIN32
 #include <algorithm>
 #include <cerrno>
+#include <cstring>
 #include <fcntl.h>
 #include <limits>
 #include <poll.h>
@@ -18,7 +19,7 @@
 #define DEVBOX_SPAWN_CLOSEFROM 1
 #endif
 #endif
-#if defined(__ANDROID__) || defined(DEVBOX_FORCE_FORK_EXEC) || \
+#if defined(__ANDROID__) || defined(DEVBOX_FORCE_FORK_EXEC) ||                                               \
     (defined(__linux__) && !defined(DEVBOX_SPAWN_CLOSEFROM))
 #define DEVBOX_USE_FORK_LAUNCH 1
 #endif
@@ -26,15 +27,80 @@
 namespace devbox {
 #ifdef DEVBOX_USE_FORK_LAUNCH
 namespace {
+#if defined(__linux__) && defined(SYS_getdents64)
+// Read the child's own descriptor table without libc directory allocation or
+// locks after fork. Kernel record offsets are the linux_dirent64 ABI. A denied
+// close_range must not turn a sparse table into a million close() syscalls.
+bool close_listed_descriptors(unsigned first, unsigned last) noexcept {
+    const int directory = ::open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (directory < 0)
+        return false;
+    std::array<char, 4096> buffer{};
+    bool complete = false;
+    for (;;) {
+        const auto count = ::syscall(SYS_getdents64, directory, buffer.data(), buffer.size());
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0) {
+            complete = count == 0;
+            break;
+        }
+        const auto bytes = static_cast<std::size_t>(count);
+        if (bytes > buffer.size())
+            break;
+        std::size_t offset = 0;
+        while (offset < bytes) {
+            constexpr std::size_t length_offset = 16, name_offset = 19;
+            if (bytes - offset < name_offset + 1)
+                goto done;
+            std::uint16_t length = 0;
+            std::memcpy(&length, buffer.data() + offset + length_offset, sizeof(length));
+            if (length <= name_offset || length > bytes - offset)
+                goto done;
+            unsigned descriptor = 0;
+            bool valid = true, terminated = false, digit_seen = false;
+            for (std::size_t i = name_offset; i < length; ++i) {
+                const auto c = buffer[offset + i];
+                if (!c) {
+                    terminated = true;
+                    break;
+                }
+                if (c < '0' || c > '9' ||
+                    descriptor > (static_cast<unsigned>(std::numeric_limits<int>::max()) -
+                                  static_cast<unsigned>(c - '0')) /
+                                     10) {
+                    valid = false;
+                    break;
+                }
+                digit_seen = true;
+                descriptor = descriptor * 10 + static_cast<unsigned>(c - '0');
+            }
+            if (valid && terminated && digit_seen && descriptor >= first && descriptor <= last &&
+                descriptor != static_cast<unsigned>(directory))
+                ::close(static_cast<int>(descriptor));
+            offset += length;
+        }
+    }
+done:
+    ::close(directory);
+    return complete;
+}
+#endif
 void close_child_descriptors(unsigned first, unsigned last, unsigned fallback_limit) noexcept {
     if (first > last)
         return;
-#if defined(__linux__) && defined(SYS_close_range)
+#if defined(__linux__) && defined(SYS_close_range) && !defined(DEVBOX_TEST_NO_CLOSE_RANGE)
     if (::syscall(SYS_close_range, first, last, 0U) == 0)
+        return;
+#endif
+#if defined(__linux__) && defined(SYS_getdents64)
+    if (close_listed_descriptors(first, last))
         return;
 #endif
     // Old Android kernels lack close_range. The bound is captured before fork;
     // this fallback performs only async-signal-safe close calls in the child.
+    if (!fallback_limit)
+        return;
     const auto end = std::min(last, fallback_limit - 1);
     for (auto descriptor = first; descriptor <= end; ++descriptor)
         ::close(static_cast<int>(descriptor));
@@ -81,8 +147,8 @@ pid_t spawn_posix(const fs::path& file, char* const* argv, char* const* envp, co
     struct rlimit descriptor_limit{};
     if (::getrlimit(RLIMIT_NOFILE, &descriptor_limit) != 0)
         checked(errno);
-    const auto fallback_limit = static_cast<unsigned>(
-        std::min<rlim_t>(descriptor_limit.rlim_cur, std::numeric_limits<int>::max()));
+    const auto fallback_limit =
+        static_cast<unsigned>(std::min<rlim_t>(descriptor_limit.rlim_cur, std::numeric_limits<int>::max()));
     struct sigaction default_signal{};
     default_signal.sa_handler = SIG_DFL;
     sigemptyset(&default_signal.sa_mask);
@@ -105,8 +171,8 @@ pid_t spawn_posix(const fs::path& file, char* const* argv, char* const* envp, co
         // locks, or another request's pipes. Preserve only stdio and the private
         // exec-error pipe, which closes atomically on successful execve.
         close_child_descriptors(3, static_cast<unsigned>(error_write) - 1, fallback_limit);
-        close_child_descriptors(static_cast<unsigned>(error_write) + 1,
-                                std::numeric_limits<unsigned>::max(), fallback_limit);
+        close_child_descriptors(static_cast<unsigned>(error_write) + 1, std::numeric_limits<unsigned>::max(),
+                                fallback_limit);
         if (!failure && directory && ::chdir(directory) != 0)
             failure = errno;
         if (!failure && reset_signals &&

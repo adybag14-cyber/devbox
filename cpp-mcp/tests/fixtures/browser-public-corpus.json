@@ -1,0 +1,12 @@
+[
+  {"id":"apple-iphone17","category":"exact-phone-variant","url":"https://www.apple.com/uk/shop/buy-iphone/iphone-17/6.3-inch-display-256gb-white"},
+  {"id":"currys-iphone17","category":"exact-phone-variant","url":"https://www.currys.co.uk/products/apple-iphone-17-256-gb-white-10290110.html"},
+  {"id":"google-pixel10","category":"phone-configurator","url":"https://store.google.com/gb/config/pixel_10?hl=en-GB"},
+  {"id":"samsung-s26","category":"exact-phone-variant","url":"https://www.samsung.com/uk/smartphones/galaxy-s26/buy/?modelCode=SM-S942BZSGEUB"},
+  {"id":"argos-pixel10","category":"exact-phone-variant","url":"https://www.argos.co.uk/product/7718364"},
+  {"id":"ecatalog-phones","category":"niche-price-catalogue","url":"https://e-catalog.co.uk/list/122/pr-56675/"},
+  {"id":"curl-multi","category":"technical-reference","url":"https://curl.se/libcurl/c/libcurl-multi.html"},
+  {"id":"chrome-headless","category":"technical-reference","url":"https://developer.chrome.com/docs/automation-and-testing/headless"},
+  {"id":"rfc-9110","category":"long-document","url":"https://www.rfc-editor.org/rfc/rfc9110.html"},
+  {"id":"tinyfish-fetch","category":"javascript-documentation","url":"https://docs.tinyfish.ai/fetch-api"}
+]

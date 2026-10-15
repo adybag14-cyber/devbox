@@ -132,7 +132,7 @@ bool blocked(std::string_view status) {
 Json parse_search_response(std::string_view provider, const Transfer& response,
                            std::optional<unsigned short> fixture_loopback_port) {
     const auto& adapter = discovery_provider(provider);
-    Json result{{"status", "unavailable"}, {"urls", Json::array()}, {"results", 0}};
+    Json result{{"status", "unavailable"}, {"urls", Json::array()}, {"items", Json::array()}, {"results", 0}};
     result["coverage"] = adapter.coverage;
     result["terms_url"] = adapter.terms_url;
     result["use_notice"] = adapter.use_notice;
@@ -156,7 +156,7 @@ Json parse_search_response(std::string_view provider, const Transfer& response,
         return result;
     }
     std::set<std::string> seen;
-    const auto add = [&](const std::string& raw) {
+    const auto add = [&](const std::string& raw, const Json& metadata) {
         if (raw.empty() || raw.size() > 2048 || result["urls"].size() >= 100)
             return;
         try {
@@ -164,8 +164,28 @@ Json parse_search_response(std::string_view provider, const Transfer& response,
                                      ? "http://127.0.0.1:" + std::to_string(*fixture_loopback_port) + "/"
                                      : "";
             auto url = !fixture.empty() && raw.starts_with(fixture) ? raw : normalize_url(raw);
-            if (seen.insert(url).second)
-                result["urls"].push_back(std::move(url));
+            if (seen.insert(url).second) {
+                Json item{{"url", url}, {"metadata_only", true}};
+                for (const auto* field : {"title", "snippet"}) {
+                    auto text = sanitize_utf8(json_string(metadata, field));
+                    if (!text.empty()) {
+                        // Provider descriptions may contain markup. Parse it as inert
+                        // source data, then bound Unicode text before retaining it.
+                        if (text.find('<') != text.npos) {
+                            Transfer fragment;
+                            fragment.url = fragment.final_url = url;
+                            fragment.status = 200;
+                            fragment.headers = Json{{"content-type", "text/html; charset=utf-8"}};
+                            fragment.body = text.substr(0, 8192);
+                            text = json_string(extract_document(fragment), "text");
+                        }
+                        item[field] =
+                            evidence_excerpt(text, "", std::string_view(field) == "title" ? 200 : 500);
+                    }
+                }
+                result["urls"].push_back(url);
+                result["items"].push_back(std::move(item));
+            }
         } catch (...) {
             result["invalid_results"] = json_uint(result, "invalid_results") + 1;
         }
@@ -182,6 +202,7 @@ Json parse_search_response(std::string_view provider, const Transfer& response,
         result["status"] = "parse_error";
         result["error"] = error.what();
         result["urls"] = Json::array();
+        result["items"] = Json::array();
         result["results"] = 0;
     }
     return result;
@@ -255,7 +276,9 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
                 summary["provider_attempts"] = json_uint(summary, "provider_attempts") + 1;
                 summary["http_attempts"] = json_uint(summary, "http_attempts") + response.attempts;
                 const auto urls = parsed["urls"];
+                const auto items = parsed["items"];
                 parsed.erase("urls");
+                parsed.erase("items");
                 report.update(parsed);
                 const auto status = json_string(parsed, "status");
                 if (status == "ok" || status == "no_results") {
@@ -267,15 +290,16 @@ Json discover_sources(Transport& transport, const Json& plan, const fs::path& he
                         std::size_t rank = 0;
                         for (const auto& candidate : urls) {
                             result["urls"].push_back(candidate);
-                            if (result["candidates"].size() < 1600)
-                                result["candidates"].push_back(
-                                    Json{{"url", candidate},
-                                         {"provenance", Json{{"kind", "search"},
-                                                             {"provider", provider},
-                                                             {"query_index", index},
-                                                             {"rank", ++rank},
-                                                             {"depth", 0}}}});
-                            else
+                            ++rank;
+                            if (result["candidates"].size() < 1600) {
+                                auto record = items.at(rank - 1);
+                                record["provenance"] = Json{{"kind", "search"},
+                                                            {"provider", provider},
+                                                            {"query_index", index},
+                                                            {"rank", rank},
+                                                            {"depth", 0}};
+                                result["candidates"].push_back(std::move(record));
+                            } else
                                 result["candidate_provenance_truncated"] = true;
                         }
                     }
