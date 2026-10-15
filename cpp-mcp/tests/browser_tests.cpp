@@ -15,6 +15,11 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace websocket = beast::websocket;
 using Tcp = asio::ip::tcp;
+void browser_diagnostics(std::string_view text) {
+    for (const auto& line : split(std::string(text), '\n'))
+        if (!line.empty() && !line.starts_with("DevTools listening on "))
+            std::cerr << "[Chromium fixture] " << line << '\n';
+}
 void require(bool v, const char* message) {
     if (!v)
         throw Error(message);
@@ -293,12 +298,14 @@ void browser_tests(bool headed = false) {
     config->platform = Platform::detect();
     BrowserOptions options;
     options.headed = headed;
+    options.launch_diagnostics = browser_diagnostics;
     options.fixture_port = page.port();
     options.lifetime = Millis(60000);
     options.idle_timeout = Millis(30000);
     BrowserService browser(config, options);
     require(json_bool(browser.perform({{"action", "status"}}, "test").data, "available"),
             "Chromium required for real browser qualification");
+    std::cerr << "[browser] opening owned rendered fixture\n" << std::flush;
     auto value = browser.perform({{"action", "open"},
                                   {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"},
                                   {"include_html", true}},
@@ -307,6 +314,7 @@ void browser_tests(bool headed = false) {
             "JavaScript-rendered live price text");
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
             "real JPEG screenshot");
+    std::cerr << "[browser] initial owned screenshot passed\n" << std::flush;
     const auto id = json_string(value.data, "session_id"),
                observation = json_string(value.data, "observation_id");
     rejects(
@@ -432,6 +440,7 @@ void shared_browser_tests(bool headed) {
     std::atomic_uint32_t pid{0};
     BrowserOptions owned_options;
     owned_options.headed = headed;
+    owned_options.launch_diagnostics = browser_diagnostics;
     owned_options.fixture_port = page.port();
     owned_options.pid_observer = [&](std::uint32_t value) { pid = value; };
     BrowserService managed(config, owned_options);

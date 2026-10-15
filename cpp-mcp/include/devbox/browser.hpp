@@ -14,6 +14,8 @@ struct BrowserOptions {
     // Native test/operator configuration only; never supplied by an MCP caller.
     std::optional<fs::path> shared_profile, shared_status_file;
     std::function<void(std::uint32_t)> pid_observer;
+    // Native qualification diagnostics only; never exposed as an MCP argument.
+    std::function<void(std::string_view)> launch_diagnostics;
     bool headed = false;
     bool text_only = false;
     Millis lifetime{300000}, idle_timeout{60000};

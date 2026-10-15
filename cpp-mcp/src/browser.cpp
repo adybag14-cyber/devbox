@@ -547,6 +547,9 @@ struct BrowserService::State {
                                           "--no-first-run",
                                           "--no-default-browser-check",
                                           "--disable-background-networking",
+                                          "--disable-background-timer-throttling",
+                                          "--disable-backgrounding-occluded-windows",
+                                          "--disable-renderer-backgrounding",
                                           "--disable-component-update",
                                           "--disable-sync",
                                           "--disable-extensions",
@@ -564,6 +567,11 @@ struct BrowserService::State {
                                           "--window-size=1280,800",
                                           "--password-store=basic",
                                           "about:blank"};
+#ifdef _WIN32
+            // The controlled window is intentionally hidden in headless mode.
+            // Native occlusion must not suspend the compositor needed for capture.
+            args.insert(args.end() - 1, "--disable-features=CalculateNativeWinOcclusion");
+#endif
             auto* pointer = owned.get();
             ProcessOptions process;
             process.env = worker_environment();
@@ -584,9 +592,23 @@ struct BrowserService::State {
                 if (observer)
                     observer(pid);
             };
-            owned->runner = std::thread([pointer, executable = *executable, args = std::move(args), process] {
+            owned->runner = std::thread([pointer, executable = *executable, args = std::move(args), process,
+                                         diagnostics = options.launch_diagnostics] {
+                const auto report = [&](std::string_view message) noexcept {
+                    if (diagnostics && !message.empty()) {
+                        try {
+                            diagnostics(message);
+                        } catch (...) {
+                        }
+                    }
+                };
                 try {
-                    spawn_process(path_text(executable), args, process, pointer->lifetime);
+                    const auto output =
+                        spawn_process(path_text(executable), args, process, pointer->lifetime);
+                    report(output.stderr_text);
+                } catch (const ProcessError& error) {
+                    pointer->launch_error = std::string(error.what()).substr(0, 1024);
+                    report(error.stderr_text);
                 } catch (const std::exception& error) {
                     pointer->launch_error = std::string(error.what()).substr(0, 1024);
                 }
@@ -685,15 +707,20 @@ struct BrowserService::State {
                 cancel);
     }
     BrowserObservation observe(const Json& args, Clock::time_point deadline, const Cancel& cancel) {
+        // Activate only the controlled headless target, not a user's desktop
+        // window, before reading its DOM and requesting the next captured frame.
+        if (json_bool(args, "screenshot", true) && !options.headed)
+            command("Page.bringToFront", Json::object(), deadline, cancel);
         auto before = frame(deadline, cancel);
         auto data = evaluate(observe_script, deadline, cancel);
         std::string image;
-        if (json_bool(args, "screenshot", true))
+        if (json_bool(args, "screenshot", true)) {
             image =
                 json_string(command("Page.captureScreenshot",
                                     {{"format", "jpeg"}, {"quality", 65}, {"captureBeyondViewport", false}},
                                     deadline, cancel),
                             "data");
+        }
         if (image.size() > 2 * 1024 * 1024)
             throw Error("BROWSER_IMAGE_LIMIT");
         const auto after = frame(deadline, cancel);
