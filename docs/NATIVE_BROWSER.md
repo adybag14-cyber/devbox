@@ -4,6 +4,8 @@
 
 `devbox_browser` is an optional C++23 controller for an installed Chromium browser. It adds no hosted browser, model, API-key or paid-proxy dependency. The core server can still run without Chromium; `action: status` reports availability. Set the operator-controlled `DEVBOX_BROWSER_EXECUTABLE` to an absolute executable path when automatic discovery is unsuitable.
 
+On Windows, automatic discovery checks standard Chrome/Edge installation locations before scanning `PATH`. This avoids thousands of unsuccessful filesystem probes on large developer/CI paths and avoids preferring a PATH shim over an installed browser. Explicit executable configuration still takes precedence; portable installations retain the PATH fallback. Native qualification reports bounded startup phase timings and the selected executable/version without exposing a diagnostic MCP option.
+
 ## Agent workflow
 
 1. Use native search for discovery and `devbox_web_fetch` for inexpensive source retrieval. Use `max_age_seconds: 0` and `view: offers` for a fresh product check.

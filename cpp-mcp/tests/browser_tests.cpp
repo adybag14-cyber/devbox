@@ -1,6 +1,7 @@
 #include "devbox/browser.hpp"
 #include "devbox/browser_protocol.hpp"
 #include "devbox/browser_proxy.hpp"
+#include "devbox/native.hpp"
 #include "devbox/process.hpp"
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
@@ -310,6 +311,23 @@ void proxy_tests() {
     require(json_uint(gate.metrics(), "accepted_connections") == 0, "no private connections admitted");
 }
 void browser_tests(bool headed = false) {
+#ifdef _WIN32
+    const auto shadow = fs::temp_directory_path() / ("devbox-browser-path-" + uuid());
+    require(fs::create_directory(shadow), "owned discovery fixture directory");
+    const auto old_path = environment("PATH");
+    ScopeExit restore_path([&] {
+        set_environment("PATH", old_path);
+        std::error_code ignored;
+        fs::remove_all(shadow, ignored);
+    });
+    {
+        std::ofstream marker(shadow / "google-chrome.exe");
+        marker << "This PATH sentinel must not replace an installed native browser.";
+        marker.close();
+        require(marker.good(), "discovery PATH sentinel written");
+    }
+    set_environment("PATH", path_text(shadow) + ";" + old_path.value_or(""));
+#endif
     PageFixture page;
     // Chromium may open a speculative connection before sending any request.
     // Keep one idle connection open while proving the actual page still loads.

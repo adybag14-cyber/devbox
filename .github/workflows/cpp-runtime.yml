@@ -101,6 +101,7 @@ jobs:
         shell: bash
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
+            powershell.exe -NoProfile -NonInteractive -Command 'Get-Command chrome,google-chrome,chromium,msedge -ErrorAction SilentlyContinue | Select-Object Name,Source; foreach ($base in @($env:ProgramFiles,${env:ProgramFiles(x86)},$env:LOCALAPPDATA)) { foreach ($relative in @("Google/Chrome/Application/chrome.exe","Microsoft/Edge/Application/msedge.exe")) { $candidate=Join-Path $base $relative; if (Test-Path -LiteralPath $candidate) { Get-Item -LiteralPath $candidate | Select-Object FullName,@{Name="ProductVersion";Expression={$_.VersionInfo.ProductVersion}} } } }; exit 0'
             .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium
             .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium-headed
           else

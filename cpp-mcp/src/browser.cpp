@@ -184,22 +184,25 @@ std::optional<fs::path> chromium_path(const BrowserOptions& options) {
         if (fs::is_regular_file(path))
             return fs::path(path);
 #endif
-    for (const auto name : {"google-chrome", "chromium", "chromium-browser", "chrome", "msedge"})
-        if (auto found = find_program(name))
-            return found;
 #ifdef _WIN32
-    for (const auto env : {"ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"}) {
-        const auto base = environment(env);
-        if (!base)
-            continue;
-        for (const auto suffix :
-             {"Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe"}) {
+    // Rich developer/CI PATHs can require thousands of filesystem probes before
+    // finding a browser. Prefer installed native binaries, then retain PATH as
+    // the fallback for portable installations. Explicit overrides still win.
+    for (const auto suffix :
+         {"Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe"}) {
+        for (const auto env : {"ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"}) {
+            const auto base = environment(env);
+            if (!base)
+                continue;
             auto path = path_from_utf8(*base) / suffix;
             if (fs::is_regular_file(path))
                 return path;
         }
     }
 #endif
+    for (const auto name : {"google-chrome", "chromium", "chromium-browser", "chrome", "msedge"})
+        if (auto found = find_program(name))
+            return found;
 #ifdef __APPLE__
     for (const auto path : {"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                             "/Applications/Chromium.app/Contents/MacOS/Chromium"})
@@ -513,6 +516,18 @@ struct BrowserService::State {
         return result["result"]["value"];
     }
     void open(const std::string& owner, bool text_only, Clock::time_point deadline, const Cancel& cancel) {
+        const auto began = Clock::now();
+        const auto diagnose = [&](std::string_view phase) {
+            if (options.launch_diagnostics) {
+                const auto elapsed = std::chrono::duration_cast<Millis>(Clock::now() - began).count();
+                try {
+                    options.launch_diagnostics("phase=" + std::string(phase) + " elapsed_ms=" +
+                                               std::to_string(elapsed));
+                } catch (...) {
+                }
+            }
+        };
+        diagnose("resolve-browser");
         if (session)
             throw Error("BROWSER_BUSY: close the existing session or wait for its idle expiry");
         if (stopping->cancelled())
@@ -520,6 +535,8 @@ struct BrowserService::State {
         auto executable = chromium_path(options);
         if (!executable)
             throw Error("BROWSER_UNAVAILABLE: install Chromium or configure DEVBOX_BROWSER_EXECUTABLE");
+        if (options.launch_diagnostics)
+            diagnose("executable=" + path_text(*executable));
 #ifndef _WIN32
         if (geteuid() == 0)
             throw Error("BROWSER_SANDBOX_REQUIRED: launch Devbox as a non-root user");
@@ -533,6 +550,7 @@ struct BrowserService::State {
         owned->text_only = text_only;
         owned->shared = options.shared_profile.has_value();
         owned->proxy = std::make_unique<BrowserProxy>(options.fixture_port);
+        diagnose("proxy-ready");
         fs::path endpoint_profile;
         if (owned->shared) {
             const auto daemon = shared_owner();
@@ -630,6 +648,7 @@ struct BrowserService::State {
                 pointer->exited.store(true, std::memory_order_release);
             });
             session = std::move(owned);
+            diagnose("process-dispatched");
             while (!fs::is_regular_file(session->profile / "DevToolsActivePort")) {
                 cancel->check();
                 if (session->exited.load(std::memory_order_acquire))
@@ -639,14 +658,23 @@ struct BrowserService::State {
                 cancel->wait_for(Millis(25));
             }
             endpoint_profile = session->profile;
+            diagnose("endpoint-file-ready");
         }
         session->protocol = std::make_unique<BrowserProtocol>();
         // A stale endpoint must not consume the entire navigation allowance.
         const auto connection_deadline = std::min(deadline, Clock::now() + Millis(3000));
-        connect_browser(*session->protocol, endpoint_profile, connection_deadline, cancel);
+        try {
+            connect_browser(*session->protocol, endpoint_profile, connection_deadline, cancel);
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception& error) {
+            throw Error(std::string(error.what()) + " [CDP connect]");
+        }
+        diagnose("cdp-connected");
         const auto version = command("Browser.getVersion", Json::object(), connection_deadline, cancel, true);
         session->browser_version = {{"product", json_string(version, "product")},
                                     {"protocol_version", json_string(version, "protocolVersion")}};
+        diagnose("version=" + json_string(version, "product"));
         if (session->shared) {
             session->context = json_string(
                 command("Target.createBrowserContext",
@@ -683,6 +711,7 @@ struct BrowserService::State {
                                 deadline, cancel, true),
                         "sessionId");
         command("Page.enable", Json::object(), deadline, cancel);
+        diagnose("page-enabled");
         session->main_frame = json_string(frame(deadline, cancel), "id");
         session->protocol->on_event(
             [owned = session.get()](const Json& event, Clock::time_point, const Cancel&) {
