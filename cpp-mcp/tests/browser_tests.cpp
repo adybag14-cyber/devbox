@@ -112,6 +112,20 @@ void protocol_tests() {
     require(browser_page_status({{"title", "Before you continue"}, {"url", "https://consent.google.com/"}},
                                 200) == "consent_required",
             "consent is an explicit intermediate state");
+    require(browser_page_status({{"title", "Just a moment..."}, {"text", "Checking your browser"}},
+                                403) == "challenge_required",
+            "a challenge using HTTP 403 remains distinguishable from a hard access denial");
+    require(browser_page_status({{"title", "Something went wrong - Argos.co.uk"},
+                                  {"text", "We can't seem to find that page right now..."}},
+                                200) == "not_found",
+            "a retailer soft-404 is not usable product evidence");
+    require(browser_page_status({{"title", "Shop"}}, 410) == "not_found",
+            "a removed resource is not useful source content");
+    require(browser_page_status({{"title", "Understanding website errors"},
+                                  {"text", std::string(90, 'a') + " we can't seem to find that page"},
+                                  {"ready_state", "complete"}, {"navigation_stable", true}},
+                                200) == "content_available",
+            "mentioning an error inside an ordinary article does not make it a soft-404");
     ProtocolFixture fixture([](auto& socket) {
         auto first = receive(socket);
         send(socket, {{"method", "Page.test"}, {"params", Json::object()}});

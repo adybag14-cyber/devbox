@@ -102,6 +102,7 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
             .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium
+            .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium-headed
           else
             .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium
           fi

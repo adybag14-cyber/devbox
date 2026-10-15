@@ -81,12 +81,18 @@ std::string browser_page_status(const Json& observation, int http_status) {
         return "unavailable";
     if (title.find("attention required") != title.npos || title.find("access denied") != title.npos ||
         text.find("sorry, you have been blocked") != text.npos ||
-        text.find("you don't have permission to access") != text.npos || http_status == 403)
+        text.find("you don't have permission to access") != text.npos)
         return "access_denied";
     if (title.find("just a moment") != title.npos || text.find("verify you are human") != text.npos ||
         text.find("checking your browser") != text.npos ||
         title.find("pardon our interruption") != title.npos)
         return "challenge_required";
+    if (http_status == 403)
+        return "access_denied";
+    if (http_status == 404 || http_status == 410 ||
+        (title.starts_with("something went wrong") &&
+         text.find("we can't seem to find that page") != text.npos))
+        return "not_found";
     if (http_status == 429)
         return "rate_limited";
     if (http_status == 401)
@@ -540,8 +546,7 @@ struct BrowserService::State {
             if (chmod(owned->profile.c_str(), 0700) != 0)
                 throw Error("BROWSER_PROFILE_PERMISSIONS");
 #endif
-            std::vector<std::string> args{options.headed ? "--ozone-platform=x11" : "--headless=new",
-                                          "--remote-debugging-address=127.0.0.1",
+            std::vector<std::string> args{"--remote-debugging-address=127.0.0.1",
                                           "--remote-debugging-port=0",
                                           "--user-data-dir=" + path_text(owned->profile),
                                           "--no-first-run",
@@ -567,6 +572,10 @@ struct BrowserService::State {
                                           "--window-size=1280,800",
                                           "--password-store=basic",
                                           "about:blank"};
+            if (!options.headed)
+                args.insert(args.begin(), "--headless=new");
+            else if (config->platform.is_linux)
+                args.insert(args.begin(), "--ozone-platform=x11");
 #ifdef _WIN32
             // The controlled window is intentionally hidden in headless mode.
             // Native occlusion must not suspend the compositor needed for capture.
@@ -575,6 +584,7 @@ struct BrowserService::State {
             auto* pointer = owned.get();
             ProcessOptions process;
             process.env = worker_environment();
+#ifndef _WIN32
             if (options.headed) {
                 if (!config->platform.is_linux || !environment("DISPLAY") || !environment("XAUTHORITY"))
                     throw Error("BROWSER_HEADED_UNAVAILABLE: an authorized Linux X11 display is required");
@@ -583,6 +593,7 @@ struct BrowserService::State {
                     if (const auto value = environment(key))
                         (*process.env)[key] = *value;
             }
+#endif
             process.timeout = options.lifetime;
             process.termination_grace = Millis(1000);
             process.max_capture_chars = 4096;
