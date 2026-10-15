@@ -490,7 +490,10 @@ struct ResearchService::State {
                     headers["If-Modified-Since"] = (*previous)["http_last_modified"];
                 old.emplace(i, std::move(*previous));
             }
-            requests.push_back({normalized[i], headers});
+            // Modern product pages often embed several MiB of hydration scripts.
+            // Fetch them once within the shared 64 MiB budget; do not retry an
+            // oversized prefix or start a browser merely because HTML exceeds 2 MiB.
+            requests.push_back({normalized[i], headers, 8 * 1024 * 1024});
             positions.push_back(i);
         }
         const auto replies = transport.get(requests, deadline, cancel);

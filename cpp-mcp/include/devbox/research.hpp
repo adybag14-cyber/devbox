@@ -16,9 +16,12 @@ struct Transfer {
 struct Request {
     std::string url;
     Json headers = Json::object();
+    // Discovery and policy responses retain the small default. Explicit source
+    // documents can request more, always clamped by the transport-wide ceiling.
+    std::size_t max_body_bytes = 2 * 1024 * 1024;
 };
 struct TransportLimits {
-    std::size_t concurrency = 4, per_origin = 1, max_body_bytes = 2 * 1024 * 1024;
+    std::size_t concurrency = 4, per_origin = 1, max_body_bytes = 8 * 1024 * 1024;
     std::size_t max_total_bytes = 64 * 1024 * 1024;
     Millis request_timeout{12000};
     // Native fixture injection only. No CLI, environment variable or MCP field exposes it.

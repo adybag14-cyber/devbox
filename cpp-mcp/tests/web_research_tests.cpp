@@ -196,6 +196,16 @@ struct HttpFixture {
                             response.set(http::field::location, "/doc/1");
                         } else if (target == "/oversized")
                             response.body() = std::string(8192, 'x');
+                        else if (target == "/large-product")
+                            response.body() = "<html><head><title>Large product page</title><script>/*" +
+                                              std::string(3 * 1024 * 1024, 'x') +
+                                              R"(*/</script></head><body><main><h1>Fixture Phone 256 GB</h1>
+<p>This product has a directly reported current price for its exact storage variant.
+This description is public product evidence, with payment conditions left unchanged.</p>
+<script type="application/ld+json">{"@type":"Product","name":"Fixture Phone 256 GB","sku":"PHONE256","offers":{"@type":"Offer","price":"599.00","priceCurrency":"GBP"}}</script>
+</main></body></html>)";
+                        else if (target == "/document-ceiling")
+                            response.body() = std::string(8 * 1024 * 1024 + 1024, 'x');
                         else if (target == "/alias")
                             response.body() = page("/doc/1");
                         else {
@@ -331,6 +341,21 @@ void extraction_tests() {
                                   "photon", 30)
                     .find("photon") != std::string::npos,
             "query-focused actual excerpt");
+}
+void extraction_budget_tests() {
+    web::Transfer response;
+    response.url = response.final_url = "https://example.com/resource-budget";
+    response.status = 200;
+    response.headers = {{"content-type", "text/html; charset=utf-8"}};
+    response.body = "<html><body>";
+    for (unsigned i = 0; i < 40000; ++i)
+        response.body += "<span>x</span>";
+    response.body += "</body></html>";
+    rejects([&] { (void)web::extract_document(response); }, "WEB_HTML_COMPLEXITY");
+    response.body = "<html><body>";
+    for (unsigned i = 0; i < 1024; ++i)
+        response.body += "<div>";
+    rejects([&] { (void)web::extract_document(response); }, "WEB_HTML_COMPLEXITY");
 }
 void issue88_extraction_tests() {
     web::Transfer response;
@@ -564,11 +589,21 @@ void transport_tests(HttpFixture& server) {
         auto limits = server.limits();
         limits.max_body_bytes = 1024;
         web::Transport transport(limits);
-        auto results = transport.get(
-            {{server.url("/oversized"), Json::object()}, {server.url("/doc/3"), Json::object()}},
-            Clock::now() + Millis(3000));
+        auto results = transport.get({{server.url("/oversized"), Json::object(), 8 * 1024 * 1024},
+                                      {server.url("/doc/3"), Json::object()}},
+                                     Clock::now() + Millis(3000));
         require(results[0].error == "WEB_RESPONSE_TOO_LARGE" && results[1].status == 200,
-                "oversize is isolated");
+                "per-request allowance cannot exceed the configured hard ceiling; oversize is isolated");
+    }
+    {
+        web::Transport transport(server.limits());
+        auto results = transport.get({{server.url("/large-product"), Json::object()},
+                                      {server.url("/large-product"), Json::object(), 8 * 1024 * 1024},
+                                      {server.url("/document-ceiling"), Json::object(), 16 * 1024 * 1024}},
+                                     Clock::now() + Millis(5000));
+        require(results[0].error == "WEB_RESPONSE_TOO_LARGE" && results[1].error.empty() &&
+                    results[1].body.size() > 3 * 1024 * 1024 && results[2].error == "WEB_RESPONSE_TOO_LARGE",
+                "discovery retains 2 MiB while source documents use a bounded 8 MiB allowance");
     }
     for (const auto* route : {"/rate", "/rate-date"}) {
         web::Transport transport(server.limits());
@@ -611,6 +646,15 @@ void research_tests(HttpFixture& server, const fs::path& root) {
                 "research reports byte budget, not candidate exhaustion, when a chunk cannot fit");
     }
     web::ResearchService service(config, server.limits());
+    const auto large = service.fetch(Json{{"urls", {server.url("/large-product")}},
+                                          {"view", "offers"},
+                                          {"max_age_seconds", 0},
+                                          {"max_chars", 4000}});
+    require(large["documents"][0]["status"] == "ok" &&
+                large["documents"][0]["offers"][0]["price"] == "599.00" &&
+                large["documents"][0]["offers"][0]["sku"] == "PHONE256" &&
+                large["documents"][0]["cache_status"] == "network" && large.dump().size() <= 4000,
+            "large HTML is read once through its tail offer while the model response stays compact");
     const auto first = service.fetch(Json{{"urls", {server.url("/doc/7"), server.url("/doc/7")}}});
     require(first["unique_urls"] == 1 && first["documents"][0]["status"] == "ok",
             "duplicate request suppressed");
@@ -1198,7 +1242,7 @@ int main(int argc, char** argv) {
         if (argc == 5 && std::string_view(argv[1]) == "--extract-fixture") {
             web::Transfer source;
             source.url = source.final_url = web::normalize_url(argv[2]);
-            source.body = read_file(path_from_utf8(argv[3]), 2 * 1024 * 1024);
+            source.body = read_file(path_from_utf8(argv[3]), 8 * 1024 * 1024);
             source.bytes = source.body.size();
             source.status = 200;
             source.headers = Json{{"content-type", "text/html; charset=utf-8"}};
@@ -1218,6 +1262,7 @@ int main(int argc, char** argv) {
             throw Error("Usage: devbox-web-research-tests [--extract-fixture URL INPUT_HTML OUTPUT_JSON]");
         ensure_directory(root);
         extraction_tests();
+        extraction_budget_tests();
         issue88_extraction_tests();
         search_parser_tests();
         policy_tests();

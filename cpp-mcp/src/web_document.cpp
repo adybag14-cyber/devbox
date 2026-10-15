@@ -7,6 +7,7 @@
 #include <lexbor/dom/interfaces/element.h>
 #include <lexbor/dom/interfaces/text.h>
 #include <lexbor/html/interfaces/document.h>
+#include <lexbor/html/parser.h>
 #include <map>
 #include <re2/re2.h>
 #include <set>
@@ -14,6 +15,26 @@
 namespace devbox::web {
 namespace {
 constexpr std::size_t text_limit = 65536;
+struct HtmlParseBudget {
+    lxb_html_tokenizer_token_f next;
+    void* context;
+    lxb_html_tree_t* tree;
+    std::size_t tokens = 0;
+    bool exceeded = false;
+    static lxb_html_token_t* consume(lxb_html_tokenizer_t* tokenizer, lxb_html_token_t* token,
+                                     void* opaque) noexcept {
+        auto& budget = *static_cast<HtmlParseBudget*>(opaque);
+        // Bound allocation and deep-tree work before building the DOM, rather
+        // than only limiting the subsequent extraction walk. Large script text
+        // does not consume a token per byte and remains within the byte ceiling.
+        if (++budget.tokens > 100000 || lexbor_array_length(budget.tree->open_elements) > 512) {
+            budget.exceeded = true;
+            tokenizer->status = LXB_STATUS_ERROR;
+            return nullptr;
+        }
+        return budget.next(tokenizer, token, budget.context);
+    }
+};
 std::string clipped(std::string_view text, std::size_t limit) {
     if (text.size() <= limit)
         return std::string(text);
@@ -357,8 +378,22 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         if (!document)
             throw Error("Could not allocate HTML document");
         ScopeExit destroy([&] { lxb_html_document_destroy(document); });
-        if (lxb_html_document_parse(document, reinterpret_cast<const lxb_char_t*>(body.data()),
-                                    body.size()) != LXB_STATUS_OK)
+        if (lxb_html_document_parse_chunk_begin(document) != LXB_STATUS_OK)
+            throw Error("WEB_HTML_PARSE");
+        auto* parser = static_cast<lxb_html_parser_t*>(document->dom_document.parser);
+        auto* tokenizer = lxb_html_parser_tokenizer(parser);
+        HtmlParseBudget budget{tokenizer->callback_token_done, tokenizer->callback_token_ctx,
+                               lxb_html_parser_tree(parser)};
+        lxb_html_tokenizer_callback_token_done_set(tokenizer, HtmlParseBudget::consume, &budget);
+        ScopeExit restore_callback(
+            [&] { lxb_html_tokenizer_callback_token_done_set(tokenizer, budget.next, budget.context); });
+        auto parsed = lxb_html_document_parse_chunk(
+            document, reinterpret_cast<const lxb_char_t*>(body.data()), body.size());
+        if (parsed == LXB_STATUS_OK)
+            parsed = lxb_html_document_parse_chunk_end(document);
+        if (budget.exceeded)
+            throw Error("WEB_HTML_COMPLEXITY: source exceeds the token or nesting budget");
+        if (parsed != LXB_STATUS_OK)
             throw Error("Native HTML parsing failed");
         auto* root = lxb_dom_interface_node(document);
         auto selected = purpose == ExtractionPurpose::evidence

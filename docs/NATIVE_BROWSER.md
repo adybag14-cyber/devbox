@@ -32,6 +32,8 @@ The native proxy admits at most 48 connections and 64 MiB of traffic per session
 
 Container headroom accounts for reclaimable inactive file cache (`total_inactive_file` on cgroup v1 and `inactive_file` on v2), following the [Docker working-set convention](https://docs.docker.com/reference/cli/docker/container/stats/). Host `MemAvailable` still caps the result. Swap is not treated as free RAM; missing or inconsistent cache counters receive no credit. The existing 192 MiB opening threshold and 64 MiB idle-pressure threshold remain unchanged.
 
+Managed-browser status also performs a read-only `Browser.getVersion` probe with a two-second total deadline and rechecks the process identity afterward. A surviving PID and stale endpoint file are insufficient readiness evidence. An unresponsive process reports `BROWSER_SHARED_UNRESPONSIVE`; the probe preserves existing contexts and never restarts another caller's browser. Opening a session bounds connection establishment and its initial version exchange to three seconds within the normal action deadline.
+
 Linux process launch also handles kernels or container policies that reject `close_range`. Its fallback enumerates the child's own open descriptors with allocation-free kernel calls, then retains the original close loop if enumeration is unavailable. This avoids scanning a million unused descriptor numbers and closes descriptors still open above a lowered soft limit. A separate CI target forces this fallback and exercises both foreground and detached descriptor isolation.
 
 ## Reproducible validation
