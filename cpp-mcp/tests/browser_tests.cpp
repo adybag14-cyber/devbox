@@ -205,8 +205,23 @@ struct PageFixture {
                 }
                 try {
                     beast::flat_buffer b;
-                    http::request<http::string_body> request;
-                    http::read(socket, b, request);
+                    http::request_parser<http::string_body> parser;
+                    parser.header_limit(8192);
+                    parser.body_limit(4096);
+                    socket.non_blocking(true);
+                    const auto read_until = Clock::now() + Millis(2000);
+                    while (!stop && !parser.is_done() && Clock::now() < read_until) {
+                        boost::system::error_code error;
+                        http::read(socket, b, parser, error);
+                        if (error == asio::error::would_block || error == asio::error::try_again)
+                            std::this_thread::sleep_for(Millis(2));
+                        else if (error)
+                            break;
+                    }
+                    if (stop || !parser.is_done())
+                        continue;
+                    auto request = parser.release();
+                    socket.non_blocking(false);
                     ++requests;
                     http::response<http::string_body> response{http::status::ok, 11};
                     response.set(http::field::content_type, "text/html; charset=utf-8");
@@ -239,6 +254,9 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
         stop = true;
         if (worker.joinable())
             worker.join();
+        if (std::uncaught_exceptions())
+            std::cerr << "Browser HTTP fixture completed " << requests.load() << " requests and "
+                      << picture_requests.load() << " image requests before failure\n";
     }
     std::uint16_t port() {
         return listener.local_endpoint().port();
@@ -264,6 +282,11 @@ void proxy_tests() {
 }
 void browser_tests(bool headed = false) {
     PageFixture page;
+    // Chromium may open a speculative connection before sending any request.
+    // Keep one idle connection open while proving the actual page still loads.
+    asio::io_context idle_io;
+    Tcp::socket idle_connection(idle_io);
+    idle_connection.connect({asio::ip::make_address("127.0.0.1"), page.port()});
     auto config = std::make_shared<Config>();
     config->runtime_mode = RuntimeMode::host;
     config->host_exec_enabled = true;
@@ -415,6 +438,14 @@ void shared_browser_tests(bool headed) {
     const Json open{{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"}};
     auto initial = managed.perform(open, "operator");
     const auto managed_id = json_string(initial.data, "session_id");
+    const auto images_until = Clock::now() + Millis(10000);
+    while (page.picture_requests < 33 ||
+           json_string(initial.data, "text").find("Fixture image loaded") == std::string::npos) {
+        require(Clock::now() < images_until, "default fixture image requests settle");
+        initial = managed.perform(
+            {{"action", "observe"}, {"session_id", managed_id}, {"wait_ms", 100}, {"screenshot", false}},
+            "operator");
+    }
     const auto profile = fs::temp_directory_path() / ("devbox-browser-" + managed_id);
     const auto instance = process_instance(pid.load());
     require(instance.has_value(), "managed process identity is observable");
@@ -545,6 +576,16 @@ void shared_browser_tests(bool headed) {
         auto full_open = open;
         full_open["render_mode"] = "full";
         auto second = shared.perform(full_open, "second");
+        const auto full_until = Clock::now() + Millis(10000);
+        while (page.picture_requests < pictures_before + 33 ||
+               json_string(second.data, "text").find("Fixture image loaded") == std::string::npos) {
+            require(Clock::now() < full_until, "full-mode fixture image requests settle");
+            second = shared.perform({{"action", "observe"},
+                                     {"session_id", second.data.at("session_id")},
+                                     {"wait_ms", 100},
+                                     {"screenshot", false}},
+                                    "second");
+        }
         require(second.data.at("render_mode") == "full" &&
                     json_string(second.data, "text").find("Fixture image loaded") != std::string::npos &&
                     page.picture_requests >= pictures_before + 33,
