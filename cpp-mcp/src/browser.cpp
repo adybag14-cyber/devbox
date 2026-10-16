@@ -499,9 +499,9 @@ struct BrowserService::State {
                                        (!current_loader.empty() && current_loader != previous_loader);
                 if (committed && evaluate("document.readyState", ready_by, cancel) != "loading") {
                     const auto after = frame(ready_by, cancel);
-                    const auto current_url = json_string(root, "url");
+                    const auto current_url = json_string(root, "url") + json_string(root, "urlFragment");
                     if (json_string(after, "loaderId") == current_loader &&
-                        json_string(after, "url") == current_url) {
+                        json_string(after, "url") + json_string(after, "urlFragment") == current_url) {
                         if (readable_since && candidate_loader == current_loader &&
                             candidate_url == current_url && Clock::now() - *readable_since >= Millis(600))
                             return;

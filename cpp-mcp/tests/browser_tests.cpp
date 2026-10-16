@@ -281,6 +281,9 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                         response.set(http::field::content_type, "application/javascript");
                         response.body() = "/* delayed parser-blocking resource */";
                     }
+                    if (request.target() == "/hash-route")
+                        response.body() =
+                            R"HTML(<!doctype html><title>Hash route fixture</title><p id="route">Initial route</p><script>setTimeout(()=>{location.hash='phone';document.querySelector('#route').innerText='Loading hash route';setTimeout(()=>document.querySelector('#route').innerText='Hash route price GBP 749.00',450)},300)</script>)HTML";
                     response.prepare_payload();
                     http::write(socket, response);
                 } catch (...) {
@@ -520,6 +523,15 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                 json_string(fragment.data, "text").find("GBP 649.00") != std::string::npos &&
                 json_bool(fragment.data, "navigation_stable"),
             "same-document navigation does not require a new loader");
+    auto routed = browser.perform(
+        {{"action", "navigate"},
+         {"session_id", redirected_id},
+         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/hash-route"}},
+        "test");
+    require(json_string(routed.data, "url").ends_with("/hash-route#phone") &&
+                json_string(routed.data, "text").find("GBP 749.00") != std::string::npos &&
+                json_bool(routed.data, "navigation_stable"),
+            "hash-route changes restart the document settling interval");
     auto navigation_cancel = std::make_shared<Cancellation>();
     auto abort_navigation = std::async(std::launch::async, [navigation_cancel] {
         std::this_thread::sleep_for(Millis(250));
