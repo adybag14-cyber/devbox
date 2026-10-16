@@ -338,10 +338,12 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     config->runtime_mode = RuntimeMode::host;
     config->host_exec_enabled = true;
     config->platform = Platform::detect();
+    std::atomic_uint32_t launched_pid{0};
     BrowserOptions options;
     options.headed = headed;
     options.compatibility = compatibility;
     options.launch_diagnostics = browser_diagnostics;
+    options.pid_observer = [&](std::uint32_t pid) { launched_pid.store(pid); };
     options.fixture_port = page.port();
     options.lifetime = Millis(60000);
     options.idle_timeout = Millis(30000);
@@ -373,6 +375,12 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     const auto profile = fs::temp_directory_path() / ("devbox-browser-" + id);
     require(fs::is_directory(profile), "owned private browser profile exists");
     std::vector<std::pair<std::uint32_t, std::optional<std::uint64_t>>> owned_processes;
+    const auto initial_pid = launched_pid.load();
+    const auto initial_instance = process_instance(initial_pid);
+    require(initial_pid != 0 && initial_instance &&
+                process_matches_instance(initial_pid, initial_instance),
+            "the originally launched browser remains owned after rendering");
+    owned_processes.emplace_back(initial_pid, initial_instance);
 #ifdef __linux__
     for (const auto& entry : fs::directory_iterator("/proc")) {
         const auto name = entry.path().filename().string();
