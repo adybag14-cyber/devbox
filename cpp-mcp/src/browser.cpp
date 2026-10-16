@@ -482,18 +482,47 @@ struct BrowserService::State {
     Json frame(Clock::time_point deadline, const Cancel& cancel) {
         return command("Page.getFrameTree", Json::object(), deadline, cancel).at("frameTree").at("frame");
     }
-    void settle(const Json& navigation, Clock::time_point deadline, const Cancel& cancel) {
+    void settle(const Json& navigation, std::string_view previous_loader, Clock::time_point deadline,
+                const Cancel& cancel) {
         const auto loader = json_string(navigation, "loaderId");
         const auto ready_by = std::min(deadline, Clock::now() + Millis(15000));
+        std::string candidate_loader, candidate_url;
+        std::optional<Clock::time_point> readable_since;
         while (Clock::now() < ready_by) {
             cancel->check();
-            const auto root = frame(deadline, cancel);
-            if ((loader.empty() || json_string(root, "loaderId") == loader) &&
-                evaluate("document.readyState", deadline, cancel) != "loading") {
-                cancel->wait_for(Millis(600));
-                cancel->check();
-                return;
+            try {
+                const auto root = frame(ready_by, cancel);
+                const auto current_loader = json_string(root, "loaderId");
+                // Client redirects commit a different loader from Page.navigate's
+                // reply. Accept that new document, but never the preceding page.
+                const bool committed = loader.empty() || current_loader == loader ||
+                                       (!current_loader.empty() && current_loader != previous_loader);
+                if (committed && evaluate("document.readyState", ready_by, cancel) != "loading") {
+                    const auto after = frame(ready_by, cancel);
+                    const auto current_url = json_string(root, "url");
+                    if (json_string(after, "loaderId") == current_loader &&
+                        json_string(after, "url") == current_url) {
+                        if (readable_since && candidate_loader == current_loader &&
+                            candidate_url == current_url && Clock::now() - *readable_since >= Millis(600))
+                            return;
+                        candidate_loader = current_loader;
+                        candidate_url = current_url;
+                        readable_since = Clock::now();
+                        cancel->wait_for(std::min(
+                            Millis(600), std::chrono::duration_cast<Millis>(ready_by - Clock::now())));
+                        continue;
+                    }
+                }
+            } catch (const Error& error) {
+                // A redirect can destroy the isolated observation world between
+                // its creation and evaluation. Only that transient error retries.
+                const std::string_view message(error.what());
+                if (!message.starts_with("BROWSER_PROTOCOL_REMOTE:") ||
+                    (message.find("Cannot find context with specified id") == message.npos &&
+                     message.find("Execution context was destroyed") == message.npos))
+                    throw;
             }
+            readable_since.reset();
             cancel->wait_for(Millis(100));
         }
         throw Error("BROWSER_NAVIGATION_DEADLINE: page did not reach a readable state");
@@ -902,10 +931,11 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         const bool text_only = render_mode == "text" || (render_mode == "auto" && state.options.text_only);
         try {
             state.open(std::string(principal), text_only, deadline, cancel);
+            const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
             auto nav = state.command("Page.navigate", {{"url", target}}, deadline, cancel);
             if (nav.contains("errorText"))
                 throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
-            state.settle(nav, deadline, cancel);
+            state.settle(nav, previous_loader, deadline, cancel);
             return state.observe(args, deadline, cancel);
         } catch (...) {
             if (state.session && state.session->owner == principal)
@@ -961,13 +991,14 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
     if (action == "navigate") {
         const auto target = state.url(json_string(args, "url"));
         session.http_status = 0;
+        const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
         auto nav = state.command("Page.navigate", {{"url", target}}, deadline, cancel);
         session.html.clear();
         session.html_hash.clear();
         session.observation.clear();
         if (nav.contains("errorText"))
             throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
-        state.settle(nav, deadline, cancel);
+        state.settle(nav, previous_loader, deadline, cancel);
         return state.observe(args, deadline, cancel);
     }
     if (action != "scroll" && action != "click" && action != "type")
