@@ -14,6 +14,7 @@ await chmod(env.XDG_RUNTIME_DIR,0o700);
 const children=new Map();let stopping=false;
 // Native C++ owns either an on-demand process or isolated contexts in this daemon.
 const sharedBrowser=process.env.DEVBOX_BROWSER_SHARED==='1';
+const browserCompatibility=process.env.DEVBOX_BROWSER_COMPATIBILITY==='1';
 const browserProfile=sharedBrowser?path.join(root,'browser'):'/workspace/.home/chromium';
 const browserAutostart=sharedBrowser||process.env.DEVBOX_DESKTOP_BROWSER_AUTOSTART!=='0';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -56,6 +57,7 @@ const chromiumArgs=['--ozone-platform=x11','--disable-gpu','--no-first-run','--n
   '--disable-features=Translate,MediaRouter,OptimizationHints','--renderer-process-limit=2',
   '--js-flags=--max-old-space-size=128','--window-size=1200,740','--window-position=20,20',
   '--user-data-dir='+browserProfile,
+  ...(sharedBrowser&&browserCompatibility?['--disable-blink-features=AutomationControlled']:[]),
   ...(sharedBrowser?['--remote-debugging-address=127.0.0.1','--remote-debugging-port=0',
     '--disable-extensions','--disable-quic','--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
     '--proxy-server=http://127.0.0.1:9','--proxy-bypass-list=<-loopback>',

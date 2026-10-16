@@ -96,14 +96,21 @@ jobs:
         run: node cpp-mcp/scripts/ci-native.mjs
       - name: Fresh packaged installer and TUI discovery
         run: node cpp-bootstrap/scripts/fresh-install.mjs
+      - name: Browser observation evidence retention
+        run: node --test cpp-mcp/scripts/browser-observation.test.mjs
       - name: Real isolated Chromium rendering and input fixtures
         if: matrix.name == 'Windows MSVC' || matrix.name == 'Linux GCC'
         shell: bash
         run: |
           if [ "$RUNNER_OS" = Windows ]; then
+            powershell.exe -NoProfile -NonInteractive -Command 'Get-Command chrome,google-chrome,chromium,msedge -ErrorAction SilentlyContinue | Select-Object Name,Source; foreach ($base in @($env:ProgramFiles,${env:ProgramFiles(x86)},$env:LOCALAPPDATA)) { foreach ($relative in @("Google/Chrome/Application/chrome.exe","Microsoft/Edge/Application/msedge.exe")) { $candidate=Join-Path $base $relative; if (Test-Path -LiteralPath $candidate) { Get-Item -LiteralPath $candidate | Select-Object FullName,@{Name="ProductVersion";Expression={$_.VersionInfo.ProductVersion}} } } }; exit 0'
             .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium
+            .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium --compatibility
+            .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium-headed
+            .cpp-build/ci/cpp-mcp/Release/devbox-browser-tests.exe --chromium-headed --compatibility
           else
             .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium
+            .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium --compatibility
           fi
       - name: Native supervision without Node or Git on runtime PATH
         if: matrix.sanitizers == '0'
@@ -202,6 +209,7 @@ jobs:
           node cpp-mcp/scripts/x11-computer-smoke.mjs
           DEVBOX_X11_TEST_WM=1 node cpp-mcp/scripts/x11-computer-smoke.mjs
           xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24 -nolisten tcp' .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium-headed
+          xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24 -nolisten tcp' .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium-headed --compatibility
       - name: Capture owned native Cocoa windows and display
         if: runner.os == 'macOS'
         run: node cpp-mcp/scripts/macos-capture-smoke.mjs

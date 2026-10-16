@@ -1,6 +1,7 @@
 #include "devbox/browser.hpp"
 #include "devbox/browser_protocol.hpp"
 #include "devbox/browser_proxy.hpp"
+#include "devbox/native.hpp"
 #include "devbox/process.hpp"
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
@@ -15,6 +16,11 @@ namespace beast = boost::beast;
 namespace http = beast::http;
 namespace websocket = beast::websocket;
 using Tcp = asio::ip::tcp;
+void browser_diagnostics(std::string_view text) {
+    for (const auto& line : split(std::string(text), '\n'))
+        if (!line.empty() && !line.starts_with("DevTools listening on "))
+            std::cerr << "[Chromium fixture] " << line << '\n';
+}
 void require(bool v, const char* message) {
     if (!v)
         throw Error(message);
@@ -93,6 +99,15 @@ void protocol_tests() {
             "conflicting profile flag rejected");
     require(!browser_process_arguments_match(flat, "/another/executable", profile),
             "flattened executable prefix must match");
+    require(!browser_process_arguments_match(flat, executable, profile, true),
+            "requested compatibility cannot silently use an incompatible managed process");
+    require(browser_process_arguments_match(flat + " --disable-blink-features=AutomationControlled",
+                                            executable, profile, true),
+            "managed compatibility requires its exact launch switch");
+    require(!browser_process_arguments_match(flat + " --disable-blink-features=AutomationControlled"
+                                                   " --disable-blink-features=OtherFeature",
+                                             executable, profile, true),
+            "conflicting compatibility switches are rejected");
     require(
         !browser_process_arguments_match(flat + " --remote-debugging-address=0.0.0.0", executable, profile),
         "conflicting public debug listener rejected");
@@ -107,6 +122,20 @@ void protocol_tests() {
     require(browser_page_status({{"title", "Before you continue"}, {"url", "https://consent.google.com/"}},
                                 200) == "consent_required",
             "consent is an explicit intermediate state");
+    require(browser_page_status({{"title", "Just a moment..."}, {"text", "Checking your browser"}},
+                                403) == "challenge_required",
+            "a challenge using HTTP 403 remains distinguishable from a hard access denial");
+    require(browser_page_status({{"title", "Something went wrong - Argos.co.uk"},
+                                  {"text", "We can't seem to find that page right now..."}},
+                                200) == "not_found",
+            "a retailer soft-404 is not usable product evidence");
+    require(browser_page_status({{"title", "Shop"}}, 410) == "not_found",
+            "a removed resource is not useful source content");
+    require(browser_page_status({{"title", "Understanding website errors"},
+                                  {"text", std::string(90, 'a') + " we can't seem to find that page"},
+                                  {"ready_state", "complete"}, {"navigation_stable", true}},
+                                200) == "content_available",
+            "mentioning an error inside an ordinary article does not make it a soft-404");
     ProtocolFixture fixture([](auto& socket) {
         auto first = receive(socket);
         send(socket, {{"method", "Page.test"}, {"params", Json::object()}});
@@ -234,6 +263,7 @@ const state=document.createElement('p');state.id='storage-state';document.body.p
 function showStorage(){state.innerText='Cookie: '+(document.cookie||'empty')+'; Storage: '+(localStorage.getItem('devbox-fixture')||'empty');}
 const save=document.createElement('button');save.innerText='Store fixture state';save.onclick=()=>{document.cookie='devboxFixture=stored; SameSite=Lax; path=/';localStorage.setItem('devbox-fixture','stored');showStorage();};document.querySelector('button').after(save);showStorage();
 </script>)HTML";
+                    response.body() += R"HTML(<script>const flag=document.createElement('p');flag.textContent='Fixture webdriver='+navigator.webdriver;document.body.appendChild(flag);</script>)HTML";
                     response.body() += R"HTML(<p id="image-state">Fixture image pending</p><script>
 for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>document.querySelector('#image-state').innerText='Fixture image loaded';image.onerror=()=>document.querySelector('#image-state').innerText='Fixture image omitted';}image.src='/fixture-picture?i='+n;document.body.appendChild(image);}
 </script>)HTML";
@@ -280,7 +310,24 @@ void proxy_tests() {
     request("http://localhost/");
     require(json_uint(gate.metrics(), "accepted_connections") == 0, "no private connections admitted");
 }
-void browser_tests(bool headed = false) {
+void browser_tests(bool headed = false, bool compatibility = false) {
+#ifdef _WIN32
+    const auto shadow = fs::temp_directory_path() / ("devbox-browser-path-" + uuid());
+    require(fs::create_directory(shadow), "owned discovery fixture directory");
+    const auto old_path = environment("PATH");
+    ScopeExit restore_path([&] {
+        set_environment("PATH", old_path);
+        std::error_code ignored;
+        fs::remove_all(shadow, ignored);
+    });
+    {
+        std::ofstream marker(shadow / "google-chrome.exe");
+        marker << "This PATH sentinel must not replace an installed native browser.";
+        marker.close();
+        require(marker.good(), "discovery PATH sentinel written");
+    }
+    set_environment("PATH", path_text(shadow) + ";" + old_path.value_or(""));
+#endif
     PageFixture page;
     // Chromium may open a speculative connection before sending any request.
     // Keep one idle connection open while proving the actual page still loads.
@@ -293,12 +340,15 @@ void browser_tests(bool headed = false) {
     config->platform = Platform::detect();
     BrowserOptions options;
     options.headed = headed;
+    options.compatibility = compatibility;
+    options.launch_diagnostics = browser_diagnostics;
     options.fixture_port = page.port();
     options.lifetime = Millis(60000);
     options.idle_timeout = Millis(30000);
     BrowserService browser(config, options);
     require(json_bool(browser.perform({{"action", "status"}}, "test").data, "available"),
             "Chromium required for real browser qualification");
+    std::cerr << "[browser] opening owned rendered fixture\n" << std::flush;
     auto value = browser.perform({{"action", "open"},
                                   {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"},
                                   {"include_html", true}},
@@ -307,6 +357,11 @@ void browser_tests(bool headed = false) {
             "JavaScript-rendered live price text");
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
             "real JPEG screenshot");
+    std::cerr << "[browser] initial owned screenshot passed\n" << std::flush;
+    require(json_string(value.data, "text").find(compatibility ? "Fixture webdriver=false" : "Fixture webdriver=true") != std::string::npos,
+            "operator compatibility choice reaches the real browser without page-script patching");
+    require(json_bool(value.data.at("browser"), "compatibility_requested") == compatibility,
+            "observations disclose the requested compatibility mode");
     const auto id = json_string(value.data, "session_id"),
                observation = json_string(value.data, "observation_id");
     rejects(
@@ -423,7 +478,7 @@ void browser_tests(bool headed = false) {
     }
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
-void shared_browser_tests(bool headed) {
+void shared_browser_tests(bool headed, bool compatibility) {
     PageFixture page(true);
     auto config = std::make_shared<Config>();
     config->runtime_mode = RuntimeMode::host;
@@ -432,6 +487,8 @@ void shared_browser_tests(bool headed) {
     std::atomic_uint32_t pid{0};
     BrowserOptions owned_options;
     owned_options.headed = headed;
+    owned_options.compatibility = compatibility;
+    owned_options.launch_diagnostics = browser_diagnostics;
     owned_options.fixture_port = page.port();
     owned_options.pid_observer = [&](std::uint32_t value) { pid = value; };
     BrowserService managed(config, owned_options);
@@ -500,6 +557,7 @@ void shared_browser_tests(bool headed) {
     require(contexts().empty(), "managed default browser has no private contexts");
     BrowserOptions shared_options;
     shared_options.headed = headed;
+    shared_options.compatibility = compatibility;
     shared_options.fixture_port = page.port();
     shared_options.shared_profile = profile;
     shared_options.shared_status_file = status_path;
@@ -607,10 +665,14 @@ int main(int argc, char** argv) {
     try {
         protocol_tests();
         proxy_tests();
-        if (argc > 1 &&
-            (std::string_view(argv[1]) == "--chromium" || std::string_view(argv[1]) == "--chromium-headed")) {
-            browser_tests(std::string_view(argv[1]) == "--chromium-headed");
-            shared_browser_tests(std::string_view(argv[1]) == "--chromium-headed");
+        if (argc > 1) {
+            const auto mode = std::string_view(argv[1]);
+            require(mode == "--chromium" || mode == "--chromium-headed", "unknown browser fixture mode");
+            require(argc <= 3 && (argc == 2 || std::string_view(argv[2]) == "--compatibility"),
+                    "unknown browser fixture option");
+            const bool headed = mode == "--chromium-headed", compatibility = argc == 3;
+            browser_tests(headed, compatibility);
+            shared_browser_tests(headed, compatibility);
         }
         std::cout << "browser checks passed\n";
         return 0;

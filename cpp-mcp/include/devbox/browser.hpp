@@ -4,7 +4,7 @@ namespace devbox {
 std::string browser_page_status(const Json& observation, int http_status = 0);
 std::string browser_normalize_url(std::string_view supplied);
 bool browser_process_arguments_match(std::string_view command, std::string_view executable,
-                                     std::string_view profile);
+                                     std::string_view profile, bool require_compatibility = false);
 std::uint64_t browser_cgroup_headroom(std::uint64_t limit, std::uint64_t usage,
                                       std::uint64_t inactive_file_cache);
 struct BrowserOptions {
@@ -14,8 +14,11 @@ struct BrowserOptions {
     // Native test/operator configuration only; never supplied by an MCP caller.
     std::optional<fs::path> shared_profile, shared_status_file;
     std::function<void(std::uint32_t)> pid_observer;
+    // Native qualification diagnostics only; never exposed as an MCP argument.
+    std::function<void(std::string_view)> launch_diagnostics;
     bool headed = false;
     bool text_only = false;
+    bool compatibility = false;
     Millis lifetime{300000}, idle_timeout{60000};
 };
 struct BrowserObservation {

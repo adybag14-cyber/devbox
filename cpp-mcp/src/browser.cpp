@@ -23,7 +23,7 @@ std::uint64_t browser_cgroup_headroom(std::uint64_t limit, std::uint64_t usage,
     return limit > working ? limit - working : 0;
 }
 bool browser_process_arguments_match(std::string_view command, std::string_view executable,
-                                     std::string_view profile) {
+                                     std::string_view profile, bool require_compatibility) {
     if (command.empty() || command.size() >= 16384)
         return false;
     auto args = split(std::string(command), '\0');
@@ -59,7 +59,8 @@ bool browser_process_arguments_match(std::string_view command, std::string_view 
             }
         return count == 1 && matches;
     };
-    return unique("--user-data-dir", profile) && unique("--remote-debugging-address", "127.0.0.1") &&
+    return (!require_compatibility || unique("--disable-blink-features", "AutomationControlled")) &&
+           unique("--user-data-dir", profile) && unique("--remote-debugging-address", "127.0.0.1") &&
            unique("--remote-debugging-port", "0");
 }
 std::string browser_normalize_url(std::string_view supplied) {
@@ -81,12 +82,18 @@ std::string browser_page_status(const Json& observation, int http_status) {
         return "unavailable";
     if (title.find("attention required") != title.npos || title.find("access denied") != title.npos ||
         text.find("sorry, you have been blocked") != text.npos ||
-        text.find("you don't have permission to access") != text.npos || http_status == 403)
+        text.find("you don't have permission to access") != text.npos)
         return "access_denied";
     if (title.find("just a moment") != title.npos || text.find("verify you are human") != text.npos ||
         text.find("checking your browser") != text.npos ||
         title.find("pardon our interruption") != title.npos)
         return "challenge_required";
+    if (http_status == 403)
+        return "access_denied";
+    if (http_status == 404 || http_status == 410 ||
+        (title.starts_with("something went wrong") &&
+         text.find("we can't seem to find that page") != text.npos))
+        return "not_found";
     if (http_status == 429)
         return "rate_limited";
     if (http_status == 401)
@@ -177,22 +184,25 @@ std::optional<fs::path> chromium_path(const BrowserOptions& options) {
         if (fs::is_regular_file(path))
             return fs::path(path);
 #endif
-    for (const auto name : {"google-chrome", "chromium", "chromium-browser", "chrome", "msedge"})
-        if (auto found = find_program(name))
-            return found;
 #ifdef _WIN32
-    for (const auto env : {"ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"}) {
-        const auto base = environment(env);
-        if (!base)
-            continue;
-        for (const auto suffix :
-             {"Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe"}) {
+    // Rich developer/CI PATHs can require thousands of filesystem probes before
+    // finding a browser. Prefer installed native binaries, then retain PATH as
+    // the fallback for portable installations. Explicit overrides still win.
+    for (const auto suffix :
+         {"Google/Chrome/Application/chrome.exe", "Microsoft/Edge/Application/msedge.exe"}) {
+        for (const auto env : {"ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"}) {
+            const auto base = environment(env);
+            if (!base)
+                continue;
             auto path = path_from_utf8(*base) / suffix;
             if (fs::is_regular_file(path))
                 return path;
         }
     }
 #endif
+    for (const auto name : {"google-chrome", "chromium", "chromium-browser", "chrome", "msedge"})
+        if (auto found = find_program(name))
+            return found;
 #ifdef __APPLE__
     for (const auto path : {"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
                             "/Applications/Chromium.app/Contents/MacOS/Chromium"})
@@ -300,6 +310,7 @@ struct BrowserService::State {
     State(std::shared_ptr<const Config> c, BrowserOptions o) : config(std::move(c)), options(std::move(o)) {
         options.headed = env_bool("DEVBOX_BROWSER_HEADED", options.headed);
         options.text_only = env_bool("DEVBOX_BROWSER_TEXT_ONLY", options.text_only);
+        options.compatibility = env_bool("DEVBOX_BROWSER_COMPATIBILITY", options.compatibility);
         if (env_bool("DEVBOX_BROWSER_SHARED", false)) {
             if (!config->platform.is_linux)
                 throw Error("BROWSER_SHARED_UNSUPPORTED: managed shared mode requires Linux");
@@ -360,7 +371,7 @@ struct BrowserService::State {
             if (!executable || !fs::equivalent(proc_exe, *executable))
                 throw Error("BROWSER_SHARED_IDENTITY: executable is not the configured Chromium binary");
             if (!browser_process_arguments_match(command, path_text(fs::read_symlink(proc_exe)),
-                                                 path_text(*options.shared_profile)))
+                                                 path_text(*options.shared_profile), options.compatibility))
                 throw Error("BROWSER_SHARED_IDENTITY: process arguments do not match the managed profile");
 #else
             if (std::stoull(text) != *instance)
@@ -505,6 +516,18 @@ struct BrowserService::State {
         return result["result"]["value"];
     }
     void open(const std::string& owner, bool text_only, Clock::time_point deadline, const Cancel& cancel) {
+        const auto began = Clock::now();
+        const auto diagnose = [&](std::string_view phase) {
+            if (options.launch_diagnostics) {
+                const auto elapsed = std::chrono::duration_cast<Millis>(Clock::now() - began).count();
+                try {
+                    options.launch_diagnostics("phase=" + std::string(phase) + " elapsed_ms=" +
+                                               std::to_string(elapsed));
+                } catch (...) {
+                }
+            }
+        };
+        diagnose("resolve-browser");
         if (session)
             throw Error("BROWSER_BUSY: close the existing session or wait for its idle expiry");
         if (stopping->cancelled())
@@ -512,6 +535,8 @@ struct BrowserService::State {
         auto executable = chromium_path(options);
         if (!executable)
             throw Error("BROWSER_UNAVAILABLE: install Chromium or configure DEVBOX_BROWSER_EXECUTABLE");
+        if (options.launch_diagnostics)
+            diagnose("executable=" + path_text(*executable));
 #ifndef _WIN32
         if (geteuid() == 0)
             throw Error("BROWSER_SANDBOX_REQUIRED: launch Devbox as a non-root user");
@@ -525,6 +550,7 @@ struct BrowserService::State {
         owned->text_only = text_only;
         owned->shared = options.shared_profile.has_value();
         owned->proxy = std::make_unique<BrowserProxy>(options.fixture_port);
+        diagnose("proxy-ready");
         fs::path endpoint_profile;
         if (owned->shared) {
             const auto daemon = shared_owner();
@@ -540,13 +566,15 @@ struct BrowserService::State {
             if (chmod(owned->profile.c_str(), 0700) != 0)
                 throw Error("BROWSER_PROFILE_PERMISSIONS");
 #endif
-            std::vector<std::string> args{options.headed ? "--ozone-platform=x11" : "--headless=new",
-                                          "--remote-debugging-address=127.0.0.1",
+            std::vector<std::string> args{"--remote-debugging-address=127.0.0.1",
                                           "--remote-debugging-port=0",
                                           "--user-data-dir=" + path_text(owned->profile),
                                           "--no-first-run",
                                           "--no-default-browser-check",
                                           "--disable-background-networking",
+                                          "--disable-background-timer-throttling",
+                                          "--disable-backgrounding-occluded-windows",
+                                          "--disable-renderer-backgrounding",
                                           "--disable-component-update",
                                           "--disable-sync",
                                           "--disable-extensions",
@@ -564,9 +592,21 @@ struct BrowserService::State {
                                           "--window-size=1280,800",
                                           "--password-store=basic",
                                           "about:blank"};
+            if (!options.headed)
+                args.insert(args.begin(), "--headless=new");
+            else if (config->platform.is_linux)
+                args.insert(args.begin(), "--ozone-platform=x11");
+            if (options.compatibility)
+                args.insert(args.begin(), "--disable-blink-features=AutomationControlled");
+#ifdef _WIN32
+            // The controlled window is intentionally hidden in headless mode.
+            // Native occlusion must not suspend the compositor needed for capture.
+            args.insert(args.end() - 1, "--disable-features=CalculateNativeWinOcclusion");
+#endif
             auto* pointer = owned.get();
             ProcessOptions process;
             process.env = worker_environment();
+#ifndef _WIN32
             if (options.headed) {
                 if (!config->platform.is_linux || !environment("DISPLAY") || !environment("XAUTHORITY"))
                     throw Error("BROWSER_HEADED_UNAVAILABLE: an authorized Linux X11 display is required");
@@ -575,6 +615,7 @@ struct BrowserService::State {
                     if (const auto value = environment(key))
                         (*process.env)[key] = *value;
             }
+#endif
             process.timeout = options.lifetime;
             process.termination_grace = Millis(1000);
             process.max_capture_chars = 4096;
@@ -584,15 +625,30 @@ struct BrowserService::State {
                 if (observer)
                     observer(pid);
             };
-            owned->runner = std::thread([pointer, executable = *executable, args = std::move(args), process] {
+            owned->runner = std::thread([pointer, executable = *executable, args = std::move(args), process,
+                                         diagnostics = options.launch_diagnostics] {
+                const auto report = [&](std::string_view message) noexcept {
+                    if (diagnostics && !message.empty()) {
+                        try {
+                            diagnostics(message);
+                        } catch (...) {
+                        }
+                    }
+                };
                 try {
-                    spawn_process(path_text(executable), args, process, pointer->lifetime);
+                    const auto output =
+                        spawn_process(path_text(executable), args, process, pointer->lifetime);
+                    report(output.stderr_text);
+                } catch (const ProcessError& error) {
+                    pointer->launch_error = std::string(error.what()).substr(0, 1024);
+                    report(error.stderr_text);
                 } catch (const std::exception& error) {
                     pointer->launch_error = std::string(error.what()).substr(0, 1024);
                 }
                 pointer->exited.store(true, std::memory_order_release);
             });
             session = std::move(owned);
+            diagnose("process-dispatched");
             while (!fs::is_regular_file(session->profile / "DevToolsActivePort")) {
                 cancel->check();
                 if (session->exited.load(std::memory_order_acquire))
@@ -602,14 +658,23 @@ struct BrowserService::State {
                 cancel->wait_for(Millis(25));
             }
             endpoint_profile = session->profile;
+            diagnose("endpoint-file-ready");
         }
         session->protocol = std::make_unique<BrowserProtocol>();
         // A stale endpoint must not consume the entire navigation allowance.
         const auto connection_deadline = std::min(deadline, Clock::now() + Millis(3000));
-        connect_browser(*session->protocol, endpoint_profile, connection_deadline, cancel);
+        try {
+            connect_browser(*session->protocol, endpoint_profile, connection_deadline, cancel);
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception& error) {
+            throw Error(std::string(error.what()) + " [CDP connect]");
+        }
+        diagnose("cdp-connected");
         const auto version = command("Browser.getVersion", Json::object(), connection_deadline, cancel, true);
         session->browser_version = {{"product", json_string(version, "product")},
                                     {"protocol_version", json_string(version, "protocolVersion")}};
+        diagnose("version=" + json_string(version, "product"));
         if (session->shared) {
             session->context = json_string(
                 command("Target.createBrowserContext",
@@ -646,6 +711,7 @@ struct BrowserService::State {
                                 deadline, cancel, true),
                         "sessionId");
         command("Page.enable", Json::object(), deadline, cancel);
+        diagnose("page-enabled");
         session->main_frame = json_string(frame(deadline, cancel), "id");
         session->protocol->on_event(
             [owned = session.get()](const Json& event, Clock::time_point, const Cancel&) {
@@ -685,15 +751,20 @@ struct BrowserService::State {
                 cancel);
     }
     BrowserObservation observe(const Json& args, Clock::time_point deadline, const Cancel& cancel) {
+        // Activate only the controlled headless target, not a user's desktop
+        // window, before reading its DOM and requesting the next captured frame.
+        if (json_bool(args, "screenshot", true) && !options.headed)
+            command("Page.bringToFront", Json::object(), deadline, cancel);
         auto before = frame(deadline, cancel);
         auto data = evaluate(observe_script, deadline, cancel);
         std::string image;
-        if (json_bool(args, "screenshot", true))
+        if (json_bool(args, "screenshot", true)) {
             image =
                 json_string(command("Page.captureScreenshot",
                                     {{"format", "jpeg"}, {"quality", 65}, {"captureBeyondViewport", false}},
                                     deadline, cancel),
                             "data");
+        }
         if (image.size() > 2 * 1024 * 1024)
             throw Error("BROWSER_IMAGE_LIMIT");
         const auto after = frame(deadline, cancel);
@@ -713,6 +784,7 @@ struct BrowserService::State {
         data["network"] = session->proxy->metrics();
         data["browser"] = session->browser_version;
         data["browser"]["mode"] = session->shared ? "managed_process_isolated_context" : "owned_process";
+        data["browser"]["compatibility_requested"] = options.compatibility;
         data["render_mode"] = session->text_only ? "text" : "full";
         data["omitted_network_resources"] = session->omitted_resources;
         if (session->text_only)
@@ -803,6 +875,7 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
               state.session && state.session->owner == principal ? Json(state.session->id) : Json()},
              {"session_limit", 1},
              {"headed", state.options.headed},
+             {"compatibility_requested", state.options.compatibility},
              {"default_render_mode", state.options.text_only ? "text" : "full"},
              {"idle_timeout_ms", state.options.idle_timeout.count()},
              {"hard_lifetime_ms", state.options.lifetime.count()},
