@@ -599,6 +599,11 @@ struct BrowserService::State {
             if (options.compatibility)
                 args.insert(args.begin(), "--disable-blink-features=AutomationControlled");
 #ifdef _WIN32
+            // Chrome otherwise may relaunch through the interactive shell with
+            // a different token and exit this owned process before DevTools is
+            // ready. Its explicit automation mode retains process/job ownership.
+            // Renderer sandboxing and the existing network gate remain enabled.
+            args.insert(args.end() - 1, "--enable-automation");
             // The controlled window is intentionally hidden in headless mode.
             // Native occlusion must not suspend the compositor needed for capture.
             args.insert(args.end() - 1, "--disable-features=CalculateNativeWinOcclusion");
@@ -638,6 +643,8 @@ struct BrowserService::State {
                 try {
                     const auto output =
                         spawn_process(path_text(executable), args, process, pointer->lifetime);
+                    pointer->launch_error = "Chromium exited before DevTools readiness (exit_code=" +
+                                            std::to_string(output.exit_code) + ")";
                     report(output.stderr_text);
                 } catch (const ProcessError& error) {
                     pointer->launch_error = std::string(error.what()).substr(0, 1024);
