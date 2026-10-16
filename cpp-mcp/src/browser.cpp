@@ -485,7 +485,9 @@ struct BrowserService::State {
     void settle(const Json& navigation, std::string_view previous_loader, Clock::time_point deadline,
                 const Cancel& cancel) {
         const auto loader = json_string(navigation, "loaderId");
-        const auto ready_by = std::min(deadline, Clock::now() + Millis(15000));
+        // Slow renderers can still produce a valid observation within the
+        // existing 40-second action budget. Do not truncate them at 15 seconds.
+        const auto ready_by = std::min(deadline, Clock::now() + Millis(30000));
         std::string candidate_loader, candidate_url;
         std::optional<Clock::time_point> readable_since;
         while (Clock::now() < ready_by) {

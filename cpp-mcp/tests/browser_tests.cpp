@@ -284,6 +284,15 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                     if (request.target() == "/hash-route")
                         response.body() =
                             R"HTML(<!doctype html><title>Hash route fixture</title><p id="route">Initial route</p><script>setTimeout(()=>{location.hash='phone';document.querySelector('#route').innerText='Loading hash route';setTimeout(()=>document.querySelector('#route').innerText='Hash route price GBP 749.00',450)},300)</script>)HTML";
+                    if (request.target() == "/slow-readable")
+                        response.body() =
+                            R"HTML(<!doctype html><title>Slow readable fixture</title><p id="slow">Loading fixture offer</p><script src="/slow-script"></script>)HTML";
+                    if (request.target() == "/slow-script") {
+                        std::this_thread::sleep_for(Millis(16000));
+                        response.set(http::field::content_type, "application/javascript");
+                        response.body() =
+                            "document.querySelector('#slow').innerText='Slow fixture price GBP 849.00';";
+                    }
                     response.prepare_payload();
                     http::write(socket, response);
                 } catch (...) {
@@ -532,6 +541,14 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                 json_string(routed.data, "text").find("GBP 749.00") != std::string::npos &&
                 json_bool(routed.data, "navigation_stable"),
             "hash-route changes restart the document settling interval");
+    auto slow = browser.perform(
+        {{"action", "navigate"},
+         {"session_id", redirected_id},
+         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/slow-readable"}},
+        "test");
+    require(json_string(slow.data, "text").find("GBP 849.00") != std::string::npos &&
+                json_bool(slow.data, "navigation_stable"),
+            "a page readable after fifteen seconds fits within the overall action budget");
     auto navigation_cancel = std::make_shared<Cancellation>();
     auto abort_navigation = std::async(std::launch::async, [navigation_cancel] {
         std::this_thread::sleep_for(Millis(250));
