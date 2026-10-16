@@ -54,6 +54,8 @@ Linux process launch also handles kernels or container policies that reject `clo
 
 ## Reproducible validation
 
+Page settlement follows committed client redirects rather than waiting for the first navigation's loader forever. It excludes the preceding document and rechecks the final loader, URL and readable state after the settling interval. The same 15-second navigation bound and cancellation still apply; same-document fragment navigation does not require a new loader. This corrects a controller timeout, not a site's access policy.
+
 `devbox-browser-tests` tests protocol framing, nested/out-of-order replies, command-error recovery, cancellation, deadlines, oversized replies and private-address denial. Add `--chromium` for real JavaScript price rendering, JPEG output, HTML hash integrity, page/nested-pane scrolling, click, principal ownership, stale-input rejection and explicit cleanup. The managed-process fixture also verifies context proxy use, cookie/local-storage isolation from the default profile and preceding session, PID-identity rejection, context disposal, and survival of the managed browser. Windows and Linux CI run the real browser fixture in headless and headed modes; Linux uses Xvfb for the headed run.
 
 The opt-in comparison uses actual MCP calls against an isolated server root:

@@ -273,6 +273,17 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                         response.body() =
                             R"(<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="blue"/></svg>)";
                     }
+                    if (request.target() == "/client-redirect")
+                        response.body() =
+                            R"HTML(<!doctype html><title>Redirecting fixture</title><script>setTimeout(()=>location.replace('/redirect-target'),25)</script><script src="/hold-script"></script>)HTML";
+                    if (request.target() == "/hold-script") {
+                        std::this_thread::sleep_for(Millis(800));
+                        response.set(http::field::content_type, "application/javascript");
+                        response.body() = "/* delayed parser-blocking resource */";
+                    }
+                    if (request.target() == "/hash-route")
+                        response.body() =
+                            R"HTML(<!doctype html><title>Hash route fixture</title><p id="route">Initial route</p><script>setTimeout(()=>{location.hash='phone';document.querySelector('#route').innerText='Loading hash route';setTimeout(()=>document.querySelector('#route').innerText='Hash route price GBP 749.00',450)},300)</script>)HTML";
                     response.prepare_payload();
                     http::write(socket, response);
                 } catch (...) {
@@ -484,6 +495,60 @@ void browser_tests(bool headed = false, bool compatibility = false) {
             std::this_thread::sleep_for(Millis(20));
         require(!process_matches_instance(pid, instance), "owned Chromium process terminated after close");
     }
+    auto redirected = browser.perform(
+        {{"action", "open"},
+         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/client-redirect"},
+         {"include_html", true}},
+        "test");
+    require(json_string(redirected.data, "url").ends_with("/redirect-target") &&
+                json_string(redirected.data, "text").find("GBP 649.00") != std::string::npos &&
+                json_bool(redirected.data, "navigation_stable"),
+            "client redirect settles on its final readable document");
+    const auto redirected_id = json_string(redirected.data, "session_id");
+    auto navigated =
+        browser.perform({{"action", "navigate"},
+                         {"session_id", redirected_id},
+                         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/client-redirect"}},
+                        "test");
+    require(json_string(navigated.data, "url").ends_with("/redirect-target") &&
+                json_string(navigated.data, "text").find("GBP 649.00") != std::string::npos &&
+                json_bool(navigated.data, "navigation_stable"),
+            "existing session settles after a client redirect");
+    auto fragment = browser.perform(
+        {{"action", "navigate"},
+         {"session_id", redirected_id},
+         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/redirect-target#section"}},
+        "test");
+    require(json_string(fragment.data, "url").ends_with("/redirect-target#section") &&
+                json_string(fragment.data, "text").find("GBP 649.00") != std::string::npos &&
+                json_bool(fragment.data, "navigation_stable"),
+            "same-document navigation does not require a new loader");
+    auto routed = browser.perform(
+        {{"action", "navigate"},
+         {"session_id", redirected_id},
+         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/hash-route"}},
+        "test");
+    require(json_string(routed.data, "url").ends_with("/hash-route#phone") &&
+                json_string(routed.data, "text").find("GBP 749.00") != std::string::npos &&
+                json_bool(routed.data, "navigation_stable"),
+            "hash-route changes restart the document settling interval");
+    auto navigation_cancel = std::make_shared<Cancellation>();
+    auto abort_navigation = std::async(std::launch::async, [navigation_cancel] {
+        std::this_thread::sleep_for(Millis(250));
+        navigation_cancel->cancel();
+    });
+    bool cancelled = false;
+    try {
+        browser.perform({{"action", "navigate"},
+                         {"session_id", redirected_id},
+                         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/client-redirect"}},
+                        "test", navigation_cancel);
+    } catch (const Cancelled&) {
+        cancelled = true;
+    }
+    abort_navigation.get();
+    require(cancelled, "redirect settlement remains cancellable");
+    browser.perform({{"action", "close"}, {"session_id", redirected.data.at("session_id")}}, "test");
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
 void shared_browser_tests(bool headed, bool compatibility) {
