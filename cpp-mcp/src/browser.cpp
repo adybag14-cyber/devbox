@@ -273,6 +273,15 @@ struct BrowserService::State {
         std::unique_ptr<BrowserProtocol> protocol;
         Json last = Json::object();
         std::thread runner;
+        std::function<void(std::string_view)> diagnostics;
+        void diagnose(std::string_view message) const {
+            if (diagnostics) {
+                try {
+                    diagnostics(message);
+                } catch (...) {
+                }
+            }
+        }
         ~Session() {
             // Let Chromium close its own helpers and profile before enforcing the
             // supervisor's process-group/Job Object deadline.
@@ -296,10 +305,18 @@ struct BrowserService::State {
             std::error_code error;
             if (!profile.empty() && profile.filename() == "devbox-browser-" + id &&
                 fs::is_directory(profile, error) && !fs::is_symlink(fs::symlink_status(profile, error))) {
-                for (unsigned attempt = 0; attempt < 5; ++attempt) {
+                // Windows can retain a Chromium profile handle briefly after the owned
+                // Job Object closes. Retry only this exact profile, within a fixed bound.
+                const auto cleanup_deadline = Clock::now() + Millis(2000);
+                for (unsigned attempt = 0;; ++attempt) {
                     error.clear();
-                    fs::remove_all(profile, error);
-                    if (!error)
+                    const auto removed = fs::remove_all(profile, error);
+                    if (diagnostics)
+                        diagnose("cleanup profile=" + profile.filename().string() +
+                                 " attempt=" + std::to_string(attempt) +
+                                 " removed=" + (error ? std::string("unknown") : std::to_string(removed)) +
+                                 " error=" + std::to_string(error.value()));
+                    if (!error || Clock::now() >= cleanup_deadline)
                         break;
                     std::this_thread::sleep_for(Millis(50));
                 }
@@ -618,6 +635,7 @@ struct BrowserService::State {
             throw Error("BROWSER_RESOURCE_PRESSURE: less than 192 MiB host memory available");
         start_reaper();
         auto owned = std::make_unique<Session>();
+        owned->diagnostics = options.launch_diagnostics;
         owned->owner = owner;
         owned->text_only = text_only;
         owned->shared = options.shared_profile.has_value();

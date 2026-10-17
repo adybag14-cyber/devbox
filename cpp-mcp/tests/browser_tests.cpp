@@ -10,6 +10,9 @@
 #include <iostream>
 #include <sstream>
 #include <thread>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 using namespace devbox;
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -359,10 +362,15 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     config->host_exec_enabled = true;
     config->platform = Platform::detect();
     std::atomic_uint32_t launched_pid{0};
+    std::atomic_bool cleanup_attempted{false};
     BrowserOptions options;
     options.headed = headed;
     options.compatibility = compatibility;
-    options.launch_diagnostics = browser_diagnostics;
+    options.launch_diagnostics = [&](std::string_view message) {
+        browser_diagnostics(message);
+        if (message.starts_with("cleanup profile="))
+            cleanup_attempted = true;
+    };
     options.pid_observer = [&](std::uint32_t pid) { launched_pid.store(pid); };
     options.fixture_port = page.port();
     options.lifetime = Millis(60000);
@@ -493,8 +501,26 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                             "test");
         },
         "PRIVATE");
+#ifdef _WIN32
+    const auto delayed_file = profile / "fixture-delayed-close";
+    const auto delayed_handle =
+        CreateFileW(delayed_file.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(delayed_handle != INVALID_HANDLE_VALUE, "owned cleanup-delay fixture opened");
+    auto release_handle = std::async(std::launch::async, [&, delayed_handle] {
+        const auto until = Clock::now() + Millis(5000);
+        while (!cleanup_attempted && Clock::now() < until)
+            std::this_thread::sleep_for(Millis(5));
+        // Reproduce a real Windows sharing violation beyond the old 250ms retry window.
+        std::this_thread::sleep_for(Millis(700));
+        CloseHandle(delayed_handle);
+    });
+#endif
     require(json_bool(browser.perform({{"action", "close"}, {"session_id", id}}, "test").data, "closed"),
             "explicit close completed");
+#ifdef _WIN32
+    release_handle.get();
+#endif
     require(!json_bool(browser.perform({{"action", "status"}}, "test").data, "active_session"),
             "owned browser cleared");
     require(!fs::exists(profile), "private browser profile removed after close");
