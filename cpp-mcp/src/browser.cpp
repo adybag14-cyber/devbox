@@ -986,9 +986,13 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
                 throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
             state.settle(nav, previous_loader, deadline, cancel);
             return state.observe(args, deadline, cancel);
+        } catch (const Cancelled&) {
+            if (state.session && state.session->owner == principal)
+                state.end_session("open_cancelled");
+            throw;
         } catch (...) {
             if (state.session && state.session->owner == principal)
-                state.session.reset();
+                state.end_session("open_failed");
             throw;
         }
     }
@@ -1002,15 +1006,15 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
             "BROWSER_SESSION_NOT_FOUND: session expired, was closed, or belongs to another principal");
     }
     auto& session = *state.session;
-    session.touched = Clock::now();
     if (action == "close") {
         state.end_session("closed");
         return {{{"closed", true}}, {}};
     }
     if (session.exited ||
         (session.shared && !process_matches_instance(session.pid.load(), session.instance))) {
-        state.session.reset();
-        throw Error("BROWSER_EXITED");
+        state.end_session("browser_exited");
+        throw Error(
+            "BROWSER_SESSION_ENDED: browser_exited; open a new session and obtain a fresh observation");
     }
     if (action == "read_html") {
         if (session.html_hash.empty() || json_string(args, "html_sha256") != session.html_hash)
@@ -1026,6 +1030,8 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
             --count;
         if (!count && offset < session.html.size())
             throw Error("BROWSER_HTML_RANGE: max_bytes too small for the next character");
+        // Reading valid retained evidence is activity; failed reads and input validation are not.
+        session.touched = Clock::now();
         return {{{"sha256", session.html_hash},
                  {"offset", offset},
                  {"bytes", count},

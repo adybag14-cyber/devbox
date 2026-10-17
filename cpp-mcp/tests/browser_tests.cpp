@@ -789,6 +789,19 @@ void session_allowance_tests() {
         auto value = expiring.perform(open, "owner");
         const auto session = json_string(value.data, "session_id");
         const auto html_hash = json_string(value.data["html_artifact"], "sha256");
+        if (!hard) {
+            std::this_thread::sleep_for(Millis(650));
+            const auto html = expiring.perform({{"action", "read_html"},
+                                                {"session_id", session},
+                                                {"html_sha256", html_hash},
+                                                {"max_bytes", 128}},
+                                               "owner");
+            require(json_uint(html.data["session_budget"], "idle_remaining_ms") > 900,
+                    "a successful retained HTML read renews the idle allowance");
+            std::this_thread::sleep_for(Millis(650));
+            require(json_bool(expiring.perform({{"action", "status"}}, "owner").data, "active_session"),
+                    "valid evidence reading preserves the session beyond the prior idle deadline");
+        }
         const auto deadline = Clock::now() + Millis(15000);
         Json status;
         do {
@@ -806,6 +819,20 @@ void session_allowance_tests() {
                     require(std::string_view(e.what()).find("BROWSER_SESSION_ENDED: hard_lifetime") !=
                                 std::string_view::npos,
                             "hard lifetime has an explicit reason despite continuing activity");
+                }
+            } else {
+                try {
+                    expiring.perform({{"action", "read_html"},
+                                      {"session_id", session},
+                                      {"html_sha256", "invalid"},
+                                      {"max_bytes", 128}},
+                                     "owner");
+                    throw Error("invalid HTML read was accepted");
+                } catch (const Error& e) {
+                    const std::string_view message(e.what());
+                    require(message.find("BROWSER_HTML_CHANGED") != message.npos ||
+                                message.find("BROWSER_SESSION_ENDED: idle_timeout") != message.npos,
+                            "invalid reads are rejected without renewing the idle allowance");
                 }
             }
             status = expiring.perform({{"action", "status"}}, "owner").data;
