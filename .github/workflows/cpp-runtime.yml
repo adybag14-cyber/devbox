@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
           cache: npm
@@ -215,7 +215,7 @@ jobs:
         run: node cpp-mcp/scripts/macos-capture-smoke.mjs
       - name: Upload native artifacts and test evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: cpp-native-${{ matrix.os }}-${{ matrix.sanitizers }}
           path: |
@@ -248,7 +248,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -290,7 +290,7 @@ jobs:
           cp '.cpp-build/android/${{ matrix.abi }}/setup-tui/devbox-tui' .cpp-build/android-package/
           file .cpp-build/android-package/*
           node cpp-mcp/scripts/record-artifacts.mjs --android '${{ matrix.abi }}' --package .cpp-build/android-package
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: cpp-android-${{ matrix.abi }}
           path: .cpp-build/android-package/
@@ -312,10 +312,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: cpp-android-x86_64
           path: .cpp-build/termux-artifact
@@ -340,10 +340,10 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: cpp-native-ubuntu-24.04-0
           path: .cpp-build/distro-artifact
@@ -361,7 +361,7 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
       - name: Prefer the public cache for container qualification
@@ -374,7 +374,7 @@ jobs:
       - name: Build and validate against native musl userspace
         run: node cpp-mcp/scripts/linux-distro-smoke.mjs alpine
       - name: Upload verified musl artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: cpp-musl-alpine-3.23
           path: .cpp-build/musl-package/
@@ -401,7 +401,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -445,7 +445,7 @@ jobs:
           key: cpp-security-${{ matrix.os }}-${{ steps.security-cache-identity.outputs.key }}
       - name: Instrumented native qualification
         run: node cpp-mcp/scripts/security-qualification.mjs '${{ matrix.mode }}'
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
           name: cpp-security-${{ matrix.mode }}
@@ -478,10 +478,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: 24
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           pattern: cpp-*
           path: .cpp-build/release-input
@@ -489,7 +489,7 @@ jobs:
         run: node cpp-mcp/scripts/package-release.mjs
       - name: Retain release assurance results even when promotion is blocked
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: cpp-release-assurance-report
           path: |
@@ -513,7 +513,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: node cpp-mcp/scripts/native-signed-install-smoke.mjs
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: cpp-release-assets
           path: .cpp-build/release-assets/
