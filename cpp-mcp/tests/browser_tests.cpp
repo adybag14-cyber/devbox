@@ -751,6 +751,82 @@ void shared_browser_tests(bool headed, bool compatibility) {
     require(!fs::exists(profile), "fixture owner removes only its own managed profile");
     std::cout << "managed browser context, proxy, cookie/storage isolation, identity and disposal passed\n";
 }
+void session_allowance_tests() {
+    PageFixture page;
+    auto config = std::make_shared<Config>();
+    config->runtime_mode = RuntimeMode::host;
+    config->host_exec_enabled = true;
+    config->platform = Platform::detect();
+    const Json open{{"action", "open"},
+                    {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"},
+                    {"include_html", true}};
+    BrowserOptions defaults;
+    defaults.fixture_port = page.port();
+    BrowserService browser(config, defaults);
+    auto first = browser.perform(open, "slow-agent");
+    const auto id = json_string(first.data, "session_id");
+    const auto profile = fs::temp_directory_path() / ("devbox-browser-" + id);
+    std::cerr << "[browser] preserving a real session across a 65-second model-thinking pause\n"
+              << std::flush;
+    std::this_thread::sleep_for(Millis(65000));
+    auto resumed = browser.perform({{"action", "observe"}, {"session_id", id}}, "slow-agent");
+    require(json_string(resumed.data, "text").find("GBP 649.00") != std::string::npos,
+            "a normal model-thinking pause does not discard the live page");
+    require(json_uint(resumed.data["session_budget"], "idle_remaining_ms") > 60000 &&
+                json_uint(resumed.data["session_budget"], "hard_remaining_ms") > 0,
+            "fresh observation reports a usable bounded continuation allowance");
+    require(browser.perform({{"action", "status"}}, "other").data["session_budget"].is_null(),
+            "another principal cannot read the active session budget");
+    browser.perform({{"action", "close"}, {"session_id", id}}, "slow-agent");
+    require(!fs::exists(profile), "longer idle allowance still disposes the owned profile on close");
+
+    for (const bool hard : {false, true}) {
+        BrowserOptions bounded;
+        bounded.fixture_port = page.port();
+        bounded.idle_timeout = Millis(hard ? 10000 : 1000);
+        bounded.lifetime = Millis(hard ? 8000 : 20000);
+        BrowserService expiring(config, bounded);
+        auto value = expiring.perform(open, "owner");
+        const auto session = json_string(value.data, "session_id");
+        const auto html_hash = json_string(value.data["html_artifact"], "sha256");
+        const auto deadline = Clock::now() + Millis(15000);
+        Json status;
+        do {
+            std::this_thread::sleep_for(Millis(100));
+            if (hard) {
+                try {
+                    const auto html = expiring.perform({{"action", "read_html"},
+                                                        {"session_id", session},
+                                                        {"html_sha256", html_hash},
+                                                        {"max_bytes", 128}},
+                                                       "owner");
+                    require(html.data["session_budget"].is_object(),
+                            "HTML reads disclose remaining lifetime");
+                } catch (const Error& e) {
+                    require(std::string_view(e.what()).find("BROWSER_SESSION_ENDED: hard_lifetime") !=
+                                std::string_view::npos,
+                            "hard lifetime has an explicit reason despite continuing activity");
+                }
+            }
+            status = expiring.perform({{"action", "status"}}, "owner").data;
+        } while (json_bool(status, "active_session") && Clock::now() < deadline);
+        require(!json_bool(status, "active_session"),
+                "status checks never renew idle expiry and activity never renews hard expiry");
+        const std::string reason = hard ? "hard_lifetime" : "idle_timeout";
+        require(status["last_session_end"]["reason"] == reason &&
+                    status["last_session_end"]["session_id"] == session && status["session_budget"].is_null(),
+                "the owner receives the actual expiry reason without retained page data");
+        require(expiring.perform({{"action", "status"}}, "other").data["last_session_end"].is_null(),
+                "expiry diagnostics are private to their principal");
+        rejects([&] { expiring.perform({{"action", "observe"}, {"session_id", session}}, "other"); },
+                "SESSION_NOT_FOUND");
+        rejects([&] { expiring.perform({{"action", "observe"}, {"session_id", session}}, "owner"); },
+                "BROWSER_SESSION_ENDED: " + reason);
+        require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + session)),
+                "expiry removes the exact owned profile");
+    }
+    std::cout << "model-thinking allowance, expiry bounds, owner diagnostics and cleanup passed\n";
+}
 int main(int argc, char** argv) {
     try {
         protocol_tests();
@@ -763,6 +839,8 @@ int main(int argc, char** argv) {
             const bool headed = mode == "--chromium-headed", compatibility = argc == 3;
             browser_tests(headed, compatibility);
             shared_browser_tests(headed, compatibility);
+            if (!headed && !compatibility)
+                session_allowance_tests();
         }
         std::cout << "browser checks passed\n";
         return 0;
