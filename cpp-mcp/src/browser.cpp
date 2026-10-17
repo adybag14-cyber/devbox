@@ -273,6 +273,15 @@ struct BrowserService::State {
         std::unique_ptr<BrowserProtocol> protocol;
         Json last = Json::object();
         std::thread runner;
+        std::function<void(std::string_view)> diagnostics;
+        void diagnose(std::string_view message) const {
+            if (diagnostics) {
+                try {
+                    diagnostics(message);
+                } catch (...) {
+                }
+            }
+        }
         ~Session() {
             // Let Chromium close its own helpers and profile before enforcing the
             // supervisor's process-group/Job Object deadline.
@@ -296,10 +305,18 @@ struct BrowserService::State {
             std::error_code error;
             if (!profile.empty() && profile.filename() == "devbox-browser-" + id &&
                 fs::is_directory(profile, error) && !fs::is_symlink(fs::symlink_status(profile, error))) {
-                for (unsigned attempt = 0; attempt < 5; ++attempt) {
+                // Windows can retain a Chromium profile handle briefly after the owned
+                // Job Object closes. Retry only this exact profile, within a fixed bound.
+                const auto cleanup_deadline = Clock::now() + Millis(2000);
+                for (unsigned attempt = 0;; ++attempt) {
                     error.clear();
-                    fs::remove_all(profile, error);
-                    if (!error)
+                    const auto removed = fs::remove_all(profile, error);
+                    if (diagnostics)
+                        diagnose("cleanup profile=" + profile.filename().string() +
+                                 " attempt=" + std::to_string(attempt) +
+                                 " removed=" + (error ? std::string("unknown") : std::to_string(removed)) +
+                                 " error=" + std::to_string(error.value()));
+                    if (!error || Clock::now() >= cleanup_deadline)
                         break;
                     std::this_thread::sleep_for(Millis(50));
                 }
@@ -307,6 +324,52 @@ struct BrowserService::State {
         }
     };
     std::unique_ptr<Session> session;
+    struct EndedSession {
+        std::string id, owner, reason, ended_at;
+    };
+    // Keep one small diagnostic only; never retain a page, URL, image or HTML after expiry.
+    std::optional<EndedSession> last_ended;
+    void end_session(std::string reason) {
+        if (session) {
+            last_ended = EndedSession{session->id, session->owner, std::move(reason), utc_now()};
+            session.reset();
+        }
+    }
+    void expire_session() {
+        if (!session)
+            return;
+        const auto now = Clock::now();
+        if (now - session->created >= options.lifetime)
+            end_session("hard_lifetime");
+        else if (now - session->touched >= options.idle_timeout)
+            end_session("idle_timeout");
+        else if (session->exited)
+            end_session("browser_exited");
+        else if (session->shared && !process_matches_instance(session->pid.load(), session->instance))
+            end_session("managed_browser_changed");
+        else if (available_memory().value_or(UINT64_MAX) < 64 * 1024 * 1024)
+            end_session("resource_pressure");
+    }
+    Json session_budget() const {
+        if (!session)
+            return Json();
+        const auto now = Clock::now();
+        const auto remaining = [now](Clock::time_point start, Millis allowance) {
+            return std::max<std::int64_t>(
+                0, std::chrono::duration_cast<Millis>(start + allowance - now).count());
+        };
+        return {{"idle_timeout_ms", options.idle_timeout.count()},
+                {"hard_lifetime_ms", options.lifetime.count()},
+                {"idle_remaining_ms", remaining(session->touched, options.idle_timeout)},
+                {"hard_remaining_ms", remaining(session->created, options.lifetime)}};
+    }
+    Json ended_session(std::string_view principal) const {
+        if (!last_ended || last_ended->owner != principal)
+            return Json();
+        return {{"session_id", last_ended->id},
+                {"reason", last_ended->reason},
+                {"ended_at", last_ended->ended_at}};
+    }
     State(std::shared_ptr<const Config> c, BrowserOptions o) : config(std::move(c)), options(std::move(o)) {
         options.headed = env_bool("DEVBOX_BROWSER_HEADED", options.headed);
         options.text_only = env_bool("DEVBOX_BROWSER_TEXT_ONLY", options.text_only);
@@ -412,13 +475,8 @@ struct BrowserService::State {
         janitor = std::thread([this] {
             while (!stopping->wait_for(Millis(500))) {
                 std::unique_lock lock(mutex, std::try_to_lock);
-                if (lock && session &&
-                    (session->exited ||
-                     (session->shared && !process_matches_instance(session->pid.load(), session->instance)) ||
-                     Clock::now() - session->touched >= options.idle_timeout ||
-                     Clock::now() - session->created >= options.lifetime ||
-                     available_memory().value_or(UINT64_MAX) < 64 * 1024 * 1024))
-                    session.reset();
+                if (lock)
+                    expire_session();
             }
         });
     }
@@ -577,6 +635,7 @@ struct BrowserService::State {
             throw Error("BROWSER_RESOURCE_PRESSURE: less than 192 MiB host memory available");
         start_reaper();
         auto owned = std::make_unique<Session>();
+        owned->diagnostics = options.launch_diagnostics;
         owned->owner = owner;
         owned->text_only = text_only;
         owned->shared = options.shared_profile.has_value();
@@ -867,9 +926,10 @@ struct BrowserService::State {
                 data["offers"] = Json::object();
             }
         }
-        session->last = data;
         // Slow navigation/rendering must not consume the caller's idle allowance.
         session->touched = Clock::now();
+        data["session_budget"] = session_budget();
+        session->last = data;
         return {std::move(data), std::move(image)};
     }
 };
@@ -887,6 +947,8 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
     cancel->check();
     auto& state = *state_;
     std::lock_guard lock(state.mutex);
+    // A request arriving between janitor ticks must not revive an expired session.
+    state.expire_session();
     const auto action = json_string(args, "action");
     if (action == "status") {
         bool managed_ready = true;
@@ -917,6 +979,9 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
              {"default_render_mode", state.options.text_only ? "text" : "full"},
              {"idle_timeout_ms", state.options.idle_timeout.count()},
              {"hard_lifetime_ms", state.options.lifetime.count()},
+             {"session_budget",
+              state.session && state.session->owner == principal ? state.session_budget() : Json()},
+             {"last_session_end", state.ended_session(principal)},
              {"available_host_memory_bytes", available_memory().value_or(0)}},
             {}};
     }
@@ -939,26 +1004,35 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
                 throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
             state.settle(nav, previous_loader, deadline, cancel);
             return state.observe(args, deadline, cancel);
+        } catch (const Cancelled&) {
+            if (state.session && state.session->owner == principal)
+                state.end_session("open_cancelled");
+            throw;
         } catch (...) {
             if (state.session && state.session->owner == principal)
-                state.session.reset();
+                state.end_session("open_failed");
             throw;
         }
     }
     if (!state.session || state.session->owner != principal ||
-        json_string(args, "session_id") != state.session->id)
+        json_string(args, "session_id") != state.session->id) {
+        if (state.last_ended && state.last_ended->owner == principal &&
+            json_string(args, "session_id") == state.last_ended->id)
+            throw Error("BROWSER_SESSION_ENDED: " + state.last_ended->reason +
+                        "; open a new session and obtain a fresh observation");
         throw Error(
             "BROWSER_SESSION_NOT_FOUND: session expired, was closed, or belongs to another principal");
+    }
     auto& session = *state.session;
-    session.touched = Clock::now();
     if (action == "close") {
-        state.session.reset();
+        state.end_session("closed");
         return {{{"closed", true}}, {}};
     }
     if (session.exited ||
         (session.shared && !process_matches_instance(session.pid.load(), session.instance))) {
-        state.session.reset();
-        throw Error("BROWSER_EXITED");
+        state.end_session("browser_exited");
+        throw Error(
+            "BROWSER_SESSION_ENDED: browser_exited; open a new session and obtain a fresh observation");
     }
     if (action == "read_html") {
         if (session.html_hash.empty() || json_string(args, "html_sha256") != session.html_hash)
@@ -974,12 +1048,15 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
             --count;
         if (!count && offset < session.html.size())
             throw Error("BROWSER_HTML_RANGE: max_bytes too small for the next character");
+        // Reading valid retained evidence is activity; failed reads and input validation are not.
+        session.touched = Clock::now();
         return {{{"sha256", session.html_hash},
                  {"offset", offset},
                  {"bytes", count},
                  {"total_bytes", session.html.size()},
                  {"text", session.html.substr(offset, count)},
-                 {"next_offset", offset + count}},
+                 {"next_offset", offset + count},
+                 {"session_budget", state.session_budget()}},
                 {}};
     }
     if (action == "observe") {

@@ -10,6 +10,9 @@
 #include <iostream>
 #include <sstream>
 #include <thread>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 using namespace devbox;
 namespace asio = boost::asio;
 namespace beast = boost::beast;
@@ -359,10 +362,15 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     config->host_exec_enabled = true;
     config->platform = Platform::detect();
     std::atomic_uint32_t launched_pid{0};
+    std::atomic_bool cleanup_attempted{false};
     BrowserOptions options;
     options.headed = headed;
     options.compatibility = compatibility;
-    options.launch_diagnostics = browser_diagnostics;
+    options.launch_diagnostics = [&](std::string_view message) {
+        browser_diagnostics(message);
+        if (message.starts_with("cleanup profile="))
+            cleanup_attempted = true;
+    };
     options.pid_observer = [&](std::uint32_t pid) { launched_pid.store(pid); };
     options.fixture_port = page.port();
     options.lifetime = Millis(60000);
@@ -493,8 +501,26 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                             "test");
         },
         "PRIVATE");
+#ifdef _WIN32
+    const auto delayed_file = profile / "fixture-delayed-close";
+    const auto delayed_handle =
+        CreateFileW(delayed_file.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(delayed_handle != INVALID_HANDLE_VALUE, "owned cleanup-delay fixture opened");
+    auto release_handle = std::async(std::launch::async, [&, delayed_handle] {
+        const auto until = Clock::now() + Millis(5000);
+        while (!cleanup_attempted && Clock::now() < until)
+            std::this_thread::sleep_for(Millis(5));
+        // Reproduce a real Windows sharing violation beyond the old 250ms retry window.
+        std::this_thread::sleep_for(Millis(700));
+        CloseHandle(delayed_handle);
+    });
+#endif
     require(json_bool(browser.perform({{"action", "close"}, {"session_id", id}}, "test").data, "closed"),
             "explicit close completed");
+#ifdef _WIN32
+    release_handle.get();
+#endif
     require(!json_bool(browser.perform({{"action", "status"}}, "test").data, "active_session"),
             "owned browser cleared");
     require(!fs::exists(profile), "private browser profile removed after close");
@@ -751,6 +777,109 @@ void shared_browser_tests(bool headed, bool compatibility) {
     require(!fs::exists(profile), "fixture owner removes only its own managed profile");
     std::cout << "managed browser context, proxy, cookie/storage isolation, identity and disposal passed\n";
 }
+void session_allowance_tests() {
+    PageFixture page;
+    auto config = std::make_shared<Config>();
+    config->runtime_mode = RuntimeMode::host;
+    config->host_exec_enabled = true;
+    config->platform = Platform::detect();
+    const Json open{{"action", "open"},
+                    {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"},
+                    {"include_html", true}};
+    BrowserOptions defaults;
+    defaults.fixture_port = page.port();
+    BrowserService browser(config, defaults);
+    auto first = browser.perform(open, "slow-agent");
+    const auto id = json_string(first.data, "session_id");
+    const auto profile = fs::temp_directory_path() / ("devbox-browser-" + id);
+    std::cerr << "[browser] preserving a real session across a 65-second model-thinking pause\n"
+              << std::flush;
+    std::this_thread::sleep_for(Millis(65000));
+    auto resumed = browser.perform({{"action", "observe"}, {"session_id", id}}, "slow-agent");
+    require(json_string(resumed.data, "text").find("GBP 649.00") != std::string::npos,
+            "a normal model-thinking pause does not discard the live page");
+    require(json_uint(resumed.data["session_budget"], "idle_remaining_ms") > 60000 &&
+                json_uint(resumed.data["session_budget"], "hard_remaining_ms") > 0,
+            "fresh observation reports a usable bounded continuation allowance");
+    require(browser.perform({{"action", "status"}}, "other").data["session_budget"].is_null(),
+            "another principal cannot read the active session budget");
+    browser.perform({{"action", "close"}, {"session_id", id}}, "slow-agent");
+    require(!fs::exists(profile), "longer idle allowance still disposes the owned profile on close");
+
+    for (const bool hard : {false, true}) {
+        BrowserOptions bounded;
+        bounded.fixture_port = page.port();
+        bounded.idle_timeout = Millis(hard ? 10000 : 1000);
+        bounded.lifetime = Millis(hard ? 8000 : 20000);
+        BrowserService expiring(config, bounded);
+        auto value = expiring.perform(open, "owner");
+        const auto session = json_string(value.data, "session_id");
+        const auto html_hash = json_string(value.data["html_artifact"], "sha256");
+        if (!hard) {
+            std::this_thread::sleep_for(Millis(650));
+            const auto html = expiring.perform({{"action", "read_html"},
+                                                {"session_id", session},
+                                                {"html_sha256", html_hash},
+                                                {"max_bytes", 128}},
+                                               "owner");
+            require(json_uint(html.data["session_budget"], "idle_remaining_ms") > 900,
+                    "a successful retained HTML read renews the idle allowance");
+            std::this_thread::sleep_for(Millis(650));
+            require(json_bool(expiring.perform({{"action", "status"}}, "owner").data, "active_session"),
+                    "valid evidence reading preserves the session beyond the prior idle deadline");
+        }
+        const auto deadline = Clock::now() + Millis(15000);
+        Json status;
+        do {
+            std::this_thread::sleep_for(Millis(100));
+            if (hard) {
+                try {
+                    const auto html = expiring.perform({{"action", "read_html"},
+                                                        {"session_id", session},
+                                                        {"html_sha256", html_hash},
+                                                        {"max_bytes", 128}},
+                                                       "owner");
+                    require(html.data["session_budget"].is_object(),
+                            "HTML reads disclose remaining lifetime");
+                } catch (const Error& e) {
+                    require(std::string_view(e.what()).find("BROWSER_SESSION_ENDED: hard_lifetime") !=
+                                std::string_view::npos,
+                            "hard lifetime has an explicit reason despite continuing activity");
+                }
+            } else {
+                try {
+                    expiring.perform({{"action", "read_html"},
+                                      {"session_id", session},
+                                      {"html_sha256", "invalid"},
+                                      {"max_bytes", 128}},
+                                     "owner");
+                    throw Error("invalid HTML read was accepted");
+                } catch (const Error& e) {
+                    const std::string_view message(e.what());
+                    require(message.find("BROWSER_HTML_CHANGED") != message.npos ||
+                                message.find("BROWSER_SESSION_ENDED: idle_timeout") != message.npos,
+                            "invalid reads are rejected without renewing the idle allowance");
+                }
+            }
+            status = expiring.perform({{"action", "status"}}, "owner").data;
+        } while (json_bool(status, "active_session") && Clock::now() < deadline);
+        require(!json_bool(status, "active_session"),
+                "status checks never renew idle expiry and activity never renews hard expiry");
+        const std::string reason = hard ? "hard_lifetime" : "idle_timeout";
+        require(status["last_session_end"]["reason"] == reason &&
+                    status["last_session_end"]["session_id"] == session && status["session_budget"].is_null(),
+                "the owner receives the actual expiry reason without retained page data");
+        require(expiring.perform({{"action", "status"}}, "other").data["last_session_end"].is_null(),
+                "expiry diagnostics are private to their principal");
+        rejects([&] { expiring.perform({{"action", "observe"}, {"session_id", session}}, "other"); },
+                "SESSION_NOT_FOUND");
+        rejects([&] { expiring.perform({{"action", "observe"}, {"session_id", session}}, "owner"); },
+                "BROWSER_SESSION_ENDED: " + reason);
+        require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + session)),
+                "expiry removes the exact owned profile");
+    }
+    std::cout << "model-thinking allowance, expiry bounds, owner diagnostics and cleanup passed\n";
+}
 int main(int argc, char** argv) {
     try {
         protocol_tests();
@@ -763,6 +892,8 @@ int main(int argc, char** argv) {
             const bool headed = mode == "--chromium-headed", compatibility = argc == 3;
             browser_tests(headed, compatibility);
             shared_browser_tests(headed, compatibility);
+            if (!headed && !compatibility)
+                session_allowance_tests();
         }
         std::cout << "browser checks passed\n";
         return 0;

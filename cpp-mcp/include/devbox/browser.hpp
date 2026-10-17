@@ -19,7 +19,9 @@ struct BrowserOptions {
     bool headed = false;
     bool text_only = false;
     bool compatibility = false;
-    Millis lifetime{300000}, idle_timeout{60000};
+    // Leave bounded time for a website agent to inspect an image and plan its next action.
+    // Resource-pressure cleanup and the one-session limit remain independent safeguards.
+    Millis lifetime{600000}, idle_timeout{180000};
 };
 struct BrowserObservation {
     Json data;
