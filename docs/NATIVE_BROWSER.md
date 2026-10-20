@@ -8,6 +8,14 @@ On Windows, automatic discovery checks standard Chrome/Edge installation locatio
 
 ## Agent workflow
 
+A slow cold launch can return `page_status: loading` and
+`pending_phase: navigation`. This response contains the owned `session_id`, but
+does not claim a page observation or screenshot. Continue with `observe` on that
+session. The initial screenshot and HTML options carry forward unless the
+observation call explicitly overrides them. This retains the initialized browser
+while keeping each request inside the same 40-second action deadline. Input
+remains unavailable until a real observation has been obtained.
+
 1. Use native search for discovery and `devbox_web_fetch` for inexpensive source retrieval. Use `max_age_seconds: 0` and `view: offers` for a fresh product check.
 2. If useful content requires JavaScript or page interaction, call `devbox_browser` with `action: open`, the public URL, and optionally `include_html: true`.
 3. Inspect `page_status`, URL, title, visible text, viewport text, controls, scroll regions and image. An access-denied page or consent screen is an intermediate outcome, not a successful source read.
