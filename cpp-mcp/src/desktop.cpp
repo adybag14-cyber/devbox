@@ -8,6 +8,7 @@
 #include <iostream>
 #include <map>
 #include <sstream>
+#include <system_error>
 #include <thread>
 
 namespace devbox {
@@ -470,6 +471,14 @@ int run_desktop_supervisor(const DesktopOptions& options, const std::function<bo
             std::string actual;
             try {
                 actual = start_ticks(static_cast<std::uint32_t>(pid));
+            } catch (const std::system_error& error) {
+                // A former child may already have exited, including between
+                // reading the status record and opening its proc entry.
+                // Permission and other I/O failures must still fail closed.
+                if (error.code() == std::errc::no_such_file_or_directory ||
+                    error.code() == std::errc::no_such_process)
+                    continue;
+                throw;
             } catch (const Error&) {
                 continue;
             }
