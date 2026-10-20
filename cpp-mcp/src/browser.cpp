@@ -156,7 +156,7 @@ constexpr auto html_script =
     R"JS((() => {const s=document.documentElement?.outerHTML||'';return {html:s.slice(0,524288),original_utf16_units:s.length,truncated:s.length>524288};})())JS";
 void connect_browser(BrowserProtocol& protocol, const fs::path& profile, Clock::time_point deadline,
                      const Cancel& cancel) {
-    const auto endpoint = split(read_file(profile / "DevToolsActivePort", 512), '\n');
+    const auto endpoint = split(read_browser_endpoint(profile, deadline, cancel), '\n');
     const auto port_text = endpoint.empty() ? std::string() : trim(endpoint[0]);
     if (endpoint.size() < 2 || port_text.empty() || port_text.size() > 5 ||
         port_text.find_first_not_of("0123456789") != std::string::npos)
@@ -247,6 +247,32 @@ std::optional<std::uint64_t> available_memory() {
     return {};
 }
 } // namespace
+std::string read_browser_endpoint(const fs::path& profile, Clock::time_point deadline, const Cancel& cancel) {
+    for (;;) {
+        if (cancel)
+            cancel->check();
+        if (Clock::now() >= deadline)
+            throw Error("BROWSER_ENDPOINT_DEADLINE: Chromium endpoint remained unavailable");
+        try {
+            return read_file(profile / "DevToolsActivePort", 512);
+        } catch (const std::system_error& error) {
+#ifdef _WIN32
+            if (error.code().category() == std::system_category() &&
+                (error.code().value() == ERROR_SHARING_VIOLATION ||
+                 error.code().value() == ERROR_LOCK_VIOLATION)) {
+                const auto remaining = std::chrono::duration_cast<Millis>(deadline - Clock::now());
+                const auto delay = std::max(Millis(0), std::min(Millis(20), remaining));
+                if (cancel)
+                    cancel->wait_for(delay);
+                else
+                    std::this_thread::sleep_for(delay);
+                continue;
+            }
+#endif
+            throw;
+        }
+    }
+}
 struct BrowserService::State {
     std::shared_ptr<const Config> config;
     BrowserOptions options;

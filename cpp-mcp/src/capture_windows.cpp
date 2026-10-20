@@ -337,18 +337,19 @@ ImageCapture native_capture(std::optional<std::uint32_t> pid, unsigned quality, 
     const auto root = table.find(*pid);
     if (root == table.end())
         throw Error("Windows process " + std::to_string(*pid) + " does not exist.");
-    const auto name = process_name(*pid).value_or(root->second.name);
-    std::set<std::uint32_t> candidates{*pid};
+    std::map<std::uint32_t, std::uint32_t> parentage;
     if (include_tree) {
-        std::deque<std::uint32_t> queue{*pid};
-        while (!queue.empty()) {
-            const auto parent = queue.front();
-            queue.pop_front();
-            for (const auto& [child, info] : table)
-                if (info.parent == parent && candidates.insert(child).second)
-                    queue.push_back(child);
-        }
+        for (const auto& [child, info] : table)
+            parentage.emplace(child, info.parent);
     }
+    // On Windows process_instance is the raw creation FILETIME. Query only the
+    // reachable branch instead of opening every system process.
+    const auto lineage = capture_process_lineage(parentage, *pid, process_instance);
+    const auto name = process_name(*pid).value_or(root->second.name);
+    std::set<std::uint32_t> candidates;
+    for (const auto& [candidate, instance] : lineage)
+        if (process_matches_instance(candidate, instance))
+            candidates.insert(candidate);
     Selection selection{&candidates, {}, {}};
     EnumWindows(select_window, reinterpret_cast<LPARAM>(&selection));
     if (selection.error)
@@ -358,6 +359,14 @@ ImageCapture native_capture(std::optional<std::uint32_t> pid, unsigned quality, 
                     ") and its visible child processes have no non-minimized, non-cloaked top-level window "
                     "to capture.");
     const auto window = *selection.best;
+    const auto verify_owner = [&] {
+        DWORD owner = 0;
+        GetWindowThreadProcessId(window.handle, &owner);
+        if (owner != window.owner || !process_matches_instance(*pid, lineage.at(*pid)) ||
+            !process_matches_instance(window.owner, lineage.at(window.owner)))
+            throw Error("Capture process/window ownership changed; request a fresh capture.");
+    };
+    verify_owner();
     std::optional<Frame> chosen;
     std::optional<Analysis> analysis;
     std::optional<UINT> last_flags;
@@ -419,7 +428,9 @@ ImageCapture native_capture(std::optional<std::uint32_t> pid, unsigned quality, 
         {"clipped_to_display", clipped},
         {"screen_fallback_may_include_occluders", starts_with(method, "DesktopCompositorCopy")},
         {"quality", quality}};
-    return {encode_jpeg(*chosen, quality), "image/jpeg", std::move(meta)};
+    auto encoded = encode_jpeg(*chosen, quality);
+    verify_owner();
+    return {std::move(encoded), "image/jpeg", std::move(meta)};
 }
 } // namespace devbox
 #endif

@@ -388,6 +388,37 @@ let rust;
 let primaryError;
 let sideCleanupError;
 let directoryFailures = [];
+const ownedJobs = [];
+const terminalStatuses = new Set(["succeeded", "failed", "cancelled", "timed_out", "interrupted"]);
+const startOwnedJob = async (side, name, args) => {
+  const result = await side.client.callTool({ name, arguments: args });
+  const id = result.structuredContent?.data?.id;
+  if (id) ownedJobs.push({ client: side.client, id });
+  return result;
+};
+const reconcileOwnedJobs = async () => {
+  const outcomes = await Promise.allSettled(ownedJobs.map(async ({ client, id }) => {
+    let result = await client.callTool({
+      name: "devbox_job_status", arguments: { job_id: id, wait_seconds: 0, terminal_only: false },
+    });
+    if (!terminalStatuses.has(result.structuredContent?.data?.status) || result.structuredContent?.data?.runnerAlive) {
+      await client.callTool({ name: "devbox_job_cancel", arguments: { job_id: id } });
+      const deadline = Date.now() + 20000;
+      do {
+        result = await client.callTool({
+          name: "devbox_job_status", arguments: { job_id: id, wait_seconds: 1, terminal_only: true },
+        });
+        if (terminalStatuses.has(result.structuredContent?.data?.status)
+          && !result.structuredContent?.data?.runnerAlive) break;
+        await sleep(100);
+      } while (Date.now() < deadline);
+    }
+    assert(terminalStatuses.has(result.structuredContent?.data?.status) && !result.structuredContent?.data?.runnerAlive,
+      `Owned parity fixture job did not terminate: ${JSON.stringify(result)}`);
+  }));
+  const failures = outcomes.filter(result => result.status === "rejected").map(result => result.reason);
+  if (failures.length) throw new AggregateError(failures, "Owned parity fixture job cleanup failed");
+};
 const differences = [];
 let comparedCalls = 0;
 const compareResults = (name, jsResult, rustResult) => {
@@ -467,8 +498,8 @@ try {
     read_only: true,
     resource_class: "light",
   };
-  const jsShellStart = await js.client.callTool({ name: "devbox_exec_start", arguments: shellArgs });
-  const rustShellStart = await rust.client.callTool({ name: "devbox_exec_start", arguments: shellArgs });
+  const jsShellStart = await startOwnedJob(js, "devbox_exec_start", shellArgs);
+  const rustShellStart = await startOwnedJob(rust, "devbox_exec_start", shellArgs);
   compareResults("devbox_exec_start", jsShellStart, rustShellStart);
   const jsShellId = jsShellStart.structuredContent?.data?.id;
   const rustShellId = rustShellStart.structuredContent?.data?.id;
@@ -487,26 +518,32 @@ try {
     timeout_seconds: 60,
     resource_class: "light",
   };
-  const jsProgramStart = await js.client.callTool({ name: "devbox_run_program_start", arguments: programArgs });
-  const rustProgramStart = await rust.client.callTool({ name: "devbox_run_program_start", arguments: programArgs });
+  const jsProgramStart = await startOwnedJob(js, "devbox_run_program_start", programArgs);
+  const rustProgramStart = await startOwnedJob(rust, "devbox_run_program_start", programArgs);
   compareResults("devbox_run_program_start", jsProgramStart, rustProgramStart);
   const jsProgramId = jsProgramStart.structuredContent?.data?.id;
   const rustProgramId = rustProgramStart.structuredContent?.data?.id;
   assert.ok(jsProgramId && rustProgramId);
   const waitUntilRunning = async (client, jobId) => {
-    const deadline = Date.now() + 5000;
+    // This waits for fixture setup, not the one-second wait measured below.
+    // Windows CI can spend more than five seconds launching a detached worker.
+    const deadline = Date.now() + 30000;
+    let result;
     while (Date.now() < deadline) {
-      const result = await client.callTool({ name: "devbox_job_status", arguments: { job_id: jobId, wait_seconds: 0, terminal_only: false } });
+      result = await client.callTool({ name: "devbox_job_status", arguments: { job_id: jobId, wait_seconds: 0, terminal_only: false } });
       if (result.structuredContent?.data?.status === "running") return result;
-      await sleep(50);
+      if (result.isError || terminalStatuses.has(result.structuredContent?.data?.status)) break;
+      await sleep(100);
     }
-    throw new Error(`Job ${jobId} did not reach running state`);
+    const logs = await client.callTool({ name: "devbox_job_logs", arguments: { job_id: jobId, max_chars: 4000 } });
+    throw new Error(`Job ${jobId} did not reach running state: ${JSON.stringify({ result, logs })}`);
   };
   const [jsRunning, rustRunning] = await Promise.all([
     waitUntilRunning(js.client, jsProgramId),
     waitUntilRunning(rust.client, rustProgramId),
   ]);
   compareResults("devbox_job_status", jsRunning, rustRunning);
+  if (process.argv.includes("--verify-failure-cleanup")) throw new Error("SYNTHETIC_PARITY_FIXTURE_FAILURE");
   const [jsWaitTimeout, rustWaitTimeout] = await Promise.all([
     js.client.callTool({ name: "devbox_job_status", arguments: { job_id: jsProgramId, wait_seconds: 1, terminal_only: false } }),
     rust.client.callTool({ name: "devbox_job_status", arguments: { job_id: rustProgramId, wait_seconds: 1, terminal_only: false } }),
@@ -524,9 +561,16 @@ try {
   primaryError = error;
 } finally {
   try {
-    await closeAuditSides(js, rust);
+    await reconcileOwnedJobs();
   } catch (error) {
     sideCleanupError = error;
+  }
+  try {
+    await closeAuditSides(js, rust);
+  } catch (error) {
+    sideCleanupError = sideCleanupError
+      ? new AggregateError([sideCleanupError, error], "Parity fixture cleanup failed")
+      : error;
   }
   const directoryCleanup = await Promise.allSettled([
     rm(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
@@ -539,6 +583,12 @@ try {
     .map((result) => result.reason);
 }
 const cleanupFailures = [sideCleanupError, ...directoryFailures].filter(Boolean);
+if (process.argv.includes("--verify-failure-cleanup")
+  && primaryError?.message === "SYNTHETIC_PARITY_FIXTURE_FAILURE"
+  && cleanupFailures.length === 0) {
+  console.log(JSON.stringify({ ok: true, failureCleanupVerified: true, ownedJobs: ownedJobs.length }));
+  process.exit(0);
+}
 if (primaryError && cleanupFailures.length === 0) throw primaryError;
 if (primaryError || cleanupFailures.length > 0) {
   throw new AggregateError(

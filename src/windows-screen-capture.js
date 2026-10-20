@@ -9,6 +9,42 @@ import { HostCommandError, assertHostExecEnabled, buildWindowsPowerShellFileArgs
 const JPEG_START = Buffer.from([0xff, 0xd8, 0xff]);
 const JPEG_END = Buffer.from([0xff, 0xd9]);
 
+// Export the actual helper for a synthetic lifetime regression without opening
+// desktop windows. This is embedded in the native PowerShell capture worker.
+export const windowsProcessTreeScript = String.raw`
+function Get-ProcessTreePids {
+  param([Parameter(Mandatory = $true)][uint32]$RootPid, [bool]$IncludeTree)
+  $result = [System.Collections.Generic.HashSet[uint32]]::new()
+  [void]$result.Add($RootPid)
+  if (-not $IncludeTree) { return [uint32[]]$result }
+  try {
+    $all = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId, CreationDate)
+    $created = @{}
+    foreach ($row in $all) {
+      if ($null -ne $row.CreationDate) {
+        $created[[uint32]$row.ProcessId] = $row.CreationDate.ToUniversalTime().Ticks
+      }
+    }
+    if (-not $created.ContainsKey($RootPid)) { return [uint32[]]$result }
+    $queue = [System.Collections.Generic.Queue[uint32]]::new()
+    $queue.Enqueue($RootPid)
+    while ($queue.Count -gt 0) {
+      $parent = $queue.Dequeue()
+      foreach ($candidate in $all) {
+        if ([uint32]$candidate.ParentProcessId -eq $parent -and
+            $created.ContainsKey([uint32]$candidate.ProcessId) -and
+            $created[[uint32]$candidate.ProcessId] -ge $created[$parent]) {
+          $child = [uint32]$candidate.ProcessId
+          if ($result.Add($child)) { $queue.Enqueue($child) }
+        }
+      }
+    }
+  } catch {
+  }
+  return [uint32[]]$result
+}
+`;
+
 const captureScript = String.raw`
 param(
   [Parameter(Mandatory = $true)][ValidateSet('display', 'pid')][string]$Mode,
@@ -239,31 +275,7 @@ function Measure-BitmapFrame {
   }
 }
 
-function Get-ProcessTreePids {
-  param([Parameter(Mandatory = $true)][uint32]$RootPid, [bool]$IncludeTree)
-
-  $result = [System.Collections.Generic.HashSet[uint32]]::new()
-  [void]$result.Add($RootPid)
-  if (-not $IncludeTree) { return [uint32[]]$result }
-
-  try {
-    $all = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId, ParentProcessId)
-    $queue = [System.Collections.Generic.Queue[uint32]]::new()
-    $queue.Enqueue($RootPid)
-    while ($queue.Count -gt 0) {
-      $parent = $queue.Dequeue()
-      foreach ($candidate in $all) {
-        if ([uint32]$candidate.ParentProcessId -eq $parent) {
-          $child = [uint32]$candidate.ProcessId
-          if ($result.Add($child)) { $queue.Enqueue($child) }
-        }
-      }
-    }
-  } catch {
-  }
-
-  return [uint32[]]$result
-}
+${windowsProcessTreeScript}
 
 function New-CaptureBitmap {
   param([int]$Width, [int]$Height)
@@ -303,6 +315,7 @@ try {
     }
 
     $process = Get-Process -Id $TargetPid -ErrorAction Stop
+    $rootBirth = $process.StartTime.ToUniversalTime().Ticks
     $candidatePids = Get-ProcessTreePids -RootPid ([uint32]$TargetPid) -IncludeTree ($IncludeProcessTree -eq '1')
     $window = [DevboxCaptureNative]::FindLargestVisibleWindow($candidatePids)
     if ($window -eq [IntPtr]::Zero) {
@@ -310,6 +323,7 @@ try {
     }
 
     $ownerPid = [int][DevboxCaptureNative]::ReadWindowPid($window)
+    $ownerBirth = (Get-Process -Id $ownerPid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks
     $rect = [DevboxCaptureNative+RECT]::new()
     if (-not [DevboxCaptureNative]::GetVisualWindowRect($window, [ref]$rect)) {
       throw "Could not read the visual window bounds for process $TargetPid."
@@ -385,6 +399,11 @@ try {
       $captureMethod = 'DesktopCompositorCopy(window-bounds)'
     }
 
+    if ([int][DevboxCaptureNative]::ReadWindowPid($window) -ne $ownerPid -or
+        (Get-Process -Id $TargetPid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks -ne $rootBirth -or
+        (Get-Process -Id $ownerPid -ErrorAction Stop).StartTime.ToUniversalTime().Ticks -ne $ownerBirth) {
+      throw 'Capture process/window ownership changed; request a fresh capture.'
+    }
     Save-Jpeg -Bitmap $bitmap -Path $OutputPath -JpegQuality $Quality
 
     $metadata = @{

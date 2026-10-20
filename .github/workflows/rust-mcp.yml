@@ -81,6 +81,9 @@ jobs:
       - name: Reproduce Windows watcher contention and hard-deadline contract
         if: runner.os == 'Windows'
         run: node rust-mcp/scripts/windows-contention-smoke-runner.mjs
+      - name: Verify Windows contention failure cleanup
+        if: runner.os == 'Windows'
+        run: node rust-mcp/scripts/windows-contention-smoke-runner.mjs --verify-failure-cleanup
       - name: Run Rust HTTP, auth, and disconnect regression smokes
         run: |
           node rust-mcp/scripts/config-parity-smoke-runner.mjs
@@ -109,8 +112,20 @@ jobs:
         env:
           RUST_MCP_RESULT_SKIP_DISPLAY: "1"
         run: node rust-mcp/scripts/result-parity-audit.mjs
+      - name: Verify failed parity fixture owns and cleans its jobs
+        if: runner.os == 'Windows'
+        env:
+          RUST_MCP_RESULT_SKIP_DISPLAY: "1"
+        run: node rust-mcp/scripts/result-parity-audit.mjs --verify-failure-cleanup
       - name: Run JavaScript MCP SDK interoperability smoke
         run: node rust-mcp/scripts/smoke-runner.mjs
+      - name: Retain Windows contention diagnostics
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: retained-windows-contention
+          path: .cpp-build/windows-contention-*.json
+          if-no-files-found: ignore
 
 
   msrv:

@@ -17,6 +17,8 @@ import {
 } from "../src/linux-screen-capture.js";
 import { macOSWindowQuerySwift } from "../src/macos-screen-capture.js";
 import { resolveScreenCaptureBackend } from "../src/screen-capture.js";
+import { windowsProcessTreeScript } from "../src/windows-screen-capture.js";
+import { runCheckedProcess } from "../src/mcp-implementation.js";
 
 const pngHeader = (width, height) => {
   const buffer = Buffer.alloc(24);
@@ -26,6 +28,26 @@ const pngHeader = (width, height) => {
   buffer.writeUInt32BE(height, 20);
   return buffer;
 };
+test("Windows capture excludes older processes attached to a recycled parent PID", {skip:process.platform!=="win32"}, async()=>{
+  const script=String.raw`
+$ErrorActionPreference='Stop'
+function Get-CimInstance {
+  @(
+    [pscustomobject]@{ProcessId=100;ParentProcessId=1;CreationDate=[datetime]'2026-10-20T12:00:00Z'},
+    [pscustomobject]@{ProcessId=200;ParentProcessId=100;CreationDate=[datetime]'2026-10-20T10:00:00Z'},
+    [pscustomobject]@{ProcessId=201;ParentProcessId=200;CreationDate=[datetime]'2026-10-20T11:00:00Z'},
+    [pscustomobject]@{ProcessId=300;ParentProcessId=100;CreationDate=[datetime]'2026-10-20T12:00:01Z'},
+    [pscustomobject]@{ProcessId=301;ParentProcessId=300;CreationDate=[datetime]'2026-10-20T12:00:02Z'},
+    [pscustomobject]@{ProcessId=400;ParentProcessId=100;CreationDate=$null}
+  )
+}
+${windowsProcessTreeScript}
+ConvertTo-Json -Compress -InputObject @(Get-ProcessTreePids -RootPid 100 -IncludeTree $true | Sort-Object)
+`;
+  const result=await runCheckedProcess("powershell.exe",["-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",Buffer.from(script,"utf16le").toString("base64")],
+    {timeoutMs:15000,maxCaptureChars:4096,label:"Windows capture lifetime fixture"});
+  assert.deepEqual(JSON.parse(result.stdout),[100,300,301]);
+});
 
 test("PNG validation extracts IHDR dimensions without an image dependency", () => {
   const png = pngHeader(1920, 1080);

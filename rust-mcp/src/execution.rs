@@ -2234,7 +2234,9 @@ mod tests {
             max_concurrent: 4,
             reserved_interactive: 1,
             watch_max_concurrent: 1,
-            queue_timeout: Duration::from_millis(150),
+            // The first successful claim includes real cold filesystem probes.
+            // Keep the short deadline on the deliberately blocked request only.
+            queue_timeout: Duration::from_secs(5),
             heavy_capacity: 4,
             heavy_weight: 2,
             io_heavy_capacity: 2,
@@ -2252,7 +2254,14 @@ mod tests {
         assert_eq!(first.slots, vec![0, 1]);
         let second = scheduler
             .acquire(
-                AcquireRequest::interactive_weighted("pressure-second", ResourceClass::Heavy, 2),
+                AcquireRequest {
+                    queue_timeout: Some(Duration::from_millis(150)),
+                    ..AcquireRequest::interactive_weighted(
+                        "pressure-second",
+                        ResourceClass::Heavy,
+                        2,
+                    )
+                },
                 &cancellation,
             )
             .await;
