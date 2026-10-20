@@ -97,6 +97,7 @@ add_library(devbox_core
   src/management.cpp
   src/management_qualification.cpp
   src/management_services.cpp
+  src/desktop.cpp
   src/contract.cpp
   src/monitoring.cpp
   src/engine.cpp
@@ -213,6 +214,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 if(DEVBOX_BUILD_TESTS)
   add_executable(devbox-management-tests tests/management_tests.cpp)
+  add_executable(devbox-desktop-tests tests/desktop_tests.cpp)
+  target_link_libraries(devbox-desktop-tests PRIVATE devbox_core)
+  add_test(NAME native-desktop COMMAND devbox-desktop-tests)
+  set_tests_properties(native-desktop PROPERTIES TIMEOUT 30)
   add_executable(devbox-management-bad-candidate tests/management_bad_candidate.cpp)
   target_link_libraries(devbox-management-bad-candidate PRIVATE devbox_core)
   target_link_libraries(devbox-management-tests PRIVATE devbox_core)

@@ -1,4 +1,5 @@
 #include "devbox/computer_use.hpp"
+#include "devbox/desktop.hpp"
 #include "devbox/engine.hpp"
 #include "devbox/filesystem_worker.hpp"
 #include "devbox/grants.hpp"
@@ -43,6 +44,18 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
         const auto mode = args.empty() ? "" : args.front();
         if (mode == "manage")
             return management_main(std::vector<std::string>(args.begin() + 1, args.end()));
+        if (mode == "--desktop-supervisor") {
+            const auto options =
+                parse_desktop_options(std::vector<std::string>(args.begin() + 1, args.end()));
+            std::signal(SIGINT, signal_handler);
+            std::signal(SIGTERM, signal_handler);
+#ifdef _WIN32
+            return run_desktop_supervisor(
+                options, [] { return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0; });
+#else
+            return run_desktop_supervisor(options, [] { return shutdown_requested != 0; });
+#endif
+        }
         if (mode == "--filesystem-worker") {
             if (args.size() != 1)
                 throw Error("Filesystem worker accepts its bounded request on stdin only");
@@ -99,7 +112,8 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
         if (mode == "--help" || mode == "-h") {
             std::cout << "Devbox C++ MCP " << build_version()
                       << "\nNative management: devbox-mcp manage help\nUsage: devbox-mcp "
-                         "[--build-info|--parity-report|--dump-contract|--job-runner "
+                         "[--build-info|--parity-report|--dump-contract|"
+                         "--desktop-supervisor --project-root PATH --workspace PATH|--job-runner "
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
                          "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|--admission "
                          "drain|resume|status|"

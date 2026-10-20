@@ -1,0 +1,453 @@
+#include "devbox/desktop.hpp"
+#include "devbox/browser_protocol.hpp"
+#include "devbox/native.hpp"
+#include "devbox/state_store.hpp"
+#include "devbox/storage.hpp"
+#include <charconv>
+#include <future>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <thread>
+
+namespace devbox {
+namespace {
+fs::path browser_profile(const DesktopOptions& options) {
+    return options.shared ? options.desktop_root / "browser" : options.workspace / ".home" / "chromium";
+}
+std::string display_name(const DesktopOptions& options) {
+    return ":" + std::to_string(options.display);
+}
+std::string start_ticks(std::uint32_t pid) {
+#ifdef __linux__
+    const auto text = read_file("/proc/" + std::to_string(pid) + "/stat", 8192);
+    const auto end = text.rfind(')');
+    if (end == std::string::npos)
+        throw Error("DESKTOP_CHILD_IDENTITY");
+    std::istringstream fields(text.substr(end + 1));
+    std::string value;
+    for (unsigned i = 0; i < 20; ++i)
+        if (!(fields >> value))
+            throw Error("DESKTOP_CHILD_IDENTITY");
+    return value;
+#else
+    return std::to_string(process_instance(pid).value_or(0));
+#endif
+}
+class DesktopLog {
+    fs::path directory_;
+    std::mutex mutex_;
+
+  public:
+    explicit DesktopLog(fs::path directory) : directory_(std::move(directory)) {}
+    void append(const std::string& name, std::string_view data) {
+        std::lock_guard lock(mutex_);
+        const auto file = directory_ / (name + ".log");
+        if (fs::exists(file) && fs::file_size(file) >= 1024 * 1024)
+            replace_state_file(file, directory_ / (name + ".log.1"));
+        write_file(file, data.substr(0, 32768), true);
+    }
+};
+class DesktopChild {
+    Cancel cancellation_ = std::make_shared<Cancellation>();
+    std::future<ProcessOutput> work_;
+    std::atomic<std::uint32_t> pid_{0};
+    std::atomic<std::uint64_t> instance_{0};
+    std::string ticks_;
+    std::mutex identity_mutex_;
+    fs::path program_;
+
+  public:
+    DesktopChild(const fs::path& program, const std::vector<std::string>& args, ProcessOptions process)
+        : program_(fs::canonical(program)) {
+        process.termination_grace = Millis(5000);
+        process.max_capture_chars = 4096;
+        process.on_pid = [this](std::uint32_t pid) {
+            const auto instance = process_instance(pid);
+            if (!instance)
+                throw Error("DESKTOP_CHILD_IDENTITY");
+            std::lock_guard lock(identity_mutex_);
+            ticks_ = start_ticks(pid);
+            instance_ = *instance;
+            pid_ = pid;
+        };
+        work_ = std::async(std::launch::async, [this, args, process = std::move(process)] {
+            return spawn_process(path_text(program_), args, process, cancellation_);
+        });
+    }
+    ~DesktopChild() {
+        stop();
+    }
+    bool running() const {
+        return work_.valid() && work_.wait_for(Millis(0)) != std::future_status::ready;
+    }
+    bool started() const {
+        return pid_.load() != 0 && instance_.load() != 0 && running();
+    }
+    Json identity(const std::string& name) {
+        std::lock_guard lock(identity_mutex_);
+        return {{"name", name},
+                {"pid", pid_.load()},
+                {"instance", std::to_string(instance_.load())},
+                {"startTicks", ticks_},
+                {"program", path_text(program_)},
+                {"running", started()}};
+    }
+    void result() {
+        if (work_.valid()) {
+            const auto result = work_.get();
+            if (result.exit_code)
+                throw Error("DESKTOP_CHILD_EXIT_" + std::to_string(result.exit_code));
+        }
+    }
+    void stop() noexcept {
+        cancellation_->cancel();
+        if (work_.valid()) {
+            try {
+                (void)work_.get();
+            } catch (...) {
+            }
+        }
+    }
+};
+class Desktop {
+    const DesktopOptions& options_;
+    const std::function<bool()>& stop_;
+    Environment environment_;
+    fs::path logs_;
+    DesktopLog log_;
+    std::map<std::string, std::unique_ptr<DesktopChild>> children_;
+    std::uint64_t browser_restarts_ = 0, desktop_restarts_ = 0;
+
+    bool pause(Millis duration) const {
+        const auto until = Clock::now() + duration;
+        while (Clock::now() < until) {
+            if (stop_())
+                return false;
+            std::this_thread::sleep_for(
+                std::min(Millis(100), std::chrono::duration_cast<Millis>(until - Clock::now())));
+        }
+        return !stop_();
+    }
+    ProcessOptions process(const std::string& name) {
+        ProcessOptions value;
+        value.cwd = options_.workspace;
+        value.env = environment_;
+        value.max_capture_chars = 4096;
+        value.on_output = [this, name](OutputStream, std::string_view data) { log_.append(name, data); };
+        return value;
+    }
+    fs::path program(std::string_view name) const {
+        const auto value = find_program(name, &environment_);
+        if (!value)
+            throw Error("DESKTOP_PROGRAM_UNAVAILABLE: " + std::string(name));
+        return fs::canonical(*value);
+    }
+    void child(const std::string& name, const fs::path& file, const std::vector<std::string>& args) {
+        if (children_.contains(name))
+            throw Error("DESKTOP_DUPLICATE_CHILD");
+        auto value = std::make_unique<DesktopChild>(file, args, process(name));
+        const auto until = Clock::now() + Millis(5000);
+        while (!value->started()) {
+            if (!value->running()) {
+                value->result();
+                throw Error("DESKTOP_CHILD_EXIT_BEFORE_READY: " + name);
+            }
+            if (Clock::now() >= until || !pause(Millis(10)))
+                throw Error("DESKTOP_CHILD_START_DEADLINE: " + name);
+        }
+        children_.emplace(name, std::move(value));
+    }
+    void stop_child(const std::string& name) {
+        const auto found = children_.find(name);
+        if (found != children_.end()) {
+            found->second->stop();
+            children_.erase(found);
+        }
+    }
+    bool alive(const std::string& name) const {
+        const auto found = children_.find(name);
+        return found != children_.end() && found->second->started();
+    }
+    void status(bool ready, const std::string& error = {}) {
+        Json children = Json::array();
+        for (auto& [name, value] : children_)
+            children.push_back(value->identity(name));
+        write_json_atomic(
+            logs_ / "status.json",
+            {{"ready", ready},
+             {"updatedAt", utc_now()},
+             {"display", display_name(options_)},
+             {"implementation", "cpp"},
+             {"supervisor_pid", process_id()},
+             {"browser", options_.browser_autostart ? "headed Chromium" : "on-demand native browser"},
+             {"backend", "native C++23 XCB/XTEST"},
+             {"browser_mode", options_.shared              ? "shared_native"
+                              : options_.browser_autostart ? "desktop"
+                                                           : "on_demand"},
+             {"browser_profile", path_text(browser_profile(options_))},
+             {"children", std::move(children)},
+             {"browser_restarts", browser_restarts_},
+             {"desktop_restarts", desktop_restarts_},
+             {"error", error.substr(0, 1024)}});
+    }
+    void start_browser() {
+        const auto profile = browser_profile(options_);
+        if (!options_.shared && !fs::exists(profile.parent_path()))
+            ensure_private_state_directory(profile.parent_path());
+        ensure_private_state_directory(profile);
+        if (options_.shared) {
+            std::error_code ec;
+            fs::remove(profile / "DevToolsActivePort", ec);
+            if (ec)
+                throw Error("DESKTOP_ENDPOINT_CLEANUP");
+        }
+        child("chromium", options_.chromium, desktop_browser_arguments(options_));
+        if (!options_.shared)
+            return;
+        status(false, "Managed browser is warming");
+        const auto until = Clock::now() + Millis(180000);
+        std::string last_error = "Endpoint has not been published";
+        while (!stop_()) {
+            if (!alive("chromium"))
+                throw Error("DESKTOP_BROWSER_EXITED_DURING_STARTUP");
+            const auto endpoint_file = profile / "DevToolsActivePort";
+            if (fs::exists(endpoint_file)) {
+                if (fs::is_symlink(fs::symlink_status(endpoint_file)))
+                    throw Error("DESKTOP_ENDPOINT_SYMLINK");
+                try {
+                    const auto lines = split(trim(read_file(endpoint_file, 1024)), '\n');
+                    unsigned port = 0;
+                    if (lines.size() != 2)
+                        throw Error("DESKTOP_ENDPOINT_INVALID");
+                    const auto parsed =
+                        std::from_chars(lines[0].data(), lines[0].data() + lines[0].size(), port);
+                    if (parsed.ec != std::errc{} || parsed.ptr != lines[0].data() + lines[0].size() ||
+                        !port || port > 65535)
+                        throw Error("DESKTOP_ENDPOINT_INVALID");
+                    BrowserProtocol probe(65536);
+                    const auto deadline = std::min(until, Clock::now() + Millis(2000));
+                    probe.connect(static_cast<std::uint16_t>(port), trim(lines[1]), deadline);
+                    const auto version = probe.call("Browser.getVersion", Json::object(), deadline);
+                    if (json_string(version, "product").empty() ||
+                        json_string(version, "protocolVersion").empty())
+                        throw Error("DESKTOP_BROWSER_NOT_READY");
+                    return;
+                } catch (const Error& error) {
+                    last_error = std::string(error.what()).substr(0, 256);
+                }
+            }
+            if (Clock::now() >= until)
+                throw Error("DESKTOP_BROWSER_STARTUP_DEADLINE: " + last_error);
+            pause(Millis(200));
+        }
+        throw Cancelled();
+    }
+    void start_desktop() {
+        const auto authority = options_.desktop_root / "authority";
+        if (fs::is_symlink(fs::symlink_status(authority)))
+            throw Error("DESKTOP_AUTHORITY_SYMLINK");
+        const auto staged = options_.desktop_root / ("authority-" + uuid());
+        ScopeExit remove_staged([&] {
+            std::error_code ignored;
+            fs::remove(staged, ignored);
+        });
+        write_file(staged, "");
+        fs::permissions(staged, fs::perms::owner_read | fs::perms::owner_write);
+        replace_state_file(staged, authority);
+        auto auth = process("xauth");
+        auth.timeout = Millis(5000);
+        auth.input = "add " + display_name(options_) + " . " + hex(random_bytes(16)) + "\n";
+        const auto initialized =
+            spawn_process(path_text(program("xauth")), {"-f", path_text(authority), "source", "-"}, auth);
+        if (initialized.exit_code)
+            throw Error("DESKTOP_AUTHENTICATION_FAILED");
+        child("xvfb", program("Xvfb"),
+              {display_name(options_), "-screen", "0", "1280x800x24", "-nolisten", "tcp", "-auth",
+               path_text(authority), "-noreset"});
+        const auto until = Clock::now() + Millis(20000);
+        for (;;) {
+            if (!alive("xvfb") || stop_())
+                throw Error("DESKTOP_XVFB_EXITED_BEFORE_READY");
+            auto probe = process("xdpyinfo");
+            probe.timeout = Millis(3000);
+            try {
+                if (!spawn_process(path_text(program("xdpyinfo")), {}, probe).exit_code)
+                    break;
+            } catch (const ProcessError&) {
+            }
+            if (Clock::now() >= until || !pause(Millis(200)))
+                throw Error("DESKTOP_X11_STARTUP_DEADLINE");
+        }
+        child("dbus", program("dbus-daemon"),
+              {"--session", "--nofork", "--address=" + environment_.at("DBUS_SESSION_BUS_ADDRESS")});
+        child("openbox", program("openbox"), {"--sm-disable"});
+        if (options_.browser_autostart)
+            start_browser();
+    }
+
+  public:
+    Desktop(const DesktopOptions& options, const std::function<bool()>& stop)
+        : options_(options), stop_(stop), environment_(desktop_environment(options)),
+          logs_(options.project / "run" / "desktop"), log_(logs_) {}
+    ~Desktop() {
+        stop_children();
+    }
+    void stop_children() {
+        for (const auto* name : {"chromium", "openbox", "dbus", "xvfb"})
+            stop_child(name);
+    }
+    void run() {
+        while (!stop_()) {
+            try {
+                start_desktop();
+                status(true);
+                auto next_status = Clock::now() + Millis(5000);
+                while (!stop_()) {
+                    for (const auto* name : {"xvfb", "dbus", "openbox"})
+                        if (!alive(name))
+                            throw Error("DESKTOP_CHILD_EXITED: " + std::string(name));
+                    if (options_.browser_autostart && !alive("chromium")) {
+                        status(false, "Managed browser exited; restarting owned child");
+                        stop_child("chromium");
+                        ++browser_restarts_;
+                        if (!pause(Millis(1500)))
+                            break;
+                        start_browser();
+                        status(true);
+                    }
+                    if (Clock::now() >= next_status) {
+                        status(true);
+                        next_status = Clock::now() + Millis(5000);
+                    }
+                    pause(Millis(500));
+                }
+            } catch (const std::exception& error) {
+                status(false, error.what());
+                std::cerr << error.what() << '\n';
+            }
+            stop_children();
+            if (!stop_()) {
+                ++desktop_restarts_;
+                pause(Millis(3000));
+            }
+        }
+        status(false, "Desktop supervisor stopped");
+    }
+};
+} // namespace
+
+DesktopOptions parse_desktop_options(const std::vector<std::string>& args) {
+    DesktopOptions result;
+    result.project = fs::current_path();
+    result.workspace = path_from_utf8(env_or("HOST_WORKSPACE_PATH", "/workspace"));
+    result.desktop_root = "/tmp/devbox-desktop";
+    result.shared = env_bool("DEVBOX_BROWSER_SHARED", false);
+    result.compatibility = env_bool("DEVBOX_BROWSER_COMPATIBILITY", false);
+    result.browser_autostart = result.shared || env_or("DEVBOX_DESKTOP_BROWSER_AUTOSTART", "1") != "0";
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const auto& flag = args[i];
+        if (++i == args.size())
+            throw Error("Desktop option requires a value: " + flag);
+        const auto& value = args[i];
+        if (flag == "--project-root")
+            result.project = path_from_utf8(value);
+        else if (flag == "--workspace")
+            result.workspace = path_from_utf8(value);
+        else if (flag == "--desktop-root")
+            result.desktop_root = path_from_utf8(value);
+        else if (flag == "--chromium")
+            result.chromium = path_from_utf8(value);
+        else if (flag == "--display") {
+            const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result.display);
+            if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() ||
+                result.display > 65535)
+                throw Error("DESKTOP_DISPLAY_INVALID");
+        } else
+            throw Error("Unknown desktop option: " + flag);
+    }
+    for (auto* path : {&result.project, &result.workspace, &result.desktop_root, &result.chromium}) {
+        *path = path->lexically_normal();
+        if (!path->is_absolute() || *path == path->root_path())
+            throw Error("DESKTOP_ABSOLUTE_NONROOT_PATH_REQUIRED");
+    }
+    return result;
+}
+std::vector<std::string> desktop_browser_arguments(const DesktopOptions& options) {
+    std::vector<std::string> args{"--ozone-platform=x11",
+                                  "--disable-gpu",
+                                  "--no-first-run",
+                                  "--no-default-browser-check",
+                                  "--disable-background-networking",
+                                  "--disable-component-update",
+                                  "--disable-sync",
+                                  "--disable-features=Translate,MediaRouter,OptimizationHints",
+                                  "--renderer-process-limit=2",
+                                  "--js-flags=--max-old-space-size=128",
+                                  "--window-size=1200,740",
+                                  "--window-position=20,20",
+                                  "--user-data-dir=" + path_text(browser_profile(options))};
+    if (options.shared && options.compatibility)
+        args.emplace_back("--disable-blink-features=AutomationControlled");
+    if (options.shared)
+        for (const auto* flag :
+             {"--remote-debugging-address=127.0.0.1", "--remote-debugging-port=0", "--disable-extensions",
+              "--disable-quic", "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+              "--proxy-server=http://127.0.0.1:9", "--proxy-bypass-list=<-loopback>",
+              "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"})
+            args.emplace_back(flag);
+    args.emplace_back("about:blank");
+    return args;
+}
+Environment desktop_environment(const DesktopOptions& options) {
+    auto env = worker_environment();
+    env["HOME"] = path_text(options.workspace / ".home");
+    env["DISPLAY"] = display_name(options);
+    env["XAUTHORITY"] = path_text(options.desktop_root / "authority");
+    env["XDG_RUNTIME_DIR"] = path_text(options.desktop_root / "runtime");
+    env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + path_text(options.desktop_root / "runtime" / "bus");
+    env.erase("SESSION_MANAGER");
+    env.erase("WAYLAND_DISPLAY");
+    return env;
+}
+int run_desktop_supervisor(const DesktopOptions& options, const std::function<bool()>& stop) {
+#if !defined(__linux__) || defined(__ANDROID__)
+    (void)options;
+    (void)stop;
+    throw Error("Native desktop supervision requires Linux");
+#else
+    if (!fs::is_directory(options.project) || !fs::is_directory(options.workspace))
+        throw Error("DESKTOP_PROJECT_AND_WORKSPACE_REQUIRED");
+    if (!fs::exists(options.workspace / ".home"))
+        ensure_private_state_directory(options.workspace / ".home");
+    ensure_private_state_directory(options.desktop_root);
+    ensure_private_state_directory(options.desktop_root / "runtime");
+    ensure_private_state_directory(options.project / "run");
+    ensure_private_state_directory(options.project / "run" / "desktop");
+    FileLock owned(options.desktop_root / "supervisor.lock", Millis(100), {}, true);
+    // A former supervisor may have died without collecting its children.
+    // Never overwrite their ownership evidence or adopt/kill an arbitrary PID.
+    const auto status_file = options.project / "run" / "desktop" / "status.json";
+    if (fs::is_symlink(fs::symlink_status(status_file)))
+        throw Error("DESKTOP_STATUS_SYMLINK");
+    if (const auto prior = read_json_optional(status_file, 16384)) {
+        for (const auto& child : prior->value("children", Json::array())) {
+            const auto pid = json_uint(child, "pid");
+            if (!pid || pid > UINT32_MAX)
+                continue;
+            std::string actual;
+            try {
+                actual = start_ticks(static_cast<std::uint32_t>(pid));
+            } catch (const Error&) {
+                continue;
+            }
+            if (actual == json_string(child, "startTicks"))
+                throw Error("DESKTOP_LIVE_CHILDREN_REQUIRE_OPERATOR_REVIEW");
+        }
+    }
+    Desktop desktop(options, stop);
+    desktop.run();
+    return 0;
+#endif
+}
+} // namespace devbox

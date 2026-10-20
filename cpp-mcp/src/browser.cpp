@@ -409,7 +409,12 @@ struct BrowserService::State {
             if (!config->platform.is_linux)
                 throw Error("BROWSER_SHARED_UNSUPPORTED: managed shared mode requires Linux");
             options.headed = true;
-            options.shared_profile = fs::path("/tmp/devbox-desktop/browser");
+            options.shared_profile =
+                path_from_utf8(env_or("DEVBOX_BROWSER_SHARED_PROFILE", "/tmp/devbox-desktop/browser"))
+                    .lexically_normal();
+            if (!options.shared_profile->is_absolute() ||
+                *options.shared_profile == options.shared_profile->root_path())
+                throw Error("BROWSER_SHARED_PROFILE: expected an absolute private profile directory");
             options.shared_status_file = config->project_root / "run/desktop/status.json";
         }
         if (options.shared_profile.has_value() != options.shared_status_file.has_value())
