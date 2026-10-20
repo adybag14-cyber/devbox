@@ -290,6 +290,7 @@ struct BrowserService::State {
         bool shared = false;
         bool text_only = false;
         std::deque<std::pair<std::string, bool>> intercepted_resources;
+        bool draining_resources = false;
         std::size_t omitted_resources = 0;
         std::optional<std::uint64_t> instance;
         int http_status = 0;
@@ -535,44 +536,52 @@ struct BrowserService::State {
         }
         return browser_normalize_url(supplied);
     }
+    void drain_resources(Clock::time_point deadline, const Cancel& cancel) {
+        auto* owned = session.get();
+        if (owned->draining_resources)
+            return;
+        owned->draining_resources = true;
+        ScopeExit release([owned] { owned->draining_resources = false; });
+        // An image needed by a renderer can pause while a screenshot/evaluation
+        // is waiting. Acknowledge it during that wait, not after the blocked
+        // command replies. Events received during this nested batch only enqueue
+        // more work, so protocol depth stays bounded instead of recursing.
+        unsigned processed = 0;
+        while (!session->intercepted_resources.empty()) {
+            std::vector<std::pair<std::string, Json>> commands;
+            std::vector<bool> omitted;
+            while (!session->intercepted_resources.empty() && commands.size() < 32) {
+                if (++processed > 512)
+                    throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
+                auto [request, omit] = std::move(session->intercepted_resources.front());
+                session->intercepted_resources.pop_front();
+                Json params{{"requestId", request}};
+                if (omit)
+                    params["errorReason"] = "BlockedByClient";
+                commands.emplace_back(omit ? "Fetch.failRequest" : "Fetch.continueRequest",
+                                      std::move(params));
+                omitted.push_back(omit);
+            }
+            // These requests are independent. Drain every acknowledgement,
+            // including cancelled interceptions, before issuing more work.
+            const auto replies = session->protocol->batch(commands, deadline, cancel, session->cdp_session);
+            for (std::size_t i = 0; i < replies.size(); ++i) {
+                if (replies[i].contains("error")) {
+                    const auto message = json_string(replies[i]["error"], "message", "command failed");
+                    if (message.find("Invalid InterceptionId") == std::string::npos)
+                        throw Error("BROWSER_PROTOCOL_REMOTE: " + message.substr(0, 256));
+                } else if (omitted[i]) {
+                    ++session->omitted_resources;
+                }
+            }
+        }
+    }
     Json command(std::string_view method, Json args, Clock::time_point deadline, const Cancel& cancel,
                  bool browser = false) {
         try {
             auto result = session->protocol->call(method, std::move(args), deadline, cancel,
                                                   browser ? "" : session->cdp_session);
-            // Drain after receiving the requested reply. Calling back recursively
-            // from each Fetch event would exhaust the protocol nesting budget on
-            // an image-heavy page. Each drain shares the caller's deadline.
-            unsigned processed = 0;
-            while (!session->intercepted_resources.empty()) {
-                std::vector<std::pair<std::string, Json>> commands;
-                std::vector<bool> omitted;
-                while (!session->intercepted_resources.empty() && commands.size() < 32) {
-                    if (++processed > 512)
-                        throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
-                    auto [request, omit] = std::move(session->intercepted_resources.front());
-                    session->intercepted_resources.pop_front();
-                    Json params{{"requestId", request}};
-                    if (omit)
-                        params["errorReason"] = "BlockedByClient";
-                    commands.emplace_back(omit ? "Fetch.failRequest" : "Fetch.continueRequest",
-                                          std::move(params));
-                    omitted.push_back(omit);
-                }
-                // These requests are independent. Drain every acknowledgement,
-                // including cancelled interceptions, before issuing more work.
-                const auto replies =
-                    session->protocol->batch(commands, deadline, cancel, session->cdp_session);
-                for (std::size_t i = 0; i < replies.size(); ++i) {
-                    if (replies[i].contains("error")) {
-                        const auto message = json_string(replies[i]["error"], "message", "command failed");
-                        if (message.find("Invalid InterceptionId") == std::string::npos)
-                            throw Error("BROWSER_PROTOCOL_REMOTE: " + message.substr(0, 256));
-                    } else if (omitted[i]) {
-                        ++session->omitted_resources;
-                    }
-                }
-            }
+            drain_resources(deadline, cancel);
             return result;
         } catch (const Cancelled&) {
             throw;
@@ -854,27 +863,29 @@ struct BrowserService::State {
         command("Page.enable", Json::object(), deadline, cancel);
         diagnose("page-enabled");
         session->main_frame = json_string(frame(deadline, cancel), "id");
-        session->protocol->on_event(
-            [owned = session.get()](const Json& event, Clock::time_point, const Cancel&) {
-                if (json_string(event, "sessionId") != owned->cdp_session)
-                    return;
-                if (owned->text_only && json_string(event, "method") == "Fetch.requestPaused" &&
-                    event.contains("params")) {
-                    const auto& params = event["params"];
-                    auto request = json_string(params, "requestId");
-                    if (request.empty() || request.size() > 256 || owned->intercepted_resources.size() >= 256)
-                        throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
-                    const auto type = json_string(params, "resourceType");
-                    owned->intercepted_resources.emplace_back(std::move(request),
-                                                              type == "Image" || type == "Media");
-                }
-                if (json_string(event, "method") == "Network.responseReceived" && event.contains("params")) {
-                    const auto& p = event["params"];
-                    if (json_string(p, "type") == "Document" &&
-                        json_string(p, "frameId") == owned->main_frame && p.contains("response"))
-                        owned->http_status = static_cast<int>(json_number(p["response"], "status"));
-                }
-            });
+        session->protocol->on_event([this, owned = session.get()](const Json& event,
+                                                                  Clock::time_point event_deadline,
+                                                                  const Cancel& event_cancel) {
+            if (json_string(event, "sessionId") != owned->cdp_session)
+                return;
+            if (owned->text_only && json_string(event, "method") == "Fetch.requestPaused" &&
+                event.contains("params")) {
+                const auto& params = event["params"];
+                auto request = json_string(params, "requestId");
+                if (request.empty() || request.size() > 256 || owned->intercepted_resources.size() >= 256)
+                    throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
+                const auto type = json_string(params, "resourceType");
+                owned->intercepted_resources.emplace_back(std::move(request),
+                                                          type == "Image" || type == "Media");
+                drain_resources(event_deadline, event_cancel);
+            }
+            if (json_string(event, "method") == "Network.responseReceived" && event.contains("params")) {
+                const auto& p = event["params"];
+                if (json_string(p, "type") == "Document" && json_string(p, "frameId") == owned->main_frame &&
+                    p.contains("response"))
+                    owned->http_status = static_cast<int>(json_number(p["response"], "status"));
+            }
+        });
         if (session->text_only)
             command("Fetch.enable",
                     {{"patterns",

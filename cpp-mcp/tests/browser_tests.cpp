@@ -264,6 +264,31 @@ void protocol_tests() {
         "PROTOCOL_CALL");
     pipeline.close();
     pipelined.finish();
+    ProtocolFixture resource_wait([](auto& socket) {
+        const auto outer = receive(socket);
+        send(socket, {{"method", "Fetch.requestPaused"}, {"params", {{"requestId", "fixture"}}}});
+        const auto first = receive(socket), second = receive(socket);
+        // A renderer cannot finish the outer command until its intercepted
+        // resources are acknowledged. Deliver the outer result before both
+        // nested acknowledgements to exercise reply ownership as well.
+        send(socket, {{"id", outer["id"]}, {"result", {{"rendered", true}}}});
+        send(socket, {{"id", second["id"]}, {"result", Json::object()}});
+        send(socket, {{"id", first["id"]}, {"result", Json::object()}});
+    });
+    BrowserProtocol renderer;
+    renderer.connect(resource_wait.port(), "/devtools/browser/test", Clock::now() + Millis(3000));
+    bool resources_drained = false;
+    renderer.on_event([&](const Json&, Clock::time_point until, const Cancel& cancel) {
+        const auto replies = renderer.batch(
+            {{"Fetch.failRequest", Json::object()}, {"Fetch.failRequest", Json::object()}}, until, cancel);
+        resources_drained = replies.size() == 2;
+    });
+    require(
+        renderer.call("Page.captureScreenshot", Json::object(), Clock::now() + Millis(3000))["rendered"] &&
+            resources_drained,
+        "resource acknowledgements can unblock a pending render without losing its early reply");
+    renderer.close();
+    resource_wait.finish();
     ProtocolFixture cancelled([](auto& socket) {
         receive(socket);
         std::this_thread::sleep_for(Millis(200));
