@@ -9,6 +9,13 @@ Each executable targets a specific operating system and CPU architecture.
 Download the matching release asset and verify its release checksum and GitHub
 attestation before transferring it to an offline computer.
 
+`devbox-offline-universal.zip` carries all five desktop installer targets in one
+archive: Windows x86-64, Linux x86-64/ARM64 and macOS Intel/Apple Silicon. Select
+the matching directory after extraction. The universal manifest identifies each
+target and the hash of its component manifest. Per-platform downloads contain
+the same installer bytes and save download space when only one target is needed.
+Alpine/musl and Android retain their separate core/full archives.
+
 Windows uses an `asInvoker` executable. Its default directory is
 `%LOCALAPPDATA%\Programs\Devbox`. It creates no machine-wide registry entries,
 services, scheduled tasks, firewall rules or PATH changes. Linux defaults to

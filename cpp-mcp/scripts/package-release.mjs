@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +30,11 @@ const targets = {
   ...Object.fromEntries(['arm64-v8a', 'armeabi-v7a', 'x86_64', 'x86'].map(abi => [`android-${abi}`, `cpp-android-${abi}`])),
 };
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+async function fileDigest(file) {
+  const hash=createHash('sha256');
+  for await(const bytes of createReadStream(file,{highWaterMark:128*1024}))hash.update(bytes);
+  return hash.digest('hex');
+}
 const machines = { x86_64: 62, aarch64: 183, 'arm64-v8a': 183, 'armeabi-v7a': 40, x86: 3 };
 function assertArchitecture(bytes, target) {
   if (target.startsWith('windows-')) {
@@ -50,9 +56,12 @@ const licenseName = 'libdeflate.LICENSE.txt';
 const license = await readFile(path.join(repo, 'cpp-mcp', licenseName));
 await writeFile(path.join(output, licenseName), license, {flag: 'wx'});
 const manifests = [];
+const offlineBundles = [];
 let offlineAssets = 0;
 const scratch = await mkdtemp(path.join(os.tmpdir(), 'devbox-cpp-release-'));
 try {
+  const universalDirectory = path.join(scratch, 'universal');
+  await mkdir(universalDirectory);
   for (const [target, directory] of Object.entries(targets)) {
     const source = path.join(input, directory);
     const manifest = JSON.parse(await readFile(path.join(source, 'build-manifest.json'), 'utf8'));
@@ -169,9 +178,57 @@ try {
       for(const item of offline.files)
         assert.equal(digest(await readFile(path.join(roundtrip,item.file))),item.sha256);
       assert.deepEqual(JSON.parse(await readFile(path.join(roundtrip,'offline-manifest.json'),'utf8')),offline);
+      // Reuse the already-verified directory without copying all payload bytes.
+      await rename(offlineDirectory,path.join(universalDirectory,target));
+      offlineBundles.push(offline);
     }
     manifests.push(manifest);
   }
+  assert.deepEqual(offlineBundles.map(row=>row.target).sort(),
+    ['windows-x86_64','linux-x86_64','linux-aarch64','macos-x86_64','macos-aarch64'].sort());
+  const universalManifest = {
+    schema:1,source:expectedSha,tree:expectedTree,version,
+    targets:offlineBundles.map(row=>({
+      target:row.target,installer:`${row.target}/${row.installer}`,
+      manifest:`${row.target}/offline-manifest.json`,
+      manifestSha256:digest(Buffer.from(JSON.stringify(row,null,2)+'\n'))
+    }))
+  };
+  const universalText=JSON.stringify(universalManifest,null,2)+'\n';
+  await writeFile(path.join(universalDirectory,'offline-manifest-universal.json'),universalText,{flag:'wx'});
+  await writeFile(path.join(output,'offline-manifest-universal.json'),universalText,{flag:'wx'});
+  for(const name of ['OFFLINE.md','CORE_SERVER.md'])
+    await copyFile(path.join(repo,'docs',name),path.join(universalDirectory,name));
+  await writeFile(path.join(universalDirectory,'README.md'),
+    '# Devbox native offline desktop bundle\n\n'+
+    'Choose the directory matching your operating system and CPU architecture. '+
+    'It contains the same native C++23 offline installer as the individual release download.\n\n'+
+    'Windows: run `windows-x86_64/devbox-offline.exe --user` from a normal terminal. '+
+    'Linux: run the matching `devbox-offline.run --user`. '+
+    'macOS: use `Devbox.app/Contents/MacOS/devbox-offline --user` in the matching directory.\n\n'+
+    'Use `--portable PATH --no-start` for a new user-owned installation. '+
+    'See [offline installation](OFFLINE.md) for configuration, trust and filesystem requirements. '+
+    'Verify the release checksum and GitHub attestation before transferring this archive offline. '+
+    'This package contains five target-specific installers; each executable runs only on its matching OS and CPU.\n',
+    {flag:'wx'});
+  const universalArchive=path.join(output,'devbox-offline-universal.zip');
+  await runCheckedProcess('zip',['-1','-q','-r',universalArchive,'.'],
+    {cwd:universalDirectory,timeoutMs:120000,label:'Universal offline desktop packaging'});
+  const universalRoundtrip=path.join(scratch,'universal-extracted');
+  await mkdir(universalRoundtrip);
+  await run('unzip',['-q',universalArchive,'-d',universalRoundtrip]);
+  assert.deepEqual((await readdir(universalRoundtrip)).sort(),
+    [...offlineBundles.map(row=>row.target),'README.md','OFFLINE.md','CORE_SERVER.md','offline-manifest-universal.json'].sort());
+  assert.deepEqual(JSON.parse(await readFile(path.join(universalRoundtrip,'offline-manifest-universal.json'),'utf8')),
+    universalManifest);
+  for(const row of offlineBundles) {
+    const restored=path.join(universalRoundtrip,row.target);
+    assert.equal(digest(await readFile(path.join(restored,'offline-manifest.json'))),
+      universalManifest.targets.find(item=>item.target===row.target).manifestSha256);
+    for(const item of row.files)
+      assert.equal(digest(await readFile(path.join(restored,item.file))),item.sha256);
+  }
+  offlineAssets+=2;
   await writeFile(path.join(output, 'build-provenance.json'), `${JSON.stringify({ schema: 1, implementation: 'cpp',
     gitSha: expectedSha, sourceTree: expectedTree, version, dependencyBaseline: baseline, targets: manifests }, null, 2)}\n`);
   const inventories=await Promise.all(Object.keys(targets).map(target=>readFile(path.join(output,`dependency-inventory-${target}.json`),'utf8').then(JSON.parse)));
@@ -185,8 +242,9 @@ try {
     promotionRequires:'verified GitHub workflow attestation and matching source/schema/binary digest'};
   await writeFile(path.join(output,'qualification-receipt.json'),JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
   const names = (await readdir(output)).sort();
-  await writeFile(path.join(output, 'SHA256SUMS'), (await Promise.all(names.map(async name =>
-    `${digest(await readFile(path.join(output, name)))}  ${name}\n`))).join(''));
+  const sums=[];
+  for(const name of names)sums.push(`${await fileDigest(path.join(output,name))}  ${name}\n`);
+  await writeFile(path.join(output, 'SHA256SUMS'), sums.join(''));
   assert.equal(names.length, Object.keys(targets).length * 8 + 4 + offlineAssets, 'Every target requires binaries, full/core archives, resolved dependency sidecars and global qualification evidence');
   console.log(JSON.stringify({ ok: true, source: expectedSha, version, targets: Object.keys(targets), verifiedFiles: names.length, output }));
 } finally {

@@ -47,6 +47,11 @@ machine. See [offline installation and trust](docs/OFFLINE.md) for Linux/macOS
 commands, filesystem requirements and lifecycle operations. Chromium and public
 tunnels are optional components and are not included in the core offline package.
 
+**`devbox-offline-universal.zip`** contains all five desktop installer variants
+in separate platform directories, plus their manifests and offline guides.
+Use it when one archive should cover several computers. Individual target
+downloads contain the same installer bytes and are smaller.
+
 The full bundle remains available and ships three native programs from the same source revision:
 
 - **`devbox-tui`** — the guided C++17 interactive setup experience for new users.

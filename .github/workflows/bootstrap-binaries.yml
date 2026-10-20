@@ -52,6 +52,8 @@ jobs:
           Native offline installers bundle the server, setup/TUI, manifests and notices.
           Windows EXE/ZIP installs with current-user privileges; Linux x86-64/ARM64
           uses a self-extracting .run executable; macOS uses an app bundle ZIP.
+          devbox-offline-universal.zip collects all five desktop installer targets
+          and their manifests/guides into one portable offline distribution.
           These installers verify and unpack locally without gh, a package manager,
           an external archiver or installation-time downloads. Use --portable PATH
           for a new user-owned directory, or --user for the current-user default.
