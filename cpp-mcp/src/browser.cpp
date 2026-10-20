@@ -254,6 +254,11 @@ struct BrowserService::State {
     Cancel stopping = std::make_shared<Cancellation>();
     std::thread janitor;
     struct Session {
+        struct PendingNavigation {
+            std::string url;
+            bool screenshot, html;
+        };
+        std::optional<PendingNavigation> pending_navigation;
         std::string id = uuid(), owner, target, cdp_session, observation, html, html_hash, main_frame;
         std::string context;
         bool shared = false;
@@ -955,6 +960,31 @@ struct BrowserService::State {
         session->last = data;
         return {std::move(data), std::move(image)};
     }
+    BrowserObservation pending_navigation(Clock::time_point deadline) {
+        // The caller's first idle allowance begins after startup, just as it
+        // does after a normal open observation. Status never renews this.
+        session->touched = Clock::now();
+        return {{{"session_id", session->id},
+                 {"observation_id", nullptr},
+                 {"url", "about:blank"},
+                 {"requested_url", session->pending_navigation->url},
+                 {"title", ""},
+                 {"text", ""},
+                 {"controls", Json::array()},
+                 {"page_status", "loading"},
+                 {"pending_phase", "navigation"},
+                 {"navigation_stable", false},
+                 {"image_mime_type", nullptr},
+                 {"next_action", "observe"},
+                 {"pending_note", "The owned browser is ready. Startup used the initial call budget; "
+                                  "observe this session to navigate and capture the requested page."},
+                 {"session_budget", session_budget()},
+                 {"session_protocol", session->protocol->metrics()},
+                 {"timing",
+                  {{"action_ms",
+                    std::chrono::duration_cast<Millis>(Clock::now() - (deadline - Millis(40000))).count()}}}},
+                {}};
+    }
 };
 BrowserService::BrowserService(std::shared_ptr<const Config> config, BrowserOptions options)
     : state_(std::make_unique<State>(std::move(config), std::move(options))) {}
@@ -1021,6 +1051,14 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         const bool text_only = render_mode == "text" || (render_mode == "auto" && state.options.text_only);
         try {
             state.open(std::string(principal), text_only, deadline, cancel);
+            // Keep a slow cold launch instead of spending its remaining few
+            // seconds on navigation and then discarding the owned process.
+            // Every caller still has the same 40-second hard action deadline.
+            if (state.options.defer_initial_navigation || deadline - Clock::now() < Millis(20000)) {
+                state.session->pending_navigation = BrowserService::State::Session::PendingNavigation{
+                    target, json_bool(args, "screenshot", true), json_bool(args, "include_html", false)};
+                return state.pending_navigation(deadline);
+            }
             const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
             auto nav = state.command("Page.navigate", {{"url", target}}, deadline, cancel);
             if (nav.contains("errorText"))
@@ -1088,10 +1126,26 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
             throw Error("BROWSER_WAIT_BOUNDS");
         cancel->wait_for(Millis(wait));
         cancel->check();
+        if (session.pending_navigation) {
+            const auto pending = *session.pending_navigation;
+            const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
+            const auto nav = state.command("Page.navigate", {{"url", pending.url}}, deadline, cancel);
+            session.pending_navigation.reset();
+            if (nav.contains("errorText"))
+                throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
+            state.settle(nav, previous_loader, deadline, cancel);
+            auto resumed = args;
+            if (!resumed.contains("screenshot"))
+                resumed["screenshot"] = pending.screenshot;
+            if (!resumed.contains("include_html"))
+                resumed["include_html"] = pending.html;
+            return state.observe(resumed, deadline, cancel);
+        }
         return state.observe(args, deadline, cancel);
     }
     if (action == "navigate") {
         const auto target = state.url(json_string(args, "url"));
+        session.pending_navigation.reset();
         session.http_status = 0;
         const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
         auto nav = state.command("Page.navigate", {{"url", target}}, deadline, cancel);

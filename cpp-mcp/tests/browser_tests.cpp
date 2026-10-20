@@ -67,6 +67,15 @@ void send(auto& socket, const Json& j) {
     socket.text(true);
     socket.write(asio::buffer(s));
 }
+BrowserObservation initial_observation(BrowserService& browser, const Json& args, std::string_view owner) {
+    auto value = browser.perform(args, owner);
+    if (json_string(value.data, "pending_phase") == "navigation") {
+        const auto id = json_string(value.data, "session_id");
+        value = browser.perform({{"action", "observe"}, {"session_id", id}}, owner);
+        require(json_string(value.data, "session_id") == id, "initial observation retains session identity");
+    }
+    return value;
+}
 void protocol_tests() {
     require(browser_cgroup_headroom(536870912, 383205376, 182263808) == 335929344,
             "observed Oracle inactive file cache is reclaimable headroom");
@@ -406,6 +415,7 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     BrowserOptions options;
     options.headed = headed;
     options.compatibility = compatibility;
+    options.defer_initial_navigation = !headed && !compatibility;
     options.launch_diagnostics = [&](std::string_view message) {
         browser_diagnostics(message);
         if (message.starts_with("cleanup profile="))
@@ -423,6 +433,29 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                                   {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"},
                                   {"include_html", true}},
                                  "test");
+    if (json_string(value.data, "pending_phase") == "navigation") {
+        const auto pending_id = json_string(value.data, "session_id");
+        require(!pending_id.empty() && value.image_base64.empty() && value.data["observation_id"].is_null() &&
+                    json_string(value.data, "page_status") == "loading",
+                "slow startup returns owned continuation without inventing a page observation");
+        rejects([&] { browser.perform({{"action", "observe"}, {"session_id", pending_id}}, "other"); },
+                "SESSION_NOT_FOUND");
+        rejects(
+            [&] {
+                browser.perform({{"action", "click"},
+                                 {"session_id", pending_id},
+                                 {"observation_id", "not-observed"},
+                                 {"x", 10},
+                                 {"y", 10}},
+                                "test");
+            },
+            "STALE_OBSERVATION");
+        value = browser.perform({{"action", "observe"}, {"session_id", pending_id}}, "test");
+        require(json_string(value.data, "session_id") == pending_id,
+                "continuation reuses the same owned session");
+    } else {
+        require(!options.defer_initial_navigation, "forced continuation regression must execute");
+    }
     require(json_string(value.data, "text").find("GBP 649.00") != std::string::npos,
             "JavaScript-rendered live price text");
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
@@ -572,10 +605,11 @@ void browser_tests(bool headed = false, bool compatibility = false) {
         require(!process_matches_instance(pid, instance), "owned Chromium process terminated after close");
     }
     auto redirected =
-        browser.perform({{"action", "open"},
-                         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/client-redirect"},
-                         {"include_html", true}},
-                        "test");
+        initial_observation(browser,
+                            {{"action", "open"},
+                             {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/client-redirect"},
+                             {"include_html", true}},
+                            "test");
     require(json_string(redirected.data, "url").ends_with("/redirect-target") &&
                 json_string(redirected.data, "text").find("GBP 649.00") != std::string::npos &&
                 json_bool(redirected.data, "navigation_stable"),
@@ -650,7 +684,7 @@ void shared_browser_tests(bool headed, bool compatibility) {
     owned_options.pid_observer = [&](std::uint32_t value) { pid = value; };
     BrowserService managed(config, owned_options);
     const Json open{{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"}};
-    auto initial = managed.perform(open, "operator");
+    auto initial = initial_observation(managed, open, "operator");
     const auto managed_id = json_string(initial.data, "session_id");
     const auto images_until = Clock::now() + Millis(10000);
     while (page.picture_requests < 33 ||
@@ -760,7 +794,7 @@ void shared_browser_tests(bool headed, bool compatibility) {
         const auto pictures_before = page.picture_requests.load();
         auto text_open = open;
         text_open["render_mode"] = "auto";
-        auto first = shared.perform(text_open, "first");
+        auto first = initial_observation(shared, text_open, "first");
         require(first.data.at("render_mode") == "text" &&
                     json_uint(first.data, "omitted_network_resources") >= 33 &&
                     json_string(first.data, "text").find("Fixture image omitted") != std::string::npos &&
@@ -790,7 +824,7 @@ void shared_browser_tests(bool headed, bool compatibility) {
                 "closing a session preserves its managed browser and profile");
         auto full_open = open;
         full_open["render_mode"] = "full";
-        auto second = shared.perform(full_open, "second");
+        auto second = initial_observation(shared, full_open, "second");
         const auto full_until = Clock::now() + Millis(10000);
         while (page.picture_requests < pictures_before + 33 ||
                json_string(second.data, "text").find("Fixture image loaded") == std::string::npos) {
@@ -830,7 +864,7 @@ void session_allowance_tests() {
     BrowserOptions defaults;
     defaults.fixture_port = page.port();
     BrowserService browser(config, defaults);
-    auto first = browser.perform(open, "slow-agent");
+    auto first = initial_observation(browser, open, "slow-agent");
     const auto id = json_string(first.data, "session_id");
     const auto profile = fs::temp_directory_path() / ("devbox-browser-" + id);
     std::cerr << "[browser] preserving a real session across a 65-second model-thinking pause\n"
@@ -853,7 +887,7 @@ void session_allowance_tests() {
         bounded.idle_timeout = Millis(hard ? 10000 : 1000);
         bounded.lifetime = Millis(hard ? 8000 : 20000);
         BrowserService expiring(config, bounded);
-        auto value = expiring.perform(open, "owner");
+        auto value = initial_observation(expiring, open, "owner");
         const auto session = json_string(value.data, "session_id");
         const auto html_hash = json_string(value.data["html_artifact"], "sha256");
         if (!hard) {
