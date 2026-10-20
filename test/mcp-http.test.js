@@ -115,6 +115,10 @@ const startServer = async (t, {
       MCP_EXEC_MAX_CONCURRENT: execMaxConcurrent,
       MCP_EXEC_RESERVED_INTERACTIVE: execReservedInteractive,
       DOCKER_COMMAND_TIMEOUT_MS: dockerCommandTimeoutMs,
+      // This fixture qualifies real legacy PowerShell/JPEG interoperability,
+      // including cold hosted Windows initialization. Deadline policy has its
+      // own focused tests; keep this attempt inside the existing 30s caller cap.
+      SCREEN_CAPTURE_ATTEMPT_TIMEOUT_MS: "20000",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
