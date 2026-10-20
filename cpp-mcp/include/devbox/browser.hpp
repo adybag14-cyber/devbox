@@ -19,6 +19,8 @@ struct BrowserOptions {
     bool headed = false;
     bool text_only = false;
     bool compatibility = false;
+    // Native regression injection only. Models and environment cannot set this.
+    bool defer_initial_navigation = false;
     // Leave bounded time for a website agent to inspect an image and plan its next action.
     // Resource-pressure cleanup and the one-session limit remain independent safeguards.
     Millis lifetime{600000}, idle_timeout{180000};
