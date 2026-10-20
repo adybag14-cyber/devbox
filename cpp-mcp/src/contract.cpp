@@ -285,9 +285,14 @@ Json ToolContract::arguments(std::string_view name, const Json& supplied) const 
     validate(supplied, schema, schema, "arguments");
     auto result = supplied;
     const auto& properties = schema.at("properties");
-    for (auto it = properties.begin(); it != properties.end(); ++it)
+    for (auto it = properties.begin(); it != properties.end(); ++it) {
+        // Omission means "inherit the open request" during a browser continuation.
+        // BrowserService supplies the ordinary defaults when no continuation exists.
+        if (name == "devbox_browser" && (it.key() == "screenshot" || it.key() == "include_html"))
+            continue;
         if (!result.contains(it.key()) && it.value().is_object() && it.value().contains("default"))
             result[it.key()] = it.value()["default"];
+    }
     return result;
 }
 Json ToolContract::capabilities(const Config& config, const std::set<std::string>& implemented) const {

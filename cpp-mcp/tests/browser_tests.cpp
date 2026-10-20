@@ -1,6 +1,7 @@
 #include "devbox/browser.hpp"
 #include "devbox/browser_protocol.hpp"
 #include "devbox/browser_proxy.hpp"
+#include "devbox/contract.hpp"
 #include "devbox/native.hpp"
 #include "devbox/process.hpp"
 #include <boost/asio.hpp>
@@ -264,6 +265,31 @@ void protocol_tests() {
         "PROTOCOL_CALL");
     pipeline.close();
     pipelined.finish();
+    ProtocolFixture resource_wait([](auto& socket) {
+        const auto outer = receive(socket);
+        send(socket, {{"method", "Fetch.requestPaused"}, {"params", {{"requestId", "fixture"}}}});
+        const auto first = receive(socket), second = receive(socket);
+        // A renderer cannot finish the outer command until its intercepted
+        // resources are acknowledged. Deliver the outer result before both
+        // nested acknowledgements to exercise reply ownership as well.
+        send(socket, {{"id", outer["id"]}, {"result", {{"rendered", true}}}});
+        send(socket, {{"id", second["id"]}, {"result", Json::object()}});
+        send(socket, {{"id", first["id"]}, {"result", Json::object()}});
+    });
+    BrowserProtocol renderer;
+    renderer.connect(resource_wait.port(), "/devtools/browser/test", Clock::now() + Millis(3000));
+    bool resources_drained = false;
+    renderer.on_event([&](const Json&, Clock::time_point until, const Cancel& cancel) {
+        const auto replies = renderer.batch(
+            {{"Fetch.failRequest", Json::object()}, {"Fetch.failRequest", Json::object()}}, until, cancel);
+        resources_drained = replies.size() == 2;
+    });
+    require(
+        renderer.call("Page.captureScreenshot", Json::object(), Clock::now() + Millis(3000))["rendered"] &&
+            resources_drained,
+        "resource acknowledgements can unblock a pending render without losing its early reply");
+    renderer.close();
+    resource_wait.finish();
     ProtocolFixture cancelled([](auto& socket) {
         receive(socket);
         std::this_thread::sleep_for(Millis(200));
@@ -305,6 +331,7 @@ struct PageFixture {
     asio::io_context io;
     Tcp::acceptor listener{io, {asio::ip::make_address("127.0.0.1"), 0}};
     std::atomic_bool stop{false};
+    std::atomic_bool reject_requests{false};
     std::atomic_uint requests{0};
     std::atomic_uint picture_requests{0};
     std::thread worker;
@@ -339,6 +366,8 @@ struct PageFixture {
                     auto request = parser.release();
                     socket.non_blocking(false);
                     ++requests;
+                    if (reject_requests)
+                        continue;
                     http::response<http::string_body> response{http::status::ok, 11};
                     response.set(http::field::content_type, "text/html; charset=utf-8");
                     response.keep_alive(false);
@@ -462,13 +491,17 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     options.lifetime = Millis(60000);
     options.idle_timeout = Millis(30000);
     BrowserService browser(config, options);
+    ToolContract contract(*config);
     require(json_bool(browser.perform({{"action", "status"}}, "test").data, "available"),
             "Chromium required for real browser qualification");
     std::cerr << "[browser] opening owned rendered fixture\n" << std::flush;
-    auto value = browser.perform({{"action", "open"},
-                                  {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"},
-                                  {"include_html", true}},
-                                 "test");
+    auto value =
+        browser.perform(contract.arguments("devbox_browser",
+                                           {{"action", "open"},
+                                            {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/"},
+                                            {"screenshot", false},
+                                            {"include_html", true}}),
+                        "test");
     if (json_string(value.data, "pending_phase") == "navigation") {
         const auto pending_id = json_string(value.data, "session_id");
         require(!pending_id.empty() && value.image_base64.empty() && value.data["observation_id"].is_null() &&
@@ -486,14 +519,36 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                                 "test");
             },
             "STALE_OBSERVATION");
-        value = browser.perform({{"action", "observe"}, {"session_id", pending_id}}, "test");
+        if (options.defer_initial_navigation) {
+            page.reject_requests = true;
+            rejects(
+                [&] {
+                    browser.perform(contract.arguments("devbox_browser",
+                                                       {{"action", "observe"}, {"session_id", pending_id}}),
+                                    "test");
+                },
+                "BROWSER_NAVIGATION");
+            page.reject_requests = false;
+        }
+        value = browser.perform(
+            contract.arguments("devbox_browser", {{"action", "observe"}, {"session_id", pending_id}}),
+            "test");
         require(json_string(value.data, "session_id") == pending_id,
                 "continuation reuses the same owned session");
+        require(value.image_base64.empty() && value.data.contains("html_artifact") &&
+                    value.data["html_artifact"].is_object(),
+                "validated omission inherits capture choices after failed and successful continuation");
     } else {
         require(!options.defer_initial_navigation, "forced continuation regression must execute");
     }
     require(json_string(value.data, "text").find("GBP 649.00") != std::string::npos,
             "JavaScript-rendered live price text");
+    require(value.image_base64.empty(), "explicit screenshot=false survives initial navigation");
+    value = browser.perform(contract.arguments("devbox_browser", {{"action", "observe"},
+                                                                  {"session_id", value.data.at("session_id")},
+                                                                  {"screenshot", true},
+                                                                  {"include_html", true}}),
+                            "test");
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
             "real JPEG screenshot");
     std::cerr << "[browser] initial owned screenshot passed\n" << std::flush;
