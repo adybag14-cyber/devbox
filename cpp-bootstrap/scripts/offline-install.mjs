@@ -24,26 +24,27 @@ const userRoot=process.platform==='win32'?path.join(env.LOCALAPPDATA,'Programs',
 const run=(file,args,timeoutMs=60000)=>runCheckedProcess(file,args,{cwd:fixture,env,timeoutMs,maxCaptureChars:65536,label:'Offline native installation qualification'});
 const port=await new Promise((resolve,reject)=>{const s=net.createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
 const binary=path.join(root,'bin','devbox-mcp'+(process.platform==='win32'?'.exe':''));
-async function waitStopped() {
+async function waitStopped(directory=root) {
+  const command=path.join(directory,'bin',path.basename(binary));
   const until=Date.now()+15000;
   do {
-    if(!JSON.parse((await run(binary,['manage','status','--root',root])).stdout).running)return;
+    if(!JSON.parse((await run(command,['manage','status','--root',directory])).stdout).running)return;
     await new Promise(resolve=>setTimeout(resolve,100));
   } while(Date.now()<until);
   throw new Error('Owned offline fixture did not stop; preserve its directory');
 }
-let initialized=false;
 try {
   assert.deepEqual(JSON.parse((await run(installer,['--inspect'])).stdout),metadata.payload);
-  await run(installer,['--portable',root,'--port',String(port),'--no-start']);
-  initialized=true;
+  await run(installer,['--portable',root,'--port',String(port)]);
   const configFile=path.join(root,'run/native/config.json');
   const config=JSON.parse(await readFile(configFile,'utf8'));
   assert.equal(config.policy,'bundled-qualified');
   assert.equal(config.current.source,metadata.source);
   assert.equal(config.current.target,metadata.target);
   assert.equal(config.environment.PORT,String(port));
-  assert.equal(JSON.parse((await run(binary,['manage','status','--root',root])).stdout).running,false);
+  const initialStatus=JSON.parse((await run(binary,['manage','status','--root',root])).stdout);
+  assert.equal(initialStatus.running,true,'Default start must survive the installer process exit');
+  assert.equal(initialStatus.healthy,true);
   await assert.rejects(run(installer,['--portable',root,'--no-start']),/NEW_USER_DIRECTORY_REQUIRED/u);
   assert.deepEqual(JSON.parse(await readFile(configFile,'utf8')),config);
   await assert.rejects(run(binary,['manage','promote','--root',root,'--binary',binary,'--allow-local-build']),/DOWNGRADE_REFUSED/u);
@@ -94,6 +95,7 @@ try {
     checks:['empty developer-tool PATH','compiled payload identity','native source and contract verification',
       'portable user directory with spaces and Unicode','default user-only directory',
       'operator environment preserved','invalid companion rejected before publishing',
+      'default startup survives installer exit','no-start remains stopped',
       'existing installation preserved','local health and exact binary',
       'native stop','no development-policy downgrade','tamper rejected before extraction']};
   for(const item of metadata.files) {
@@ -104,10 +106,16 @@ try {
   await writeFile(path.join(directory,'offline-test-result.json'),JSON.stringify(receipt,null,2)+'\n');
   console.log(JSON.stringify(receipt));
 } finally {
-  if(initialized) {
-    const status=JSON.parse((await run(binary,['manage','status','--root',root])).stdout);
-    if(status.running)await run(binary,['manage','stop','--root',root]);
-    await waitStopped();
+  for(const directory of [root,userRoot]) {
+    const initialized=await access(path.join(directory,'run/native/config.json')).then(()=>true,error=>{
+      if(error.code==='ENOENT')return false;throw error;
+    });
+    if(initialized) {
+      const command=path.join(directory,'bin',path.basename(binary));
+      const status=JSON.parse((await run(command,['manage','status','--root',directory])).stdout);
+      if(status.running)await run(command,['manage','stop','--root',directory]);
+      await waitStopped(directory);
+    }
   }
   await rm(fixture,{recursive:true,force:true});
 }

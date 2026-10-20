@@ -148,6 +148,9 @@ int run(const std::vector<std::string>& args) {
             process.cwd = root;
             process.timeout = Millis(45000);
             process.max_capture_chars = 65536;
+            // This verified management command intentionally starts a durable
+            // supervisor. It must outlive the installer and its process job.
+            process.allow_durable_children = true;
             const auto result = spawn_process(path_text(root / "bin" / runtime),
                                               {"manage", "start", "--root", path_text(root)}, process);
             if (result.exit_code)
