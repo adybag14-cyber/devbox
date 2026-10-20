@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {cp,mkdir,mkdtemp,open,readFile,rm,writeFile,access} from 'node:fs/promises';
+import {cp,mkdir,mkdtemp,open,readFile,realpath,rm,writeFile,access} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,7 +61,7 @@ try {
   await writeFile(settings,`HOST=127.0.0.1\nPORT=${port}\nMCP_AUTH_MODE=none\nMCP_EXEC_MAX_CONCURRENT=2\n`,{mode:0o600});
   await run(installer,['--user','--no-start','--env-file',settings]);
   const userConfig=JSON.parse(await readFile(path.join(userRoot,'run/native/config.json'),'utf8'));
-  assert.equal(userConfig.root,path.resolve(userRoot));
+  assert.equal(userConfig.root,await realpath(userRoot));
   assert.equal(userConfig.policy,'bundled-qualified');
   assert.equal(userConfig.current.source,metadata.source);
   assert.equal(userConfig.environment.PORT,String(port));
