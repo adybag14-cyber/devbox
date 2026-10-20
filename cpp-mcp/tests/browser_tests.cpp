@@ -108,7 +108,7 @@ void protocol_tests() {
                                             executable, profile, true),
             "managed compatibility requires its exact launch switch");
     require(!browser_process_arguments_match(flat + " --disable-blink-features=AutomationControlled"
-                                                   " --disable-blink-features=OtherFeature",
+                                                    " --disable-blink-features=OtherFeature",
                                              executable, profile, true),
             "conflicting compatibility switches are rejected");
     require(
@@ -125,18 +125,19 @@ void protocol_tests() {
     require(browser_page_status({{"title", "Before you continue"}, {"url", "https://consent.google.com/"}},
                                 200) == "consent_required",
             "consent is an explicit intermediate state");
-    require(browser_page_status({{"title", "Just a moment..."}, {"text", "Checking your browser"}},
-                                403) == "challenge_required",
+    require(browser_page_status({{"title", "Just a moment..."}, {"text", "Checking your browser"}}, 403) ==
+                "challenge_required",
             "a challenge using HTTP 403 remains distinguishable from a hard access denial");
     require(browser_page_status({{"title", "Something went wrong - Argos.co.uk"},
-                                  {"text", "We can't seem to find that page right now..."}},
+                                 {"text", "We can't seem to find that page right now..."}},
                                 200) == "not_found",
             "a retailer soft-404 is not usable product evidence");
     require(browser_page_status({{"title", "Shop"}}, 410) == "not_found",
             "a removed resource is not useful source content");
     require(browser_page_status({{"title", "Understanding website errors"},
-                                  {"text", std::string(90, 'a') + " we can't seem to find that page"},
-                                  {"ready_state", "complete"}, {"navigation_stable", true}},
+                                 {"text", std::string(90, 'a') + " we can't seem to find that page"},
+                                 {"ready_state", "complete"},
+                                 {"navigation_stable", true}},
                                 200) == "content_available",
             "mentioning an error inside an ordinary article does not make it a soft-404");
     ProtocolFixture fixture([](auto& socket) {
@@ -180,6 +181,44 @@ void protocol_tests() {
             "command error retains usable transport");
     recovery.close();
     recoverable.finish();
+    // The peer refuses to answer until all requests have arrived: sequential
+    // call-and-wait implementations cannot pass this fixture.
+    ProtocolFixture pipelined([](auto& socket) {
+        std::vector<Json> requests;
+        for (unsigned i = 0; i < 3; ++i)
+            requests.push_back(receive(socket));
+        send(socket, {{"method", "Test.event"}, {"params", Json::object()}});
+        send(socket, {{"id", requests[2]["id"]}, {"result", {{"index", 2}}}});
+        send(socket, {{"id", requests[0]["id"]}, {"result", {{"index", 0}}}});
+        send(socket, {{"id", requests[1]["id"]},
+                      {"error", {{"code", -32000}, {"message", "Invalid InterceptionId"}}}});
+        auto next = receive(socket);
+        send(socket, {{"id", next["id"]}, {"result", {{"ready", true}}}});
+    });
+    BrowserProtocol pipeline;
+    pipeline.connect(pipelined.port(), "/devtools/browser/test", Clock::now() + Millis(3000));
+    unsigned notifications = 0;
+    pipeline.on_event([&](const Json&, Clock::time_point, const Cancel&) { ++notifications; });
+    const auto replies = pipeline.batch(
+        {{"Test.one", Json::object()}, {"Test.two", Json::object()}, {"Test.three", Json::object()}},
+        Clock::now() + Millis(3000));
+    require(replies.size() == 3 && replies[0]["result"]["index"] == 0 &&
+                replies[1]["error"]["message"] == "Invalid InterceptionId" &&
+                replies[2]["result"]["index"] == 2 && notifications == 1,
+            "batch preserves order, events and per-command errors");
+    require(pipeline.call("Test.next", Json::object(), Clock::now() + Millis(3000))["ready"],
+            "batch drains all replies after a remote error");
+    require(json_uint(pipeline.metrics(), "commands") == 4 && json_uint(pipeline.metrics(), "batches") == 1,
+            "protocol metrics count commands separately from batches");
+    rejects([&] { pipeline.batch({}, Clock::now() + Millis(1000)); }, "PROTOCOL_CALL");
+    rejects(
+        [&] {
+            pipeline.batch(std::vector<std::pair<std::string, Json>>(33, {"Test.one", Json::object()}),
+                           Clock::now() + Millis(1000));
+        },
+        "PROTOCOL_CALL");
+    pipeline.close();
+    pipelined.finish();
     ProtocolFixture cancelled([](auto& socket) {
         receive(socket);
         std::this_thread::sleep_for(Millis(200));
@@ -266,7 +305,8 @@ const state=document.createElement('p');state.id='storage-state';document.body.p
 function showStorage(){state.innerText='Cookie: '+(document.cookie||'empty')+'; Storage: '+(localStorage.getItem('devbox-fixture')||'empty');}
 const save=document.createElement('button');save.innerText='Store fixture state';save.onclick=()=>{document.cookie='devboxFixture=stored; SameSite=Lax; path=/';localStorage.setItem('devbox-fixture','stored');showStorage();};document.querySelector('button').after(save);showStorage();
 </script>)HTML";
-                    response.body() += R"HTML(<script>const flag=document.createElement('p');flag.textContent='Fixture webdriver='+navigator.webdriver;document.body.appendChild(flag);</script>)HTML";
+                    response.body() +=
+                        R"HTML(<script>const flag=document.createElement('p');flag.textContent='Fixture webdriver='+navigator.webdriver;document.body.appendChild(flag);</script>)HTML";
                     response.body() += R"HTML(<p id="image-state">Fixture image pending</p><script>
 for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>document.querySelector('#image-state').innerText='Fixture image loaded';image.onerror=()=>document.querySelector('#image-state').innerText='Fixture image omitted';}image.src='/fixture-picture?i='+n;document.body.appendChild(image);}
 </script>)HTML";
@@ -388,7 +428,9 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
             "real JPEG screenshot");
     std::cerr << "[browser] initial owned screenshot passed\n" << std::flush;
-    require(json_string(value.data, "text").find(compatibility ? "Fixture webdriver=false" : "Fixture webdriver=true") != std::string::npos,
+    require(json_string(value.data, "text")
+                    .find(compatibility ? "Fixture webdriver=false" : "Fixture webdriver=true") !=
+                std::string::npos,
             "operator compatibility choice reaches the real browser without page-script patching");
     require(json_bool(value.data.at("browser"), "compatibility_requested") == compatibility,
             "observations disclose the requested compatibility mode");
@@ -405,8 +447,7 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     std::vector<std::pair<std::uint32_t, std::optional<std::uint64_t>>> owned_processes;
     const auto initial_pid = launched_pid.load();
     const auto initial_instance = process_instance(initial_pid);
-    require(initial_pid != 0 && initial_instance &&
-                process_matches_instance(initial_pid, initial_instance),
+    require(initial_pid != 0 && initial_instance && process_matches_instance(initial_pid, initial_instance),
             "the originally launched browser remains owned after rendering");
     owned_processes.emplace_back(initial_pid, initial_instance);
 #ifdef __linux__
@@ -530,11 +571,11 @@ void browser_tests(bool headed = false, bool compatibility = false) {
             std::this_thread::sleep_for(Millis(20));
         require(!process_matches_instance(pid, instance), "owned Chromium process terminated after close");
     }
-    auto redirected = browser.perform(
-        {{"action", "open"},
-         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/client-redirect"},
-         {"include_html", true}},
-        "test");
+    auto redirected =
+        browser.perform({{"action", "open"},
+                         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/client-redirect"},
+                         {"include_html", true}},
+                        "test");
     require(json_string(redirected.data, "url").ends_with("/redirect-target") &&
                 json_string(redirected.data, "text").find("GBP 649.00") != std::string::npos &&
                 json_bool(redirected.data, "navigation_stable"),
@@ -558,20 +599,20 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                 json_string(fragment.data, "text").find("GBP 649.00") != std::string::npos &&
                 json_bool(fragment.data, "navigation_stable"),
             "same-document navigation does not require a new loader");
-    auto routed = browser.perform(
-        {{"action", "navigate"},
-         {"session_id", redirected_id},
-         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/hash-route"}},
-        "test");
+    auto routed =
+        browser.perform({{"action", "navigate"},
+                         {"session_id", redirected_id},
+                         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/hash-route"}},
+                        "test");
     require(json_string(routed.data, "url").ends_with("/hash-route#phone") &&
                 json_string(routed.data, "text").find("GBP 749.00") != std::string::npos &&
                 json_bool(routed.data, "navigation_stable"),
             "hash-route changes restart the document settling interval");
-    auto slow = browser.perform(
-        {{"action", "navigate"},
-         {"session_id", redirected_id},
-         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/slow-readable"}},
-        "test");
+    auto slow =
+        browser.perform({{"action", "navigate"},
+                         {"session_id", redirected_id},
+                         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/slow-readable"}},
+                        "test");
     require(json_string(slow.data, "text").find("GBP 849.00") != std::string::npos &&
                 json_bool(slow.data, "navigation_stable"),
             "a page readable after fifteen seconds fits within the overall action budget");

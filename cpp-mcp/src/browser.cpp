@@ -509,24 +509,32 @@ struct BrowserService::State {
             // an image-heavy page. Each drain shares the caller's deadline.
             unsigned processed = 0;
             while (!session->intercepted_resources.empty()) {
-                if (++processed > 512)
-                    throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
-                auto [request, omit] = std::move(session->intercepted_resources.front());
-                session->intercepted_resources.pop_front();
-                Json params{{"requestId", request}};
-                if (omit)
-                    params["errorReason"] = "BlockedByClient";
-                try {
-                    session->protocol->call(omit ? "Fetch.failRequest" : "Fetch.continueRequest",
-                                            std::move(params), deadline, cancel, session->cdp_session);
+                std::vector<std::pair<std::string, Json>> commands;
+                std::vector<bool> omitted;
+                while (!session->intercepted_resources.empty() && commands.size() < 32) {
+                    if (++processed > 512)
+                        throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
+                    auto [request, omit] = std::move(session->intercepted_resources.front());
+                    session->intercepted_resources.pop_front();
+                    Json params{{"requestId", request}};
                     if (omit)
+                        params["errorReason"] = "BlockedByClient";
+                    commands.emplace_back(omit ? "Fetch.failRequest" : "Fetch.continueRequest",
+                                          std::move(params));
+                    omitted.push_back(omit);
+                }
+                // These requests are independent. Drain every acknowledgement,
+                // including cancelled interceptions, before issuing more work.
+                const auto replies =
+                    session->protocol->batch(commands, deadline, cancel, session->cdp_session);
+                for (std::size_t i = 0; i < replies.size(); ++i) {
+                    if (replies[i].contains("error")) {
+                        const auto message = json_string(replies[i]["error"], "message", "command failed");
+                        if (message.find("Invalid InterceptionId") == std::string::npos)
+                            throw Error("BROWSER_PROTOCOL_REMOTE: " + message.substr(0, 256));
+                    } else if (omitted[i]) {
                         ++session->omitted_resources;
-                } catch (const Error& error) {
-                    // A navigation can cancel an intercepted resource before the
-                    // queued rejection is sent. Other protocol errors remain fatal.
-                    if (std::string_view(error.what()).find("Invalid InterceptionId") ==
-                        std::string_view::npos)
-                        throw;
+                    }
                 }
             }
             return result;
@@ -610,8 +618,8 @@ struct BrowserService::State {
             if (options.launch_diagnostics) {
                 const auto elapsed = std::chrono::duration_cast<Millis>(Clock::now() - began).count();
                 try {
-                    options.launch_diagnostics("phase=" + std::string(phase) + " elapsed_ms=" +
-                                               std::to_string(elapsed));
+                    options.launch_diagnostics("phase=" + std::string(phase) +
+                                               " elapsed_ms=" + std::to_string(elapsed));
                 } catch (...) {
                 }
             }
@@ -848,6 +856,11 @@ struct BrowserService::State {
                 cancel);
     }
     BrowserObservation observe(const Json& args, Clock::time_point deadline, const Cancel& cancel) {
+        const auto began = Clock::now();
+        const auto elapsed = [](Clock::time_point since) {
+            return std::chrono::duration_cast<Millis>(Clock::now() - since).count();
+        };
+        Json timing = Json::object();
         // Activate only the controlled headless target, not a user's desktop
         // window, before reading its DOM and requesting the next captured frame.
         if (json_bool(args, "screenshot", true) && !options.headed)
@@ -856,11 +869,13 @@ struct BrowserService::State {
         auto data = evaluate(observe_script, deadline, cancel);
         std::string image;
         if (json_bool(args, "screenshot", true)) {
+            const auto screenshot_began = Clock::now();
             image =
                 json_string(command("Page.captureScreenshot",
                                     {{"format", "jpeg"}, {"quality", 65}, {"captureBeyondViewport", false}},
                                     deadline, cancel),
                             "data");
+            timing["screenshot_ms"] = elapsed(screenshot_began);
         }
         if (image.size() > 2 * 1024 * 1024)
             throw Error("BROWSER_IMAGE_LIMIT");
@@ -895,7 +910,9 @@ struct BrowserService::State {
         data["page_status"] = page_status;
         data["possible_challenge"] = page_status == "access_denied" || page_status == "challenge_required";
         if (json_bool(args, "include_html", false)) {
+            const auto html_began = Clock::now();
             auto capture = evaluate(html_script, deadline, cancel);
+            timing["html_capture_ms"] = elapsed(html_began);
             session->html = json_string(capture, "html");
             if (session->html.size() > html_limit)
                 throw Error("BROWSER_HTML_LIMIT");
@@ -915,8 +932,10 @@ struct BrowserService::State {
             rendered.headers = {{"content-type", "text/html"}};
             rendered.completed_at = json_string(data, "observed_at");
             rendered.completed_unix_ms = unix_millis();
+            const auto extract_began = Clock::now();
             auto document = web::extract_document(rendered);
             data["offers"] = web::offer_view(document, 0, 10);
+            timing["offer_extraction_ms"] = elapsed(extract_began);
             data["offers_origin"] =
                 "rendered DOM extraction, not an HTTP status or a verified selected-variant price";
             const auto html_frame = frame(deadline, cancel);
@@ -929,6 +948,10 @@ struct BrowserService::State {
         // Slow navigation/rendering must not consume the caller's idle allowance.
         session->touched = Clock::now();
         data["session_budget"] = session_budget();
+        timing["observation_ms"] = elapsed(began);
+        timing["action_ms"] = elapsed(deadline - Millis(40000));
+        data["timing"] = std::move(timing);
+        data["session_protocol"] = session->protocol->metrics();
         session->last = data;
         return {std::move(data), std::move(image)};
     }

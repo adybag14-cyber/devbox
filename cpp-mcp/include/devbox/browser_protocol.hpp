@@ -19,6 +19,14 @@ class BrowserProtocol {
     void on_event(Event handler);
     Json call(std::string_view method, Json params, Clock::time_point deadline, const Cancel& cancel = {},
               std::string_view session = {});
+    // Send independent commands before awaiting their replies. Results retain
+    // input order and contain either result or error; a remote command error
+    // does not abandon other replies. Bounded to 32 commands and one message
+    // budget in each direction. Protocol failures invalidate the connection.
+    std::vector<Json> batch(const std::vector<std::pair<std::string, Json>>& commands,
+                            Clock::time_point deadline, const Cancel& cancel = {},
+                            std::string_view session = {});
+    Json metrics() const;
     void close() noexcept;
 };
 } // namespace devbox
