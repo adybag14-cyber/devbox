@@ -50,8 +50,8 @@ int main() {
                          {"build", {{"sourceDirty", false}, {"sanitizers", false}}},
                          {"binaries", Json::array({record})}};
         write_json_atomic(package / "build-manifest.json", build);
-        for (const auto* name :
-             {"THIRD_PARTY_NOTICES.txt", "dependency-inventory.json", "sbom.spdx.json", "OFFLINE.md"})
+        for (const auto* name : {"THIRD_PARTY_NOTICES.txt", "dependency-inventory.json", "sbom.spdx.json",
+                                 "OFFLINE.md", "CORE_SERVER.md"})
             write_file(package / name, "{}\n");
         const auto payload = root / "payload";
         const auto manifest = bundle::pack(package, payload, "123");

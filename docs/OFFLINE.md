@@ -21,6 +21,19 @@ devbox-offline --portable "/path/you/own/devbox" --no-start
 devbox-offline --inspect
 ```
 
+Linux standalone executables have a `.run` suffix; make the downloaded file
+executable before invoking it. The macOS app bundle's CLI is
+`Devbox.app/Contents/MacOS/devbox-offline`.
+
+Operators can pass `--env-file /private/runtime.env` to preserve authentication,
+workspace and optional capability configuration in the installation's private
+state. An explicit `--port` overrides the file's `PORT`; otherwise its configured
+port is retained. `--companions /private/companions.json` accepts the same
+bounded, absolute-path process definitions as
+[native management](CORE_SERVER.md#verified-native-installation). Companion
+executables must already exist; they are validated and pinned by hash. These
+options do not copy credentials into a release asset.
+
 The destination must be empty or absent on a local filesystem qualified for
 Devbox's private durable state. On Windows that means a fixed local disk with
 private ACL support; the installer itself can be carried on removable media.
@@ -36,8 +49,8 @@ workflow/source identity. Existing online Sigstore verification continues to
 use `signed-qualified`. Neither policy permits an unqualified development
 binary to be promoted over the installed runtime.
 
-The initial server listens on `127.0.0.1` and uses port 8100 unless `--port` is
-supplied. `--no-start` leaves it configured and stopped. Use the installed native
+The server defaults to `127.0.0.1:8100`; an operator environment file or explicit
+`--port` can change the configuration. `--no-start` leaves it configured and stopped. Use the installed native
 CLI, with the absolute installation directory:
 
 ```

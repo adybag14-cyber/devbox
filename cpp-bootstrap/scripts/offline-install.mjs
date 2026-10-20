@@ -48,7 +48,7 @@ try {
   assert.deepEqual(JSON.parse(await readFile(configFile,'utf8')),config);
   await assert.rejects(run(binary,['manage','promote','--root',root,'--binary',binary,'--allow-local-build']),/DOWNGRADE_REFUSED/u);
   assert.deepEqual(JSON.parse(await readFile(configFile,'utf8')),config);
-  for(const file of ['THIRD_PARTY_NOTICES.txt','dependency-inventory.json','sbom.spdx.json','build-manifest.json','OFFLINE.md'])
+  for(const file of ['THIRD_PARTY_NOTICES.txt','dependency-inventory.json','sbom.spdx.json','build-manifest.json','OFFLINE.md','CORE_SERVER.md'])
     await access(path.join(root,'share',file));
   const started=JSON.parse((await run(binary,['manage','start','--root',root])).stdout);
   assert.equal(started.healthy,true);
@@ -57,13 +57,23 @@ try {
   assert.equal((await live.json()).build.binarySha256,config.current.sha256);
   await run(binary,['manage','stop','--root',root]);
   await waitStopped();
-  await run(installer,['--user','--no-start','--port',String(port)]);
+  const settings=path.join(fixture,'operator.env');
+  await writeFile(settings,`HOST=127.0.0.1\nPORT=${port}\nMCP_AUTH_MODE=none\nMCP_EXEC_MAX_CONCURRENT=2\n`,{mode:0o600});
+  await run(installer,['--user','--no-start','--env-file',settings]);
   const userConfig=JSON.parse(await readFile(path.join(userRoot,'run/native/config.json'),'utf8'));
   assert.equal(userConfig.root,path.resolve(userRoot));
   assert.equal(userConfig.policy,'bundled-qualified');
   assert.equal(userConfig.current.source,metadata.source);
+  assert.equal(userConfig.environment.PORT,String(port));
+  assert.equal(userConfig.environment.MCP_EXEC_MAX_CONCURRENT,'2');
   assert.equal(JSON.parse((await run(path.join(userRoot,'bin',path.basename(binary)),
     ['manage','status','--root',userRoot])).stdout).running,false);
+  const invalidCompanions=path.join(fixture,'invalid-companions.json');
+  await writeFile(invalidCompanions,JSON.stringify([{name:'invalid',program:'relative-command',args:[]}]));
+  const invalidRoot=path.join(fixture,'invalid-companion-install');
+  await assert.rejects(run(installer,['--portable',invalidRoot,'--no-start','--companions',invalidCompanions]),
+    /Companion program must be absolute/u);
+  await assert.rejects(access(invalidRoot));
   const corrupted=path.join(fixture,'corrupted');
   await cp(directory,corrupted,{recursive:true});
   const damaged=process.platform==='darwin'
@@ -83,6 +93,7 @@ try {
     files:metadata.files,
     checks:['empty developer-tool PATH','compiled payload identity','native source and contract verification',
       'portable user directory with spaces and Unicode','default user-only directory',
+      'operator environment preserved','invalid companion rejected before publishing',
       'existing installation preserved','local health and exact binary',
       'native stop','no development-policy downgrade','tamper rejected before extraction']};
   for(const item of metadata.files) {

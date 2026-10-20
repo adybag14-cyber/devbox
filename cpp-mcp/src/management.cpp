@@ -1045,8 +1045,9 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
                 fs::copy_file(control_root(staging) / release / executable_name(),
                               staging / "bin" / executable_name());
             ensure_private_state_directory(staging / "share");
-            for (const auto* name : {"build-manifest.json", "THIRD_PARTY_NOTICES.txt",
-                                     "dependency-inventory.json", "sbom.spdx.json", "OFFLINE.md"})
+            for (const auto* name :
+                 {"build-manifest.json", "THIRD_PARTY_NOTICES.txt", "dependency-inventory.json",
+                  "sbom.spdx.json", "OFFLINE.md", "CORE_SERVER.md"})
                 fs::copy_file(bundled->contents / name, staging / "share" / name);
             for (const auto* name : {"devbox-setup", "devbox-tui"}) {
                 const auto file = std::string(name) +

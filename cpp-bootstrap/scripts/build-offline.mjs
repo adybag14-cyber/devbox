@@ -19,6 +19,7 @@ const staging=path.join(build,'offline-input');
 const output=path.join(packageRoot,'offline');
 await mkdir(staging);await mkdir(output);
 await copyFile(path.join(repo,'docs/OFFLINE.md'),path.join(packageRoot,'OFFLINE.md'));
+await copyFile(path.join(repo,'docs/CORE_SERVER.md'),path.join(packageRoot,'CORE_SERVER.md'));
 const payload=path.join(staging,'devbox.payload'),metadata=path.join(staging,'manifest.json');
 const run=(file,args)=>runCheckedProcess(file,args,{cwd:repo,timeoutMs:300000,maxCaptureChars:65536,label:'Native offline bundle construction'});
 await run(packer,['pack',packageRoot,payload,metadata,process.env.GITHUB_RUN_ID]);

@@ -34,7 +34,9 @@ fs::path user_root() {
 int run(const std::vector<std::string>& args) {
     try {
         std::optional<fs::path> selected;
+        std::optional<fs::path> environment_file, companions_file;
         bool start = true, inspect = false;
+        bool port_supplied = false;
         unsigned port = 8100;
         for (std::size_t i = 0; i < args.size(); ++i) {
             const auto& arg = args[i];
@@ -45,9 +47,11 @@ int run(const std::vector<std::string>& args) {
                        "  --portable PATH       Install in a new empty directory you own\n"
                        "  --no-start            Install without launching the local server\n"
                        "  --port NUMBER         Local server port (default 8100)\n"
+                       "  --env-file FILE       Read operator configuration into private server state\n"
+                       "  --companions FILE     Optional native-supervised companion definitions\n"
                        "  --inspect             Verify the bundled payload and print its manifest\n"
                        "No administrator rights, package manager, download or developer tools required.\n"
-                       "The initial server binds to 127.0.0.1. No system service is registered.\n";
+                       "The server binds to 127.0.0.1 by default. No system service is registered.\n";
                 return 0;
             }
             if (arg == "--user") {
@@ -59,6 +63,7 @@ int run(const std::vector<std::string>& args) {
                     throw Error("OFFLINE_DESTINATION_REQUIRED_ONCE");
                 selected = fs::absolute(path_from_utf8(args[i]));
             } else if (arg == "--port") {
+                port_supplied = true;
                 if (++i == args.size())
                     throw Error("OFFLINE_PORT_REQUIRED");
                 const auto& value = args[i];
@@ -66,6 +71,11 @@ int run(const std::vector<std::string>& args) {
                 if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || !port ||
                     port > 65535)
                     throw Error("OFFLINE_PORT_INVALID");
+            } else if (arg == "--env-file" || arg == "--companions") {
+                auto& file = arg == "--env-file" ? environment_file : companions_file;
+                if (file || ++i == args.size())
+                    throw Error("OFFLINE_CONFIGURATION_FILE_REQUIRED_ONCE");
+                file = fs::canonical(path_from_utf8(args[i]));
             } else if (arg == "--no-start") {
                 start = false;
             } else if (arg == "--inspect") {
@@ -124,9 +134,15 @@ int run(const std::vector<std::string>& args) {
             }
         if (runtimes != 1)
             throw Error("OFFLINE_EXACT_RUNTIME_REQUIRED");
-        management_main({"init", "--root", path_text(root), "--binary", path_text(scratch / runtime),
-                         "--port", std::to_string(port)},
-                        &proof);
+        std::vector<std::string> initialize{"init", "--root", path_text(root), "--binary",
+                                            path_text(scratch / runtime)};
+        if (port_supplied)
+            initialize.insert(initialize.end(), {"--port", std::to_string(port)});
+        if (environment_file)
+            initialize.insert(initialize.end(), {"--env-file", path_text(*environment_file)});
+        if (companions_file)
+            initialize.insert(initialize.end(), {"--companions", path_text(*companions_file)});
+        management_main(initialize, &proof);
         if (start) {
             ProcessOptions process;
             process.cwd = root;

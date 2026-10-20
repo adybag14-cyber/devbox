@@ -222,7 +222,7 @@ Json pack(const fs::path& package, const fs::path& payload, std::string workflow
     if (!binaries.contains("devbox-mcp"))
         throw Error("OFFLINE_RUNTIME_REQUIRED");
     for (const auto* name : {"build-manifest.json", "THIRD_PARTY_NOTICES.txt", "dependency-inventory.json",
-                             "sbom.spdx.json", "OFFLINE.md"})
+                             "sbom.spdx.json", "OFFLINE.md", "CORE_SERVER.md"})
         files.emplace_back(package / name, false);
     std::uint64_t offset = 0, expanded = 0;
     for (const auto& [source, executable] : files) {
