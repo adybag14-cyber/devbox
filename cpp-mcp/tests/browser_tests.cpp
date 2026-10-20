@@ -78,6 +78,48 @@ BrowserObservation initial_observation(BrowserService& browser, const Json& args
     return value;
 }
 void protocol_tests() {
+    const Json controls = Json::array({{{"tag", "input"},
+                                        {"type", "radio"},
+                                        {"name", "White"},
+                                        {"checked", false},
+                                        {"x", 100},
+                                        {"y", 100},
+                                        {"width", 30},
+                                        {"height", 30}},
+                                       {{"tag", "a"},
+                                        {"name", "Learn more"},
+                                        {"href", "https://example.com/old"},
+                                        {"x", 10},
+                                        {"y", 10},
+                                        {"width", 60},
+                                        {"height", 20}}});
+    auto help_updated = controls;
+    help_updated[1]["href"] = "https://example.com/new";
+    require(browser_click_controls_match(controls, help_updated, 115, 115),
+            "unrelated help-link URL does not invalidate a stable radio click");
+    require(!browser_click_controls_match(controls, help_updated, 25, 15),
+            "clicked link URL changes still require a fresh observation");
+    require(!browser_click_controls_match(controls, help_updated, 500, 500),
+            "blank clicks cannot ignore control changes");
+    for (const auto& field : {"checked", "name", "x", "disabled"}) {
+        auto target_changed = help_updated;
+        if (std::string_view(field) == "checked" || std::string_view(field) == "disabled")
+            target_changed[0][field] = true;
+        else if (std::string_view(field) == "x")
+            target_changed[0][field] = 101;
+        else
+            target_changed[0][field] = "Different variant";
+        require(!browser_click_controls_match(controls, target_changed, 115, 115),
+                "changed target identity, geometry or state remains stale");
+    }
+    auto help_renamed = help_updated;
+    help_renamed[1]["name"] = "Different help";
+    require(!browser_click_controls_match(controls, help_renamed, 115, 115),
+            "unrelated visible label changes retain the strict guard");
+    auto added_control = help_updated;
+    added_control.push_back(controls[0]);
+    require(!browser_click_controls_match(controls, added_control, 115, 115),
+            "added controls retain the strict guard");
 #ifdef _WIN32
     const auto endpoint_root = fs::temp_directory_path() / ("devbox-endpoint-fixture-" + uuid());
     fs::create_directory(endpoint_root);
@@ -334,6 +376,7 @@ struct PageFixture {
     std::atomic_bool reject_requests{false};
     std::atomic_uint requests{0};
     std::atomic_uint picture_requests{0};
+    std::atomic_uint href_revision{0}, href_applied{0};
     std::thread worker;
     explicit PageFixture(bool storage = false) {
         listener.non_blocking(true);
@@ -409,6 +452,36 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                         response.set(http::field::content_type, "application/javascript");
                         response.body() =
                             "document.querySelector('#slow').innerText='Slow fixture price GBP 849.00';";
+                    }
+                    if (request.target() == "/control-change")
+                        response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
+<style>button,a{display:block;width:200px;height:40px;margin:15px}</style>
+<p>Verify a stable product control while an unrelated help link changes its destination.</p>
+<button onclick="this.textContent='Selected White'">Choose White</button>
+<a id="help" href="/help-old">Learn more</a>
+<script>
+let applied=0;
+async function update(){
+ try{
+  const revision=Number(await(await fetch('/href-revision')).text());
+  if(revision!==applied){
+   document.querySelector('#help').href='/help-'+revision;
+   applied=revision;
+   await fetch('/href-applied/'+revision);
+  }
+ }finally{setTimeout(update,50);}
+}
+update();
+</script>)HTML";
+                    if (request.target() == "/href-revision") {
+                        response.set(http::field::content_type, "text/plain");
+                        response.body() = std::to_string(href_revision.load());
+                    }
+                    if (request.target().starts_with("/href-applied/")) {
+                        href_applied =
+                            static_cast<unsigned>(std::stoul(std::string(request.target().substr(14))));
+                        response.set(http::field::content_type, "text/plain");
+                        response.body() = "ack";
                     }
                     response.prepare_payload();
                     http::write(socket, response);
@@ -666,6 +739,41 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                             "test");
         },
         "PRIVATE");
+    auto stable_click =
+        browser.perform({{"action", "navigate"},
+                         {"session_id", id},
+                         {"url", "http://127.0.0.1:" + std::to_string(page.port()) + "/control-change"}},
+                        "test");
+    const auto selected_control = stable_click.data["controls"][0];
+    const auto change_link = [&](unsigned revision) {
+        page.href_revision = revision;
+        const auto until = Clock::now() + Millis(5000);
+        while (page.href_applied.load() != revision && Clock::now() < until)
+            std::this_thread::sleep_for(Millis(10));
+        require(page.href_applied.load() == revision,
+                "real page acknowledged the asynchronous help-link update");
+    };
+    change_link(1);
+    auto selected = browser.perform({{"action", "click"},
+                                     {"session_id", id},
+                                     {"observation_id", stable_click.data["observation_id"]},
+                                     {"x", json_number(selected_control, "x") + 20},
+                                     {"y", json_number(selected_control, "y") + 20}},
+                                    "test");
+    require(json_string(selected.data, "text").find("Selected White") != std::string::npos,
+            "unchanged product control can be clicked after an unrelated href update");
+    const auto help_control = selected.data["controls"][1];
+    change_link(2);
+    rejects(
+        [&] {
+            browser.perform({{"action", "click"},
+                             {"session_id", id},
+                             {"observation_id", selected.data["observation_id"]},
+                             {"x", json_number(help_control, "x") + 20},
+                             {"y", json_number(help_control, "y") + 20}},
+                            "test");
+        },
+        "STALE_OBSERVATION");
 #ifdef _WIN32
     const auto delayed_file = profile / "fixture-delayed-close";
     const auto delayed_handle =

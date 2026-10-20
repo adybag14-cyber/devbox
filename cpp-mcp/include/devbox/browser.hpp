@@ -3,6 +3,7 @@
 namespace devbox {
 std::string browser_page_status(const Json& observation, int http_status = 0);
 std::string browser_normalize_url(std::string_view supplied);
+bool browser_click_controls_match(const Json& previous, const Json& current, double x, double y);
 // Chromium publishes this private endpoint while its writer may still hold a
 // Windows sharing lock. Retry only that transient condition within the caller's
 // existing deadline; permission and malformed-endpoint errors remain failures.
