@@ -683,7 +683,12 @@ int supervise(const ManagementOptions& options) {
         } catch (const std::exception& error) {
             state["controlError"] = error.what();
         }
-        if (take_stop_signal())
+        const bool signal_received = take_stop_signal();
+        const bool operator_stop_pending =
+            json_string(request, "epoch") == epoch && json_string(request, "action") == "stop" &&
+            !json_string(request, "id").empty() && json_string(request, "id") != last_request;
+        const bool service_shutdown = signal_received && !operator_stop_pending;
+        if (service_shutdown)
             request = Json{{"epoch", epoch}, {"id", uuid()}, {"action", "stop"}};
         if (json_string(request, "epoch") == epoch && !json_string(request, "id").empty() &&
             json_string(request, "id") != last_request) {
@@ -721,7 +726,10 @@ int supervise(const ManagementOptions& options) {
                     throw Error("NATIVE_COORDINATOR_STOP_UNCONFIRMED");
                 if (action == "stop") {
                     companions.stop();
-                    config["desired"] = false;
+                    // Service-manager shutdown/reboot is transient. Only an
+                    // explicit operator stop disables future managed starts.
+                    if (!service_shutdown)
+                        config["desired"] = false;
                     config_write(root, config);
                     acknowledgement["ok"] = true;
                     state["lastRequest"] = acknowledgement;

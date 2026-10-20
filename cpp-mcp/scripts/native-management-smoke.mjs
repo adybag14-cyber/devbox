@@ -28,7 +28,19 @@ const invoke = async (command, ...args) => {
   return JSON.parse(result.stdout);
 };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-let foreground, exit;
+let foreground, exit, output='';
+const launchForeground=()=>{
+  output='';
+  foreground=spawn(binary,['manage','run','--root',root,'--timeout-ms','20000'],
+    {env,cwd:fixture,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  for(const stream of [foreground.stdout,foreground.stderr])
+    stream.on('data',value=>output=(output+value).slice(-16000));
+  exit=new Promise((resolve,reject)=>{
+    foreground.once('exit',(code,signal)=>resolve({code,signal}));
+    foreground.once('error',reject);
+  });
+  exit.catch(()=>{});
+};
 let counter = 0;
 const rpc = async (name, args = {}) => {
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {method:'POST', headers:{'content-type':'application/json', accept:'application/json, text/event-stream'},
@@ -50,9 +62,7 @@ try {
   const initialized = await invoke('init', '--binary', binary, '--allow-local-build', '--port', String(port), '--env-file', environment,'--companions',companionFile);
   assert.equal(initialized.policy,'local-development');
   const startedAt = performance.now();
-  foreground = spawn(binary,['manage','run','--root',root,'--timeout-ms','20000'], {env,cwd:fixture,windowsHide:true,stdio:['ignore','pipe','pipe']});
-  let output=''; for(const stream of [foreground.stdout,foreground.stderr]) stream.on('data',value=>output=(output+value).slice(-16000));
-  exit = new Promise((resolve,reject)=>{foreground.once('exit',(code,signal)=>resolve({code,signal}));foreground.once('error',reject);});
+  launchForeground();
   const by = performance.now()+20000;
   let first;
   while(performance.now()<by) {
@@ -109,6 +119,8 @@ try {
   await invoke('service-file','--service',serviceKind,'--output',service);
   const definition=await readFile(service,'utf8');
   assert(definition.includes(serviceKind==='launchd'?'<string>manage</string>':'manage run --root'));
+  if(serviceKind==='systemd')assert(!definition.includes('ExecStop='),
+    'systemd shutdown must signal the supervisor, not persist an operator stop');
   if(process.platform==='darwin') await runCheckedProcess('/usr/bin/plutil',['-lint',service],{timeoutMs:10000,label:'Native LaunchAgent XML validation'});
   assert(!definition.includes('node '));
   await writeFile(service,'unrelated existing service definition');
@@ -121,6 +133,26 @@ try {
   const rolledBack=await invoke('status');assert.equal(rolledBack.healthy,true);
   assert.equal(rolledBack.candidateSha256,initialized.sha256,'failed startup restores prior immutable binary');
   assert.equal(await readFile(marker,'utf8'),'x');
+  if(process.platform!=='win32') {
+    // Signal only the ChildProcess owned by this fixture. A service-manager
+    // termination must allow the next foreground start without manual repair.
+    assert.equal(rolledBack.owner.pid,foreground.pid);
+    foreground.kill('SIGTERM');
+    const terminated=await Promise.race([exit,delay(25000).then(()=>{throw Error('Owned signal shutdown did not finish');})]);
+    assert.equal(terminated.code,0,output);foreground=null;
+    assert.equal(JSON.parse(await readFile(configPath,'utf8')).desired,true,
+      'service-manager shutdown preserves restart intent');
+    launchForeground();
+    const resumedBy=performance.now()+20000;let resumed;
+    do {
+      assert.equal(foreground.exitCode,null,output);
+      resumed=await invoke('status');
+      if(resumed.healthy&&resumed.owner.pid===foreground.pid)break;
+      await delay(100);
+    }while(performance.now()<resumedBy);
+    assert.equal(resumed.healthy,true);assert.equal(resumed.owner.pid,foreground.pid);
+    assert.equal(await readFile(marker,'utf8'),'x','service restart does not replay completed effects');
+  }
   // Kill only the ChildProcess that this fixture launched, then recover through
   // stored birth/executable identities without duplicating an orphan frontend.
   foreground.kill('SIGKILL'); await exit; foreground=null;
@@ -130,6 +162,11 @@ try {
   const stoppedBy=performance.now()+10000;
   while((await invoke('status')).running&&performance.now()<stoppedBy)await delay(100);
   assert.equal((await invoke('status')).running,false);
+  assert.equal(JSON.parse(await readFile(configPath,'utf8')).desired,false,
+    'explicit operator stop remains persistent');
+  await runCheckedProcess(binary,['manage','run','--root',root],
+    {env,cwd:fixture,timeoutMs:5000,label:'Foreground run after persistent operator stop'});
+  assert.equal((await invoke('status')).running,false,'foreground service start respects an operator stop');
   // Detached lifecycle is also native and retains exact owner identity.
   const detached=await invoke('start'); assert.equal(detached.healthy,true);
   await invoke('stop');
@@ -140,7 +177,9 @@ try {
     'empty-PATH native initialization/startup','live MCP file effect','duplicate suppression','restart/state preservation',
     'busy request and durable-job drain refusal','frontend crash recovery without replay','supervisor crash recovery',
     'independent owned companion lifecycle','service definition without activation','missing proof rejection',
-    'failed candidate startup rollback','foreground and detached stop']}));
+    'failed candidate startup rollback','foreground and detached stop',
+    ...(process.platform==='win32'?[]:['service signal shutdown and foreground restart without replay']),
+    'persistent explicit operator stop']}));
 } finally {
   try { if((await invoke('status')).running) await invoke('stop'); } catch(error) { console.error(String(error)); }
   if(foreground && foreground.exitCode===null) {
