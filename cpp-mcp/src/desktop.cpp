@@ -3,6 +3,7 @@
 #include "devbox/native.hpp"
 #include "devbox/state_store.hpp"
 #include "devbox/storage.hpp"
+#include <array>
 #include <charconv>
 #include <future>
 #include <iostream>
@@ -10,6 +11,10 @@
 #include <sstream>
 #include <system_error>
 #include <thread>
+#ifdef __linux__
+#include <cerrno>
+#include <fcntl.h>
+#endif
 
 namespace devbox {
 namespace {
@@ -21,7 +26,33 @@ std::string display_name(const DesktopOptions& options) {
 }
 std::string start_ticks(std::uint32_t pid) {
 #ifdef __linux__
-    const auto text = read_file("/proc/" + std::to_string(pid) + "/stat", 8192);
+    const auto path = "/proc/" + std::to_string(pid) + "/stat";
+    int opened;
+    do {
+        opened = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    } while (opened < 0 && errno == EINTR);
+    NativeHandle file(opened);
+    if (!file) {
+        const auto code = errno;
+        throw std::system_error(code, std::generic_category(), "open " + path);
+    }
+    std::array<char, 8192> buffer{};
+    std::size_t used = 0;
+    while (used < buffer.size()) {
+        const auto count = ::read(file.get(), buffer.data() + used, buffer.size() - used);
+        if (count < 0) {
+            const auto code = errno;
+            if (code == EINTR)
+                continue;
+            throw std::system_error(code, std::generic_category(), "read " + path);
+        }
+        if (count == 0)
+            break;
+        used += static_cast<std::size_t>(count);
+    }
+    if (used == buffer.size())
+        throw Error("DESKTOP_CHILD_IDENTITY_TOO_LARGE");
+    const std::string text(buffer.data(), used);
     const auto end = text.rfind(')');
     if (end == std::string::npos)
         throw Error("DESKTOP_CHILD_IDENTITY");
@@ -479,8 +510,6 @@ int run_desktop_supervisor(const DesktopOptions& options, const std::function<bo
                     error.code() == std::errc::no_such_process)
                     continue;
                 throw;
-            } catch (const Error&) {
-                continue;
             }
             if (actual == json_string(child, "startTicks"))
                 throw Error("DESKTOP_LIVE_CHILDREN_REQUIRE_OPERATOR_REVIEW");
