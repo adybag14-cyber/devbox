@@ -120,6 +120,12 @@ void protocol_tests() {
     added_control.push_back(controls[0]);
     require(!browser_click_controls_match(controls, added_control, 115, 115),
             "added controls retain the strict guard");
+    auto linked_input = controls;
+    linked_input[0]["activation_href"] = "https://example.com/wrapped-old";
+    auto changed_ancestor = linked_input;
+    changed_ancestor[0]["activation_href"] = "https://example.com/wrapped-new";
+    require(!browser_click_controls_match(linked_input, changed_ancestor, 115, 115),
+            "an input's activating ancestor link remains part of its target identity");
 #ifdef _WIN32
     const auto endpoint_root = fs::temp_directory_path() / ("devbox-endpoint-fixture-" + uuid());
     fs::create_directory(endpoint_root);
@@ -459,6 +465,8 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
 <p>Verify a stable product control while an unrelated help link changes its destination.</p>
 <button onclick="this.textContent='Selected White'">Choose White</button>
 <a id="help" href="/help-old">Learn more</a>
+<a id="wrapper" href="/wrapped-old">Wrapped control<input type="radio" aria-label="Wrapped radio"
+style="position:absolute;left:600px;top:200px;width:30px;height:30px;margin:0"></a>
 <script>
 let applied=0;
 async function update(){
@@ -466,6 +474,7 @@ async function update(){
   const revision=Number(await(await fetch('/href-revision')).text());
   if(revision!==applied){
    document.querySelector('#help').href='/help-'+revision;
+   if(revision===3)document.querySelector('#wrapper').href='/wrapped-new';
    applied=revision;
    await fetch('/href-applied/'+revision);
   }
@@ -771,6 +780,25 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                              {"observation_id", selected.data["observation_id"]},
                              {"x", json_number(help_control, "x") + 20},
                              {"y", json_number(help_control, "y") + 20}},
+                            "test");
+        },
+        "STALE_OBSERVATION");
+    auto wrapped_snapshot = browser.perform({{"action", "observe"}, {"session_id", id}}, "test");
+    Json wrapped_control;
+    for (const auto& control : wrapped_snapshot.data["controls"])
+        if (json_string(control, "name") == "Wrapped radio")
+            wrapped_control = control;
+    require(wrapped_control.is_object() &&
+                json_string(wrapped_control, "activation_href").ends_with("/wrapped-old"),
+            "linked radio observation retains its activating ancestor URL");
+    change_link(3);
+    rejects(
+        [&] {
+            browser.perform({{"action", "click"},
+                             {"session_id", id},
+                             {"observation_id", wrapped_snapshot.data["observation_id"]},
+                             {"x", json_number(wrapped_control, "x") + 15},
+                             {"y", json_number(wrapped_control, "y") + 15}},
                             "test");
         },
         "STALE_OBSERVATION");

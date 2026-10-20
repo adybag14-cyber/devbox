@@ -157,9 +157,11 @@ constexpr auto observe_script = R"JS((() => {
   const r=e.getBoundingClientRect();if(r.bottom<0||r.right<0||r.top>innerHeight||r.left>innerWidth)continue;
   if(controls.length>=80)break;
   const type=(e.type||'').toLowerCase(); const privateValue=type==='password'||type==='file'||e.autocomplete==='one-time-code';
+  const activationLink=e.tagName==='A'?null:e.closest('a[href]');
   controls.push({tag:e.tagName.toLowerCase(),role:e.getAttribute('role')||'',type,
    name:clean(e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.innerText||e.getAttribute('placeholder')||e.getAttribute('title')),
    href:e.tagName==='A'?clip(e.href,1000):undefined,disabled:!!e.disabled,checked:typeof e.checked==='boolean'?e.checked:undefined,
+   activation_href:activationLink?clip(activationLink.href,1000):undefined,
    value:privateValue?'[redacted]':clip(e.value,160),x:Math.round(Math.max(0,r.left)),y:Math.round(Math.max(0,r.top)),
    width:Math.round(Math.min(innerWidth,r.right)-Math.max(0,r.left)),height:Math.round(Math.min(innerHeight,r.bottom)-Math.max(0,r.top))});
  }
