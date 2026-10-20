@@ -118,6 +118,12 @@ jobs:
       - name: Native packaged setup without development tools
         if: matrix.sanitizers == '0'
         run: node cpp-bootstrap/scripts/native-install.mjs
+      - name: Build self-contained offline C++ installer
+        if: matrix.sanitizers == '0'
+        run: node cpp-bootstrap/scripts/build-offline.mjs
+      - name: Qualify offline install, runtime ownership and tamper rejection
+        if: matrix.sanitizers == '0'
+        run: node cpp-bootstrap/scripts/offline-install.mjs
       - name: Prefer the public cache for container qualification
         if: matrix.name == 'Linux GCC'
         uses: ./.github/actions/docker-cache

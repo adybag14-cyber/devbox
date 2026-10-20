@@ -50,6 +50,7 @@ const licenseName = 'libdeflate.LICENSE.txt';
 const license = await readFile(path.join(repo, 'cpp-mcp', licenseName));
 await writeFile(path.join(output, licenseName), license, {flag: 'wx'});
 const manifests = [];
+let offlineAssets = 0;
 const scratch = await mkdtemp(path.join(os.tmpdir(), 'devbox-cpp-release-'));
 try {
   for (const [target, directory] of Object.entries(targets)) {
@@ -115,6 +116,60 @@ try {
     assert.deepEqual((await readdir(coreExtracted)).sort(), [...coreNames].sort());
     for (const name of coreNames)
       assert.equal(digest(await readFile(path.join(coreExtracted, name))), digest(await readFile(path.join(coreDirectory, name))));
+    if(!target.startsWith('android-')&&!target.startsWith('linux-musl-')) {
+      const directory=path.join(source,'offline');
+      const offline=JSON.parse(await readFile(path.join(directory,'offline-manifest.json'),'utf8'));
+      const receipt=JSON.parse(await readFile(path.join(directory,'offline-test-result.json'),'utf8'));
+      assert.equal(offline.schema,1);assert.equal(offline.source,expectedSha);assert.equal(offline.tree,expectedTree);
+      assert.equal(offline.target,target);assert.equal(offline.version,version);
+      assert.equal(offline.payload.source,expectedSha);assert.equal(offline.payload.tree,expectedTree);
+      assert.equal(offline.payload.target,target);
+      assert.equal(receipt.ok,true);assert.equal(receipt.source,expectedSha);assert.equal(receipt.target,target);
+      assert.equal(receipt.policy,'bundled-qualified');assert.deepEqual(receipt.files,offline.files);
+      const mac=target.startsWith('macos-');
+      const expectedFiles=['OFFLINE.md',...(mac?
+        ['Devbox.app/Contents/MacOS/devbox-offline','Devbox.app/Contents/Resources/devbox.payload','Devbox.app/Contents/Info.plist']:
+        ['devbox-offline'+(extension||'.run')])];
+      assert.deepEqual(offline.files.map(row=>row.file).sort(),expectedFiles.sort());
+      assert.equal(offline.installer,mac?'Devbox.app/Contents/MacOS/devbox-offline':'devbox-offline'+(extension||'.run'));
+      for(const binary of manifest.binaries) {
+        const rows=offline.payload.files.filter(row=>row.name===binary.name+extension);
+        assert.equal(rows.length,1);assert.equal(rows[0].sha256,binary.sha256);assert.equal(rows[0].bytes,binary.bytes);
+      }
+      const offlineDirectory=path.join(scratch,target+'-offline');await mkdir(offlineDirectory);
+      for(const item of offline.files) {
+        const bytes=await readFile(path.join(directory,item.file));
+        assert.equal(bytes.length,item.bytes);assert.equal(digest(bytes),item.sha256);
+        if(item.file===offline.installer) {
+          assertArchitecture(bytes,target);
+          const imports=runtimeImports(bytes);assertCoreImports(imports);assert.deepEqual(imports,offline.runtime);
+        }
+        const destination=path.join(offlineDirectory,item.file);
+        await mkdir(path.dirname(destination),{recursive:true});
+        await writeFile(destination,bytes,{flag:'wx',mode:item.file===offline.installer?0o755:0o644});
+      }
+      await writeFile(path.join(offlineDirectory,'offline-manifest.json'),JSON.stringify(offline,null,2)+'\n');
+      const sidecar=`offline-manifest-${target}.json`;
+      await writeFile(path.join(output,sidecar),JSON.stringify({...offline,qualification:receipt},null,2)+'\n',{flag:'wx'});
+      ++offlineAssets;
+      if(!mac) {
+        await copyFile(path.join(offlineDirectory,offline.installer),path.join(output,`devbox-offline-${target}${extension||'.run'}`));
+        ++offlineAssets;
+      }
+      const offlineArchive=path.join(output,`devbox-offline-${target}.${mac?'app.zip':extension?'zip':'tar.gz'}`);
+      const offlineNames=[...(mac?['Devbox.app']:['devbox-offline'+(extension||'.run')]),'OFFLINE.md','offline-manifest.json'];
+      if(mac||extension) {
+        const args=['-q','-r',offlineArchive,...offlineNames];
+        await runCheckedProcess('zip',args,{cwd:offlineDirectory,timeoutMs:120000,label:'Offline archive packaging'});
+      } else await run('tar',['-czf',offlineArchive,'-C',offlineDirectory,...offlineNames]);
+      ++offlineAssets;
+      const roundtrip=path.join(scratch,target+'-offline-extracted');await mkdir(roundtrip);
+      if(mac||extension)await run('unzip',['-q',offlineArchive,'-d',roundtrip]);
+      else await run('tar',['-xzf',offlineArchive,'-C',roundtrip]);
+      for(const item of offline.files)
+        assert.equal(digest(await readFile(path.join(roundtrip,item.file))),item.sha256);
+      assert.deepEqual(JSON.parse(await readFile(path.join(roundtrip,'offline-manifest.json'),'utf8')),offline);
+    }
     manifests.push(manifest);
   }
   await writeFile(path.join(output, 'build-provenance.json'), `${JSON.stringify({ schema: 1, implementation: 'cpp',
@@ -132,7 +187,7 @@ try {
   const names = (await readdir(output)).sort();
   await writeFile(path.join(output, 'SHA256SUMS'), (await Promise.all(names.map(async name =>
     `${digest(await readFile(path.join(output, name)))}  ${name}\n`))).join(''));
-  assert.equal(names.length, Object.keys(targets).length * 8 + 4, 'Every target requires binaries, full/core archives, resolved dependency sidecars and global qualification evidence');
+  assert.equal(names.length, Object.keys(targets).length * 8 + 4 + offlineAssets, 'Every target requires binaries, full/core archives, resolved dependency sidecars and global qualification evidence');
   console.log(JSON.stringify({ ok: true, source: expectedSha, version, targets: Object.keys(targets), verifiedFiles: names.length, output }));
 } finally {
   await rm(scratch, { recursive: true, force: true });

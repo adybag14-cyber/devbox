@@ -32,7 +32,17 @@ Json qualify_managed_binary(const ManagementOptions& options, const Environment&
         return result.stdout_text;
     };
     Json receipt;
-    if (!options.allow_local_build) {
+    if (options.bundled) {
+        const auto& proof = *options.bundled;
+        if (options.allow_local_build || !hex_id(proof.source, 40) || !hex_id(proof.tree, 40) ||
+            !hex_id(proof.sha256, 64) || proof.target.empty() || proof.source != options.source ||
+            proof.target != options.target || proof.sha256 != hash || proof.bytes != fs::file_size(binary) ||
+            proof.workflow_run.empty() ||
+            !std::all_of(proof.workflow_run.begin(), proof.workflow_run.end(),
+                         [](char c) { return c >= '0' && c <= '9'; }))
+            throw Error("BUNDLED_QUALIFICATION_IDENTITY_MISMATCH");
+        receipt = {{"sourceTree", proof.tree}, {"workflowRunId", proof.workflow_run}};
+    } else if (!options.allow_local_build) {
         if (!hex_id(options.source, 40) || options.target.empty() || options.receipt.empty() ||
             options.bundle.empty())
             throw Error(
@@ -116,7 +126,9 @@ Json qualify_managed_binary(const ManagementOptions& options, const Environment&
     return Json{{"file", path_text(binary)},
                 {"sha256", hash},
                 {"build", info},
-                {"policy", options.allow_local_build ? "local-development" : "signed-qualified"},
+                {"policy", options.bundled             ? "bundled-qualified"
+                           : options.allow_local_build ? "local-development"
+                                                       : "signed-qualified"},
                 {"source", json_string(info, "gitSha")},
                 {"target", options.target},
                 {"verifiedAt", utc_now()},

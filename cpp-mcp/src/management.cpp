@@ -151,7 +151,9 @@ void verify_stored(const fs::path& root, const Json& candidate, std::string_view
     const auto expected = control_root(root) / "releases" / hash / executable_name();
     if (hash.size() != 64 || file != expected || fs::canonical(file) != expected ||
         sha256_file(file) != hash ||
-        (policy == "signed-qualified" && json_string(candidate, "policy") != policy))
+        (policy == "signed-qualified" && json_string(candidate, "policy") != policy) ||
+        (policy == "bundled-qualified" && json_string(candidate, "policy") != "signed-qualified" &&
+         json_string(candidate, "policy") != "bundled-qualified"))
         throw Error("NATIVE_STORED_CANDIDATE_IDENTITY_MISMATCH");
     const auto& build = candidate.at("build");
     if (json_uint(build, "stateSchemaVersion") != state_store_schema_version ||
@@ -945,8 +947,15 @@ ManagementOptions parse_management_options(const std::vector<std::string>& args)
     }
     return result;
 }
-int management_main(const std::vector<std::string>& args) {
-    const auto options = parse_management_options(args);
+int management_main(const std::vector<std::string>& args, const BundledQualification* bundled) {
+    auto options = parse_management_options(args);
+    if (bundled) {
+        if (options.command != "init" || options.allow_local_build)
+            throw Error("BUNDLED_QUALIFICATION_INIT_ONLY");
+        options.bundled = bundled;
+        options.source = bundled->source;
+        options.target = bundled->target;
+    }
     const auto& root = options.root;
     const auto& command = options.command;
     if (command == "help" || command == "--help") {
@@ -977,7 +986,9 @@ int management_main(const std::vector<std::string>& args) {
         Json config{{"schema", 1},
                     {"root", path_text(root)},
                     {"desired", true},
-                    {"policy", options.allow_local_build ? "local-development" : "signed-qualified"},
+                    {"policy", bundled                     ? "bundled-qualified"
+                               : options.allow_local_build ? "local-development"
+                                                           : "signed-qualified"},
                     {"environment", Json{{"PORT", std::to_string(options.port)}}}};
         if (!options.env_file.empty()) {
             const auto values = parse_env_text(read_file(options.env_file, 1024 * 1024));
@@ -1023,6 +1034,31 @@ int management_main(const std::vector<std::string>& args) {
         staged_options.root = staging;
         config["current"] = prepare_candidate(staged_options, config);
         const auto release = fs::path("releases") / json_string(config.at("current"), "sha256");
+        if (bundled && !bundled->contents.empty()) {
+            ensure_private_state_directory(staging / "bin");
+            // A hard link supplies a convenient CLI without another runtime copy.
+            // Native manage start always launches config.current after verification.
+            std::error_code link_error;
+            fs::create_hard_link(control_root(staging) / release / executable_name(),
+                                 staging / "bin" / executable_name(), link_error);
+            if (link_error)
+                fs::copy_file(control_root(staging) / release / executable_name(),
+                              staging / "bin" / executable_name());
+            ensure_private_state_directory(staging / "share");
+            for (const auto* name : {"build-manifest.json", "THIRD_PARTY_NOTICES.txt",
+                                     "dependency-inventory.json", "sbom.spdx.json", "OFFLINE.md"})
+                fs::copy_file(bundled->contents / name, staging / "share" / name);
+            for (const auto* name : {"devbox-setup", "devbox-tui"}) {
+                const auto file = std::string(name) +
+#ifdef _WIN32
+                                  ".exe";
+#else
+                                  "";
+#endif
+                if (fs::is_regular_file(bundled->contents / file))
+                    fs::copy_file(bundled->contents / file, staging / "bin" / file);
+            }
+        }
         config["current"]["file"] = path_text(control_root(root) / release / executable_name());
         write_json_atomic(control_root(staging) / release / "verification.json", config.at("current"));
         config_write(staging, config);

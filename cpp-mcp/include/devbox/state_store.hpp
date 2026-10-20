@@ -68,7 +68,7 @@ class StateStore {
     virtual Json private_snapshot(const fs::path& destination) = 0;
 };
 std::shared_ptr<StateStore> open_state_store(const fs::path& directory, StateStoreOptions options = {});
-void ensure_private_state_directory(const fs::path& directory);
+void ensure_private_state_directory(const fs::path& directory, bool exclusive = false);
 Json export_state_summary(const StateStore& store);
 Json restore_state_snapshot(const fs::path& snapshot, const fs::path& destination);
 } // namespace devbox
