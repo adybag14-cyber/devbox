@@ -15,6 +15,12 @@ trust remain required. X11 libraries load only when desktop capabilities are use
 
 ## Verified native installation
 
+The [offline installer](OFFLINE.md) is the alternative when the destination
+machine cannot download software or run GitHub CLI. Its authenticated outer
+release package embeds the payload identity and records `bundled-qualified`
+installation provenance. The manual route below verifies Sigstore evidence
+at installation time and records `signed-qualified` provenance.
+
 Download the archive for the correct OS/architecture, `qualification-receipt.json`
 and `provenance.sigstore.json` from the same release. Extract the archive and run:
 
