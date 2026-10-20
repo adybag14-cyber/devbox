@@ -113,6 +113,9 @@ try {
     return next?.ready&&next.browser_restarts===1&&next.children.some(child=>child.name==='chromium'&&child.pid!==original.pid);
   },()=>supervisor.log(),180000);
   const recovered=await status();
+  assert(recovered.last_browser_exit?.signal===9||recovered.last_browser_exit?.exit_code===137,
+    'Native supervisor must retain the owned browser termination reason');
+  assert.equal(typeof recovered.browser_ready_at,'string');
   for(const name of ['xvfb','openbox','dbus'])assert.equal(recovered.children.find(x=>x.name===name).pid,first.children.find(x=>x.name===name).pid);
   ownedIdentities.push(recovered.children.find(x=>x.name==='chromium'));
   result=await call({action:'status'});assert.equal(result.isError,false,JSON.stringify(result));

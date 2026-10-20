@@ -100,6 +100,23 @@ class DesktopChild {
                 throw Error("DESKTOP_CHILD_EXIT_" + std::to_string(result.exit_code));
         }
     }
+    Json exit_result() {
+        if (!work_.valid() || running())
+            return Json();
+        try {
+            const auto result = work_.get();
+            return {{"exit_code", result.exit_code}, {"elapsed_ms", result.elapsed_ms}};
+        } catch (const ProcessError& error) {
+            return {{"exit_code", error.exit_code ? Json(*error.exit_code) : Json()},
+                    {"signal", error.signal ? Json(*error.signal) : Json()},
+                    {"timed_out", error.timed_out},
+                    {"cancelled", error.aborted}};
+        } catch (const Cancelled&) {
+            return {{"cancelled", true}};
+        } catch (...) {
+            return {{"observation_error", true}};
+        }
+    }
     void stop() noexcept {
         cancellation_->cancel();
         if (work_.valid()) {
@@ -118,6 +135,9 @@ class Desktop {
     DesktopLog log_;
     std::map<std::string, std::unique_ptr<DesktopChild>> children_;
     std::uint64_t browser_restarts_ = 0, desktop_restarts_ = 0;
+    unsigned browser_failures_ = 0;
+    Clock::time_point browser_started_{};
+    Json last_browser_exit_, browser_ready_at_;
 
     bool pause(Millis duration) const {
         const auto until = Clock::now() + duration;
@@ -189,6 +209,8 @@ class Desktop {
              {"children", std::move(children)},
              {"browser_restarts", browser_restarts_},
              {"desktop_restarts", desktop_restarts_},
+             {"last_browser_exit", last_browser_exit_},
+             {"browser_ready_at", browser_ready_at_},
              {"error", error.substr(0, 1024)}});
     }
     void start_browser() {
@@ -203,6 +225,8 @@ class Desktop {
                 throw Error("DESKTOP_ENDPOINT_CLEANUP");
         }
         child("chromium", options_.chromium, desktop_browser_arguments(options_));
+        browser_started_ = Clock::now();
+        browser_ready_at_ = Json();
         if (!options_.shared)
             return;
         status(false, "Managed browser is warming");
@@ -232,6 +256,7 @@ class Desktop {
                     if (json_string(version, "product").empty() ||
                         json_string(version, "protocolVersion").empty())
                         throw Error("DESKTOP_BROWSER_NOT_READY");
+                    browser_ready_at_ = utc_now();
                     return;
                 } catch (const Error& error) {
                     last_error = std::string(error.what()).substr(0, 256);
@@ -308,10 +333,17 @@ class Desktop {
                         if (!alive(name))
                             throw Error("DESKTOP_CHILD_EXITED: " + std::string(name));
                     if (options_.browser_autostart && !alive("chromium")) {
+                        last_browser_exit_ = children_.at("chromium")->exit_result();
+                        if (last_browser_exit_.is_object())
+                            last_browser_exit_["observed_at"] = utc_now();
+                        if (Clock::now() - browser_started_ >= Millis(60000))
+                            browser_failures_ = 0;
+                        const auto delay = std::min(60000U, 1500U << std::min(browser_failures_, 6U));
+                        browser_failures_ = std::min(browser_failures_ + 1, 7U);
                         status(false, "Managed browser exited; restarting owned child");
                         stop_child("chromium");
                         ++browser_restarts_;
-                        if (!pause(Millis(1500)))
+                        if (!pause(Millis(delay)))
                             break;
                         start_browser();
                         status(true);

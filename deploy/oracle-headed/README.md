@@ -1,15 +1,18 @@
 # Oracle headed runtime profile
 
 This is the small-VM profile used for the existing Oracle deployment. The MCP
-executable is the qualified native C++23 `linux-musl-x86_64` artifact. The native
+executable is the qualified native C++23 `linux-x86_64` artifact. The native
 `--desktop-supervisor` mode supervises the desktop. Node remains in the existing
 launcher/Guardian migration path; it is no longer required by desktop
 supervision or computer-use actions. Input runs in `cpp-mcp/src/computer_x11.cpp`.
-The image uses pinned Alpine 3.24 with its newer Chromium; the core release's
-musl ABI baseline remains separately qualified.
-ImageMagick, xdotool, xwininfo and xset are no longer installed in this local-X11
-profile: capture, window enumeration and input use the native XCB/XTEST path.
-Small xauth/xdpyinfo utilities remain for desktop authentication and startup
+The image uses pinned Debian 13 with a pinned Chromium security package. The
+glibc browser stack was selected after a `pwritev2` sandbox failure in the
+Alpine 3.24 Chromium 155 candidate. It must pass the isolated Oracle canary;
+no sandbox-disabling flag is used.
+The older musl core release remains a separate qualified target.
+ImageMagick and xdotool are no longer installed in this local-X11 profile:
+capture, window enumeration and input use the native XCB/XTEST path.
+Small xauth and X11 utilities remain for desktop authentication and startup
 verification. Wayland and remote-display compatibility helpers are outside this
 profile.
 
@@ -62,6 +65,10 @@ use the native process owner's handles/cancellation and retain PID birth times
 and executable identities. Child environments exclude application credentials;
 logs rotate at 1 MiB per file and retain one previous file. Guardian continues to
 supervise the MCP frontend.
+Repeated early browser exits back off before another restart. `last_browser_exit`
+retains bounded numeric termination diagnostics without process output or page
+content; `browser_ready_at` identifies the last successful startup health probe.
+The model-facing browser status performs its own fresh health check.
 
 Stage the exact qualified binary before starting this profile. The default
 desktop executable is `/opt/devbox/bin/native/devbox-mcp`;
