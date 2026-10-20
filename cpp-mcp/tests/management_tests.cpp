@@ -124,6 +124,45 @@ int main() {
         proofs = 0;
         info["stateSchemaVersion"] = 999;
         rejects([&] { (void)qualify_managed_binary(options, env, runner); }, "STATE_INCOMPATIBLE");
+        info["stateSchemaVersion"] = state_store_schema_version;
+        BundledQualification bundled{options.source,
+                                     std::string(40, 'b'),
+                                     options.target,
+                                     hash,
+                                     "12345",
+                                     fs::file_size(options.binary),
+                                     {}};
+        options.bundled = &bundled;
+        unsigned bundled_executions = 0;
+        const auto offline_runner = [&](const fs::path&, const std::vector<std::string>& args,
+                                        const ProcessOptions&) {
+            require(args.front() == "--build-info" || args.front() == "--dump-contract",
+                    "offline qualification cannot invoke a downloader or external verifier");
+            ++bundled_executions;
+            ProcessOutput output;
+            output.stdout_text = (args.front() == "--build-info" ? info : tools).dump();
+            return output;
+        };
+        require(qualify_managed_binary(options, env, offline_runner).at("policy") == "bundled-qualified",
+                "embedded release identity has a distinct offline policy");
+        require(bundled_executions == 2, "offline native identity and contract checks");
+        bundled_executions = 0;
+        bundled.sha256 = std::string(64, '0');
+        rejects([&] { (void)qualify_managed_binary(options, env, offline_runner); },
+                "BUNDLED_QUALIFICATION_IDENTITY_MISMATCH");
+        require(bundled_executions == 0, "offline digest rejection precedes candidate execution");
+        bundled.sha256 = hash;
+        info["sourceDirty"] = true;
+        rejects([&] { (void)qualify_managed_binary(options, env, offline_runner); }, "SOURCE_NOT_QUALIFIED");
+        info["sourceDirty"] = false;
+        rejects([&] { (void)management_main({"promote", "--root", path_text(root)}, &bundled); },
+                "INIT_ONLY");
+        rejects(
+            [&] {
+                (void)parse_management_options(
+                    {"init", "--root", path_text(root), "--bundled", "caller-supplied-proof"});
+            },
+            "Unknown");
         const auto unit = native_service_definition("systemd", root / "quoted % $ binary", root);
         require(unit.find("%%") != unit.npos && unit.find("$$") != unit.npos, "systemd expansions escaped");
         require(unit.find("SendSIGKILL=no") != unit.npos, "no forced stop on busy drain");

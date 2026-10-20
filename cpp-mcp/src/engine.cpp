@@ -514,6 +514,7 @@ Json Engine::status(const Cancel& cancel) {
         return result_error("Failed to fetch " + config_->runtime_label() +
                             " status: cached scheduler snapshot is unavailable or stale.");
     auto data = info;
+    data["build"] = build_snapshot();
     data["hostWorkspacePath"] = path_text(config_->host_workspace_path);
     data["devboxWorkspacePath"] = path_text(config_->devbox_workspace_path);
     data["hostExecEnabled"] = config_->host_exec_enabled;

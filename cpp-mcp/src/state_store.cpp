@@ -26,7 +26,7 @@ void key(std::string_view value, bool empty = false) {
     if ((!empty && value.empty()) || value.size() > 256 || value == "*" || value.find('\0') != value.npos)
         throw Error("STATE_INVALID_KEY");
 }
-void private_local_directory(const fs::path& directory, bool create) {
+void private_local_directory(const fs::path& directory, bool create, bool exclusive = false) {
     if (!directory.is_absolute())
         throw Error("STATE_LOCAL_PATH_REQUIRED");
 #ifdef _WIN32
@@ -54,7 +54,10 @@ void private_local_directory(const fs::path& directory, bool create) {
     if (!GetVolumePathNameW(path.parent_path().c_str(), volume.data(), static_cast<DWORD>(volume.size())) ||
         GetDriveTypeW(volume.data()) != DRIVE_FIXED)
         throw Error("STATE_LOCAL_FIXED_DISK_REQUIRED");
-    if (create && !fs::exists(path)) {
+    const bool present = fs::exists(path);
+    if (create && exclusive && present)
+        throw Error("STATE_DIRECTORY_EXISTS");
+    if (create && !present) {
         HANDLE raw = nullptr;
         if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw))
             throw Error("STATE_TOKEN_QUERY_FAILED");
@@ -75,7 +78,8 @@ void private_local_directory(const fs::path& directory, bool create) {
             throw Error("STATE_PRIVATE_ACL_FAILED");
         ScopeExit free_descriptor([&] { LocalFree(descriptor); });
         SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
-        if (!CreateDirectoryW(path.c_str(), &security) && GetLastError() != ERROR_ALREADY_EXISTS)
+        if (!CreateDirectoryW(path.c_str(), &security) &&
+            (GetLastError() != ERROR_ALREADY_EXISTS || exclusive))
             throw Error("STATE_DIRECTORY_CREATE_FAILED");
     }
     const auto attributes = GetFileAttributesW(path.c_str());
@@ -115,7 +119,7 @@ void private_local_directory(const fs::path& directory, bool create) {
             throw Error("STATE_PRIVATE_ACL_REQUIRED");
     }
 #else
-    if (create && ::mkdir(directory.c_str(), 0700) != 0 && errno != EEXIST)
+    if (create && ::mkdir(directory.c_str(), 0700) != 0 && (errno != EEXIST || exclusive))
         throw Error("STATE_DIRECTORY_CREATE_FAILED");
     struct stat info{};
     if (::lstat(directory.c_str(), &info) || !S_ISDIR(info.st_mode) || info.st_uid != ::geteuid() ||
@@ -817,8 +821,8 @@ PRAGMA user_version=2;
 std::shared_ptr<StateStore> open_state_store(const fs::path& directory, StateStoreOptions options) {
     return std::make_shared<SqliteStore>(directory, options);
 }
-void ensure_private_state_directory(const fs::path& directory) {
-    private_local_directory(directory, true);
+void ensure_private_state_directory(const fs::path& directory, bool exclusive) {
+    private_local_directory(directory, true, exclusive);
 }
 Json export_state_summary(const StateStore& store) {
     Json counts = Json::object();

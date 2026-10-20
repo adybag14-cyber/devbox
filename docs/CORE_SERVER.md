@@ -15,6 +15,12 @@ trust remain required. X11 libraries load only when desktop capabilities are use
 
 ## Verified native installation
 
+The [offline installer](OFFLINE.md) is the alternative when the destination
+machine cannot download software or run GitHub CLI. Its authenticated outer
+release package embeds the payload identity and records `bundled-qualified`
+installation provenance. The manual route below verifies Sigstore evidence
+at installation time and records `signed-qualified` provenance.
+
 Download the archive for the correct OS/architecture, `qualification-receipt.json`
 and `provenance.sigstore.json` from the same release. Extract the archive and run:
 
@@ -62,6 +68,11 @@ managed services are not adopted by name. A recovered owned companion must match
 its recorded birth identity, executable path and pinned hash.
 
 ## Lifecycle and updates
+
+The MCP `devbox_status` response includes a `build` object from the running
+native executable: source commit/tree, binary SHA-256 and contract/state
+versions. Use it to identify the serving release. Retained launcher startup
+records can describe an earlier launch and are separate from this live identity.
 
 ```sh
 ./devbox-mcp manage run --root /absolute/path/devbox     # foreground supervision

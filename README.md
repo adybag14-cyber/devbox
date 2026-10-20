@@ -17,6 +17,41 @@ promotion and rollback commands. Normal operation needs no Node/npm/Git, compile
 browser or desktop stack. Follow the [core installation guide](docs/CORE_SERVER.md)
 for signed initialization and optional OS startup integration.
 
+For installation without downloading dependencies, choose a
+**`devbox-offline-TARGET`** asset from the [GitHub release](https://github.com/adybag14-cyber/devbox/releases).
+The C++23 installer bundles the server, setup tools, manifests and dependency
+notices, verifies its payload, and installs into a directory owned by the current
+user. It requires no administrator rights, Node/npm/Git, compiler, external
+archiver or installation-time network access.
+
+| Platform | Offline installer | Portable distribution |
+| --- | --- | --- |
+| Windows x86-64 | `devbox-offline-windows-x86_64.exe` | `.zip` |
+| Linux x86-64 | `devbox-offline-linux-x86_64.run` | `.tar.gz` |
+| Linux ARM64 | `devbox-offline-linux-aarch64.run` | `.tar.gz` |
+| macOS Intel | `devbox-offline-macos-x86_64.app.zip` | Native app bundle |
+| macOS Apple Silicon | `devbox-offline-macos-aarch64.app.zip` | Native app bundle |
+
+For example, from a normal Windows PowerShell window:
+
+```powershell
+.\devbox-offline-windows-x86_64.exe --user
+# Or choose a new directory on a local fixed disk:
+.\devbox-offline-windows-x86_64.exe --portable "$env:LOCALAPPDATA\Devbox-Test" --no-start
+```
+
+Windows defaults to `%LOCALAPPDATA%\Programs\Devbox` and starts the local service
+without registering a system service or changing the machine PATH. Verify the
+release checksum and attestation before transferring an installer to an offline
+machine. See [offline installation and trust](docs/OFFLINE.md) for Linux/macOS
+commands, filesystem requirements and lifecycle operations. Chromium and public
+tunnels are optional components and are not included in the core offline package.
+
+**`devbox-offline-universal.zip`** contains all five desktop installer variants
+in separate platform directories, plus their manifests and offline guides.
+Use it when one archive should cover several computers. Individual target
+downloads contain the same installer bytes and are smaller.
+
 The full bundle remains available and ships three native programs from the same source revision:
 
 - **`devbox-tui`** — the guided C++17 interactive setup experience for new users.
@@ -259,7 +294,18 @@ Windows users can also use:
 
 ## Configuration
 
-The C++ service exposes 50 tools: the 37 compatible legacy tools, eight native agent APIs for durable submissions, job/task discovery, revisioned checkpoints, atomic files and capability inspection, two [native Windows computer-use tools](docs/COMPUTER_USE.md), and three [native public-web research tools](docs/NATIVE_WEB_RESEARCH.md). Research targets 100 source documents in Standard mode or 50 in Fast mode, with explicit partial coverage and citation evidence. See [the native agent runtime contract](docs/AGENT_RUNTIME.md). Guardian supervises the selected native service. Ordinary Devbox shell commands honor `HOST_SHELL` and inherit the service token, while explicit `host_exec` retains the administrative PowerShell policy.
+The [canonical tool registry](cpp-mcp/contract/tool-registry.json) defines the
+C++ service's compatible execution/file tools, durable jobs and tasks, atomic
+files, artifact uploads, bounded agent runs, WSL operations,
+[native computer use](docs/COMPUTER_USE.md), and
+[public-web research](docs/NATIVE_WEB_RESEARCH.md) and
+[rendered browsing](docs/NATIVE_BROWSER.md). Research targets 100 source
+documents in Standard mode or 50 in Fast mode, with explicit partial coverage
+and citation evidence. See [the native agent runtime contract](docs/AGENT_RUNTIME.md).
+Native installations use C++ supervision; retained source-checkout deployments
+can use Guardian. Ordinary Devbox shell commands honor `HOST_SHELL` and inherit
+the service token, while explicit `host_exec` retains the administrative
+PowerShell policy.
 
 Important `.env` values:
 
