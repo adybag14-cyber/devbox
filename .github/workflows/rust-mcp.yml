@@ -112,6 +112,11 @@ jobs:
         env:
           RUST_MCP_RESULT_SKIP_DISPLAY: "1"
         run: node rust-mcp/scripts/result-parity-audit.mjs
+      - name: Verify failed parity fixture owns and cleans its jobs
+        if: runner.os == 'Windows'
+        env:
+          RUST_MCP_RESULT_SKIP_DISPLAY: "1"
+        run: node rust-mcp/scripts/result-parity-audit.mjs --verify-failure-cleanup
       - name: Run JavaScript MCP SDK interoperability smoke
         run: node rust-mcp/scripts/smoke-runner.mjs
       - name: Retain Windows contention diagnostics
