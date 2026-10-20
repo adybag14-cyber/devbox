@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -79,32 +79,68 @@ const server = spawn(binaryPath, [], {
 let stderr = "";
 server.stderr.setEncoding("utf8");
 server.stderr.on("data", (chunk) => { stderr = `${stderr}${chunk}`.slice(-16_000); });
+server.stdout.resume();
 
 const transport = new StreamableHTTPClientTransport(baseUrl);
 const client = new Client({ name: "windows-contention-smoke", version: "0.1.0" });
+const verifyFailureCleanup = process.argv.includes("--verify-failure-cleanup");
+const controlledFailure = new Error("Controlled assertion failure after watcher readiness");
+let exercisedFailureCleanup = false;
+const jobs = [];
+const readyFiles = [];
+const releaseFile = path.join(runtimeDir, "release-watchers");
+let stopProbes = false, probeTask;
+const diagnosticRoot = path.join(projectRoot, ".cpp-build");
+await mkdir(diagnosticRoot, { recursive: true });
+await writeFile(path.join(diagnosticRoot, "windows-contention-owner.json"), JSON.stringify({
+  pid: process.pid, serverPid: server.pid, binaryPath, runtimeDir, startedAt: new Date().toISOString(),
+}, null, 2));
 try {
   await waitForHealth(baseUrl);
   await client.connect(transport);
-  const jobs = [];
   for (let index = 0; index < 4; index += 1) {
+    const readyFile = path.join(runtimeDir, `watcher-${index}-ready`);
     const result = await client.callTool({
       name: "devbox_run_program_start",
       arguments: {
         program: "node",
-        args: ["-e", "setTimeout(()=>{},20000)"],
+        args: ["-e", "const fs=require('node:fs');fs.writeFileSync(process.argv[1],'ready');setInterval(()=>{if(fs.existsSync(process.argv[2]))process.exit(0)},100)", readyFile, releaseFile],
         working_dir: projectRoot,
-        timeout_seconds: 30,
+        timeout_seconds: 60,
         resource_class: "watch",
       },
     });
     assert.equal(result.isError, false);
-    jobs.push(result.structuredContent?.data?.id);
+    const id = result.structuredContent?.data?.id;
+    assert.equal(typeof id, "string", JSON.stringify(result.structuredContent));
+    jobs.push(id);
+    readyFiles.push(readyFile);
   }
   assert.equal(jobs.filter(Boolean).length, 4);
+  // Measure watcher deadlines only after the actual child workloads are alive.
+  // A fixed sleep measured from submission conflates Windows launch latency
+  // with the eight-second wait contract and can expire during later setup.
+  const readyBy = Date.now() + 20000;
+  for (let index = 0; index < jobs.length; index += 1) {
+    for (;;) {
+      try { if (await readFile(readyFiles[index], "utf8") === "ready") break; }
+      catch (error) { if (error.code !== "ENOENT") throw error; }
+      const status = await client.callTool({name:"devbox_job_status",arguments:{job_id:jobs[index]}});
+      const data = status.structuredContent?.data;
+      assert.equal(status.isError,false,JSON.stringify(status.structuredContent));
+      assert(!["succeeded","failed","cancelled","timed_out","interrupted"].includes(data?.status),
+        `Watcher child ended before readiness: ${JSON.stringify(data)}`);
+      assert(Date.now() < readyBy,`Watcher child did not reach readiness: ${JSON.stringify(data)}`);
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+  }
+  if (verifyFailureCleanup) {
+    exercisedFailureCleanup = true;
+    throw controlledFailure;
+  }
 
   const probeSamples = [];
-  let stopProbes = false;
-  const probeTask = (async () => {
+  probeTask = (async () => {
     while (!stopProbes) {
       const started = performance.now();
       try {
@@ -119,6 +155,7 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   })();
+  probeTask.catch(() => {});
 
   const waits = jobs.map(async (jobId) => {
     const started = performance.now();
@@ -128,7 +165,8 @@ try {
     });
     const elapsed = performance.now() - started;
     assert.equal(result.isError, false);
-    assert.equal(result.structuredContent?.data?.waitTimedOut, true);
+    assert.equal(result.structuredContent?.data?.waitTimedOut, true,
+      `Expected an active job to exhaust the wait deadline: ${JSON.stringify(result.structuredContent)}`);
     assert.ok(elapsed >= 7_500, `wait returned too early: ${elapsed}ms`);
     assert.ok(elapsed <= 9_500, `8s wait exceeded hard deadline budget: ${elapsed}ms`);
     return elapsed;
@@ -262,13 +300,72 @@ try {
   const maxProbe = Math.max(...probeSamples);
   assert.ok(Number.isFinite(maxProbe) && maxProbe < 1_500, `health probe stalled under watchers: ${maxProbe}ms`);
   console.log(JSON.stringify({ waitDurationsMs: waitDurations, healthProbeCount: probeSamples.length, maxHealthMs: maxProbe, statusMs }));
+ } catch (error) {
+  const states = [];
+  for (const id of jobs) {
+    assert.match(id, /^[a-zA-Z0-9_-]{1,128}$/u);
+    const record = {id};
+    for (const file of ["status.json", "heartbeat.json", "stdout.log", "stderr.log"]) {
+      try {
+        const value = await readFile(path.join(runtimeDir, "jobs", id, file), "utf8");
+        record[file] = value.slice(-16000);
+      } catch (readError) { record[file] = readError.code || String(readError); }
+    }
+    states.push(record);
+  }
+  await writeFile(path.join(diagnosticRoot, "windows-contention-failure.json"), JSON.stringify({
+    kind: error===controlledFailure ? "controlled_cleanup_test" : "unexpected_failure",
+    error: String(error), states, serverStderr: stderr,
+  }, null, 2));
+  if (error !== controlledFailure) throw error;
  } finally {
+  stopProbes = true;
+  await probeTask?.catch(() => {});
+  await writeFile(releaseFile, "stop");
+  // Detached job runners need cancellation even when a preceding assertion
+  // fails. Preserve their state if shutdown cannot be confirmed.
+  let jobsStopped = true;
+  const recorded = await readdir(path.join(runtimeDir, "jobs"), {withFileTypes:true}).catch(error=>{
+    if(error.code==='ENOENT')return [];throw error;
+  });
+  const cleanupJobs = [...new Set([...jobs,...recorded.filter(row=>row.isDirectory()&&/^[a-zA-Z0-9_-]{1,128}$/u.test(row.name)).map(row=>row.name)])];
+  if(cleanupJobs.length>16)jobsStopped=false;
+  for (const id of cleanupJobs.slice(0,16)) {
+    try {
+      const cancelled = await client.callTool({name:"devbox_job_cancel",arguments:{job_id:id}});
+      assert.equal(cancelled.isError,false,JSON.stringify(cancelled.structuredContent));
+      const until = Date.now() + 10000;
+      let stopped = false;
+      do {
+        const state = await client.callTool({name:"devbox_job_status",arguments:{job_id:id,wait_seconds:1,terminal_only:true}});
+        const data = state.structuredContent?.data;
+        stopped = !state.isError && data?.runnerAlive !== true &&
+          ["succeeded","failed","cancelled","timed_out","interrupted"].includes(data?.status);
+        if (stopped) break;
+        await new Promise(resolve=>setTimeout(resolve,100));
+      } while (Date.now() < until);
+      if (!stopped) jobsStopped = false;
+    } catch (error) {
+      jobsStopped = false;
+      process.stderr.write(`Owned contention job cleanup failed for ${id}: ${String(error)}\n`);
+    }
+  }
+  await client.close().catch(() => {});
   // The server is process-scoped to this smoke; killing it below owns transport cleanup.
   if (server.exitCode === null && server.signalCode === null) {
     const exited = new Promise((resolve) => server.once("exit", resolve));
     server.kill();
     await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))]);
   }
-  await rm(runtimeDir, { recursive: true, force: true }).catch(() => {});
+  if (jobsStopped && (server.exitCode !== null || server.signalCode !== null))
+    await rm(runtimeDir, { recursive: true, force: true });
+  else {
+    process.stderr.write(`Retained owned contention fixture for cleanup: ${runtimeDir}\n`);
+    throw new Error("Owned contention jobs or server did not stop; fixture retained");
+  }
   if (stderr) process.stderr.write(stderr);
+}
+if (verifyFailureCleanup) {
+  assert(exercisedFailureCleanup);
+  console.log(JSON.stringify({ok:true,check:"assertion failure cancels owned runners and removes only a stopped fixture"}));
 }
