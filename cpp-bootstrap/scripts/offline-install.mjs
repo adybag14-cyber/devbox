@@ -11,12 +11,16 @@ const directory=path.join(packageRoot,'offline');
 const metadata=JSON.parse(await readFile(path.join(directory,'offline-manifest.json'),'utf8'));
 const installer=path.join(directory,metadata.installer);
 const fixture=await mkdtemp(path.join(os.tmpdir(),'devbox-offline-install-'));
-const root=path.join(fixture,'portable'),empty=path.join(fixture,'empty-path');
+const root=path.join(fixture,'portable spaces \u03a9'),empty=path.join(fixture,'empty-path');
 await mkdir(empty);
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>['SYSTEMROOT','WINDIR','SYSTEMDRIVE','TEMP','TMP','TMPDIR','HOME','USERPROFILE'].includes(key.toUpperCase())));
 env.PATH=empty;
 env.LOCALAPPDATA=path.join(fixture,'user-profile');env.APPDATA=env.LOCALAPPDATA;
+env.HOME=env.LOCALAPPDATA;env.USERPROFILE=env.LOCALAPPDATA;
 await mkdir(env.LOCALAPPDATA);
+const userRoot=process.platform==='win32'?path.join(env.LOCALAPPDATA,'Programs','Devbox')
+  :process.platform==='darwin'?path.join(env.HOME,'Library','Application Support','Devbox')
+  :path.join(env.HOME,'.local','share','devbox');
 const run=(file,args,timeoutMs=60000)=>runCheckedProcess(file,args,{cwd:fixture,env,timeoutMs,maxCaptureChars:65536,label:'Offline native installation qualification'});
 const port=await new Promise((resolve,reject)=>{const s=net.createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
 const binary=path.join(root,'bin','devbox-mcp'+(process.platform==='win32'?'.exe':''));
@@ -53,6 +57,13 @@ try {
   assert.equal((await live.json()).build.binarySha256,config.current.sha256);
   await run(binary,['manage','stop','--root',root]);
   await waitStopped();
+  await run(installer,['--user','--no-start','--port',String(port)]);
+  const userConfig=JSON.parse(await readFile(path.join(userRoot,'run/native/config.json'),'utf8'));
+  assert.equal(userConfig.root,path.resolve(userRoot));
+  assert.equal(userConfig.policy,'bundled-qualified');
+  assert.equal(userConfig.current.source,metadata.source);
+  assert.equal(JSON.parse((await run(path.join(userRoot,'bin',path.basename(binary)),
+    ['manage','status','--root',userRoot])).stdout).running,false);
   const corrupted=path.join(fixture,'corrupted');
   await cp(directory,corrupted,{recursive:true});
   const damaged=process.platform==='darwin'
@@ -71,7 +82,8 @@ try {
   const receipt={ok:true,source:metadata.source,target:metadata.target,policy:config.policy,
     files:metadata.files,
     checks:['empty developer-tool PATH','compiled payload identity','native source and contract verification',
-      'portable user directory','existing installation preserved','local health and exact binary',
+      'portable user directory with spaces and Unicode','default user-only directory',
+      'existing installation preserved','local health and exact binary',
       'native stop','no development-policy downgrade','tamper rejected before extraction']};
   for(const item of metadata.files) {
     const bytes=await readFile(path.join(directory,item.file));
