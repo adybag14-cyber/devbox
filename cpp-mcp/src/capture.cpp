@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <charconv>
 #include <csignal>
+#include <deque>
 #include <iostream>
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -26,6 +27,35 @@ std::uint32_t parse_number(std::string_view text, const char* name) {
     return number;
 }
 } // namespace
+std::map<std::uint32_t, std::uint64_t>
+capture_process_lineage(const std::map<std::uint32_t, std::uint32_t>& parents, std::uint32_t root,
+                        const std::function<std::optional<std::uint64_t>(std::uint32_t)>& birth) {
+    const auto started = birth(root);
+    if (!started || !*started)
+        throw Error("Cannot verify the requested capture process lifetime.");
+    std::multimap<std::uint32_t, std::uint32_t> children;
+    for (const auto& [pid, parent] : parents)
+        children.emplace(parent, pid);
+    std::map<std::uint32_t, std::uint64_t> result{{root, *started}};
+    std::deque<std::uint32_t> queue{root};
+    while (!queue.empty()) {
+        const auto parent = queue.front();
+        queue.pop_front();
+        const auto [begin, end] = children.equal_range(parent);
+        for (auto child = begin; child != end; ++child) {
+            if (result.contains(child->second))
+                continue;
+            const auto created = birth(child->second);
+            // A stale PPID survives its original parent. A newer process
+            // reusing that number must not inherit the older process's windows.
+            if (created && *created >= result.at(parent)) {
+                result.emplace(child->second, *created);
+                queue.push_back(child->second);
+            }
+        }
+    }
+    return result;
+}
 void validate_capture_image(std::span<const std::uint8_t> image, std::string_view mime) {
     if (mime == "image/jpeg") {
         if (image.size() < 5 || image[0] != 0xff || image[1] != 0xd8 || image[2] != 0xff ||

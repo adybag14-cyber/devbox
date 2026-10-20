@@ -2,12 +2,18 @@
 #include "async.hpp"
 #include "config.hpp"
 #include "process.hpp"
+#include <map>
 namespace devbox {
 struct ImageCapture {
     std::vector<std::uint8_t> image;
     std::string mime_type;
     Json metadata;
 };
+// Birth values must be ordered creation timestamps from the same clock (Windows
+// FILETIME here), not opaque process-instance hashes from other platforms.
+std::map<std::uint32_t, std::uint64_t>
+capture_process_lineage(const std::map<std::uint32_t, std::uint32_t>& parents, std::uint32_t root,
+                        const std::function<std::optional<std::uint64_t>(std::uint32_t)>& birth);
 void validate_capture_image(std::span<const std::uint8_t> image, std::string_view mime);
 bool transient_capture_error(const std::exception& error);
 ImageCapture native_capture(std::optional<std::uint32_t> pid, unsigned quality, bool include_tree,
