@@ -77,6 +77,42 @@ BrowserObservation initial_observation(BrowserService& browser, const Json& args
     return value;
 }
 void protocol_tests() {
+#ifdef _WIN32
+    const auto endpoint_root = fs::temp_directory_path() / ("devbox-endpoint-fixture-" + uuid());
+    fs::create_directory(endpoint_root);
+    ScopeExit remove_endpoint([&] {
+        std::error_code ignored;
+        fs::remove_all(endpoint_root, ignored);
+    });
+    const std::string endpoint_text = "1234\n/devtools/browser/fixture\n";
+    const auto endpoint_file = endpoint_root / "DevToolsActivePort";
+    const auto writer = CreateFileW(endpoint_file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    require(writer != INVALID_HANDLE_VALUE, "exclusive Chromium endpoint writer fixture");
+    DWORD written = 0;
+    require(WriteFile(writer, endpoint_text.data(), static_cast<DWORD>(endpoint_text.size()), &written,
+                      nullptr) &&
+                written == endpoint_text.size(),
+            "endpoint fixture written");
+    auto publication = std::async(std::launch::async, [writer] {
+        std::this_thread::sleep_for(Millis(100));
+        CloseHandle(writer);
+    });
+    require(read_browser_endpoint(endpoint_root, Clock::now() + Millis(2000)) == endpoint_text,
+            "endpoint read waits for the actual Windows writer to release its handle");
+    publication.get();
+    NativeHandle locked(CreateFileW(endpoint_file.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr));
+    require(static_cast<bool>(locked), "permanent endpoint lock fixture");
+    const auto locked_until = Clock::now() + Millis(80);
+    rejects([&] { (void)read_browser_endpoint(endpoint_root, locked_until); }, "ENDPOINT_DEADLINE");
+    auto cancelled_endpoint = std::make_shared<Cancellation>();
+    cancelled_endpoint->cancel();
+    rejects(
+        [&] { (void)read_browser_endpoint(endpoint_root, Clock::now() + Millis(2000), cancelled_endpoint); },
+        "cancelled");
+    locked.reset();
+#endif
     require(browser_cgroup_headroom(536870912, 383205376, 182263808) == 335929344,
             "observed Oracle inactive file cache is reclaimable headroom");
     require(browser_cgroup_headroom(512, 400, 0) == 112,
