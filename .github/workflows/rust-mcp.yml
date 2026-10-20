@@ -1,9 +1,15 @@
 name: Frozen Rust reference verification
 
-# The C++ workflow owns release certification. This manual reference workflow
-# remains available for investigating compatibility with the retained Rust code.
+# The C++ workflow owns release certification. Dependency updates must also
+# qualify the retained runtime they change; C++ checks do not exercise it.
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - 'rust-mcp/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/rust-mcp.yml'
 
 permissions:
   contents: read
@@ -50,7 +56,7 @@ jobs:
       - name: Check formatting
         run: cargo fmt --manifest-path rust-mcp/Cargo.toml -- --check
       - name: Run strict Clippy
-        run: cargo clippy --manifest-path rust-mcp/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --manifest-path rust-mcp/Cargo.toml --locked --all-targets -- -D warnings
       - name: Run Rust tests
         shell: bash
         run: |
