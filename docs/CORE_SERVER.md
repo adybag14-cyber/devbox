@@ -69,6 +69,11 @@ its recorded birth identity, executable path and pinned hash.
 
 ## Lifecycle and updates
 
+The MCP `devbox_status` response includes a `build` object from the running
+native executable: source commit/tree, binary SHA-256 and contract/state
+versions. Use it to identify the serving release. Retained launcher startup
+records can describe an earlier launch and are separate from this live identity.
+
 ```sh
 ./devbox-mcp manage run --root /absolute/path/devbox     # foreground supervision
 ./devbox-mcp manage restart --root /absolute/path/devbox
