@@ -548,11 +548,12 @@ struct BrowserService::State {
         // more work, so protocol depth stays bounded instead of recursing.
         unsigned processed = 0;
         while (!session->intercepted_resources.empty()) {
+            if (processed >= 512)
+                throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
             std::vector<std::pair<std::string, Json>> commands;
             std::vector<bool> omitted;
-            while (!session->intercepted_resources.empty() && commands.size() < 32) {
-                if (++processed > 512)
-                    throw Error("BROWSER_RESOURCE_EVENT_LIMIT");
+            while (!session->intercepted_resources.empty() && commands.size() < 32 && processed < 512) {
+                ++processed;
                 auto [request, omit] = std::move(session->intercepted_resources.front());
                 session->intercepted_resources.pop_front();
                 Json params{{"requestId", request}};
@@ -1172,7 +1173,6 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
             const auto pending = *session.pending_navigation;
             const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
             const auto nav = state.command("Page.navigate", {{"url", pending.url}}, deadline, cancel);
-            session.pending_navigation.reset();
             if (nav.contains("errorText"))
                 throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
             state.settle(nav, previous_loader, deadline, cancel);
@@ -1181,7 +1181,9 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
                 resumed["screenshot"] = pending.screenshot;
             if (!resumed.contains("include_html"))
                 resumed["include_html"] = pending.html;
-            return state.observe(resumed, deadline, cancel);
+            auto observation = state.observe(resumed, deadline, cancel);
+            session.pending_navigation.reset();
+            return observation;
         }
         return state.observe(args, deadline, cancel);
     }
