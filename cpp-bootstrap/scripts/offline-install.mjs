@@ -20,6 +20,14 @@ await mkdir(env.LOCALAPPDATA);
 const run=(file,args,timeoutMs=60000)=>runCheckedProcess(file,args,{cwd:fixture,env,timeoutMs,maxCaptureChars:65536,label:'Offline native installation qualification'});
 const port=await new Promise((resolve,reject)=>{const s=net.createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const p=s.address().port;s.close(()=>resolve(p));});});
 const binary=path.join(root,'bin','devbox-mcp'+(process.platform==='win32'?'.exe':''));
+async function waitStopped() {
+  const until=Date.now()+15000;
+  do {
+    if(!JSON.parse((await run(binary,['manage','status','--root',root])).stdout).running)return;
+    await new Promise(resolve=>setTimeout(resolve,100));
+  } while(Date.now()<until);
+  throw new Error('Owned offline fixture did not stop; preserve its directory');
+}
 let initialized=false;
 try {
   assert.deepEqual(JSON.parse((await run(installer,['--inspect'])).stdout),metadata.payload);
@@ -44,7 +52,7 @@ try {
   assert.equal(live.status,200);
   assert.equal((await live.json()).build.binarySha256,config.current.sha256);
   await run(binary,['manage','stop','--root',root]);
-  assert.equal(JSON.parse((await run(binary,['manage','status','--root',root])).stdout).running,false);
+  await waitStopped();
   const corrupted=path.join(fixture,'corrupted');
   await cp(directory,corrupted,{recursive:true});
   const damaged=process.platform==='darwin'
@@ -76,7 +84,7 @@ try {
   if(initialized) {
     const status=JSON.parse((await run(binary,['manage','status','--root',root])).stdout);
     if(status.running)await run(binary,['manage','stop','--root',root]);
-    assert.equal(JSON.parse((await run(binary,['manage','status','--root',root])).stdout).running,false,'retain fixture if owned server remains active');
+    await waitStopped();
   }
   await rm(fixture,{recursive:true,force:true});
 }
