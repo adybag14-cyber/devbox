@@ -28,6 +28,14 @@ const invoke = async (command, ...args) => {
   return JSON.parse(result.stdout);
 };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const awaitWithin=async(promise,ms,message)=>{
+  let timer;
+  try {
+    return await Promise.race([promise,new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(new Error(message)),ms);
+    })]);
+  } finally { clearTimeout(timer); }
+};
 let foreground, exit, output='';
 const launchForeground=()=>{
   output='';
@@ -145,7 +153,7 @@ try {
     // termination must allow the next foreground start without manual repair.
     assert.equal(rolledBack.owner.pid,foreground.pid);
     foreground.kill('SIGTERM');
-    const terminated=await Promise.race([exit,delay(25000).then(()=>{throw Error('Owned signal shutdown did not finish');})]);
+    const terminated=await awaitWithin(exit,25000,'Owned signal shutdown did not finish');
     assert.equal(terminated.code,0,output);foreground=null;
     assert.equal(JSON.parse(await readFile(configPath,'utf8')).desired,true,
       'service-manager shutdown preserves restart intent');
@@ -211,7 +219,8 @@ try {
   try { if((await invoke('status')).running) await invoke('stop'); } catch(error) { console.error(String(error)); }
   if(foreground && foreground.exitCode===null) {
     // Only this fixture's owned child, never a name/group lookup.
-    foreground.kill('SIGTERM'); await Promise.race([exit,delay(15000)]);
+    foreground.kill('SIGTERM');
+    await awaitWithin(exit,15000,`Owned fixture did not stop; evidence retained at ${fixture}`);
     if(foreground.exitCode===null) throw new Error(`Owned fixture did not stop; evidence retained at ${fixture}`);
   }
   const last=await invoke('status').catch(()=>({running:false}));
