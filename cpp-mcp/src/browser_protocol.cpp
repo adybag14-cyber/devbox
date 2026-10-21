@@ -157,6 +157,9 @@ Json BrowserProtocol::metrics() const {
             {"received_messages", state_->received_messages},
             {"transport_microseconds", state_->operation_micros}};
 }
+bool BrowserProtocol::is_connected() const {
+    return state_->connected;
+}
 std::vector<Json> BrowserProtocol::batch(const std::vector<std::pair<std::string, Json>>& commands,
                                          Clock::time_point deadline, const Cancel& cancel,
                                          std::string_view session) {

@@ -6,15 +6,30 @@
 
 On Windows, automatic discovery checks standard Chrome/Edge installation locations before scanning `PATH`. This avoids thousands of unsuccessful filesystem probes on large developer/CI paths and avoids preferring a PATH shim over an installed browser. Explicit executable configuration still takes precedence; portable installations retain the PATH fallback. Native qualification reports bounded startup phase timings and the selected executable/version without exposing a diagnostic MCP option.
 
+Chromium can create its private `DevToolsActivePort` file before writing both endpoint lines. The C++ reader waits for empty or incomplete records, as well as transient Windows writer locks, within the original connection deadline. Malformed ports or browser paths and permission failures remain errors; cancellation interrupts the wait. A cross-platform regression publishes the file in stages to cover this startup race.
+
 ## Agent workflow
 
-A slow cold launch can return `page_status: loading` and
-`pending_phase: navigation`. This response contains the owned `session_id`, but
-does not claim a page observation or screenshot. Continue with `observe` on that
-session. The initial screenshot and HTML options carry forward unless the
-observation call explicitly overrides them. This retains the initialized browser
-while keeping each request inside the same 40-second action deadline. Input
-remains unavailable until a real observation has been obtained.
+A slow cold launch or page load can return `page_status: loading` and
+`next_action: observe`. `pending_phase` distinguishes navigation not yet submitted
+(`navigation`), an already-submitted document still loading (`document`), and a
+settled page awaiting its snapshot (`observation`). The response includes the
+owned `session_id` and `navigation_started`, but does not claim a page observation
+or screenshot. Continue with `observe` on that same session. After submission,
+this resumes reading/capture without issuing `Page.navigate` again. An explicit
+negative navigation acknowledgement remains retryable by the caller.
+
+The initial screenshot and HTML choices carry forward unless the observation
+call explicitly overrides them. A soft navigation budget reserves five seconds
+for capture or an honest continuation within the existing 40-second action
+deadline. Input and old HTML are unavailable while navigation is pending; a real
+fresh observation is required. Protocol failure still invalidates its connection
+and cannot be treated as a successful continuation.
+
+A disconnected channel retires its session as `protocol_closed`. A thrown
+navigation error with an uncertain outcome retires it as `navigation_uncertain`;
+it cannot yield an observation of the preceding page or automatically replay the
+request. The owner's next status call exposes that terminal reason.
 
 1. Use native search for discovery and `devbox_web_fetch` for inexpensive source retrieval. Use `max_age_seconds: 0` and `view: offers` for a fresh product check.
 2. If useful content requires JavaScript or page interaction, call `devbox_browser` with `action: open`, the public URL, and optionally `include_html: true`.
@@ -66,7 +81,7 @@ Linux process launch also handles kernels or container policies that reject `clo
 
 ## Reproducible validation
 
-Page settlement follows committed client redirects rather than waiting for the first navigation's loader forever. It excludes the preceding document and rechecks the final loader, complete URL and readable state after the settling interval. Navigation has up to 30 seconds within the existing 40-second total action deadline, allowing a constrained renderer to finish without extending that overall limit. Fast pages return after their first stable interval; cancellation remains active, and same-document fragment navigation does not require a new loader. This corrects controller timeouts, not a site's access policy.
+Page settlement follows committed client redirects rather than waiting for the first navigation's loader forever. It excludes the preceding document and rechecks the final loader, complete URL and readable state after the settling interval. Navigation has a soft allowance of up to 30 seconds while reserving capture time inside the existing 40-second total action deadline. A still-loading document can continue in a later observation without being reloaded. Fast pages return after their first stable interval; cancellation remains active, and same-document fragment navigation does not require a new loader. This corrects controller budget handling, not a site's access policy. Real Chromium fixtures count page requests to verify that document and snapshot continuations do not replay navigation, and check principal ownership, stale-input rejection and capture-option preservation.
 
 `devbox-browser-tests` tests protocol framing, nested/out-of-order replies, command-error recovery, cancellation, deadlines, oversized replies and private-address denial. Add `--chromium` for real JavaScript price rendering, JPEG output, HTML hash integrity, page/nested-pane scrolling, click, principal ownership, stale-input rejection and explicit cleanup. The managed-process fixture also verifies context proxy use, cookie/local-storage isolation from the default profile and preceding session, PID-identity rejection, context disposal, and survival of the managed browser. Windows and Linux CI run the real browser fixture in headless and headed modes; Linux uses Xvfb for the headed run.
 

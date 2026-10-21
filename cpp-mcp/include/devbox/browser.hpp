@@ -4,9 +4,9 @@ namespace devbox {
 std::string browser_page_status(const Json& observation, int http_status = 0);
 std::string browser_normalize_url(std::string_view supplied);
 bool browser_click_controls_match(const Json& previous, const Json& current, double x, double y);
-// Chromium publishes this private endpoint while its writer may still hold a
-// Windows sharing lock. Retry only that transient condition within the caller's
-// existing deadline; permission and malformed-endpoint errors remain failures.
+// Chromium creates this private file before publishing its complete endpoint,
+// and its Windows writer can hold a sharing lock. Wait for these transient
+// states within the existing deadline; permission and malformed values fail.
 std::string read_browser_endpoint(const fs::path& profile, Clock::time_point deadline,
                                   const Cancel& cancel = {});
 bool browser_process_arguments_match(std::string_view command, std::string_view executable,
@@ -27,6 +27,10 @@ struct BrowserOptions {
     bool compatibility = false;
     // Native regression injection only. Models and environment cannot set this.
     bool defer_initial_navigation = false;
+    // Qualification injections only; never supplied through MCP or environment.
+    bool defer_initial_observation = false;
+    Millis navigation_wait{30000};
+    std::function<void()> navigation_acknowledgement_probe;
     // Leave bounded time for a website agent to inspect an image and plan its next action.
     // Resource-pressure cleanup and the one-session limit remain independent safeguards.
     Millis lifetime{600000}, idle_timeout{180000};
