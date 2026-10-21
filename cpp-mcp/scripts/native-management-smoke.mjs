@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
+import {mkdtemp, mkdir, open, readFile, writeFile, rm} from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,6 +61,12 @@ try {
     args:['-e',"require('fs').appendFileSync(process.argv[1],'x');setInterval(()=>{},1000)",companionEffect]}]));
   const initialized = await invoke('init', '--binary', binary, '--allow-local-build', '--port', String(port), '--env-file', environment,'--companions',companionFile);
   assert.equal(initialized.policy,'local-development');
+  // An incidental download receipt blocked the former Git-checkout launcher
+  // after a reboot. Native supervision verifies its pinned runtime instead.
+  const incidentalFile=path.join(root,'undefined','native-artifact-fixture','download-source-private.json');
+  const incidentalContent=JSON.stringify({artifact_id:'fixture-only',download_url:'https://example.invalid/not-fetched'});
+  await mkdir(path.dirname(incidentalFile),{recursive:true});
+  await writeFile(incidentalFile,incidentalContent);
   const startedAt = performance.now();
   launchForeground();
   const by = performance.now()+20000;
@@ -82,6 +88,7 @@ try {
   await invoke('restart');
   const restarted=await invoke('status'); assert.notEqual(restarted.child.generation,first.child.generation);
   assert.equal(restarted.healthy,true); assert.equal(await readFile(file,'utf8'),'native-core-effect');
+  assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent,'incidental metadata does not block startup or restart');
   assert.equal(restarted.companions[0].process.pid,companionPid,'frontend restart preserves healthy companion');
   const longWait=rpc('devbox_wait',{seconds:10}); longWait.catch(()=>{}); await delay(500);
   await assert.rejects(invoke('stop','--timeout-ms','2000'), /DRAIN_BUSY_OR_UNCONFIRMED/);
@@ -152,12 +159,14 @@ try {
     }while(performance.now()<resumedBy);
     assert.equal(resumed.healthy,true);assert.equal(resumed.owner.pid,foreground.pid);
     assert.equal(await readFile(marker,'utf8'),'x','service restart does not replay completed effects');
+    assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent,'service restart preserves unrelated metadata');
   }
   // Kill only the ChildProcess that this fixture launched, then recover through
   // stored birth/executable identities without duplicating an orphan frontend.
   foreground.kill('SIGKILL'); await exit; foreground=null;
   const recoveredOwner=await invoke('start');assert.equal(recoveredOwner.healthy,true);
   assert.equal(await readFile(marker,'utf8'),'x');
+  assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent,'supervisor recovery preserves unrelated metadata');
   await invoke('stop');
   const stoppedBy=performance.now()+10000;
   while((await invoke('status')).running&&performance.now()<stoppedBy)await delay(100);
@@ -167,6 +176,19 @@ try {
   await runCheckedProcess(binary,['manage','run','--root',root],
     {env,cwd:fixture,timeoutMs:5000,label:'Foreground run after persistent operator stop'});
   assert.equal((await invoke('status')).running,false,'foreground service start respects an operator stop');
+  const stoppedConfig=await readFile(configPath,'utf8');
+  const runtimeFile=await open(config.current.file,'r+');
+  const originalByte=Buffer.alloc(1),runtimeOffset=(await runtimeFile.stat()).size-1;
+  await runtimeFile.read(originalByte,0,1,runtimeOffset);
+  try {
+    await runtimeFile.write(Buffer.from([originalByte[0]^1]),0,1,runtimeOffset);
+    await assert.rejects(invoke('start'),/NATIVE_STORED_CANDIDATE_IDENTITY_MISMATCH/);
+    assert.equal(await readFile(configPath,'utf8'),stoppedConfig,'invalid selected runtime does not change restart intent');
+    assert.equal((await invoke('status')).running,false,'invalid selected runtime does not launch a supervisor');
+  } finally {
+    await runtimeFile.write(originalByte,0,1,runtimeOffset);
+    await runtimeFile.close();
+  }
   // Detached lifecycle is also native and retains exact owner identity.
   const detached=await invoke('start'); assert.equal(detached.healthy,true);
   await invoke('stop');
@@ -174,10 +196,12 @@ try {
   while((await invoke('status')).running && performance.now()<deadline) await delay(100);
   assert.equal((await invoke('status')).running,false);
   console.log(JSON.stringify({ok:true,platform:process.platform,startupMs,nodeOnRuntimePath:false,checks:[
-    'empty-PATH native initialization/startup','live MCP file effect','duplicate suppression','restart/state preservation',
+    'empty-PATH native initialization/startup','unrelated download metadata survives startup and recovery',
+    'live MCP file effect','duplicate suppression','restart/state preservation',
     'busy request and durable-job drain refusal','frontend crash recovery without replay','supervisor crash recovery',
     'independent owned companion lifecycle','service definition without activation','missing proof rejection',
     'failed candidate startup rollback','foreground and detached stop',
+    'modified selected runtime rejected without changing restart intent',
     ...(process.platform==='win32'?[]:['service signal shutdown and foreground restart without replay']),
     'persistent explicit operator stop']}));
 } finally {

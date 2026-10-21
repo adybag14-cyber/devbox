@@ -1114,6 +1114,9 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
             result = management_status(root);
         }
         if (!json_bool(result, "running")) {
+            // Report an invalid selected runtime before changing persistent
+            // intent or creating a detached supervisor that cannot start it.
+            verify_stored(root, config.at("current"), json_string(config, "policy"));
             config["desired"] = true;
             config_write(root, config);
             std::optional<std::uint64_t> instance;

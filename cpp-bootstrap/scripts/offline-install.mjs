@@ -58,6 +58,40 @@ try {
   assert.equal((await live.json()).build.binarySha256,config.current.sha256);
   await run(binary,['manage','stop','--root',root]);
   await waitStopped();
+  // Reproduce the incidental metadata that blocked the old checkout-based
+  // launcher, with no Git or other developer tools available to the runtime.
+  const incidental=path.join(root,'undefined','native-artifact-fixture','download-source-private.json');
+  const incidentalContent=JSON.stringify({artifact_id:'fixture-only',download_url:'https://example.invalid/not-fetched'});
+  await mkdir(path.dirname(incidental),{recursive:true});
+  await writeFile(incidental,incidentalContent);
+  const resumed=JSON.parse((await run(binary,['manage','start','--root',root])).stdout);
+  assert.equal(resumed.healthy,true,'unrelated metadata must not prevent a fresh supervisor start');
+  assert.notEqual(resumed.child.generation,started.child.generation);
+  const restarted=JSON.parse((await run(binary,['manage','restart','--root',root])).stdout);
+  assert.equal(restarted.healthy,true);
+  assert.equal(await readFile(incidental,'utf8'),incidentalContent);
+  await run(binary,['manage','stop','--root',root]);
+  await waitStopped();
+  // Ignoring unrelated files must not weaken verification of the executable
+  // selected for launch. Mutate only the stopped fixture's private runtime.
+  const runtimeFile=await open(config.current.file,'r+');
+  const stoppedConfig=await readFile(configFile,'utf8');
+  const originalByte=Buffer.alloc(1);
+  const runtimeOffset=(await runtimeFile.stat()).size-1;
+  await runtimeFile.read(originalByte,0,1,runtimeOffset);
+  try {
+    await runtimeFile.write(Buffer.from([originalByte[0]^1]),0,1,runtimeOffset);
+    await assert.rejects(run(binary,['manage','start','--root',root]),/NATIVE_STORED_CANDIDATE_IDENTITY_MISMATCH/u);
+    assert.equal(await readFile(configFile,'utf8'),stoppedConfig,'invalid selected runtime does not change restart intent');
+    assert.equal(JSON.parse((await run(binary,['manage','status','--root',root])).stdout).running,false);
+  } finally {
+    await runtimeFile.write(originalByte,0,1,runtimeOffset);
+    await runtimeFile.close();
+  }
+  const restored=JSON.parse((await run(binary,['manage','start','--root',root])).stdout);
+  assert.equal(restored.healthy,true,'the original verified executable remains usable after restoring fixture bytes');
+  await run(binary,['manage','stop','--root',root]);
+  await waitStopped();
   const settings=path.join(fixture,'operator.env');
   await writeFile(settings,`HOST=127.0.0.1\nPORT=${port}\nMCP_AUTH_MODE=none\nMCP_EXEC_MAX_CONCURRENT=2\n`,{mode:0o600});
   await run(installer,['--user','--no-start','--env-file',settings]);
@@ -97,6 +131,8 @@ try {
       'operator environment preserved','invalid companion rejected before publishing',
       'default startup survives installer exit','no-start remains stopped',
       'existing installation preserved','local health and exact binary',
+      'unrelated download metadata survives fresh startup and restart',
+      'modified installed runtime rejected before launch','restored original runtime starts',
       'native stop','no development-policy downgrade','tamper rejected before extraction']};
   for(const item of metadata.files) {
     const bytes=await readFile(path.join(directory,item.file));
