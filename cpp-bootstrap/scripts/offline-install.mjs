@@ -74,19 +74,27 @@ try {
   await waitStopped();
   // Ignoring unrelated files must not weaken verification of the executable
   // selected for launch. Mutate only the stopped fixture's private runtime.
+  // The installed CLI can be a hard link to that runtime, so use an unchanged
+  // verified controller copy and close all write handles before invoking it.
+  const controller=path.join(fixture,'verified-controller'+(process.platform==='win32'?'.exe':''));
+  await cp(binary,controller);
+  assert.equal(createHash('sha256').update(await readFile(controller)).digest('hex'),config.current.sha256);
   const runtimeFile=await open(config.current.file,'r+');
   const stoppedConfig=await readFile(configFile,'utf8');
   const originalByte=Buffer.alloc(1);
   const runtimeOffset=(await runtimeFile.stat()).size-1;
-  await runtimeFile.read(originalByte,0,1,runtimeOffset);
   try {
+    await runtimeFile.read(originalByte,0,1,runtimeOffset);
     await runtimeFile.write(Buffer.from([originalByte[0]^1]),0,1,runtimeOffset);
-    await assert.rejects(run(binary,['manage','start','--root',root]),/NATIVE_STORED_CANDIDATE_IDENTITY_MISMATCH/u);
+  } finally { await runtimeFile.close(); }
+  try {
+    await assert.rejects(run(controller,['manage','start','--root',root]),/NATIVE_STORED_CANDIDATE_IDENTITY_MISMATCH/u);
     assert.equal(await readFile(configFile,'utf8'),stoppedConfig,'invalid selected runtime does not change restart intent');
-    assert.equal(JSON.parse((await run(binary,['manage','status','--root',root])).stdout).running,false);
+    assert.equal(JSON.parse((await run(controller,['manage','status','--root',root])).stdout).running,false);
   } finally {
-    await runtimeFile.write(originalByte,0,1,runtimeOffset);
-    await runtimeFile.close();
+    const restore=await open(config.current.file,'r+');
+    try { await restore.write(originalByte,0,1,runtimeOffset); }
+    finally { await restore.close(); }
   }
   const restored=JSON.parse((await run(binary,['manage','start','--root',root])).stdout);
   assert.equal(restored.healthy,true,'the original verified executable remains usable after restoring fixture bytes');

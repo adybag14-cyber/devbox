@@ -179,15 +179,18 @@ try {
   const stoppedConfig=await readFile(configPath,'utf8');
   const runtimeFile=await open(config.current.file,'r+');
   const originalByte=Buffer.alloc(1),runtimeOffset=(await runtimeFile.stat()).size-1;
-  await runtimeFile.read(originalByte,0,1,runtimeOffset);
   try {
+    await runtimeFile.read(originalByte,0,1,runtimeOffset);
     await runtimeFile.write(Buffer.from([originalByte[0]^1]),0,1,runtimeOffset);
+  } finally { await runtimeFile.close(); }
+  try {
     await assert.rejects(invoke('start'),/NATIVE_STORED_CANDIDATE_IDENTITY_MISMATCH/);
     assert.equal(await readFile(configPath,'utf8'),stoppedConfig,'invalid selected runtime does not change restart intent');
     assert.equal((await invoke('status')).running,false,'invalid selected runtime does not launch a supervisor');
   } finally {
-    await runtimeFile.write(originalByte,0,1,runtimeOffset);
-    await runtimeFile.close();
+    const restore=await open(config.current.file,'r+');
+    try { await restore.write(originalByte,0,1,runtimeOffset); }
+    finally { await restore.close(); }
   }
   // Detached lifecycle is also native and retains exact owner identity.
   const detached=await invoke('start'); assert.equal(detached.healthy,true);
