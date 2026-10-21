@@ -330,6 +330,7 @@ Important `.env` values:
 - `GUARDIAN_HOST_PRESSURE_SAMPLE_MS` controls diagnostic Windows CPU/memory/commit/pagefile sampling; it does not trigger repair by itself
 - `DEVBOX_VERSION_CACHE_MS` controls the toolchain-version cache; a supervised background loop refreshes it so `devbox_status` remains subprocess-free while normally returning fresh versions
 - `devbox_status` exposes cached scheduler/store health plus `executionStore.diskPressure`, a robust multi-sample free-space trend (`freeBytesTrendPerHour`, sample count, and window), and `operationalWarnings`; low disk percentage warns before the hard readiness floor. Warning/critical pressure serializes weighted work, and critical pressure rejects new mutating heavy/I/O-heavy work while leaving read-only inspection and cleanup available
+- The byte warning allowance is the smaller of 50 GiB and 10% of the volume, with a 512 MiB minimum. The independent below-5%-free rule still protects large volumes. Status reports the effective `warningFreeBytes`; invalid measurements and less than 512 MiB available remain critical. A small volume with healthy headroom does not lose light-work scheduling capacity merely because its total size is below 50 GiB.
 - `npm run repo:freshness` compares `HEAD`, cached `origin/main`, and the actual remote head so a stale remote-tracking ref cannot masquerade as a current checkout
 - `PUBLIC_BASE_URL` for public OAuth deployments
 - `ENABLE_GATEWAY_BRIDGE=true|false`
