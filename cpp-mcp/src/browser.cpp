@@ -319,6 +319,8 @@ struct BrowserService::State {
         struct PendingNavigation {
             std::string url;
             bool screenshot, html;
+            enum class Phase { navigation, document, observation } phase = Phase::navigation;
+            std::string previous_loader, loader;
         };
         std::optional<PendingNavigation> pending_navigation;
         std::string id = uuid(), owner, target, cdp_session, observation, html, html_hash, main_frame;
@@ -630,31 +632,33 @@ struct BrowserService::State {
     Json frame(Clock::time_point deadline, const Cancel& cancel) {
         return command("Page.getFrameTree", Json::object(), deadline, cancel).at("frameTree").at("frame");
     }
-    void settle(const Json& navigation, std::string_view previous_loader, Clock::time_point deadline,
+    bool settle(std::string_view loader, std::string_view previous_loader, Clock::time_point deadline,
                 const Cancel& cancel) {
-        const auto loader = json_string(navigation, "loaderId");
-        // Slow renderers can still produce a valid observation within the
-        // existing 40-second action budget. Do not truncate them at 15 seconds.
-        const auto ready_by = std::min(deadline, Clock::now() + Millis(30000));
+        // A soft navigation allowance leaves time for an honest continuation.
+        // Individual protocol operations retain the hard action deadline; a
+        // soft wait must not close a healthy connection or discard its page.
+        const auto ready_by =
+            std::min(deadline - Millis(5000),
+                     Clock::now() + std::clamp(options.navigation_wait, Millis(1000), Millis(30000)));
         std::string candidate_loader, candidate_url;
         std::optional<Clock::time_point> readable_since;
         while (Clock::now() < ready_by) {
             cancel->check();
             try {
-                const auto root = frame(ready_by, cancel);
+                const auto root = frame(deadline, cancel);
                 const auto current_loader = json_string(root, "loaderId");
                 // Client redirects commit a different loader from Page.navigate's
                 // reply. Accept that new document, but never the preceding page.
                 const bool committed = loader.empty() || current_loader == loader ||
                                        (!current_loader.empty() && current_loader != previous_loader);
-                if (committed && evaluate("document.readyState", ready_by, cancel) != "loading") {
-                    const auto after = frame(ready_by, cancel);
+                if (committed && evaluate("document.readyState", deadline, cancel) != "loading") {
+                    const auto after = frame(deadline, cancel);
                     const auto current_url = json_string(root, "url") + json_string(root, "urlFragment");
                     if (json_string(after, "loaderId") == current_loader &&
                         json_string(after, "url") + json_string(after, "urlFragment") == current_url) {
                         if (readable_since && candidate_loader == current_loader &&
                             candidate_url == current_url && Clock::now() - *readable_since >= Millis(600))
-                            return;
+                            return true;
                         candidate_loader = current_loader;
                         candidate_url = current_url;
                         readable_since = Clock::now();
@@ -675,7 +679,7 @@ struct BrowserService::State {
             readable_since.reset();
             cancel->wait_for(Millis(100));
         }
-        throw Error("BROWSER_NAVIGATION_DEADLINE: page did not reach a readable state");
+        return false;
     }
     Json evaluate(std::string_view script, Clock::time_point deadline, const Cancel& cancel) {
         const auto root = frame(deadline, cancel);
@@ -1043,26 +1047,74 @@ struct BrowserService::State {
         // The caller's first idle allowance begins after startup, just as it
         // does after a normal open observation. Status never renews this.
         session->touched = Clock::now();
+        using Phase = Session::PendingNavigation::Phase;
+        const auto phase = session->pending_navigation->phase;
+        const auto name = phase == Phase::navigation ? "navigation"
+                          : phase == Phase::document ? "document"
+                                                     : "observation";
         return {{{"session_id", session->id},
                  {"observation_id", nullptr},
-                 {"url", "about:blank"},
+                 {"url", phase == Phase::navigation ? Json("about:blank") : Json()},
                  {"requested_url", session->pending_navigation->url},
                  {"title", ""},
                  {"text", ""},
                  {"controls", Json::array()},
                  {"page_status", "loading"},
-                 {"pending_phase", "navigation"},
+                 {"pending_phase", name},
+                 {"navigation_started", phase != Phase::navigation},
+                 {"render_mode", session->text_only ? "text" : "full"},
                  {"navigation_stable", false},
                  {"image_mime_type", nullptr},
                  {"next_action", "observe"},
-                 {"pending_note", "The owned browser is ready. Startup used the initial call budget; "
-                                  "observe this session to navigate and capture the requested page."},
+                 {"pending_note", phase == Phase::navigation
+                                      ? "The owned browser is ready. Observe this session to navigate and "
+                                        "capture the requested page."
+                                      : "Navigation has already been submitted. Observe this same session to "
+                                        "finish reading or capture; do not navigate again."},
                  {"session_budget", session_budget()},
                  {"session_protocol", session->protocol->metrics()},
                  {"timing",
                   {{"action_ms",
                     std::chrono::duration_cast<Millis>(Clock::now() - (deadline - Millis(40000))).count()}}}},
                 {}};
+    }
+    BrowserObservation continue_navigation(const Json& args, Clock::time_point deadline,
+                                           const Cancel& cancel) {
+        using Phase = Session::PendingNavigation::Phase;
+        auto& pending = *session->pending_navigation;
+        if (pending.phase == Phase::navigation) {
+            pending.previous_loader = json_string(frame(deadline, cancel), "loaderId");
+            // Mark submission before issuing the effect. A continuation never
+            // repeats Page.navigate after a successful command acknowledgement.
+            pending.phase = Phase::document;
+            const auto nav = command("Page.navigate", {{"url", pending.url}}, deadline, cancel);
+            if (nav.contains("errorText")) {
+                const auto message = "BROWSER_NAVIGATION: " + json_string(nav, "errorText");
+                // A negative acknowledgement permits an explicit caller retry.
+                // Unconfirmed transport failures never reach this transition.
+                pending.phase = Phase::navigation;
+                pending.loader.clear();
+                throw Error(message);
+            }
+            pending.loader = json_string(nav, "loaderId");
+        }
+        if (pending.phase == Phase::document) {
+            if (!settle(pending.loader, pending.previous_loader, deadline, cancel))
+                return pending_navigation(deadline);
+            pending.phase = Phase::observation;
+            if (options.defer_initial_observation)
+                return pending_navigation(deadline);
+        }
+        if (deadline - Clock::now() < Millis(5000))
+            return pending_navigation(deadline);
+        auto resumed = args;
+        if (!resumed.contains("screenshot"))
+            resumed["screenshot"] = pending.screenshot;
+        if (!resumed.contains("include_html"))
+            resumed["include_html"] = pending.html;
+        auto result = observe(resumed, deadline, cancel);
+        session->pending_navigation.reset();
+        return result;
     }
 };
 BrowserService::BrowserService(std::shared_ptr<const Config> config, BrowserOptions options)
@@ -1130,20 +1182,15 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         const bool text_only = render_mode == "text" || (render_mode == "auto" && state.options.text_only);
         try {
             state.open(std::string(principal), text_only, deadline, cancel);
+            state.session->pending_navigation = BrowserService::State::Session::PendingNavigation{
+                target, json_bool(args, "screenshot", true), json_bool(args, "include_html", false)};
             // Keep a slow cold launch instead of spending its remaining few
             // seconds on navigation and then discarding the owned process.
             // Every caller still has the same 40-second hard action deadline.
             if (state.options.defer_initial_navigation || deadline - Clock::now() < Millis(20000)) {
-                state.session->pending_navigation = BrowserService::State::Session::PendingNavigation{
-                    target, json_bool(args, "screenshot", true), json_bool(args, "include_html", false)};
                 return state.pending_navigation(deadline);
             }
-            const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
-            auto nav = state.command("Page.navigate", {{"url", target}}, deadline, cancel);
-            if (nav.contains("errorText"))
-                throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
-            state.settle(nav, previous_loader, deadline, cancel);
-            return state.observe(args, deadline, cancel);
+            return state.continue_navigation(args, deadline, cancel);
         } catch (const Cancelled&) {
             if (state.session && state.session->owner == principal)
                 state.end_session("open_cancelled");
@@ -1206,39 +1253,25 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         cancel->wait_for(Millis(wait));
         cancel->check();
         if (session.pending_navigation) {
-            const auto pending = *session.pending_navigation;
-            const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
-            const auto nav = state.command("Page.navigate", {{"url", pending.url}}, deadline, cancel);
-            if (nav.contains("errorText"))
-                throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
-            state.settle(nav, previous_loader, deadline, cancel);
-            auto resumed = args;
-            if (!resumed.contains("screenshot"))
-                resumed["screenshot"] = pending.screenshot;
-            if (!resumed.contains("include_html"))
-                resumed["include_html"] = pending.html;
-            auto observation = state.observe(resumed, deadline, cancel);
-            session.pending_navigation.reset();
-            return observation;
+            return state.continue_navigation(args, deadline, cancel);
         }
         return state.observe(args, deadline, cancel);
     }
     if (action == "navigate") {
         const auto target = state.url(json_string(args, "url"));
-        session.pending_navigation.reset();
         session.http_status = 0;
-        const auto previous_loader = json_string(state.frame(deadline, cancel), "loaderId");
-        auto nav = state.command("Page.navigate", {{"url", target}}, deadline, cancel);
         session.html.clear();
         session.html_hash.clear();
         session.observation.clear();
-        if (nav.contains("errorText"))
-            throw Error("BROWSER_NAVIGATION: " + json_string(nav, "errorText"));
-        state.settle(nav, previous_loader, deadline, cancel);
-        return state.observe(args, deadline, cancel);
+        session.last = Json::object();
+        session.pending_navigation = BrowserService::State::Session::PendingNavigation{
+            target, json_bool(args, "screenshot", true), json_bool(args, "include_html", false)};
+        return state.continue_navigation(args, deadline, cancel);
     }
     if (action != "scroll" && action != "click" && action != "type")
         throw Error("BROWSER_INVALID_ACTION");
+    if (session.pending_navigation)
+        throw Error("BROWSER_STALE_OBSERVATION: navigation is pending; observe this session before input");
     if (session.observation.empty() || json_string(args, "observation_id") != session.observation ||
         !json_bool(session.last, "navigation_stable"))
         throw Error("BROWSER_STALE_OBSERVATION: observe the page again before input");

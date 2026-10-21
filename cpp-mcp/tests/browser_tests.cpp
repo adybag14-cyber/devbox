@@ -70,11 +70,13 @@ void send(auto& socket, const Json& j) {
 }
 BrowserObservation initial_observation(BrowserService& browser, const Json& args, std::string_view owner) {
     auto value = browser.perform(args, owner);
-    if (json_string(value.data, "pending_phase") == "navigation") {
+    for (unsigned attempt = 0; json_string(value.data, "next_action") == "observe" && attempt < 4;
+         ++attempt) {
         const auto id = json_string(value.data, "session_id");
         value = browser.perform({{"action", "observe"}, {"session_id", id}}, owner);
         require(json_string(value.data, "session_id") == id, "initial observation retains session identity");
     }
+    require(json_string(value.data, "next_action") != "observe", "bounded fixture continuation completes");
     return value;
 }
 void protocol_tests() {
@@ -382,6 +384,7 @@ struct PageFixture {
     std::atomic_bool reject_requests{false};
     std::atomic_uint requests{0};
     std::atomic_uint picture_requests{0};
+    std::atomic_uint continuation_requests{0}, capture_requests{0};
     std::atomic_uint href_revision{0}, href_applied{0};
     std::thread worker;
     explicit PageFixture(bool storage = false) {
@@ -458,6 +461,27 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                         response.set(http::field::content_type, "application/javascript");
                         response.body() =
                             "document.querySelector('#slow').innerText='Slow fixture price GBP 849.00';";
+                    }
+                    if (request.target() == "/continuation") {
+                        const auto visit = ++continuation_requests;
+                        response.body() = "<!doctype html><title>Continuation fixture</title><p>Visit " +
+                                          std::to_string(visit) +
+                                          "</p><p id='price'>Loading the product price</p>"
+                                          "<script src='/continuation-script'></script>";
+                    }
+                    if (request.target() == "/continuation-script") {
+                        std::this_thread::sleep_for(Millis(3000));
+                        response.set(http::field::content_type, "application/javascript");
+                        response.body() = "document.querySelector('#price').innerText='Continuation product "
+                                          "price GBP 749.00';";
+                    }
+                    if (request.target() == "/capture-continuation") {
+                        const auto visit = ++capture_requests;
+                        response.body() = "<!doctype html><title>Capture continuation</title><h1>Fixture "
+                                          "phone GBP 699.00</h1><p>Capture visit " +
+                                          std::to_string(visit) +
+                                          "</p><p>The requested product observation must retain its original "
+                                          "image and HTML choices.</p>";
                     }
                     if (request.target() == "/control-change")
                         response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
@@ -896,6 +920,84 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     browser.perform({{"action", "close"}, {"session_id", redirected.data.at("session_id")}}, "test");
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
+void continuation_budget_tests(bool compatibility) {
+    PageFixture page;
+    auto config = std::make_shared<Config>();
+    config->runtime_mode = RuntimeMode::host;
+    config->host_exec_enabled = true;
+    config->platform = Platform::detect();
+    ToolContract contract(*config);
+    const auto base = "http://127.0.0.1:" + std::to_string(page.port());
+    BrowserOptions options;
+    options.fixture_port = page.port();
+    options.compatibility = compatibility;
+    options.navigation_wait = Millis(2000);
+    {
+        BrowserService browser(config, options);
+        const auto first = initial_observation(browser, {{"action", "open"}, {"url", base + "/"}}, "owner");
+        const auto id = json_string(first.data, "session_id");
+        auto pending = browser.perform(contract.arguments("devbox_browser", {{"action", "navigate"},
+                                                                             {"session_id", id},
+                                                                             {"url", base + "/continuation"},
+                                                                             {"screenshot", false},
+                                                                             {"include_html", true}}),
+                                       "owner");
+        require(pending.data["pending_phase"] == "document" && pending.data["navigation_started"] == true &&
+                    pending.data["observation_id"].is_null() && pending.image_base64.empty(),
+                "slow document returns owned pending state without invented observation or screenshot");
+        rejects(
+            [&] {
+                browser.perform({{"action", "click"},
+                                 {"session_id", id},
+                                 {"observation_id", first.data.at("observation_id")},
+                                 {"x", 10},
+                                 {"y", 10}},
+                                "owner");
+            },
+            "STALE_OBSERVATION");
+        rejects([&] { browser.perform({{"action", "observe"}, {"session_id", id}}, "other"); },
+                "SESSION_NOT_FOUND");
+        for (unsigned attempt = 0; json_string(pending.data, "next_action") == "observe" && attempt < 4;
+             ++attempt)
+            pending = browser.perform(
+                contract.arguments("devbox_browser", {{"action", "observe"}, {"session_id", id}}), "owner");
+        require(json_string(pending.data, "next_action").empty() &&
+                    json_bool(pending.data, "navigation_stable") &&
+                    json_string(pending.data, "text").find("GBP 749.00") != std::string::npos,
+                "continuation reaches the newly readable product document");
+        require(page.continuation_requests == 1 &&
+                    json_string(pending.data, "text").find("Visit 1") != std::string::npos,
+                "observing pending navigation must not submit Page.navigate again");
+        require(pending.image_base64.empty() && pending.data["html_artifact"].is_object(),
+                "contract validation preserves original false screenshot and true HTML choices");
+        browser.perform({{"action", "close"}, {"session_id", id}}, "owner");
+    }
+    options.navigation_wait = Millis(30000);
+    options.defer_initial_observation = true;
+    {
+        BrowserService browser(config, options);
+        auto pending = browser.perform({{"action", "open"},
+                                        {"url", base + "/capture-continuation"},
+                                        {"screenshot", true},
+                                        {"include_html", true}},
+                                       "capture-owner");
+        require(pending.data["pending_phase"] == "observation" &&
+                    pending.data["navigation_started"] == true && pending.data["observation_id"].is_null() &&
+                    pending.image_base64.empty(),
+                "snapshot deferral retains a settled document without pretending capture succeeded");
+        const auto id = json_string(pending.data, "session_id");
+        const auto observed =
+            browser.perform(contract.arguments("devbox_browser", {{"action", "observe"}, {"session_id", id}}),
+                            "capture-owner");
+        require(!observed.image_base64.empty() && observed.data["html_artifact"].is_object() &&
+                    json_string(observed.data, "text").find("Capture visit 1") != std::string::npos &&
+                    page.capture_requests == 1,
+                "deferred snapshot captures JPEG and HTML from the same single navigation");
+        browser.perform({{"action", "close"}, {"session_id", id}}, "capture-owner");
+    }
+    std::cout
+        << "slow navigation and snapshot continuation retain ownership, capture choices and one navigation\n";
+}
 void shared_browser_tests(bool headed, bool compatibility) {
     PageFixture page(true);
     auto config = std::make_shared<Config>();
@@ -1194,6 +1296,8 @@ int main(int argc, char** argv) {
             const bool headed = mode == "--chromium-headed", compatibility = argc == 3;
             browser_tests(headed, compatibility);
             shared_browser_tests(headed, compatibility);
+            if (!headed)
+                continuation_budget_tests(compatibility);
             if (!headed && !compatibility)
                 session_allowance_tests();
         }
