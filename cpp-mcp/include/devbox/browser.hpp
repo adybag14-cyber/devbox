@@ -30,6 +30,7 @@ struct BrowserOptions {
     // Qualification injections only; never supplied through MCP or environment.
     bool defer_initial_observation = false;
     Millis navigation_wait{30000};
+    std::function<void()> navigation_acknowledgement_probe;
     // Leave bounded time for a website agent to inspect an image and plan its next action.
     // Resource-pressure cleanup and the one-session limit remain independent safeguards.
     Millis lifetime{600000}, idle_timeout{180000};

@@ -24,6 +24,11 @@ deadline. Input and old HTML are unavailable while navigation is pending; a real
 fresh observation is required. Protocol failure still invalidates its connection
 and cannot be treated as a successful continuation.
 
+A disconnected channel retires its session as `protocol_closed`. A thrown
+navigation error with an uncertain outcome retires it as `navigation_uncertain`;
+it cannot yield an observation of the preceding page or automatically replay the
+request. The owner's next status call exposes that terminal reason.
+
 1. Use native search for discovery and `devbox_web_fetch` for inexpensive source retrieval. Use `max_age_seconds: 0` and `view: offers` for a fresh product check.
 2. If useful content requires JavaScript or page interaction, call `devbox_browser` with `action: open`, the public URL, and optionally `include_html: true`.
 3. Inspect `page_status`, URL, title, visible text, viewport text, controls, scroll regions and image. An access-denied page or consent screen is an intermediate outcome, not a successful source read.

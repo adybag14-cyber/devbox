@@ -1089,7 +1089,18 @@ struct BrowserService::State {
             // Mark submission before issuing the effect. A continuation never
             // repeats Page.navigate after a successful command acknowledgement.
             pending.phase = Phase::document;
-            const auto nav = command("Page.navigate", {{"url", pending.url}}, deadline, cancel);
+            Json nav;
+            try {
+                nav = command("Page.navigate", {{"url", pending.url}}, deadline, cancel);
+                if (options.navigation_acknowledgement_probe)
+                    options.navigation_acknowledgement_probe();
+            } catch (...) {
+                // A thrown command error cannot establish which document is
+                // active, even when its transport remains connected. Retire
+                // this context instead of accepting the old loader or replaying.
+                end_session("navigation_uncertain");
+                throw;
+            }
             if (nav.contains("errorText")) {
                 const auto message = "BROWSER_NAVIGATION: " + json_string(nav, "errorText");
                 // A negative acknowledgement permits an explicit caller retry.

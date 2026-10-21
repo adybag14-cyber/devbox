@@ -1001,6 +1001,34 @@ void continuation_budget_tests(bool compatibility) {
                 "deferred snapshot captures JPEG and HTML from the same single navigation");
         browser.perform({{"action", "close"}, {"session_id", id}}, "capture-owner");
     }
+    options.defer_initial_observation = false;
+    bool uncertain_acknowledgement = false;
+    options.navigation_acknowledgement_probe = [&] {
+        if (uncertain_acknowledgement)
+            throw Error("BROWSER_PROTOCOL_REMOTE: qualification-injected uncertain acknowledgement");
+    };
+    {
+        BrowserService browser(config, options);
+        const auto initial =
+            initial_observation(browser, {{"action", "open"}, {"url", base + "/"}}, "uncertain-owner");
+        const auto id = json_string(initial.data, "session_id");
+        uncertain_acknowledgement = true;
+        const auto visits_before = page.capture_requests.load();
+        rejects(
+            [&] {
+                browser.perform(
+                    {{"action", "navigate"}, {"session_id", id}, {"url", base + "/capture-continuation"}},
+                    "uncertain-owner");
+            },
+            "BROWSER_PROTOCOL_REMOTE");
+        const auto status = browser.perform({{"action", "status"}}, "uncertain-owner");
+        require(!json_bool(status.data, "active_session") &&
+                    status.data["last_session_end"]["reason"] == "navigation_uncertain",
+                "a connected but uncertain navigation cannot retain an old-document continuation");
+        rejects([&] { browser.perform({{"action", "observe"}, {"session_id", id}}, "uncertain-owner"); },
+                "BROWSER_SESSION_ENDED: navigation_uncertain");
+        require(page.capture_requests <= visits_before + 1, "an uncertain navigation is never resubmitted");
+    }
     std::cout
         << "slow navigation and snapshot continuation retain ownership, capture choices and one navigation\n";
 }
