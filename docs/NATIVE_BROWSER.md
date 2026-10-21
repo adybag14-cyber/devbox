@@ -6,6 +6,8 @@
 
 On Windows, automatic discovery checks standard Chrome/Edge installation locations before scanning `PATH`. This avoids thousands of unsuccessful filesystem probes on large developer/CI paths and avoids preferring a PATH shim over an installed browser. Explicit executable configuration still takes precedence; portable installations retain the PATH fallback. Native qualification reports bounded startup phase timings and the selected executable/version without exposing a diagnostic MCP option.
 
+Chromium can create its private `DevToolsActivePort` file before writing both endpoint lines. The C++ reader waits for empty or incomplete records, as well as transient Windows writer locks, within the original connection deadline. Malformed ports or browser paths and permission failures remain errors; cancellation interrupts the wait. A cross-platform regression publishes the file in stages to cover this startup race.
+
 ## Agent workflow
 
 A slow cold launch or page load can return `page_status: loading` and

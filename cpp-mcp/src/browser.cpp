@@ -190,17 +190,36 @@ constexpr auto observe_script = R"JS((() => {
 })())JS";
 constexpr auto html_script =
     R"JS((() => {const s=document.documentElement?.outerHTML||'';return {html:s.slice(0,524288),original_utf16_units:s.length,truncated:s.length>524288};})())JS";
-void connect_browser(BrowserProtocol& protocol, const fs::path& profile, Clock::time_point deadline,
-                     const Cancel& cancel) {
-    const auto endpoint = split(read_browser_endpoint(profile, deadline, cancel), '\n');
-    const auto port_text = endpoint.empty() ? std::string() : trim(endpoint[0]);
-    if (endpoint.size() < 2 || port_text.empty() || port_text.size() > 5 ||
+std::optional<std::pair<std::uint16_t, std::string>> parse_browser_endpoint(std::string_view text) {
+    if (text.empty())
+        return {};
+    const auto newline = text.find('\n');
+    const auto port_text = trim(text.substr(0, newline));
+    if (port_text.empty() || port_text.size() > 5 ||
         port_text.find_first_not_of("0123456789") != std::string::npos)
         throw Error("BROWSER_ENDPOINT_INVALID");
+    // Chromium creates this file before publishing both lines. A readable
+    // empty file or incomplete record is not a completed, invalid endpoint.
+    if (newline == std::string_view::npos)
+        return {};
     const auto port = std::stoul(port_text);
     if (!port || port > 65535)
         throw Error("BROWSER_ENDPOINT_INVALID");
-    protocol.connect(static_cast<std::uint16_t>(port), trim(endpoint[1]), deadline, cancel);
+    const auto path = trim(text.substr(newline + 1));
+    constexpr std::string_view prefix = "/devtools/browser/";
+    if (prefix.starts_with(path))
+        return {};
+    if (!path.starts_with(prefix) || path.size() > 256 ||
+        path.substr(prefix.size())
+                .find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") !=
+            std::string::npos)
+        throw Error("BROWSER_ENDPOINT_INVALID");
+    return std::pair{static_cast<std::uint16_t>(port), path};
+}
+void connect_browser(BrowserProtocol& protocol, const fs::path& profile, Clock::time_point deadline,
+                     const Cancel& cancel) {
+    const auto endpoint = parse_browser_endpoint(read_browser_endpoint(profile, deadline, cancel)).value();
+    protocol.connect(endpoint.first, endpoint.second, deadline, cancel);
 }
 std::optional<fs::path> chromium_path(const BrowserOptions& options) {
     if (options.executable && fs::is_regular_file(*options.executable))
@@ -290,23 +309,25 @@ std::string read_browser_endpoint(const fs::path& profile, Clock::time_point dea
         if (Clock::now() >= deadline)
             throw Error("BROWSER_ENDPOINT_DEADLINE: Chromium endpoint remained unavailable");
         try {
-            return read_file(profile / "DevToolsActivePort", 512);
+            const auto text = read_file(profile / "DevToolsActivePort", 512);
+            if (parse_browser_endpoint(text))
+                return text;
         } catch (const std::system_error& error) {
 #ifdef _WIN32
-            if (error.code().category() == std::system_category() &&
-                (error.code().value() == ERROR_SHARING_VIOLATION ||
-                 error.code().value() == ERROR_LOCK_VIOLATION)) {
-                const auto remaining = std::chrono::duration_cast<Millis>(deadline - Clock::now());
-                const auto delay = std::max(Millis(0), std::min(Millis(20), remaining));
-                if (cancel)
-                    cancel->wait_for(delay);
-                else
-                    std::this_thread::sleep_for(delay);
-                continue;
-            }
-#endif
+            if (error.code().category() != std::system_category() ||
+                (error.code().value() != ERROR_SHARING_VIOLATION &&
+                 error.code().value() != ERROR_LOCK_VIOLATION))
+                throw;
+#else
             throw;
+#endif
         }
+        const auto remaining = std::chrono::duration_cast<Millis>(deadline - Clock::now());
+        const auto delay = std::max(Millis(0), std::min(Millis(20), remaining));
+        if (cancel)
+            cancel->wait_for(delay);
+        else
+            std::this_thread::sleep_for(delay);
     }
 }
 struct BrowserService::State {

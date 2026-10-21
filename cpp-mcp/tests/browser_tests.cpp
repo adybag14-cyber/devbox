@@ -128,7 +128,6 @@ void protocol_tests() {
     changed_ancestor[0]["activation_href"] = "https://example.com/wrapped-new";
     require(!browser_click_controls_match(linked_input, changed_ancestor, 115, 115),
             "an input's activating ancestor link remains part of its target identity");
-#ifdef _WIN32
     const auto endpoint_root = fs::temp_directory_path() / ("devbox-endpoint-fixture-" + uuid());
     fs::create_directory(endpoint_root);
     ScopeExit remove_endpoint([&] {
@@ -137,6 +136,40 @@ void protocol_tests() {
     });
     const std::string endpoint_text = "1234\n/devtools/browser/fixture\n";
     const auto endpoint_file = endpoint_root / "DevToolsActivePort";
+    write_file(endpoint_file, "");
+    auto incomplete_publication = std::async(std::launch::async, [&] {
+        std::this_thread::sleep_for(Millis(100));
+        write_file(endpoint_file, "1234\n");
+        std::this_thread::sleep_for(Millis(100));
+        write_file(endpoint_file, endpoint_text);
+    });
+    require(read_browser_endpoint(endpoint_root, Clock::now() + Millis(2000)) == endpoint_text,
+            "endpoint read waits for empty and port-only files to finish publication");
+    incomplete_publication.get();
+    for (const auto* incomplete : {"", "1234", "1234\n", "1234\n/devtools/browser/"}) {
+        write_file(endpoint_file, incomplete);
+        rejects([&] { (void)read_browser_endpoint(endpoint_root, Clock::now() + Millis(80)); },
+                "ENDPOINT_DEADLINE");
+    }
+    for (const auto* invalid : {"bad-port", "0\n/devtools/browser/test", "65536\n/devtools/browser/test",
+                                "1234\n/devtools/page/test", "1234\n/devtools/browser/test?token=bad"}) {
+        write_file(endpoint_file, invalid);
+        rejects([&] { (void)read_browser_endpoint(endpoint_root, Clock::now() + Millis(2000)); },
+                "ENDPOINT_INVALID");
+    }
+    write_file(endpoint_file, "");
+    auto cancelled_publication = std::make_shared<Cancellation>();
+    auto abort_publication = std::async(std::launch::async, [&] {
+        std::this_thread::sleep_for(Millis(40));
+        cancelled_publication->cancel();
+    });
+    rejects(
+        [&] {
+            (void)read_browser_endpoint(endpoint_root, Clock::now() + Millis(2000), cancelled_publication);
+        },
+        "cancelled");
+    abort_publication.get();
+#ifdef _WIN32
     const auto writer = CreateFileW(endpoint_file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
                                     FILE_ATTRIBUTE_NORMAL, nullptr);
     require(writer != INVALID_HANDLE_VALUE, "exclusive Chromium endpoint writer fixture");
