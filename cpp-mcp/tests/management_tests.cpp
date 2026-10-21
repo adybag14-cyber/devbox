@@ -39,6 +39,34 @@ int main() {
         rejects(
             [&] { (void)parse_management_options({"init", "--root", path_text(root), "--port", "65536"}); },
             "Invalid");
+        rejects([&] { (void)management_main({"prepare", "--root", path_text(root)}); }, "absolute --output");
+        rejects(
+            [&] { (void)management_main({"prepare", "--root", path_text(root), "--output", "relative"}); },
+            "absolute --output");
+        for (const auto& output : {root, root / "inside", root.parent_path(), root / "inside" / ".."})
+            rejects(
+                [&] {
+                    (void)management_main(
+                        {"prepare", "--root", path_text(root), "--output", path_text(output)});
+                },
+                "OVERLAPPING_ROOTS");
+        rejects(
+            [&] {
+                (void)management_main(
+                    {"prepare", "--root", path_text(root / ""), "--output", path_text(root / "inside")});
+            },
+            "OVERLAPPING_ROOTS");
+        const auto existing_root = root / "existing", empty_file = root / "empty-file";
+        ensure_private_state_directory(existing_root);
+        write_file(empty_file, "");
+        rejects(
+            [&] {
+                (void)management_main(
+                    {"prepare", "--root", path_text(existing_root), "--output", path_text(empty_file)});
+            },
+            "new empty output directory");
+        require(fs::is_regular_file(empty_file) && fs::file_size(empty_file) == 0,
+                "preparation must preserve an unrelated empty file");
         const Json config{{"environment",
                            {{"PORT", "18123"},
                             {"MCP_STATE_ROOT", "/unrelated-production"},

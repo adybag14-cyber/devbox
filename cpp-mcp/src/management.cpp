@@ -47,6 +47,26 @@ bool take_stop_signal() {
 fs::path control_root(const fs::path& root) {
     return root / "run" / "native";
 }
+bool path_contains(const fs::path& parent, const fs::path& child) {
+    auto item = child.begin();
+    for (const auto& part : parent) {
+        if (part.empty())
+            continue;
+        while (item != child.end() && item->empty())
+            ++item;
+        if (item == child.end())
+            return false;
+#ifdef _WIN32
+        if (_wcsicmp(part.c_str(), item->c_str()) != 0)
+            return false;
+#else
+        if (part != *item)
+            return false;
+#endif
+        ++item;
+    }
+    return true;
+}
 std::string executable_name() {
 #ifdef _WIN32
     return "devbox-mcp.exe";
@@ -683,7 +703,12 @@ int supervise(const ManagementOptions& options) {
         } catch (const std::exception& error) {
             state["controlError"] = error.what();
         }
-        if (take_stop_signal())
+        const bool signal_received = take_stop_signal();
+        const bool operator_stop_pending =
+            json_string(request, "epoch") == epoch && json_string(request, "action") == "stop" &&
+            !json_string(request, "id").empty() && json_string(request, "id") != last_request;
+        const bool service_shutdown = signal_received && !operator_stop_pending;
+        if (service_shutdown)
             request = Json{{"epoch", epoch}, {"id", uuid()}, {"action", "stop"}};
         if (json_string(request, "epoch") == epoch && !json_string(request, "id").empty() &&
             json_string(request, "id") != last_request) {
@@ -721,7 +746,10 @@ int supervise(const ManagementOptions& options) {
                     throw Error("NATIVE_COORDINATOR_STOP_UNCONFIRMED");
                 if (action == "stop") {
                     companions.stop();
-                    config["desired"] = false;
+                    // Service-manager shutdown/reboot is transient. Only an
+                    // explicit operator stop disables future managed starts.
+                    if (!service_shutdown)
+                        config["desired"] = false;
                     config_write(root, config);
                     acknowledgement["ok"] = true;
                     state["lastRequest"] = acknowledgement;
@@ -961,20 +989,40 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
     if (command == "help" || command == "--help") {
         std::cout
             << "Native C++23 management (no Node/npm/Git runtime)\n"
-               "devbox-mcp manage init|start|run|status|stop|restart|promote|rollback|service-file --root "
+               "devbox-mcp manage init|prepare|start|run|status|stop|restart|promote|rollback|service-file "
+               "--root "
                "ABSOLUTE_PATH\n"
-               "init/promote: --binary FILE --receipt FILE --provenance FILE --source SHA --target TARGET\n"
-               "Development init/promote only: --allow-local-build (never downgrades a signed installation)\n"
+               "init/prepare/promote: --binary FILE --receipt FILE --provenance FILE --source SHA --target "
+               "TARGET\n"
+               "Development init/prepare/promote only: --allow-local-build (never downgrades a signed "
+               "installation)\n"
                "init: --port NUMBER --env-file FILE; service-file: --service systemd|launchd|windows "
                "--output FILE\n"
+               "prepare: --output NEW_ABSOLUTE_DIRECTORY stages native management for --root without "
+               "changing or stopping it; reviewed activation is separate.\n"
                "--timeout-ms NUMBER bounds startup/drain. Native state stays under root/run.\n";
         return 0;
     }
-    if (command == "init") {
-        if (fs::exists(root) && !fs::is_empty(root))
-            throw Error("Native init requires a new empty root; production migration is separate");
-        ensure_directory(root.parent_path());
-        const auto staging = root.parent_path() / (".devbox-init-" + uuid());
+    if (command == "init" || command == "prepare") {
+        const bool preparing = command == "prepare";
+        auto destination = root;
+        if (preparing) {
+            if (options.output.empty() || !options.output.is_absolute())
+                throw Error("Native prepare requires an absolute --output DIRECTORY");
+            if (!fs::is_directory(root))
+                throw Error("NATIVE_PREPARE_EXISTING_DIRECTORY_REQUIRED");
+            destination = fs::weakly_canonical(options.output);
+            if (path_contains(root, destination) || path_contains(destination, root))
+                throw Error("NATIVE_PREPARE_OVERLAPPING_ROOTS");
+            if (fs::exists(control_root(root)))
+                throw Error("NATIVE_EXISTING_MANAGEMENT: use qualified promotion for an installed manager");
+        }
+        if (fs::exists(destination) && (!fs::is_directory(destination) || !fs::is_empty(destination)))
+            throw Error(preparing
+                            ? "Native prepare requires a new empty output directory"
+                            : "Native init requires a new empty root; production migration is separate");
+        ensure_directory(destination.parent_path());
+        const auto staging = destination.parent_path() / (".devbox-init-" + uuid());
         ensure_private_state_directory(staging);
         ScopeExit discard_staging([&] {
             std::error_code ec;
@@ -1065,17 +1113,21 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
         config_write(staging, config);
         // Publish only a fully verified configuration. Failed proof leaves the
         // requested destination empty/absent and can be retried without cleanup.
-        if (fs::exists(root)) {
-            if (!fs::is_empty(root) || !fs::remove(root))
+        if (fs::exists(destination)) {
+            if (!fs::is_directory(destination) || !fs::is_empty(destination) || !fs::remove(destination))
                 throw Error("Native destination changed during initialization");
         }
-        fs::rename(staging, root);
-        std::cout << Json{{"initialized", true},
-                          {"root", path_text(root)},
-                          {"policy", config.at("policy")},
-                          {"sha256", config.at("current").at("sha256")}}
-                         .dump()
-                  << '\n';
+        fs::rename(staging, destination);
+        Json result{{"initialized", !preparing},
+                    {"root", path_text(root)},
+                    {"policy", config.at("policy")},
+                    {"sha256", config.at("current").at("sha256")}};
+        if (preparing) {
+            result["prepared"] = true;
+            result["activationRequired"] = true;
+            result["preparedNativeState"] = path_text(control_root(destination));
+        }
+        std::cout << result.dump() << '\n';
         return 0;
     }
     if (command == "status") {
@@ -1106,6 +1158,9 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
             result = management_status(root);
         }
         if (!json_bool(result, "running")) {
+            // Report an invalid selected runtime before changing persistent
+            // intent or creating a detached supervisor that cannot start it.
+            verify_stored(root, config.at("current"), json_string(config, "policy"));
             config["desired"] = true;
             config_write(root, config);
             std::optional<std::uint64_t> instance;

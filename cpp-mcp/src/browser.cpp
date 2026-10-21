@@ -15,6 +15,40 @@
 #endif
 
 namespace devbox {
+bool browser_click_controls_match(const Json& previous, const Json& current, double x, double y) {
+    if (previous == current)
+        return true;
+    if (!previous.is_array() || !current.is_array() || previous.size() != current.size())
+        return false;
+    const auto contains_point = [x, y](const Json& control) {
+        const auto left = json_number(control, "x"), top = json_number(control, "y");
+        const auto width = json_number(control, "width"), height = json_number(control, "height");
+        return width > 0 && height > 0 && x >= left && x < left + width && y >= top && y < top + height;
+    };
+    bool unchanged_target = false;
+    for (std::size_t i = 0; i < previous.size(); ++i) {
+        const auto& before = previous[i];
+        const auto& after = current[i];
+        if (before == after) {
+            unchanged_target = unchanged_target || contains_point(before);
+            continue;
+        }
+        // Retail sites can asynchronously populate unrelated help-link URLs.
+        // Ignore only that field, only outside the click, and only when every
+        // target/position/state remains otherwise identical.
+        if (json_string(before, "tag") != "a" || json_string(after, "tag") != "a" ||
+            !before.contains("href") || !after.contains("href") || contains_point(before) ||
+            contains_point(after))
+            return false;
+        auto before_link = before, after_link = after;
+        before_link.erase("href");
+        after_link.erase("href");
+        if (before_link != after_link)
+            return false;
+    }
+    // Blank/non-control clicks retain the complete original snapshot guard.
+    return unchanged_target;
+}
 std::uint64_t browser_cgroup_headroom(std::uint64_t limit, std::uint64_t usage,
                                       std::uint64_t inactive_file_cache) {
     // Match Linux working-set accounting: inactive file cache can be reclaimed.
@@ -123,9 +157,11 @@ constexpr auto observe_script = R"JS((() => {
   const r=e.getBoundingClientRect();if(r.bottom<0||r.right<0||r.top>innerHeight||r.left>innerWidth)continue;
   if(controls.length>=80)break;
   const type=(e.type||'').toLowerCase(); const privateValue=type==='password'||type==='file'||e.autocomplete==='one-time-code';
+  const activationLink=e.tagName==='A'?null:e.closest('a[href]');
   controls.push({tag:e.tagName.toLowerCase(),role:e.getAttribute('role')||'',type,
    name:clean(e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.innerText||e.getAttribute('placeholder')||e.getAttribute('title')),
    href:e.tagName==='A'?clip(e.href,1000):undefined,disabled:!!e.disabled,checked:typeof e.checked==='boolean'?e.checked:undefined,
+   activation_href:activationLink?clip(activationLink.href,1000):undefined,
    value:privateValue?'[redacted]':clip(e.value,160),x:Math.round(Math.max(0,r.left)),y:Math.round(Math.max(0,r.top)),
    width:Math.round(Math.min(innerWidth,r.right)-Math.max(0,r.left)),height:Math.round(Math.min(innerHeight,r.bottom)-Math.max(0,r.top))});
  }
@@ -1239,7 +1275,9 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
         return found;
     };
     stale = stale || scroll_target(current) != scroll_target(session.last);
-    if (action != "scroll")
+    if (action == "click")
+        stale = stale || !browser_click_controls_match(session.last["controls"], current["controls"], x, y);
+    else if (action != "scroll")
         stale = stale || current["controls"] != session.last["controls"];
     if (stale)
         throw Error("BROWSER_STALE_OBSERVATION: page or targets changed; observe again");

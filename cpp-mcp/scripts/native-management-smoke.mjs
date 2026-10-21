@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
+import {access, mkdtemp, mkdir, open, readFile, rename, writeFile, rm} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,7 +29,27 @@ const invoke = async (command, ...args) => {
   return JSON.parse(result.stdout);
 };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
-let foreground, exit;
+const awaitWithin=async(promise,ms,message)=>{
+  let timer;
+  try {
+    return await Promise.race([promise,new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(new Error(message)),ms);
+    })]);
+  } finally { clearTimeout(timer); }
+};
+let foreground, exit, output='';
+const launchForeground=()=>{
+  output='';
+  foreground=spawn(binary,['manage','run','--root',root,'--timeout-ms','20000'],
+    {env,cwd:fixture,windowsHide:true,stdio:['ignore','pipe','pipe']});
+  for(const stream of [foreground.stdout,foreground.stderr])
+    stream.on('data',value=>output=(output+value).slice(-16000));
+  exit=new Promise((resolve,reject)=>{
+    foreground.once('exit',(code,signal)=>resolve({code,signal}));
+    foreground.once('error',reject);
+  });
+  exit.catch(()=>{});
+};
 let counter = 0;
 const rpc = async (name, args = {}) => {
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {method:'POST', headers:{'content-type':'application/json', accept:'application/json, text/event-stream'},
@@ -49,10 +70,14 @@ try {
     args:['-e',"require('fs').appendFileSync(process.argv[1],'x');setInterval(()=>{},1000)",companionEffect]}]));
   const initialized = await invoke('init', '--binary', binary, '--allow-local-build', '--port', String(port), '--env-file', environment,'--companions',companionFile);
   assert.equal(initialized.policy,'local-development');
+  // An incidental download receipt blocked the former Git-checkout launcher
+  // after a reboot. Native supervision verifies its pinned runtime instead.
+  const incidentalFile=path.join(root,'undefined','native-artifact-fixture','download-source-private.json');
+  const incidentalContent=JSON.stringify({artifact_id:'fixture-only',download_url:'https://example.invalid/not-fetched'});
+  await mkdir(path.dirname(incidentalFile),{recursive:true});
+  await writeFile(incidentalFile,incidentalContent);
   const startedAt = performance.now();
-  foreground = spawn(binary,['manage','run','--root',root,'--timeout-ms','20000'], {env,cwd:fixture,windowsHide:true,stdio:['ignore','pipe','pipe']});
-  let output=''; for(const stream of [foreground.stdout,foreground.stderr]) stream.on('data',value=>output=(output+value).slice(-16000));
-  exit = new Promise((resolve,reject)=>{foreground.once('exit',(code,signal)=>resolve({code,signal}));foreground.once('error',reject);});
+  launchForeground();
   const by = performance.now()+20000;
   let first;
   while(performance.now()<by) {
@@ -72,6 +97,7 @@ try {
   await invoke('restart');
   const restarted=await invoke('status'); assert.notEqual(restarted.child.generation,first.child.generation);
   assert.equal(restarted.healthy,true); assert.equal(await readFile(file,'utf8'),'native-core-effect');
+  assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent,'incidental metadata does not block startup or restart');
   assert.equal(restarted.companions[0].process.pid,companionPid,'frontend restart preserves healthy companion');
   const longWait=rpc('devbox_wait',{seconds:10}); longWait.catch(()=>{}); await delay(500);
   await assert.rejects(invoke('stop','--timeout-ms','2000'), /DRAIN_BUSY_OR_UNCONFIRMED/);
@@ -109,6 +135,8 @@ try {
   await invoke('service-file','--service',serviceKind,'--output',service);
   const definition=await readFile(service,'utf8');
   assert(definition.includes(serviceKind==='launchd'?'<string>manage</string>':'manage run --root'));
+  if(serviceKind==='systemd')assert(!definition.includes('ExecStop='),
+    'systemd shutdown must signal the supervisor, not persist an operator stop');
   if(process.platform==='darwin') await runCheckedProcess('/usr/bin/plutil',['-lint',service],{timeoutMs:10000,label:'Native LaunchAgent XML validation'});
   assert(!definition.includes('node '));
   await writeFile(service,'unrelated existing service definition');
@@ -121,31 +149,114 @@ try {
   const rolledBack=await invoke('status');assert.equal(rolledBack.healthy,true);
   assert.equal(rolledBack.candidateSha256,initialized.sha256,'failed startup restores prior immutable binary');
   assert.equal(await readFile(marker,'utf8'),'x');
+  if(process.platform!=='win32') {
+    // Signal only the ChildProcess owned by this fixture. A service-manager
+    // termination must allow the next foreground start without manual repair.
+    assert.equal(rolledBack.owner.pid,foreground.pid);
+    foreground.kill('SIGTERM');
+    const terminated=await awaitWithin(exit,25000,'Owned signal shutdown did not finish');
+    assert.equal(terminated.code,0,output);foreground=null;
+    assert.equal(JSON.parse(await readFile(configPath,'utf8')).desired,true,
+      'service-manager shutdown preserves restart intent');
+    launchForeground();
+    const resumedBy=performance.now()+20000;let resumed;
+    do {
+      assert.equal(foreground.exitCode,null,output);
+      resumed=await invoke('status');
+      if(resumed.healthy&&resumed.owner.pid===foreground.pid)break;
+      await delay(100);
+    }while(performance.now()<resumedBy);
+    assert.equal(resumed.healthy,true);assert.equal(resumed.owner.pid,foreground.pid);
+    assert.equal(await readFile(marker,'utf8'),'x','service restart does not replay completed effects');
+    assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent,'service restart preserves unrelated metadata');
+  }
   // Kill only the ChildProcess that this fixture launched, then recover through
   // stored birth/executable identities without duplicating an orphan frontend.
   foreground.kill('SIGKILL'); await exit; foreground=null;
   const recoveredOwner=await invoke('start');assert.equal(recoveredOwner.healthy,true);
   assert.equal(await readFile(marker,'utf8'),'x');
+  assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent,'supervisor recovery preserves unrelated metadata');
   await invoke('stop');
   const stoppedBy=performance.now()+10000;
   while((await invoke('status')).running&&performance.now()<stoppedBy)await delay(100);
   assert.equal((await invoke('status')).running,false);
+  assert.equal(JSON.parse(await readFile(configPath,'utf8')).desired,false,
+    'explicit operator stop remains persistent');
+  await runCheckedProcess(binary,['manage','run','--root',root],
+    {env,cwd:fixture,timeoutMs:5000,label:'Foreground run after persistent operator stop'});
+  assert.equal((await invoke('status')).running,false,'foreground service start respects an operator stop');
+  const stoppedConfig=await readFile(configPath,'utf8');
+  const runtimeFile=await open(config.current.file,'r+');
+  const originalByte=Buffer.alloc(1),runtimeOffset=(await runtimeFile.stat()).size-1;
+  try {
+    await runtimeFile.read(originalByte,0,1,runtimeOffset);
+    await runtimeFile.write(Buffer.from([originalByte[0]^1]),0,1,runtimeOffset);
+  } finally { await runtimeFile.close(); }
+  try {
+    await assert.rejects(invoke('start'),/NATIVE_STORED_CANDIDATE_IDENTITY_MISMATCH/);
+    assert.equal(await readFile(configPath,'utf8'),stoppedConfig,'invalid selected runtime does not change restart intent');
+    assert.equal((await invoke('status')).running,false,'invalid selected runtime does not launch a supervisor');
+  } finally {
+    const restore=await open(config.current.file,'r+');
+    try { await restore.write(originalByte,0,1,runtimeOffset); }
+    finally { await restore.close(); }
+  }
   // Detached lifecycle is also native and retains exact owner identity.
   const detached=await invoke('start'); assert.equal(detached.healthy,true);
   await invoke('stop');
   const deadline=performance.now()+10000;
   while((await invoke('status')).running && performance.now()<deadline) await delay(100);
   assert.equal((await invoke('status')).running,false);
+  // Model a stopped legacy installation while retaining its real durable job,
+  // workspace and incidental files. Preparation must not touch any of them.
+  await rename(path.join(root,'run/native'),path.join(fixture,'retained-old-native'));
+  const stateDatabase=path.join(root,'run/state/metadata.sqlite3');
+  const stateDigest=()=>readFile(stateDatabase).then(bytes=>createHash('sha256').update(bytes).digest('hex'));
+  const beforePreparation=await stateDigest();
+  const preparation=path.join(fixture,'prepared native manager');
+  const prepared=await invoke('prepare','--output',preparation,'--binary',binary,'--allow-local-build',
+    '--port',String(port),'--env-file',environment,'--companions',companionFile);
+  assert.equal(prepared.prepared,true);assert.equal(prepared.initialized,false);
+  assert.equal(prepared.activationRequired,true);
+  await assert.rejects(access(path.join(root,'run/native')),{code:'ENOENT'});
+  assert.equal(await stateDigest(),beforePreparation,'preparation leaves the existing database unchanged');
+  assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent);
+  const preparedConfig=JSON.parse(await readFile(path.join(preparation,'run/native/config.json'),'utf8'));
+  assert.equal(preparedConfig.root,initialized.root);
+  assert.equal(preparedConfig.current.file,config.current.file,'prepared runtime binds the final path');
+  await assert.rejects(runCheckedProcess(binary,['manage','start','--root',preparation],
+    {env,cwd:fixture,timeoutMs:5000,label:'Prepared configuration cannot start from its staging directory'}),
+    /NATIVE_MANAGEMENT_CONFIG_INVALID/);
+  assert.equal(await stateDigest(),beforePreparation);
+  await rename(path.join(preparation,'run/native'),path.join(root,'run/native'));
+  const activated=await invoke('start');assert.equal(activated.healthy,true);
+  assert.equal((await rpc('devbox_job_status',{job_id:job.id})).status,'succeeded');
+  assert.equal(await readFile(marker,'utf8'),'x','prepared activation does not replay durable effects');
+  assert.equal(await readFile(file,'utf8'),'native-core-effect');
+  assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent);
+  await assert.rejects(invoke('prepare','--output',path.join(fixture,'second-preparation'),
+    '--binary',binary,'--allow-local-build'),/NATIVE_EXISTING_MANAGEMENT/);
+  await invoke('stop');
+  const migratedStopBy=performance.now()+10000;
+  while((await invoke('status')).running&&performance.now()<migratedStopBy)await delay(100);
+  assert.equal((await invoke('status')).running,false);
   console.log(JSON.stringify({ok:true,platform:process.platform,startupMs,nodeOnRuntimePath:false,checks:[
-    'empty-PATH native initialization/startup','live MCP file effect','duplicate suppression','restart/state preservation',
+    'empty-PATH native initialization/startup','unrelated download metadata survives startup and recovery',
+    'live MCP file effect','duplicate suppression','restart/state preservation',
     'busy request and durable-job drain refusal','frontend crash recovery without replay','supervisor crash recovery',
     'independent owned companion lifecycle','service definition without activation','missing proof rejection',
-    'failed candidate startup rollback','foreground and detached stop']}));
+    'failed candidate startup rollback','foreground and detached stop',
+    'modified selected runtime rejected without changing restart intent',
+    'preparation does not alter existing production paths or database',
+    'staged manager cannot run before activation','prepared activation preserves durable effects without replay',
+    ...(process.platform==='win32'?[]:['service signal shutdown and foreground restart without replay']),
+    'persistent explicit operator stop']}));
 } finally {
   try { if((await invoke('status')).running) await invoke('stop'); } catch(error) { console.error(String(error)); }
   if(foreground && foreground.exitCode===null) {
     // Only this fixture's owned child, never a name/group lookup.
-    foreground.kill('SIGTERM'); await Promise.race([exit,delay(15000)]);
+    foreground.kill('SIGTERM');
+    await awaitWithin(exit,15000,`Owned fixture did not stop; evidence retained at ${fixture}`);
     if(foreground.exitCode===null) throw new Error(`Owned fixture did not stop; evidence retained at ${fixture}`);
   }
   const last=await invoke('status').catch(()=>({running:false}));

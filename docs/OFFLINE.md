@@ -22,15 +22,29 @@ services, scheduled tasks, firewall rules or PATH changes. Linux defaults to
 `$XDG_DATA_HOME/devbox`, or `~/.local/share/devbox`. macOS defaults to
 `~/Library/Application Support/Devbox`.
 
-```
-devbox-offline --user
-devbox-offline --portable "/path/you/own/devbox" --no-start
-devbox-offline --inspect
+Windows, from the directory containing the downloaded standalone asset:
+
+```powershell
+.\devbox-offline-windows-x86_64.exe --user
+.\devbox-offline-windows-x86_64.exe --inspect
 ```
 
-Linux standalone executables have a `.run` suffix; make the downloaded file
-executable before invoking it. The macOS app bundle's CLI is
-`Devbox.app/Contents/MacOS/devbox-offline`.
+Linux x86-64, with a portable directory owned by your account (use the ARM64
+asset name on ARM64):
+
+```sh
+chmod +x ./devbox-offline-linux-x86_64.run
+./devbox-offline-linux-x86_64.run --portable "$HOME/devbox" --no-start
+```
+
+macOS, after extracting the matching archive:
+
+```sh
+./Devbox.app/Contents/MacOS/devbox-offline --user
+```
+
+Inside the universal ZIP, select the directory matching your platform; its
+Windows and Linux filenames are `devbox-offline.exe` and `devbox-offline.run`.
 
 Operators can pass `--env-file /private/runtime.env` to preserve authentication,
 workspace and optional capability configuration in the installation's private
@@ -55,6 +69,12 @@ Offline installations record the `bundled-qualified` policy and their hosted
 workflow/source identity. Existing online Sigstore verification continues to
 use `signed-qualified`. Neither policy permits an unqualified development
 binary to be promoted over the installed runtime.
+
+Startup verifies the selected runtime's stored identity and digest. It does not
+depend on a Git checkout or its cleanliness: unrelated download receipts or
+operator notes do not block a restart. Modified runtime executables are still
+rejected before launch. Service-manager shutdown preserves the intent to run
+on the next service start; an explicit `manage stop` remains persistent.
 
 The server defaults to `127.0.0.1:8100`; an operator environment file or explicit
 `--port` can change the configuration. `--no-start` leaves it configured and stopped. Use the installed native
