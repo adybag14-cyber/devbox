@@ -361,6 +361,7 @@ void protocol_tests() {
     BrowserProtocol timed;
     timed.connect(slow.port(), "/devtools/browser/test", Clock::now() + Millis(1000));
     rejects([&] { timed.call("Test.slow", Json::object(), Clock::now() + Millis(80)); }, "DEADLINE");
+    require(!timed.is_connected(), "a transport deadline cannot be reused as a healthy continuation");
     slow.finish();
     ProtocolFixture oversized([](auto& socket) {
         receive(socket);
@@ -917,7 +918,12 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     }
     abort_navigation.get();
     require(cancelled, "redirect settlement remains cancellable");
-    browser.perform({{"action", "close"}, {"session_id", redirected.data.at("session_id")}}, "test");
+    const auto cancelled_status = browser.perform({{"action", "status"}}, "test");
+    if (json_bool(cancelled_status.data, "active_session"))
+        browser.perform({{"action", "close"}, {"session_id", redirected.data.at("session_id")}}, "test");
+    else
+        require(cancelled_status.data["last_session_end"]["reason"] == "protocol_closed",
+                "cancelled protocol I/O retires the disconnected owned context");
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
 void continuation_budget_tests(bool compatibility) {

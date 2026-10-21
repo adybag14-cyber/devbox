@@ -27,6 +27,7 @@ class BrowserProtocol {
                             Clock::time_point deadline, const Cancel& cancel = {},
                             std::string_view session = {});
     Json metrics() const;
+    bool is_connected() const;
     void close() noexcept;
 };
 } // namespace devbox

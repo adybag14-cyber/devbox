@@ -415,6 +415,8 @@ struct BrowserService::State {
             end_session("idle_timeout");
         else if (session->exited)
             end_session("browser_exited");
+        else if (session->protocol && !session->protocol->is_connected())
+            end_session("protocol_closed");
         else if (session->shared && !process_matches_instance(session->pid.load(), session->instance))
             end_session("managed_browser_changed");
         else if (available_memory().value_or(UINT64_MAX) < 64 * 1024 * 1024)
