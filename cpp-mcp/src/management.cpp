@@ -1009,13 +1009,15 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
         if (preparing) {
             if (options.output.empty() || !options.output.is_absolute())
                 throw Error("Native prepare requires an absolute --output DIRECTORY");
+            if (!fs::is_directory(root))
+                throw Error("NATIVE_PREPARE_EXISTING_DIRECTORY_REQUIRED");
             destination = fs::weakly_canonical(options.output);
             if (path_contains(root, destination) || path_contains(destination, root))
                 throw Error("NATIVE_PREPARE_OVERLAPPING_ROOTS");
             if (fs::exists(control_root(root)))
                 throw Error("NATIVE_EXISTING_MANAGEMENT: use qualified promotion for an installed manager");
         }
-        if (fs::exists(destination) && !fs::is_empty(destination))
+        if (fs::exists(destination) && (!fs::is_directory(destination) || !fs::is_empty(destination)))
             throw Error(preparing
                             ? "Native prepare requires a new empty output directory"
                             : "Native init requires a new empty root; production migration is separate");
@@ -1112,7 +1114,7 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
         // Publish only a fully verified configuration. Failed proof leaves the
         // requested destination empty/absent and can be retried without cleanup.
         if (fs::exists(destination)) {
-            if (!fs::is_empty(destination) || !fs::remove(destination))
+            if (!fs::is_directory(destination) || !fs::is_empty(destination) || !fs::remove(destination))
                 throw Error("Native destination changed during initialization");
         }
         fs::rename(staging, destination);
