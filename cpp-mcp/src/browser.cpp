@@ -356,6 +356,9 @@ struct BrowserService::State {
             // Let Chromium close its own helpers and profile before enforcing the
             // supervisor's process-group/Job Object deadline.
             if (protocol) {
+                // The owner's session pointer can already be cleared. Disposal
+                // may drain queued Fetch events; never re-enter that old owner.
+                protocol->on_event({});
                 try {
                     if (shared) {
                         if (!context.empty())

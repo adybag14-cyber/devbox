@@ -482,7 +482,7 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                                           "phone GBP 699.00</h1><p>Capture visit " +
                                           std::to_string(visit) +
                                           "</p><p>The requested product observation must retain its original "
-                                          "image and HTML choices.</p>";
+                                          "image and HTML choices.</p><img src='/fixture-picture?capture=1'>";
                     }
                     if (request.target() == "/control-change")
                         response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
@@ -1002,10 +1002,21 @@ void continuation_budget_tests(bool compatibility) {
         browser.perform({{"action", "close"}, {"session_id", id}}, "capture-owner");
     }
     options.defer_initial_observation = false;
+    options.text_only = true;
     bool uncertain_acknowledgement = false;
+    unsigned expected_capture_requests = 0;
     options.navigation_acknowledgement_probe = [&] {
-        if (uncertain_acknowledgement)
+        if (uncertain_acknowledgement) {
+            const auto by = Clock::now() + Millis(5000);
+            while (page.capture_requests < expected_capture_requests && Clock::now() < by)
+                std::this_thread::sleep_for(Millis(10));
+            require(page.capture_requests == expected_capture_requests,
+                    "the uncertain navigation was actually submitted to the fixture");
+            // Let its image interception arrive while the CDP reply is withheld
+            // by this native fault injection. Disposal must not re-enter State.
+            std::this_thread::sleep_for(Millis(200));
             throw Error("BROWSER_PROTOCOL_REMOTE: qualification-injected uncertain acknowledgement");
+        }
     };
     {
         BrowserService browser(config, options);
@@ -1014,6 +1025,7 @@ void continuation_budget_tests(bool compatibility) {
         const auto id = json_string(initial.data, "session_id");
         uncertain_acknowledgement = true;
         const auto visits_before = page.capture_requests.load();
+        expected_capture_requests = visits_before + 1;
         rejects(
             [&] {
                 browser.perform(
@@ -1027,7 +1039,7 @@ void continuation_budget_tests(bool compatibility) {
                 "a connected but uncertain navigation cannot retain an old-document continuation");
         rejects([&] { browser.perform({{"action", "observe"}, {"session_id", id}}, "uncertain-owner"); },
                 "BROWSER_SESSION_ENDED: navigation_uncertain");
-        require(page.capture_requests <= visits_before + 1, "an uncertain navigation is never resubmitted");
+        require(page.capture_requests == visits_before + 1, "an uncertain navigation is never resubmitted");
     }
     std::cout
         << "slow navigation and snapshot continuation retain ownership, capture choices and one navigation\n";
