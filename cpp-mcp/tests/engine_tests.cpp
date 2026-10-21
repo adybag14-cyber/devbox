@@ -127,6 +127,10 @@ int main(int argc, char** argv) {
                         disk_pressure(4 * gib, 40 * gib, true) == "normal" &&
                         disk_pressure(4 * gib - 1, 40 * gib, true) == "warning",
                     "small-volume warning begins below its capacity-aware byte allowance");
+            require(disk_warning_free_bytes(40 * gib + 1) == 4 * gib + 1 &&
+                        disk_pressure(4 * gib, 40 * gib + 1, true) == "warning" &&
+                        disk_pressure(4 * gib + 1, 40 * gib + 1, true) == "normal",
+                    "fractional-byte percentage thresholds round up without losing protection");
             require(disk_warning_free_bytes(2 * gib) == floor &&
                         disk_pressure(floor, 2 * gib, true) == "normal" &&
                         disk_pressure(floor - 1, 2 * gib, true) == "critical",
@@ -144,6 +148,13 @@ int main(int argc, char** argv) {
                         disk_pressure(gib, 0, true) == "critical" &&
                         disk_pressure(3 * gib, 2 * gib, true) == "critical",
                     "invalid space measurements remain fail-closed");
+            const auto unknown = std::numeric_limits<std::uintmax_t>::max();
+            require(!disk_space_sample_valid({unknown, unknown, unknown}, true) &&
+                        !disk_space_sample_valid({40 * gib, 4 * gib, unknown}, true) &&
+                        !disk_space_sample_valid({unknown, 4 * gib, 4 * gib}, true) &&
+                        !disk_space_sample_valid({40 * gib, 4 * gib, 4 * gib}, false) &&
+                        disk_space_sample_valid({40 * gib, 4 * gib, 4 * gib}, true),
+                    "filesystem unknown-value sentinels are rejected at the probe boundary");
         }
         {
             auto probe_config = std::make_shared<Config>(*config);

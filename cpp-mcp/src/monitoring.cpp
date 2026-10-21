@@ -131,10 +131,16 @@ Json degraded_background(const Json& snapshot) {
             result.push_back(it.key());
     return result;
 }
+bool disk_space_sample_valid(const fs::space_info& space, bool query_succeeded) {
+    const auto unknown = std::numeric_limits<std::uintmax_t>::max();
+    return query_succeeded && space.capacity != unknown && space.available != unknown &&
+           space.capacity != 0 && space.available <= space.capacity;
+}
 std::uint64_t disk_warning_free_bytes(std::uint64_t total) {
     // A fixed 50 GiB warning is permanently active on a smaller filesystem.
     // Keep the hard floor and the established large-volume byte allowance.
-    return std::max(minimum_free, std::min(warning_free, total / 10));
+    const auto capacity_allowance = total / 10 + (total % 10 != 0 ? 1 : 0);
+    return std::max(minimum_free, std::min(warning_free, capacity_allowance));
 }
 std::string disk_pressure(std::uint64_t free, std::uint64_t total, bool valid) {
     if (!valid || !total || free > total || free < minimum_free)
@@ -212,7 +218,7 @@ void OperationalMonitor::probe_store() {
     std::error_code ec;
     const auto space = fs::space(config_->jobs_root, ec);
     const auto free = ec ? 0 : space.available, total = ec ? 0 : space.capacity;
-    const bool valid_space = !ec && total != 0 && free <= total;
+    const bool valid_space = disk_space_sample_valid(space, !ec);
     if (ec)
         errors.push_back(ec.message());
     else if (!valid_space)
