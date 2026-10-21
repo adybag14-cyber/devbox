@@ -113,6 +113,39 @@ manager to register the reviewed file when deploying. Keep the referenced
 executable at its stable path; regenerate the definition when moving or upgrading
 that supervisor executable. The manager and controlled MCP may be the same file.
 
+## Prepare an existing installation for native management
+
+An operator can prepare a verified manager for the existing production root
+without writing to it or stopping its processes:
+
+```sh
+./devbox-mcp manage prepare --root /absolute/production/devbox \
+  --output /private/new-empty-preparation-directory \
+  --binary /downloads/devbox-mcp --receipt /downloads/qualification-receipt.json \
+  --provenance /downloads/provenance.sigstore.json \
+  --source RELEASE_COMMIT_SHA --target linux-x86_64 \
+  --env-file /private/effective-production.env
+```
+
+Preparation uses the same source, signature, executable and capability checks
+as signed initialization. The output directory must be separate from the
+production tree. Its configuration already binds the selected executable and
+state to the final production paths; it cannot be started from the preparation
+directory. It contains private configuration and must not be shared as a release
+artifact. Preparation rejects a target that already has `run/native` management;
+use qualified promotion for that installation.
+
+Activation is a separate, reviewed operation: confirm compatible state and
+contract versions, drain active work, preserve private backups and service
+definitions, stop the verified previous owners and state coordinator, then move
+only the prepared `run/native` directory to the production root's absent
+`run/native` path. Keep the production database, OAuth state, workspace and
+external artifact paths in place. Bind OS startup and any desktop worker to the
+verified native executable; confirm readiness and retained durable work before
+reopening admission. Rollback preserves the current database and restores the
+retained launch definitions. The preparation command performs none of these
+activation steps automatically.
+
 The packaged `devbox-setup --native-root ABSOLUTE_PATH` route accepts the same
 qualification arguments and configures this native supervisor. `--repo PATH`
 selects the retained source-checkout installer for development/legacy management,

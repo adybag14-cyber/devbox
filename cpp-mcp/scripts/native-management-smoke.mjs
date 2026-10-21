@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp, mkdir, open, readFile, writeFile, rm} from 'node:fs/promises';
+import {access, mkdtemp, mkdir, open, readFile, rename, writeFile, rm} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -206,6 +207,39 @@ try {
   const deadline=performance.now()+10000;
   while((await invoke('status')).running && performance.now()<deadline) await delay(100);
   assert.equal((await invoke('status')).running,false);
+  // Model a stopped legacy installation while retaining its real durable job,
+  // workspace and incidental files. Preparation must not touch any of them.
+  await rename(path.join(root,'run/native'),path.join(fixture,'retained-old-native'));
+  const stateDatabase=path.join(root,'run/state/metadata.sqlite3');
+  const stateDigest=()=>readFile(stateDatabase).then(bytes=>createHash('sha256').update(bytes).digest('hex'));
+  const beforePreparation=await stateDigest();
+  const preparation=path.join(fixture,'prepared native manager');
+  const prepared=await invoke('prepare','--output',preparation,'--binary',binary,'--allow-local-build',
+    '--port',String(port),'--env-file',environment,'--companions',companionFile);
+  assert.equal(prepared.prepared,true);assert.equal(prepared.initialized,false);
+  assert.equal(prepared.activationRequired,true);
+  await assert.rejects(access(path.join(root,'run/native')),{code:'ENOENT'});
+  assert.equal(await stateDigest(),beforePreparation,'preparation leaves the existing database unchanged');
+  assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent);
+  const preparedConfig=JSON.parse(await readFile(path.join(preparation,'run/native/config.json'),'utf8'));
+  assert.equal(preparedConfig.root,initialized.root);
+  assert.equal(preparedConfig.current.file,config.current.file,'prepared runtime binds the final path');
+  await assert.rejects(runCheckedProcess(binary,['manage','start','--root',preparation],
+    {env,cwd:fixture,timeoutMs:5000,label:'Prepared configuration cannot start from its staging directory'}),
+    /NATIVE_MANAGEMENT_CONFIG_INVALID/);
+  assert.equal(await stateDigest(),beforePreparation);
+  await rename(path.join(preparation,'run/native'),path.join(root,'run/native'));
+  const activated=await invoke('start');assert.equal(activated.healthy,true);
+  assert.equal((await rpc('devbox_job_status',{job_id:job.id})).status,'succeeded');
+  assert.equal(await readFile(marker,'utf8'),'x','prepared activation does not replay durable effects');
+  assert.equal(await readFile(file,'utf8'),'native-core-effect');
+  assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent);
+  await assert.rejects(invoke('prepare','--output',path.join(fixture,'second-preparation'),
+    '--binary',binary,'--allow-local-build'),/NATIVE_EXISTING_MANAGEMENT/);
+  await invoke('stop');
+  const migratedStopBy=performance.now()+10000;
+  while((await invoke('status')).running&&performance.now()<migratedStopBy)await delay(100);
+  assert.equal((await invoke('status')).running,false);
   console.log(JSON.stringify({ok:true,platform:process.platform,startupMs,nodeOnRuntimePath:false,checks:[
     'empty-PATH native initialization/startup','unrelated download metadata survives startup and recovery',
     'live MCP file effect','duplicate suppression','restart/state preservation',
@@ -213,6 +247,8 @@ try {
     'independent owned companion lifecycle','service definition without activation','missing proof rejection',
     'failed candidate startup rollback','foreground and detached stop',
     'modified selected runtime rejected without changing restart intent',
+    'preparation does not alter existing production paths or database',
+    'staged manager cannot run before activation','prepared activation preserves durable effects without replay',
     ...(process.platform==='win32'?[]:['service signal shutdown and foreground restart without replay']),
     'persistent explicit operator stop']}));
 } finally {

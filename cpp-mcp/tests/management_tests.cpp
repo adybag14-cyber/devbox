@@ -39,6 +39,23 @@ int main() {
         rejects(
             [&] { (void)parse_management_options({"init", "--root", path_text(root), "--port", "65536"}); },
             "Invalid");
+        rejects([&] { (void)management_main({"prepare", "--root", path_text(root)}); }, "absolute --output");
+        rejects(
+            [&] { (void)management_main({"prepare", "--root", path_text(root), "--output", "relative"}); },
+            "absolute --output");
+        for (const auto& output : {root, root / "inside", root.parent_path(), root / "inside" / ".."})
+            rejects(
+                [&] {
+                    (void)management_main(
+                        {"prepare", "--root", path_text(root), "--output", path_text(output)});
+                },
+                "OVERLAPPING_ROOTS");
+        rejects(
+            [&] {
+                (void)management_main(
+                    {"prepare", "--root", path_text(root / ""), "--output", path_text(root / "inside")});
+            },
+            "OVERLAPPING_ROOTS");
         const Json config{{"environment",
                            {{"PORT", "18123"},
                             {"MCP_STATE_ROOT", "/unrelated-production"},
