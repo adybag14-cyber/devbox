@@ -6,6 +6,8 @@ std::optional<std::uint64_t> snapshot_age(const Json& value, std::string_view ke
 Json read_status_snapshot(const fs::path& path, std::uint64_t stale_ms = 150000);
 Json guardian_snapshot(const Config& config);
 Json degraded_background(const Json& snapshot);
+bool disk_space_sample_valid(const fs::space_info& space, bool query_succeeded);
+std::uint64_t disk_warning_free_bytes(std::uint64_t total);
 std::string disk_pressure(std::uint64_t free, std::uint64_t total, bool valid);
 bool cleanup_operation(std::string_view operation);
 class OperationalMonitor {

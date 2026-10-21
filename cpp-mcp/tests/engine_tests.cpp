@@ -2,6 +2,7 @@
 #include "devbox/filesystem_worker.hpp"
 #include <future>
 #include <iostream>
+#include <limits>
 using namespace devbox;
 namespace {
 void require(bool value, const std::string& message) {
@@ -119,6 +120,43 @@ int main(int argc, char** argv) {
             "constrained schema");
         config->max_wait_seconds = 85;
         {
+            constexpr std::uint64_t gib = 1024ULL * 1024 * 1024, floor = gib / 2;
+            require(disk_pressure(6037696512ULL, 48274628608ULL, true) == "normal",
+                    "observed Oracle volume with 12.5% free is not under disk pressure");
+            require(disk_warning_free_bytes(40 * gib) == 4 * gib &&
+                        disk_pressure(4 * gib, 40 * gib, true) == "normal" &&
+                        disk_pressure(4 * gib - 1, 40 * gib, true) == "warning",
+                    "small-volume warning begins below its capacity-aware byte allowance");
+            require(disk_warning_free_bytes(40 * gib + 1) == 4 * gib + 1 &&
+                        disk_pressure(4 * gib, 40 * gib + 1, true) == "warning" &&
+                        disk_pressure(4 * gib + 1, 40 * gib + 1, true) == "normal",
+                    "fractional-byte percentage thresholds round up without losing protection");
+            require(disk_warning_free_bytes(2 * gib) == floor &&
+                        disk_pressure(floor, 2 * gib, true) == "normal" &&
+                        disk_pressure(floor - 1, 2 * gib, true) == "critical",
+                    "the critical storage floor is unchanged on very small filesystems");
+            require(disk_warning_free_bytes(500 * gib) == 50 * gib &&
+                        disk_pressure(50 * gib, 500 * gib, true) == "normal" &&
+                        disk_pressure(50 * gib - 1, 500 * gib, true) == "warning" &&
+                        disk_pressure(60 * gib, 2000 * gib, true) == "warning",
+                    "large-volume absolute and percentage warnings remain protective");
+            const auto largest = std::numeric_limits<std::uint64_t>::max();
+            require(disk_pressure(largest / 20, largest, true) == "warning" &&
+                        disk_pressure(largest / 20 + 1, largest, true) == "normal",
+                    "five-percent classification is exact at the uint64_t boundary");
+            require(disk_pressure(100 * gib, 200 * gib, false) == "critical" &&
+                        disk_pressure(gib, 0, true) == "critical" &&
+                        disk_pressure(3 * gib, 2 * gib, true) == "critical",
+                    "invalid space measurements remain fail-closed");
+            const auto unknown = std::numeric_limits<std::uintmax_t>::max();
+            require(!disk_space_sample_valid({unknown, unknown, unknown}, true) &&
+                        !disk_space_sample_valid({40 * gib, 4 * gib, unknown}, true) &&
+                        !disk_space_sample_valid({unknown, 4 * gib, 4 * gib}, true) &&
+                        !disk_space_sample_valid({40 * gib, 4 * gib, 4 * gib}, false) &&
+                        disk_space_sample_valid({40 * gib, 4 * gib, 4 * gib}, true),
+                    "filesystem unknown-value sentinels are rejected at the probe boundary");
+        }
+        {
             auto probe_config = std::make_shared<Config>(*config);
             probe_config->jobs_root = root / "blocked-jobs";
             probe_config->execution_slot_root = root / "probe-slots";
@@ -148,6 +186,10 @@ int main(int argc, char** argv) {
             require(monitor.store_health()["ok"] == true &&
                         !monitor.reject_disk_work(ResourceClass::heavy, false, "cmake --build").has_value(),
                     "storage health recovers only after a successful real probe");
+            const auto health = monitor.store_health();
+            require(health["warningFreeBytes"] == disk_warning_free_bytes(json_uint(health, "totalBytes")) &&
+                        health["warningFreePercent"] == 5.0 && health["minimumFreeBytes"] == 536870912ULL,
+                    "live storage status reports the actual warning allowance and unchanged critical floor");
             usage.stop();
         }
         auto engine = std::make_shared<Engine>(config);

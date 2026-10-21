@@ -1,3 +1,4 @@
+#include "devbox/monitoring.hpp"
 #include "devbox/scheduler.hpp"
 #include "devbox/state_store.hpp"
 #include <future>
@@ -299,6 +300,28 @@ int run(int argc, char** argv) {
         require(weighted.slots == std::vector<std::size_t>{1, 0}, "weighted work progresses under pressure");
         weighted.release();
         light.release();
+        {
+            SchedulerConfig small_volume = pressure_config;
+            small_volume.root = root / "small-volume";
+            small_volume.max_concurrent = 4;
+            small_volume.heavy_capacity = 3;
+            fs::create_directory(small_volume.root);
+            write_json_atomic(small_volume.root / ".disk-pressure.json",
+                              Json{{"diskPressure", disk_pressure(6037696512ULL, 48274628608ULL, true)}});
+            ExecutionScheduler healthy_small_volume(small_volume);
+            std::vector<ExecutionLease> held;
+            for (unsigned i = 0; i < 4; ++i) {
+                auto waiting = healthy_small_volume.begin(
+                    {ExecutionKind::interactive, ResourceClass::light, 1, "small-volume-light", {}});
+                auto lease = waiting.poll();
+                require(lease.has_value(),
+                        "a healthy small volume retains its configured light-work capacity");
+                held.push_back(std::move(*lease));
+            }
+            auto excess = healthy_small_volume.begin(
+                {ExecutionKind::interactive, ResourceClass::light, 1, "small-volume-excess", {}});
+            require(!excess.poll(), "capacity-aware disk warnings must not enlarge scheduler capacity");
+        }
         SchedulerConfig age_config = fifo_config;
         std::cout << "CHECK background aging\n" << std::flush;
         age_config.root = root / "aging";

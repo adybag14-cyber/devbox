@@ -14,7 +14,14 @@ if ! apt-get update; then
   printf 'deb https://packages-cf.termux.dev/apt/termux-main stable main\n' > "$PREFIX/etc/apt/sources.list"
   apt-get update
 fi
+# The pinned bootstrap and the rolling package repository can have different
+# C++ runtime ABIs. Upgrade the whole disposable userspace before installing
+# current test tools; installing Node alone can leave an older libc++ in place.
+export DEBIAN_FRONTEND=noninteractive
+apt-get -o Dpkg::Options::="--force-confold" -y dist-upgrade
 apt-get install -y nodejs git python ripgrep curl ca-certificates
+apt-get check
+dpkg-query -W -f='${Package} ${Version}\n' libc++ nodejs
 # Complete Termux's one-time login-profile bootstrap before MCP shell probes.
 # Otherwise the first login shell includes package postinst output in stdout.
 "$PREFIX/bin/bash" -lc ':'

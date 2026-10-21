@@ -131,12 +131,24 @@ Json degraded_background(const Json& snapshot) {
             result.push_back(it.key());
     return result;
 }
+bool disk_space_sample_valid(const fs::space_info& space, bool query_succeeded) {
+    const auto unknown = std::numeric_limits<std::uintmax_t>::max();
+    return query_succeeded && space.capacity != unknown && space.available != unknown &&
+           space.capacity != 0 && space.available <= space.capacity;
+}
+std::uint64_t disk_warning_free_bytes(std::uint64_t total) {
+    // A fixed 50 GiB warning is permanently active on a smaller filesystem.
+    // Keep the hard floor and the established large-volume byte allowance.
+    const auto capacity_allowance = total / 10 + (total % 10 != 0 ? 1 : 0);
+    return std::max(minimum_free, std::min(warning_free, capacity_allowance));
+}
 std::string disk_pressure(std::uint64_t free, std::uint64_t total, bool valid) {
-    if (!valid || free < minimum_free)
+    if (!valid || !total || free > total || free < minimum_free)
         return "critical";
-    const auto percent =
-        total ? static_cast<long double>(free) * 100.0L / static_cast<long double>(total) : 0.0L;
-    return free < warning_free || percent < 5.0L ? "warning" : "normal";
+    // ceil(total / 20) preserves the strict 5% rule without multiplication
+    // overflow or floating-point rounding at large uint64_t capacities.
+    const auto percent_warning = total / 20 + (total % 20 != 0 ? 1 : 0);
+    return free < disk_warning_free_bytes(total) || free < percent_warning ? "warning" : "normal";
 }
 bool cleanup_operation(std::string_view operation) {
     const auto raw = lower(trim(operation));
@@ -206,12 +218,15 @@ void OperationalMonitor::probe_store() {
     std::error_code ec;
     const auto space = fs::space(config_->jobs_root, ec);
     const auto free = ec ? 0 : space.available, total = ec ? 0 : space.capacity;
+    const bool valid_space = disk_space_sample_valid(space, !ec);
     if (ec)
         errors.push_back(ec.message());
+    else if (!valid_space)
+        errors.push_back("disk capacity or available-space measurement is invalid");
     else if (free < minimum_free)
         errors.push_back("free disk " + std::to_string(free) + " below minimum " +
                          std::to_string(minimum_free));
-    const auto pressure = disk_pressure(free, total, !ec);
+    const auto pressure = disk_pressure(free, total, valid_space);
     Json trend = nullptr;
     std::size_t samples = 0;
     std::uint64_t window = 0;
@@ -268,7 +283,7 @@ void OperationalMonitor::probe_store() {
                {"freeBytesTrendSampleCount", samples},
                {"freeBytesTrendWindowSeconds", window},
                {"diskPressure", pressure},
-               {"warningFreeBytes", warning_free},
+               {"warningFreeBytes", disk_warning_free_bytes(total)},
                {"warningFreePercent", 5.0},
                {"minimumFreeBytes", minimum_free},
                {"error", errors.empty() ? Json() : Json(join(errors, "; "))}};
