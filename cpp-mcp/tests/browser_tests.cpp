@@ -43,11 +43,19 @@ struct ProtocolFixture {
     asio::io_context io;
     Tcp::acceptor acceptor{io, {asio::ip::make_address("127.0.0.1"), 0}};
     std::future<void> worker;
-    template <class F> explicit ProtocolFixture(F f) {
-        worker = std::async(std::launch::async, [this, f] {
+    template <class F>
+    explicit ProtocolFixture(F f, Millis handshake_delay = Millis(0), bool allow_peer_close = false) {
+        worker = std::async(std::launch::async, [this, f, handshake_delay, allow_peer_close] {
             websocket::stream<Tcp::socket> socket(io);
             acceptor.accept(socket.next_layer());
-            socket.accept();
+            std::this_thread::sleep_for(handshake_delay);
+            boost::system::error_code error;
+            socket.accept(error);
+            if (error) {
+                if (allow_peer_close)
+                    return;
+                throw boost::system::system_error(error);
+            }
             f(socket);
         });
     }
@@ -80,6 +88,68 @@ BrowserObservation initial_observation(BrowserService& browser, const Json& args
     return value;
 }
 void protocol_tests() {
+    {
+        // A newly started Chromium process can publish its endpoint before its
+        // debugger finishes a slow cold start. Exercise an actual delayed
+        // WebSocket handshake, then a CDP exchange using the production budget.
+        ProtocolFixture cold(
+            [](auto& socket) {
+                const auto request = receive(socket);
+                send(socket, {{"id", request["id"]}, {"result", {{"product", "cold-fixture"}}}});
+            },
+            Millis(3500), true);
+        BrowserProtocol fresh;
+        const auto hard = Clock::now() + Millis(12000);
+        const auto until = browser_connection_deadline(false, hard);
+        fresh.connect(cold.port(), "/devtools/browser/cold-fixture", until);
+        require(fresh.call("Browser.getVersion", Json::object(), until)["product"] == "cold-fixture",
+                "fresh owned browser survives a slow debugger handshake");
+        fresh.close();
+        cold.finish();
+    }
+    {
+        ProtocolFixture stale([](auto&) {}, Millis(3500), true);
+        BrowserProtocol shared;
+        const auto now = Clock::now();
+        const auto until = browser_connection_deadline(true, now + Millis(12000), now);
+        require(until == now + Millis(3000), "shared endpoint retains its short stale-peer bound");
+        rejects([&] { shared.connect(stale.port(), "/devtools/browser/stale-fixture", until); }, "DEADLINE");
+        require(!shared.is_connected(), "timed-out shared connection is not reusable");
+        stale.finish();
+    }
+    {
+        ProtocolFixture slow([](auto&) {}, Millis(500), true);
+        BrowserProtocol bounded;
+        const auto now = Clock::now();
+        const auto hard = now + Millis(100);
+        require(browser_connection_deadline(false, hard, now) == hard,
+                "fresh connection never extends the operation deadline");
+        rejects(
+            [&] {
+                bounded.connect(slow.port(), "/devtools/browser/bounded-fixture",
+                                browser_connection_deadline(false, hard, now));
+            },
+            "DEADLINE");
+        slow.finish();
+    }
+    {
+        ProtocolFixture slow([](auto&) {}, Millis(500), true);
+        BrowserProtocol cancelled;
+        auto cancel = std::make_shared<Cancellation>();
+        auto abort = std::async(std::launch::async, [cancel] {
+            std::this_thread::sleep_for(Millis(40));
+            cancel->cancel();
+        });
+        rejects(
+            [&] {
+                cancelled.connect(slow.port(), "/devtools/browser/cancel-fixture",
+                                  browser_connection_deadline(false, Clock::now() + Millis(12000)), cancel);
+            },
+            "cancelled");
+        require(!cancelled.is_connected(), "cancelled cold connection is not reusable");
+        abort.get();
+        slow.finish();
+    }
     const Json controls = Json::array({{{"tag", "input"},
                                         {"type", "radio"},
                                         {"name", "White"},
