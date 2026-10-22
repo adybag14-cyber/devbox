@@ -13,6 +13,9 @@ namespace devbox {
 #ifdef _WIN32
 namespace {
 constexpr std::uint32_t max_request = 64 * 1024, max_response = 16 * 1024 * 1024;
+bool peer_disconnected(DWORD error) noexcept {
+    return error == ERROR_NO_DATA || error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED;
+}
 std::wstring pipe_path(std::string_view name) {
     if (name.empty() || name.size() > 100 || !std::all_of(name.begin(), name.end(), [](char c) {
             return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-';
@@ -220,6 +223,10 @@ int run_computer_broker(std::string_view name, const std::function<bool()>& stop
     ToolContract contract(config);
     std::cout << "Native CUA desktop worker ready in session " << session << '\n' << std::flush;
     while (!stopping()) {
+        // A client can open and close the instance before ConnectNamedPipe runs.
+        // Retire that connection on every path so a lost peer does not kill the
+        // worker or leave the instance stuck in ERROR_NO_DATA for the next client.
+        ScopeExit disconnect([&] { DisconnectNamedPipe(pipe.get()); });
         ResetEvent(connected.get());
         OVERLAPPED pending{};
         pending.hEvent = connected.get();
@@ -232,14 +239,19 @@ int run_computer_broker(std::string_view name, const std::function<bool()>& stop
             if (stopping())
                 CancelIoEx(pipe.get(), &pending);
             const bool ok = GetOverlappedResult(pipe.get(), &pending, &count, TRUE) != FALSE;
+            const auto completion_error = ok ? ERROR_SUCCESS : GetLastError();
             if (stopping())
                 break;
-            if (!ok)
-                throw Error("COMPUTER_BROKER_CONNECT: " + windows_error());
+            if (!ok) {
+                if (peer_disconnected(completion_error))
+                    continue;
+                throw Error("COMPUTER_BROKER_CONNECT: " + windows_error(completion_error));
+            }
         } else if (error != ERROR_PIPE_CONNECTED && error != ERROR_SUCCESS) {
+            if (peer_disconnected(error))
+                continue;
             throw Error("COMPUTER_BROKER_CONNECT: " + windows_error(error));
         }
-        ScopeExit disconnect([&] { DisconnectNamedPipe(pipe.get()); });
         const auto cancel = std::make_shared<Cancellation>();
         const auto deadline = Clock::now() + std::chrono::seconds(30);
         try {

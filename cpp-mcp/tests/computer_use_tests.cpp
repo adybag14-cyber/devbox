@@ -96,7 +96,8 @@ struct BrokerFixture {
         SetEvent(event.get());
         require(WaitForSingleObject(process.get(), 5000) == WAIT_OBJECT_0, "broker graceful shutdown");
         DWORD status = 99;
-        require(GetExitCodeProcess(process.get(), &status) && status == 0, "broker exit status");
+        require(GetExitCodeProcess(process.get(), &status) != FALSE, "read owned broker exit status");
+        require(status == 0, "broker exit status: " + std::to_string(status));
     }
 };
 struct Fixture {
