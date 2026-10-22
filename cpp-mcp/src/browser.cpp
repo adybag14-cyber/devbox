@@ -15,6 +15,13 @@
 #endif
 
 namespace devbox {
+Clock::time_point browser_connection_deadline(bool shared, Clock::time_point operation_deadline,
+                                              Clock::time_point now) {
+    // A fresh process may publish DevToolsActivePort before its debugger is
+    // responsive under cold-start load. Reused endpoints keep the short stale
+    // peer bound; neither case can extend the caller's overall allowance.
+    return std::min(operation_deadline, now + Millis(shared ? 3000 : 10000));
+}
 bool browser_click_controls_match(const Json& previous, const Json& current, double x, double y) {
     if (previous == current)
         return true;
@@ -878,8 +885,9 @@ struct BrowserService::State {
             diagnose("endpoint-file-ready");
         }
         session->protocol = std::make_unique<BrowserProtocol>();
-        // A stale endpoint must not consume the entire navigation allowance.
-        const auto connection_deadline = std::min(deadline, Clock::now() + Millis(3000));
+        // Keep stale shared endpoints bounded while allowing a fresh owned
+        // debugger to finish starting within this same operation deadline.
+        const auto connection_deadline = browser_connection_deadline(session->shared, deadline);
         try {
             connect_browser(*session->protocol, endpoint_profile, connection_deadline, cancel);
         } catch (const Cancelled&) {
