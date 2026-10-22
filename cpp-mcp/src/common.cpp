@@ -887,17 +887,22 @@ HttpResult http_request(std::string_view method, std::string_view url, std::stri
     if (!handle)
         throw Error("HTTP allocation failed");
     const auto uri = std::string(url), verb = std::string(method);
-    curl_slist* raw_headers = nullptr;
-    for (auto it = headers.begin(); it != headers.end(); ++it)
-        raw_headers =
-            curl_slist_append(raw_headers, (it.key() + ": " + it.value().get<std::string>()).c_str());
-    const std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> header_list(raw_headers,
-                                                                                  curl_slist_free_all);
+    std::unique_ptr<curl_slist, decltype(&curl_slist_free_all)> header_list(nullptr, curl_slist_free_all);
+    for (auto it = headers.begin(); it != headers.end(); ++it) {
+        auto* appended =
+            curl_slist_append(header_list.get(), (it.key() + ": " + it.value().get<std::string>()).c_str());
+        if (!appended)
+            throw Error("HTTP header allocation failed");
+        // Append failure preserves the old list. Keep it owned across both
+        // allocation failures and exceptions while converting later headers.
+        (void)header_list.release();
+        header_list.reset(appended);
+    }
     curl_easy_setopt(handle.get(), CURLOPT_URL, uri.c_str());
     if (direct_connection)
         curl_easy_setopt(handle.get(), CURLOPT_PROXY, "");
     curl_easy_setopt(handle.get(), CURLOPT_CUSTOMREQUEST, verb.c_str());
-    curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, raw_headers);
+    curl_easy_setopt(handle.get(), CURLOPT_HTTPHEADER, header_list.get());
     curl_easy_setopt(handle.get(), CURLOPT_NOSIGNAL, 1L);
     curl_easy_setopt(handle.get(), CURLOPT_TIMEOUT_MS,
                      static_cast<long>(std::clamp<std::int64_t>(timeout.count(), 1, 2147483647)));
