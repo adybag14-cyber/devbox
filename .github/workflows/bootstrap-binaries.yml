@@ -9,8 +9,27 @@ permissions:
   contents: read
 
 jobs:
+  preflight:
+    name: Validate release version before certification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Require a matching source version for release tags
+        shell: bash
+        run: |
+          version=$(tr -d '\r\n' < cpp-bootstrap/VERSION)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid bootstrap version'; exit 1; }
+          if [[ "$GITHUB_REF_TYPE" == 'tag' && "$GITHUB_REF_NAME" != "bootstrap-v$version" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match source version $version"
+            exit 1
+          fi
+
   certify:
     name: Certify every C++ runtime and installer
+    needs: preflight
     permissions:
       contents: read
       id-token: write
