@@ -28,7 +28,7 @@ int run(int argc, char** argv) {
     JobStore jobs(config);
     const auto store = jobs.index();
     constexpr std::size_t records = 512, retained = 64;
-    const auto expected_scanned = argc == 3 ? std::stoul(argv[2]) : records;
+    const auto expected_scanned = argc == 3 ? std::stoul(argv[2]) : retained;
     if (expected_scanned != records && expected_scanned != retained)
         throw Error("Expected scan count must match the full or maintenance-only fixture");
     std::uint64_t expected_bytes = 0;
