@@ -241,22 +241,24 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
         store->get("maintenance", "job-usage")
             .value_or(StateRecord{"maintenance", "job-usage", "operator", "", "partial", 0, Json::object()});
     const auto cursor = json_string(meter.data, "after");
-    const auto page = store->list(StateQuery{"job",
-                                             "operator",
-                                             {},
-                                             {},
-                                             cursor.empty() ? std::nullopt : std::optional(cursor),
-                                             std::clamp<std::size_t>(maximum, 1, 64)});
+    auto page = store->list(StateQuery{"job",
+                                       "operator",
+                                       {},
+                                       {},
+                                       cursor.empty() ? std::nullopt : std::optional(cursor),
+                                       std::clamp<std::size_t>(maximum, 1, 64),
+                                       true});
     std::map<std::string, StateRecord, std::less<>> sampled_usage;
     if (!page.records.empty()) {
         try {
-            // Reuse the existing bounded list protocol. The usage index may be
-            // sparse or shifted relative to jobs, so missing IDs still use get.
+            // Most candidates retain terminal artifacts. Skip settled absent
+            // charges when prefetching; active, missing or shifted IDs still use
+            // the revision-checked per-ID fallback below.
             const auto usage_page =
                 store->list(StateQuery{"job_usage",
                                        {},
                                        {},
-                                       {},
+                                       "retained_terminal",
                                        cursor.empty() ? std::nullopt : std::optional(cursor),
                                        page.records.size()});
             for (const auto& usage : usage_page.records)
@@ -324,7 +326,7 @@ Json JobStore::indexed_maintenance(std::size_t maximum, bool quota, const Cancel
         }
     }
     mutations.reserve(page.records.size() * 2 + 1);
-    for (auto record : page.records) {
+    for (auto& record : page.records) {
         const auto before_bytes = bytes, before_retained = retained;
         const auto before_mutations = mutations.size();
         if (cancel)

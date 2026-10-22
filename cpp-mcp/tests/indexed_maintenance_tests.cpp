@@ -34,7 +34,7 @@ void batch_bounds(const fs::path& root) {
         // charges outside that page must be loaded individually, not replaced
         // with a default charge or a neighbouring row.
         const StateMutation extra{
-            {"job_usage", "job-bounds-09999", "operator", "", "unknown", 0, Json{{"bytes", 0}}}, 0};
+            {"job_usage", "job-bounds-09999", "operator", "", "retained_terminal", 0, Json{{"bytes", 0}}}, 0};
         store->apply({&extra, 1});
         const auto second = *store->get("job_usage", "job-bounds-10001");
         const auto result = jobs.reconcile_maintenance(2);
@@ -309,6 +309,18 @@ int main(int argc, char** argv) {
                 "pruning logs retains admitted job and operation identity");
         require(initial.get_status("job-test-10000")["artifactsAvailable"] == false,
                 "pruned terminal metadata remains readable and explicitly lacks artifacts");
+        {
+            const auto pruned_usage = *store->get("job_usage", "job-test-10000");
+            require(pruned_usage.status == "absent" && json_uint(pruned_usage.data, "bytes") == 0,
+                    "committed pruning establishes an absent zero-byte charge");
+            const auto settled = restarted.enforce_store_quota();
+            const auto again = *store->get("job_usage", pruned_usage.id);
+            require(json_uint(settled, "errors") == 0 && json_uint(settled, "scanned") <= 4 &&
+                        again.revision == pruned_usage.revision && again.data == pruned_usage.data &&
+                        store->count("job") == 140 && initial.operation_receipt("job-test-10000").has_value(),
+                    "settled pruning avoids rescanning and rewriting historical zero charges without losing "
+                    "identities");
+        }
         require(fs::exists(config->jobs_root / "job-unindexed-poison"),
                 "unindexed files are not adopted or deleted");
         {

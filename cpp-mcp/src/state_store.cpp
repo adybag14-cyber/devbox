@@ -223,10 +223,10 @@ class SqliteStore final : public StateStore {
     std::uint64_t generation_ = 0;
     std::string journal_mode_ = "wal";
     mutable int last_query_steps_ = 0;
-    // Exactly fifteen trusted SELECT shapes: get/count/events, eight list filters,
-    // and four capped-count filters. Slots are borrowed under mutex_, not shared
-    // across SQLite connections. At most 15 * 64 KiB of compiled statements.
-    mutable std::array<sqlite3_stmt*, 15> read_statements_{};
+    // Sixteen trusted SELECT shapes: get/count/events, eight list filters,
+    // four capped-count filters and the maintenance candidate page. Slots are
+    // borrowed under mutex_, not shared across SQLite connections.
+    mutable std::array<sqlite3_stmt*, 16> read_statements_{};
     bool reuse_read_statements_ = true;
     sqlite3_stmt** read_slot(std::size_t slot) const {
         return reuse_read_statements_ ? &read_statements_.at(slot) : nullptr;
@@ -253,6 +253,42 @@ class SqliteStore final : public StateStore {
                            row.text(4),
                            row.integer(5),
                            Json::parse(row.text(6))};
+    }
+    void settle_maintenance_candidate(const StateRecord& value) {
+        const auto flag = [](const Json& data, const char* name) {
+            if (!data.is_object())
+                return false;
+            const auto found = data.find(name);
+            return found != data.end() && found->is_boolean() && found->get<bool>();
+        };
+        const auto pruned = [&](std::string_view status, const Json& data) {
+            return (status == "succeeded" || status == "failed" || status == "cancelled" ||
+                    status == "timed_out" || status == "interrupted") &&
+                   flag(data, "artifacts_pruned");
+        };
+        const auto absent = [&](std::string_view status, const Json& data) {
+            if (status != "absent" || !data.is_object() || !flag(data, "compacted"))
+                return false;
+            const auto bytes = data.find("bytes");
+            return bytes != data.end() && bytes->is_number_integer() && *bytes == 0;
+        };
+        const bool job = value.kind == "job";
+        if (job ? !pruned(value.status, value.data)
+                : (value.kind != "job_usage" || !absent(value.status, value.data)))
+            return;
+        Statement paired(db_, "SELECT principal,status,data FROM records WHERE kind=? AND id=?");
+        paired.bind(1, job ? "job_usage" : "job");
+        paired.bind(2, value.id);
+        if (!paired.step() || paired.text(0) != value.principal)
+            return;
+        const auto data = Json::parse(paired.text(2));
+        if (job ? !absent(paired.text(1), data) : !pruned(paired.text(1), data))
+            return;
+        // Only the derived index is retired. Record identities, revisions and
+        // operation receipts remain intact, in this same revision-checked transaction.
+        Statement erase(db_, "DELETE FROM job_maintenance_candidates WHERE id=?");
+        erase.bind(1, value.id);
+        erase.step();
     }
 
   public:
@@ -382,6 +418,28 @@ PRAGMA user_version=2;
             }
             sql("BEGIN IMMEDIATE;");
             ScopeExit rollback([&] { sqlite3_exec(db_, "ROLLBACK", nullptr, nullptr, nullptr); });
+            // No SQL JSON extension is needed. Older writers conservatively
+            // requeue changed jobs through these ordinary SQL triggers. Existing
+            // records receive one bounded-page reconciliation after this upgrade.
+            const bool create_candidates = scalar("SELECT count(*) FROM sqlite_schema WHERE type='table' AND "
+                                                  "name='job_maintenance_candidates'") == 0;
+            sql("CREATE TABLE IF NOT EXISTS job_maintenance_candidates(id TEXT PRIMARY KEY,principal TEXT "
+                "NOT NULL) WITHOUT ROWID;"
+                "CREATE INDEX IF NOT EXISTS job_maintenance_principal ON "
+                "job_maintenance_candidates(principal,id);"
+                "CREATE TRIGGER IF NOT EXISTS job_maintenance_insert AFTER INSERT ON records WHEN new.kind "
+                "IN('job','job_usage') BEGIN "
+                "INSERT INTO job_maintenance_candidates SELECT id,principal FROM records WHERE kind='job' "
+                "AND id=new.id "
+                "ON CONFLICT(id) DO UPDATE SET principal=excluded.principal; END;"
+                "CREATE TRIGGER IF NOT EXISTS job_maintenance_update AFTER UPDATE ON records WHEN new.kind "
+                "IN('job','job_usage') BEGIN "
+                "INSERT INTO job_maintenance_candidates SELECT id,principal FROM records WHERE kind='job' "
+                "AND id=new.id "
+                "ON CONFLICT(id) DO UPDATE SET principal=excluded.principal; END;");
+            if (create_candidates)
+                sql("INSERT INTO job_maintenance_candidates SELECT id,principal FROM records WHERE "
+                    "kind='job';");
             generation_ = scalar("SELECT generation FROM control WHERE singleton=1") + 1;
             if (generation_ > max_safe_integer)
                 throw Error("STATE_GENERATION_EXHAUSTED");
@@ -425,6 +483,9 @@ PRAGMA user_version=2;
             key(*query.after, true);
         if (!query.limit || query.limit > 100)
             throw Error("STATE_PAGE_LIMIT");
+        if (query.maintenance_candidates &&
+            (query.kind != "job" || !query.principal || query.group || query.status))
+            throw Error("STATE_MAINTENANCE_QUERY_SHAPE");
         std::lock_guard lock(mutex_);
         // Choose the covering filter prefix explicitly. Statistics can lag behind rapid admission;
         // planner guesses must not turn a small page into a scan of unrelated owners/groups.
@@ -435,19 +496,29 @@ PRAGMA user_version=2;
             index += index.empty() ? "records_group" : "_group";
         if (query.status)
             index += index.empty() ? "records_status" : "_status";
-        std::string sql = "SELECT kind,id,principal,group_id,status,revision,data FROM records";
-        if (!index.empty())
-            sql += " INDEXED BY " + index;
-        sql += " WHERE kind=? AND id>?";
-        for (const auto& [value, column] :
-             {std::pair{query.principal, "principal"}, {query.group, "group_id"}, {query.status, "status"}})
-            if (value) {
-                key(*value, true);
-                sql += std::string(" AND ") + column + "=?";
-            }
-        sql += " ORDER BY id LIMIT ?";
+        std::string sql;
+        if (query.maintenance_candidates) {
+            key(*query.principal, true);
+            sql = "SELECT r.kind,r.id,r.principal,r.group_id,r.status,r.revision,r.data "
+                  "FROM job_maintenance_candidates AS c INDEXED BY job_maintenance_principal "
+                  "CROSS JOIN records AS r WHERE r.kind=? AND c.id>? AND c.principal=? "
+                  "AND r.id=c.id AND r.principal=c.principal ORDER BY c.id LIMIT ?";
+        } else {
+            sql = "SELECT kind,id,principal,group_id,status,revision,data FROM records";
+            if (!index.empty())
+                sql += " INDEXED BY " + index;
+            sql += " WHERE kind=? AND id>?";
+            for (const auto& [value, column] : {std::pair{query.principal, "principal"},
+                                                {query.group, "group_id"},
+                                                {query.status, "status"}})
+                if (value) {
+                    key(*value, true);
+                    sql += std::string(" AND ") + column + "=?";
+                }
+            sql += " ORDER BY id LIMIT ?";
+        }
         const auto shape = (query.principal ? 1U : 0U) | (query.group ? 2U : 0U) | (query.status ? 4U : 0U);
-        Statement row(db_, sql, read_slot(3 + shape));
+        Statement row(db_, sql, read_slot(query.maintenance_candidates ? 15 : 3 + shape));
         row.bind(1, query.kind);
         row.bind(2, query.after.value_or(""));
         int at = 3;
@@ -614,6 +685,7 @@ PRAGMA user_version=2;
             write.bind(6, revision + 1);
             write.bind(7, data);
             write.step();
+            settle_maintenance_candidate(value);
             if (transition_hook_)
                 transition_hook_("mutation_written");
         }
@@ -681,6 +753,7 @@ PRAGMA user_version=2;
                     previous.status != value.status || previous.revision != value.revision ||
                     canonical_json(previous.data) != canonical_json(value.data))
                     throw Error("STATE_IMPORT_CONFLICT");
+                settle_maintenance_candidate(value);
                 continue;
             }
             Statement write(db_, "INSERT INTO records VALUES(?,?,?,?,?,?,?)");
@@ -690,6 +763,7 @@ PRAGMA user_version=2;
             write.bind(6, value.revision);
             write.bind(7, data);
             write.step();
+            settle_maintenance_candidate(value);
         }
         sql("COMMIT;");
         rollback.disarm();

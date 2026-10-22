@@ -10,8 +10,8 @@ int run(int argc, char** argv) {
         return run_filesystem_worker();
     if (argc == 3 && std::string_view(argv[1]) == "--state-coordinator")
         return run_state_coordinator(path_from_utf8(argv[2]), [] { return false; });
-    if (argc != 2)
-        throw Error("Supply a new absolute fixture directory");
+    if (argc != 2 && argc != 3)
+        throw Error("Supply a new absolute fixture directory and optional expected scan count");
     const auto root = path_from_utf8(argv[1]);
     if (!root.is_absolute() || !fs::create_directory(root))
         throw Error("Fixture path must be new and absolute");
@@ -28,6 +28,9 @@ int run(int argc, char** argv) {
     JobStore jobs(config);
     const auto store = jobs.index();
     constexpr std::size_t records = 512, retained = 64;
+    const auto expected_scanned = argc == 3 ? std::stoul(argv[2]) : records;
+    if (expected_scanned != records && expected_scanned != retained)
+        throw Error("Expected scan count must match the full or maintenance-only fixture");
     std::uint64_t expected_bytes = 0;
     for (std::size_t i = 0; i < records; ++i) {
         const auto id = "job-profile-" + std::to_string(10000 + i);
@@ -48,7 +51,7 @@ int run(int argc, char** argv) {
             store->apply({&row, 1});
         }
         const StateMutation usage{
-            {"job_usage", id, "operator", "", "unknown", 0,
+            {"job_usage", id, "operator", "", i % 8 == 0 ? "unknown" : "absent", 0,
              Json{{"bytes", 0}, {"compacted", true}, {"checked_at", "2000-01-01T00:00:00Z"}}},
             0};
         store->apply({&usage, 1});
@@ -75,7 +78,7 @@ int run(int argc, char** argv) {
         } while (json_bool(result, "quotaCyclePending"));
         const auto stopped = Clock::now();
         const auto after = allocator_counters();
-        if (scanned != records || json_uint(result, "storeBytes") != expected_bytes ||
+        if (scanned != expected_scanned || json_uint(result, "storeBytes") != expected_bytes ||
             json_uint(result, "terminalRetained") != retained || !json_bool(result, "accountingComplete") ||
             store->count("job") != records || store->count("job_usage", {}, "retained_terminal") != retained)
             throw Error("Maintenance state/accounting oracle failed");
