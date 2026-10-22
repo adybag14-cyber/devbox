@@ -215,10 +215,13 @@ class Coordinator final : public McpBackend {
                                 optional(payload, "group"), json_strings(payload, "statuses"),
                                 static_cast<std::size_t>(json_uint(payload, "limit", 256))});
         if (op == "list") {
-            StateQuery query{
-                json_string(payload, "kind"), optional(payload, "principal"),
-                optional(payload, "group"),   optional(payload, "status"),
-                optional(payload, "after"),   static_cast<std::size_t>(json_uint(payload, "limit", 50))};
+            StateQuery query{json_string(payload, "kind"),
+                             optional(payload, "principal"),
+                             optional(payload, "group"),
+                             optional(payload, "status"),
+                             optional(payload, "after"),
+                             static_cast<std::size_t>(json_uint(payload, "limit", 50)),
+                             json_bool(payload, "maintenance_candidates")};
             const auto page = store_->list(query);
             Json records = Json::array();
             for (const auto& value : page.records)
@@ -407,6 +410,8 @@ class StateClient final : public StateStore {
     }
     StatePage list(const StateQuery& query) const override {
         Json request{{"op", "list"}, {"kind", query.kind}, {"limit", query.limit}};
+        if (query.maintenance_candidates)
+            request["maintenance_candidates"] = true;
         for (const auto& [key, value] : {std::pair{"principal", query.principal},
                                          {"group", query.group},
                                          {"status", query.status},

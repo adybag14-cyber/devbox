@@ -1,3 +1,4 @@
+#include "devbox/allocator.hpp"
 #include "devbox/config.hpp"
 #include "devbox/native.hpp"
 #include "devbox/result.hpp"
@@ -75,6 +76,12 @@ int main() {
         require(sanitize_utf8(std::string("a\xf0\x9f", 3)) == "a�", "partial UTF8 sequence");
         require(utc_from_millis(0) == "1970-01-01T00:00:00.000Z", "UTC formatting");
         require(parse_utc("1970-01-01T01:00:00.125+01:00") == 125, "UTC offset parse");
+        for (const auto malformed : {"2026-10-22T12-53-00Z", "2026-10-22T12:53-00Z", "2026-10-22T12:53:00.Z",
+                                     "2026-10-22T12:53:00.+01:00"})
+            require(!parse_utc(malformed), "UTC parsing rejects malformed separators and empty fractions");
+        require(parse_utc("1970-01-01t00:00:00.123456789z") == 123 &&
+                    parse_utc("1970-01-01 00:00:00-01:00") == 3600000,
+                "valid extended precision and existing case/offset compatibility remain supported");
         auto out = shape_output("a\nb\nc\n", "tail", 1000, 2);
         require(out.text == "... head lines omitted ...\nb\nc\n" && out.original_lines == 3, "line shaping");
         out = shape_output(std::string(500, 'a'), "summary", 120, 0);
@@ -102,6 +109,24 @@ int main() {
             ensure_directory(nested);
             require(read_file(nested / "preserved.txt") == "preserve",
                     "existing directory fast path preserves contents");
+            {
+                std::string contents(131087, '\0');
+                for (std::size_t i = 0; i < contents.size(); ++i)
+                    contents[i] = static_cast<char>((i * 37) & 255);
+                const auto binary = root / "bounded-read.bin";
+                write_file(binary, contents);
+                for (const std::size_t offset : {0U, 4093U, 4096U, 65530U, 65536U, 131087U, 131096U})
+                    for (const std::size_t limit : {0U, 1U, 16U, 4095U, 4096U, 4097U, 65536U, 200000U})
+                        require(
+                            read_file_range(binary, offset, limit) ==
+                                (offset < contents.size() ? contents.substr(offset, limit) : std::string()),
+                            "bounded reads preserve binary bytes, offsets, chunk boundaries and EOF");
+                const auto before = allocator_counters();
+                const auto small = read_file(nested / "preserved.txt", 4096);
+                const auto after = allocator_counters();
+                require(small == "preserve" && after.allocated - before.allocated < 16384,
+                        "small reads do not allocate a full-size transfer scratch buffer");
+            }
             bool rejected_directory = false;
             try {
                 ensure_directory(nested / "preserved.txt");

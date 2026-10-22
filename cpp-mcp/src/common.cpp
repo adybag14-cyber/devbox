@@ -382,7 +382,7 @@ std::string utc_now() {
 }
 std::optional<std::int64_t> parse_utc(std::string_view value) {
     try {
-        if (value.size() < 20 || value[4] != '-' || value[7] != '-' ||
+        if (value.size() < 20 || value[4] != '-' || value[7] != '-' || value[13] != ':' || value[16] != ':' ||
             (value[10] != 'T' && value[10] != 't' && value[10] != ' '))
             return std::nullopt;
         const std::chrono::year_month_day date{
@@ -401,6 +401,8 @@ std::optional<std::int64_t> parse_utc(std::string_view value) {
         std::size_t p = 19;
         if (p < value.size() && value[p] == '.') {
             ++p;
+            if (p == value.size() || value[p] < '0' || value[p] > '9')
+                return std::nullopt;
             int place = 100;
             while (p < value.size() && value[p] >= '0' && value[p] <= '9') {
                 if (place) {
@@ -586,6 +588,17 @@ std::string read_file(const fs::path& path, std::size_t limit) {
 std::string read_file_range(const fs::path& path, std::uint64_t offset, std::size_t limit) {
     if (offset > static_cast<std::uint64_t>(INT64_MAX))
         throw Error("File offset exceeds supported range");
+    // Most operational reads are small journals. Avoid a 64 KiB allocation
+    // for each one, while retaining large transfer chunks after the first 4 KiB.
+    std::array<char, 4096> small_buffer;
+    std::unique_ptr<char[]> large_buffer;
+    const auto next_buffer = [&](std::size_t consumed) {
+        if (!large_buffer && consumed >= small_buffer.size() && limit - consumed > small_buffer.size())
+            large_buffer = std::make_unique_for_overwrite<char[]>(65536);
+        return std::span<char>(
+            large_buffer ? large_buffer.get() : small_buffer.data(),
+            std::min<std::size_t>(large_buffer ? 65536 : small_buffer.size(), limit - consumed));
+    };
 #ifdef _WIN32
     NativeHandle file(CreateFileW(path.c_str(), GENERIC_READ,
                                   FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -600,9 +613,9 @@ std::string read_file_range(const fs::path& path, std::uint64_t offset, std::siz
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category());
     }
     std::string out;
-    std::vector<char> buffer(65536);
     while (out.size() < limit) {
-        const auto wanted = static_cast<DWORD>(std::min(buffer.size(), limit - out.size()));
+        const auto buffer = next_buffer(out.size());
+        const auto wanted = static_cast<DWORD>(buffer.size());
         DWORD count = 0;
         if (!ReadFile(file.get(), buffer.data(), wanted, &count, nullptr))
             throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
@@ -622,9 +635,9 @@ std::string read_file_range(const fs::path& path, std::uint64_t offset, std::siz
             throw Error("Cannot seek " + path_text(path));
     }
     std::string out;
-    std::vector<char> buffer(65536);
     while (file && out.size() < limit) {
-        const auto n = std::min(buffer.size(), limit - out.size());
+        const auto buffer = next_buffer(out.size());
+        const auto n = buffer.size();
         file.read(buffer.data(), static_cast<std::streamsize>(n));
         out.append(buffer.data(), static_cast<std::size_t>(file.gcount()));
     }

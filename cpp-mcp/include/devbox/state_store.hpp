@@ -20,6 +20,10 @@ struct StateQuery {
     std::string kind;
     std::optional<std::string> principal, group, status, after;
     std::size_t limit = 50;
+    // Maintenance skips settled pruning/accounting pairs. Older writers and
+    // additive upgrades can conservatively requeue a pair for one reconciliation.
+    // Ordinary history, counts and receipt lookups retain every identity.
+    bool maintenance_candidates = false;
 };
 struct StatePage {
     std::vector<StateRecord> records;
