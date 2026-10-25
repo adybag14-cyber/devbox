@@ -79,3 +79,16 @@ Publishing or building these changes does not itself migrate a production
 installation. Oracle cutover must preserve its state/workspace paths, Chromium
 sandbox and authentication, validate its particular OS/browser libraries, drain
 active work, retain rollback and verify the final public MCP route.
+
+The isolated Oracle qualification used the native service profile in
+[`deploy/oracle-native`](../deploy/oracle-native/README.md), a separate database,
+workspace, display and loopback port. Actual MCP calls exercised bundled `rg`,
+live Apple UK HTML/aggregate offer extraction, native point scrolling (independent
+DOM position changed from 0 to 360), URL typing and HTML artifact reads. Manager
+and frontend crash recovery retained the desktop. The host-side processes ran
+as UID 996 with no capabilities and `NoNewPrivs`; Chromium additionally used
+private user/PID namespaces and seccomp. Its namespace zygote's capability was
+confined to a one-user mapping, not the host namespace. Actual kernel limits were
+576 MiB physical and 1 GiB combined RAM/swap. The final graceful stop took 3.14
+seconds and left no owned process or mounted desktop runtime. This canary proof
+does not claim production activation or a selected product's checkout price.
