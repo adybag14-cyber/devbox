@@ -40,6 +40,10 @@ struct ProcessOptions {
     std::optional<Environment> env;
     std::optional<Millis> timeout;
     Millis termination_grace{3000};
+    // POSIX TERM-to-KILL interval: internal supervisors may need time to stop their own children.
+    // Generic tool jobs retain the short 250 ms escalation window.
+    Millis termination_signal_grace{250};
+    bool linux_parent_bound = false;
     std::optional<std::size_t> max_capture_chars;
     std::optional<std::string> input;
     std::function<void(OutputStream, std::string_view)> on_output;
@@ -87,7 +91,8 @@ Json process_probe_metrics();
 std::optional<std::uint64_t> process_instance(std::uint32_t pid);
 bool process_matches_instance(std::uint32_t pid, std::optional<std::uint64_t> expected);
 // Only callers holding a stored process identity may request cross-process termination.
-bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expected);
+bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expected,
+                            Millis signal_grace = Millis(250));
 ProcessOutput spawn_process(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options = {}, const Cancel& cancel = {});
 std::uint32_t spawn_detached(const fs::path& file, const std::vector<std::string>& args, const fs::path& cwd,

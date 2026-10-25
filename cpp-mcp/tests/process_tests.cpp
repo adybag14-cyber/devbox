@@ -2,6 +2,7 @@
 #include "devbox/posix_process.hpp"
 #include "devbox/process.hpp"
 #include "devbox/scoped_thread.hpp"
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -17,17 +18,26 @@
 #endif
 #endif
 using namespace devbox;
+#ifndef _WIN32
+volatile std::sig_atomic_t graceful_stop = 0;
+void graceful_signal(int) {
+    graceful_stop = 1;
+}
+#endif
 void require(bool condition, const char* message) {
     if (!condition)
         throw Error(message);
 }
 int child(int argc, char** argv) {
     const std::string mode = argc > 2 ? argv[2] : "";
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     if (mode == "abrupt-owner" && argc == 4) {
         Json owned;
         ProcessOptions options;
         options.timeout = Millis(5000);
+#ifdef __linux__
+        options.linux_parent_bound = true;
+#endif
         options.on_pid = [&](std::uint32_t pid) {
             owned = Json{{"pid", pid}, {"instance", *process_instance(pid)}};
         };
@@ -39,6 +49,17 @@ int child(int argc, char** argv) {
         };
         spawn_process(path_text(executable_path()), {"--child", "sleep"}, options);
         return 1;
+    }
+#endif
+#ifndef _WIN32
+    if (mode == "graceful-cleanup" && argc == 4) {
+        std::signal(SIGTERM, graceful_signal);
+        std::cout << "ready" << std::flush;
+        while (!graceful_stop)
+            std::this_thread::sleep_for(Millis(5));
+        std::this_thread::sleep_for(Millis(500));
+        write_file(path_from_utf8(argv[3]), "owned cleanup complete");
+        return 0;
     }
 #endif
     if (mode == "echo") {
@@ -369,7 +390,7 @@ int test_main(int argc, char** argv) {
                     "empty zero capture is not truncated");
         }
         const auto self = path_text(executable_path());
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
         {
             const auto receipt = root / "orphan-fixture.json";
             const auto owner =
@@ -394,6 +415,29 @@ int test_main(int argc, char** argv) {
                 std::this_thread::sleep_for(Millis(5));
             require(!process_matches_instance(pid, instance),
                     "foreground child is terminated when its owner exits abruptly");
+        }
+#endif
+#ifndef _WIN32
+        {
+            const auto receipt = root / "graceful-cleanup.txt";
+            auto cancellation = std::make_shared<Cancellation>();
+            ProcessOptions graceful;
+            graceful.timeout = Millis(4000);
+            graceful.termination_signal_grace = Millis(1000);
+            graceful.termination_grace = Millis(2500);
+            graceful.on_output = [&](OutputStream, std::string_view text) {
+                if (text.find("ready") != text.npos)
+                    cancellation->cancel();
+            };
+            bool stopped = false;
+            try {
+                (void)spawn_process(self, {"--child", "graceful-cleanup", path_text(receipt)}, graceful,
+                                    cancellation);
+            } catch (const ProcessError& error) {
+                stopped = error.aborted;
+            }
+            require(stopped && fs::exists(receipt),
+                    "Supervisor TERM grace must allow owned child cleanup beyond 250 ms");
         }
 #endif
         {

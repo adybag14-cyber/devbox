@@ -293,6 +293,7 @@ struct Child {
     std::atomic<std::uint32_t> pid{0};
     std::optional<std::uint64_t> instance;
     bool adopted = false;
+    Millis stop_grace{250};
     std::string generation;
     ~Child() {
         if (task.valid()) {
@@ -310,11 +311,11 @@ struct Child {
     }
     void stop() {
         if (adopted) {
-            if (alive() && !terminate_process_tree(pid, instance))
+            if (alive() && !terminate_process_tree(pid, instance, stop_grace))
                 throw Error("NATIVE_OWNED_STOP_UNCONFIRMED");
         } else if (task.valid()) {
             cancel->cancel();
-            if (task.wait_for(Millis(10000)) != std::future_status::ready)
+            if (task.wait_for(Millis(15000)) != std::future_status::ready)
                 throw Error("NATIVE_CHILD_STOP_TIMED_OUT");
             task.get();
         }
@@ -328,6 +329,7 @@ struct Child {
 std::unique_ptr<Child> launch_owned(std::string file, std::vector<std::string> arguments,
                                     ProcessOptions options, std::string generation = {}) {
     auto child = std::make_unique<Child>();
+    child->stop_grace = options.termination_signal_grace;
     child->generation = generation.empty() ? uuid() : std::move(generation);
     auto* state = child.get();
     options.on_pid = [state](std::uint32_t pid) { state->pid.store(pid); };
@@ -354,6 +356,8 @@ std::unique_ptr<Child> launch(const fs::path& root, const Json& config, const Js
     options.cwd = root;
     options.env = managed_environment(root, config, generation);
     options.max_capture_chars = 16384;
+    options.termination_signal_grace = Millis(2000);
+    options.termination_grace = Millis(5000);
     options.allow_durable_children = true;
     options.on_output = [root](OutputStream stream, std::string_view text) {
         log(root, std::string(stream == OutputStream::stderr_stream ? "mcp stderr: " : "mcp stdout: ") +
@@ -398,6 +402,7 @@ class Companions {
                 entry.child->instance = management_instance(identity);
                 entry.child->generation = json_string(identity, "generation");
                 entry.child->adopted = true;
+                entry.child->stop_grace = Millis(8000);
             }
             entries_.push_back(std::move(entry));
         }
@@ -446,6 +451,8 @@ class Companions {
                     for (const auto& [key, data] : configured.items())
                         options.env->insert_or_assign(key, data.get<std::string>());
                     options.max_capture_chars = 4096;
+                    options.termination_signal_grace = Millis(8000);
+                    options.termination_grace = Millis(10000);
                     options.on_output = [this, name](OutputStream, std::string_view data) {
                         log(root_, name + ": " + std::string(data));
                     };
@@ -608,6 +615,7 @@ int supervise(const ManagementOptions& options) {
         child->instance = management_instance(previous);
         child->generation = json_string(previous, "generation");
         child->adopted = true;
+        child->stop_grace = Millis(2000);
     }
     auto publish = [&] {
         state["updatedAt"] = utc_now();

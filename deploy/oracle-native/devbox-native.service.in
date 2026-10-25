@@ -1,0 +1,61 @@
+[Unit]
+Description=Devbox native C++23 Fallback
+After=network-online.target @RUNTIME_MOUNT_UNIT@
+Wants=network-online.target
+Requires=@RUNTIME_MOUNT_UNIT@
+
+[Service]
+Type=simple
+User=devbox
+Group=devbox
+RootDirectory=@RUNTIME_ROOT@
+MountAPIVFS=yes
+WorkingDirectory=/opt/devbox
+BindReadOnlyPaths=@INSTALL_ROOT@:/opt/devbox
+BindReadOnlyPaths=@ASSETS_ROOT@:/assurance
+BindReadOnlyPaths=/etc/resolv.conf:/etc/resolv.conf
+BindPaths=@STATE_ROOT@:/opt/devbox/run
+BindPaths=@WORKSPACE_ROOT@:/workspace
+BindPaths=@DESKTOP_ROOT@:/tmp/devbox-desktop
+TemporaryFileSystem=/tmp:rw,nosuid,nodev,size=96M,mode=1777
+TemporaryFileSystem=/dev/shm:rw,nosuid,nodev,size=96M,mode=1777
+ProtectSystem=strict
+ProtectHome=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+# systemd 245's ProtectControlGroups remount overrides nested write exceptions.
+# Keep the hierarchy read-only, with only this root-owned service group writable
+# for the root pre-start guard. The long-lived UID 996 cannot write its controls.
+ProtectControlGroups=no
+ReadOnlyPaths=/sys/fs/cgroup
+ReadWritePaths=/opt/devbox/run /workspace /tmp /dev/shm
+ReadWritePaths=-/sys/fs/cgroup/memory/system.slice/%n -/sys/fs/cgroup/system.slice/%n
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+SystemCallArchitectures=native
+SystemCallFilter=~@reboot @swap @module @raw-io @debug @obsolete bpf perf_event_open open_by_handle_at
+MemoryAccounting=yes
+MemoryMax=576M
+MemorySwapMax=448M
+TasksMax=256
+CPUQuota=125%
+UMask=0077
+ExecStartPre=!/assurance/devbox-mcp --service-memory-guard %n 603979776 1073741824
+ExecStart=/assurance/devbox-mcp manage run --root /opt/devbox
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=60
+TimeoutStopSec=180
+KillMode=process
+SendSIGKILL=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

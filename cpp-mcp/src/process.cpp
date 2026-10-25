@@ -423,7 +423,8 @@ bool is_administrator() {
         throw Error(windows_error());
     return elevation.TokenIsElevated != 0;
 }
-bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expected) {
+bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expected, Millis signal_grace) {
+    (void)signal_grace;
     if (pid <= 4 || pid == process_id() || !expected)
         return false;
     NativeHandle root(
@@ -518,18 +519,22 @@ std::optional<std::uint64_t> process_instance(std::uint32_t pid) {
 bool is_administrator() {
     return ::geteuid() == 0;
 }
-bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expected) {
+bool terminate_process_tree(std::uint32_t pid, std::optional<std::uint64_t> expected, Millis signal_grace) {
     if (pid <= 1 || pid == process_id() || !expected || process_instance(pid) != expected)
         return false;
     const auto native = static_cast<pid_t>(pid);
     const auto target = ::getpgid(native) == native && ::getpgrp() != native ? -native : native;
     if (::kill(target, SIGTERM) != 0 && errno != ESRCH)
         return false;
-    const auto deadline = Clock::now() + Millis(250);
+    const auto deadline = Clock::now() + std::clamp(signal_grace, Millis(0), Millis(30000));
     while (Clock::now() < deadline && process_matches_instance(pid, expected))
         std::this_thread::sleep_for(Millis(10));
-    if (process_matches_instance(pid, expected))
+    if (process_matches_instance(pid, expected)) {
         ::kill(target, SIGKILL);
+        const auto until = Clock::now() + Millis(250);
+        while (Clock::now() < until && process_matches_instance(pid, expected))
+            std::this_thread::sleep_for(Millis(10));
+    }
     return !process_matches_instance(pid, expected);
 }
 #endif
@@ -1018,9 +1023,10 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
                                stdout_pipe.write.get(), stderr_pipe.read.get(), stderr_pipe.write.get()};
     const auto reap_slot = reserve_posix_reap_slot();
     ScopeExit release_slot([&] { release_posix_reap_slot(reap_slot); });
-    const pid_t child = spawn_posix(
-        program, argv.data(), options.env ? envp.data() : environ, options.cwd ? &*options.cwd : nullptr,
-        {input_pipe.read.get(), stdout_pipe.write.get(), stderr_pipe.write.get()}, close_fds, true);
+    const pid_t child = spawn_posix(program, argv.data(), options.env ? envp.data() : environ,
+                                    options.cwd ? &*options.cwd : nullptr,
+                                    {input_pipe.read.get(), stdout_pipe.write.get(), stderr_pipe.write.get()},
+                                    close_fds, true, options.linux_parent_bound);
     process_started = true;
     bool reaped = false;
     ScopeExit terminate_on_error([&] {
@@ -1107,7 +1113,9 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
             ::kill(-child, SIGTERM);
             forced = now;
         }
-        if (forced && !killed && now - *forced >= std::min(Millis(250), options.termination_grace)) {
+        if (forced && !killed &&
+            now - *forced >= std::clamp(options.termination_signal_grace, Millis(0),
+                                        std::max(Millis(0), options.termination_grace))) {
             ::kill(-child, SIGKILL);
             killed = true;
         }

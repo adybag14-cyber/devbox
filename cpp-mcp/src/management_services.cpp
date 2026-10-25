@@ -127,9 +127,12 @@ Json apply_service_memory_guard(std::string_view unit, std::uint64_t physical_by
     }
     const auto open_control = [&](const char* name, int mode) {
         NativeHandle file(::openat(directory.get(), name, mode | O_CLOEXEC | O_NOFOLLOW));
+        if (!file)
+            throw Error("SERVICE_CGROUP_CONTROL_OPEN_FAILED: " + std::string(name) +
+                        " errno=" + std::to_string(errno));
         struct stat state{};
         struct statfs type{};
-        if (!file || ::fstat(file.get(), &state) != 0 || !S_ISREG(state.st_mode) || state.st_uid != 0 ||
+        if (::fstat(file.get(), &state) != 0 || !S_ISREG(state.st_mode) || state.st_uid != 0 ||
             (state.st_mode & 022) || ::fstatfs(file.get(), &type) != 0 || type.f_type != expected_fs)
             throw Error("SERVICE_CGROUP_KERNEL_CONTROL_REQUIRED");
         return file;

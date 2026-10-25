@@ -95,6 +95,8 @@ class DesktopChild {
     DesktopChild(const fs::path& program, const std::vector<std::string>& args, ProcessOptions process)
         : program_(fs::canonical(program)) {
         process.termination_grace = Millis(5000);
+        process.termination_signal_grace = Millis(1000);
+        process.linux_parent_bound = true;
         process.max_capture_chars = 4096;
         process.on_pid = [this](std::uint32_t pid) {
             const auto instance = process_instance(pid);
