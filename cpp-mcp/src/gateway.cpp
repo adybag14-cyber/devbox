@@ -83,10 +83,12 @@ GatewayDecision Gateway::inspect(const HttpRequest& request) const {
     // the local bridge. Direct operator probes use a loopback authority and no
     // proxy headers; a deployment's public hostname always gets the public view.
     result.is_local = loopback(request.peer) && local_authority;
-    for (const auto* name :
-         {"x-forwarded-for", "forwarded", "cf-connecting-ip", "true-client-ip", "x-real-ip"})
-        if (request.headers.contains(name))
+    for (auto header = request.headers.begin(); header != request.headers.end(); ++header) {
+        const auto& name = header.key();
+        if (name.starts_with("x-forwarded-") || name == "forwarded" || name == "via" ||
+            name == "cf-connecting-ip" || name == "true-client-ip" || name == "x-real-ip")
             result.is_local = false;
+    }
     const auto requested_origin = origin(json_string(request.headers, "origin"));
     const auto expose =
         config_.gateway_bridge_enabled && config_.auth_mode == AuthMode::none && result.is_local;

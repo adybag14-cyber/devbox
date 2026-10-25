@@ -17,4 +17,4 @@ authenticated MCP access; forwarding headers do not grant local privileges.
 
 Wire regression coverage includes forged loopback addresses, mixed proxy chains,
 localhost and IPv4-mapped IPv6 forms, empty forwarding headers, and the Forwarded,
-CF-Connecting-IP, True-Client-IP and X-Real-IP alternatives.
+CF-Connecting-IP, True-Client-IP, X-Real-IP, Via and other X-Forwarded headers.

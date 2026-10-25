@@ -294,6 +294,7 @@ try {
       {}, { "X-Forwarded-For": "127.0.0.1" },
       { "X-Forwarded-For": "127.0.0.1, 203.0.113.8" },
       { "Forwarded": "for=127.0.0.1" }, { "CF-Connecting-IP": "127.0.0.1" },
+      { "X-Forwarded-Host": "localhost" }, { "X-Forwarded-Proto": "https" }, { Via: "1.1 localhost" },
       { "X-Real-IP": "127.0.0.1" }, { "True-Client-IP": "127.0.0.1" },
     ];
     for (const hints of forwardingHints) {
