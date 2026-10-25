@@ -7,6 +7,7 @@
 #include "devbox/run_service.hpp"
 #include "devbox/state_coordinator.hpp"
 #include "server_main.hpp"
+#include <charconv>
 #include <csignal>
 #include <iostream>
 namespace {
@@ -44,6 +45,19 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
         const auto mode = args.empty() ? "" : args.front();
         if (mode == "manage")
             return management_main(std::vector<std::string>(args.begin() + 1, args.end()));
+        if (mode == "--service-memory-guard") {
+            if (args.size() != 4)
+                throw Error("Service memory guard requires UNIT PHYSICAL_BYTES TOTAL_BYTES");
+            const auto bytes = [](const std::string& text) {
+                std::uint64_t value = 0;
+                const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+                if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+                    throw Error("SERVICE_MEMORY_BOUNDS_INVALID");
+                return value;
+            };
+            std::cout << apply_service_memory_guard(args[1], bytes(args[2]), bytes(args[3])).dump() << '\n';
+            return 0;
+        }
         if (mode == "--desktop-supervisor") {
             const auto options =
                 parse_desktop_options(std::vector<std::string>(args.begin() + 1, args.end()));

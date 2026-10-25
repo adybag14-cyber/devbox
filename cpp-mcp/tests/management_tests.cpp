@@ -32,6 +32,36 @@ int main() {
         fs::remove_all(root, ec);
     });
     try {
+        const std::string memory_unit = "devbox-native-fallback.service";
+        constexpr std::uint64_t physical = 576 * 1024 * 1024, combined = 1024 * 1024 * 1024;
+        const auto legacy = service_memory_plan("8:memory:/system.slice/" + memory_unit + "\n0::/other\n",
+                                                memory_unit, physical, combined);
+        require(!legacy.unified && legacy.group == "/system.slice/" + memory_unit,
+                "Hybrid cgroup must select the memory controller");
+        require(service_memory_plan("0::/system.slice/" + memory_unit + "\n", memory_unit, physical, combined)
+                    .unified,
+                "Unified cgroup selection");
+        for (const auto& member : {"0::/\n", "3:memory:/system.slice/another.service\n",
+                                   "0::/system.slice/devbox-native-fallback.service/child\n"})
+            rejects([&] { (void)service_memory_plan(member, memory_unit, physical, combined); },
+                    "OWN_SYSTEM_UNIT");
+        rejects(
+            [&] {
+                (void)service_memory_plan("8:memory:/system.slice/" + memory_unit +
+                                              "\n9:memory:/system.slice/" + memory_unit + "\n",
+                                          memory_unit, physical, combined);
+            },
+            "DUPLICATE");
+        for (const auto* unit :
+             {"ssh.service", "devbox-../other.service", "devbox-test.service/path", "devbox-test\n.service"})
+            rejects([&] { (void)service_memory_plan("0::/system.slice/x\n", unit, physical, combined); },
+                    "UNIT_INVALID");
+        rejects(
+            [&] {
+                (void)service_memory_plan("0::/system.slice/" + memory_unit, memory_unit, physical,
+                                          physical - 1);
+            },
+            "BOUNDS_INVALID");
         rejects([] { (void)parse_management_options({"start", "--root", "relative"}); }, "absolute");
         rejects(
             [&] { (void)parse_management_options({"start", "--root", path_text(root), "--unknown", "x"}); },
