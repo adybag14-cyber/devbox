@@ -230,6 +230,7 @@ jobs:
           node cpp-mcp/scripts/x11-capture-smoke.mjs
           node cpp-mcp/scripts/x11-computer-smoke.mjs
           DEVBOX_X11_TEST_WM=1 node cpp-mcp/scripts/x11-computer-smoke.mjs
+          DEVBOX_X11_TEST_WM=native node cpp-mcp/scripts/x11-computer-smoke.mjs
           xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24 -nolisten tcp' .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium-headed
           xvfb-run --auto-servernum --server-args='-screen 0 1280x800x24 -nolisten tcp' .cpp-build/ci/cpp-mcp/devbox-browser-tests --chromium-headed --compatibility
           node cpp-mcp/scripts/native-desktop-smoke.mjs

@@ -3,7 +3,7 @@
 // compile a reviewed source pin without that optional engine instead.
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {access,chmod,copyFile,mkdir,readFile,readdir,stat,writeFile} from 'node:fs/promises';
+import {access,chmod,copyFile,mkdir,mkdtemp,readFile,readdir,stat,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {runCheckedProcess} from '../../src/mcp-implementation.js';
 import {inspectRuntimeFile} from './runtime-imports.mjs';
@@ -39,6 +39,15 @@ assert(/^(?:x86_64|aarch64)-(?:pc-windows-msvc|unknown-linux-gnu|apple-darwin)$/
 const target=process.platform==='linux'?host.replace('unknown-linux-gnu','unknown-linux-musl'):host;
 const env={...process.env,CARGO_TARGET_DIR:path.join(root,'target'),CARGO_INCREMENTAL:'0',
   CARGO_ENCODED_RUSTFLAGS:[`--remap-path-prefix=${source}=/ripgrep`,...(['win32','linux'].includes(process.platform)?['-Ctarget-feature=+crt-static']:[])].join('\x1f')};
+// Upstream tests deliberately distinguish a non-repository directory from a
+// repository. Devbox's Windows TEMP is inside its checkout for separate tests;
+// use a private sibling on the same volume, outside every .git ancestor.
+const testTemp=await mkdtemp(path.join(path.dirname(repo),'devbox-rg-tests-'));
+for(let directory=testTemp;;directory=path.dirname(directory)) {
+  assert(!await exists(path.join(directory,'.git')),'ripgrep test TEMP must be outside a repository');
+  if(path.dirname(directory)===directory)break;
+}
+env.TEMP=testTemp;env.TMP=testTemp;env.TMPDIR=testTemp;
 // Rust supplies the matching musl CRT/linker inputs. An older host musl-gcc
 // wrapper can inject a dynamic interpreter into a static PIE, so leave final
 // linking to Rust's target defaults; musl-gcc remains a build-only C compiler.

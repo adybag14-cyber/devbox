@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp, mkdir, readFile, writeFile, rm} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile, writeFile, rm, access} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,20 +29,40 @@ function child(file,args,env,display=false) {
 }
 const run=(file,args,env=process.env)=>runCheckedProcess(file,args,{cwd:root,env,timeoutMs:30000,label:'Owned X11 input fixture'});
 try {
-  await run('c++',['-std=c++23','-O2',path.join(repo,'cpp-mcp/tests/computer_x11_fixture.cpp'),'-lX11','-o',path.join(root,'fixture')]);
-  const display=child('Xvfb',['-displayfd','3','-screen','0','1024x768x24','-nolisten','tcp','-noreset'],process.env,true);
-  const number=await new Promise((resolve,reject)=>{
-    let output='';const timer=setTimeout(()=>reject(new Error(display.output())),10000);
-    display.handle.stdio[3].on('data',bytes=>{output+=bytes;if(output.includes('\n')){clearTimeout(timer);resolve(output.trim());}});
-    display.exited.then(()=>{clearTimeout(timer);reject(new Error(display.output()));},reject);
-  });
-  assert.match(number,/^\d+$/);
-  const env={...process.env,DISPLAY:`:${number}`,DEVBOX_COMPUTER_USE_X11:'1'};
+  await run(process.env.CXX||'c++',['-std=c++23','-O2',path.join(repo,'cpp-mcp/tests/computer_x11_fixture.cpp'),'-lX11','-o',path.join(root,'fixture')]);
+  const workspace=path.join(root,'workspace');await mkdir(workspace);
+  const nativeWm=process.env.DEVBOX_X11_TEST_WM==='native';
+  const env={...process.env,DEVBOX_COMPUTER_USE_X11:'1'};
+  let display,number;
+  if(nativeWm) {
+    const exists=async file=>{try{await access(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
+    for(let n=300;n<400;n++)if(!await exists(`/tmp/.X11-unix/X${n}`)&&!await exists(`/tmp/.X${n}-lock`)){number=String(n);break;}
+    assert(number,'A private unused native input display is required');
+    const desktopRoot=path.join(root,'desktop');
+    Object.assign(env,{DISPLAY:`:${number}`,XAUTHORITY:path.join(desktopRoot,'authority'),
+      DEVBOX_BROWSER_SHARED:'0',DEVBOX_DESKTOP_BROWSER_AUTOSTART:'0'});
+    display=child(binary,['--desktop-supervisor','--project-root',root,'--workspace',workspace,
+      '--desktop-root',desktopRoot,'--display',number],env);
+    await until(async()=>{
+      assert.equal(display.handle.exitCode,null,display.output());
+      try {const status=JSON.parse(await readFile(path.join(root,'run/desktop/status.json'),'utf8'));
+        return status.ready&&status.window_manager==='native C++23'&&status.window_manager_ready;
+      } catch(error){if(error.code==='ENOENT')return false;throw error;}
+    },()=>display.output());
+  } else {
+    display=child('Xvfb',['-displayfd','3','-screen','0','1024x768x24','-nolisten','tcp','-noreset'],process.env,true);
+    number=await new Promise((resolve,reject)=>{
+      let output='';const timer=setTimeout(()=>reject(new Error(display.output())),10000);
+      display.handle.stdio[3].on('data',bytes=>{output+=bytes;if(output.includes('\n')){clearTimeout(timer);resolve(output.trim());}});
+      display.exited.then(()=>{clearTimeout(timer);reject(new Error(display.output()));},reject);
+    });
+    assert.match(number,/^\d+$/);env.DISPLAY=`:${number}`;
+  }
   delete env.WAYLAND_DISPLAY;delete env.DEVBOX_COMPUTER_USE_PIPE;
   delete env.SESSION_MANAGER;delete env.DBUS_SESSION_BUS_ADDRESS;
   env.HOME=path.join(root,'home');await mkdir(env.HOME);
-  const requireWm=process.env.DEVBOX_X11_TEST_WM==='1';
-  if(requireWm) {
+  const requireWm=nativeWm||process.env.DEVBOX_X11_TEST_WM==='1';
+  if(requireWm&&!nativeWm) {
     // Openbox invokes this hook after installing its event handlers. Polling
     // _NET_SUPPORTING_WM_CHECK can observe an earlier, incomplete startup state
     // and repeatedly opens X connections during that sensitive phase.
@@ -54,7 +74,6 @@ try {
   window.handle.stdin.write('map\n');
   await until(()=>window.output().includes('mapped\n'),()=>window.output());
   const port=await new Promise(resolve=>{const socket=net.createServer();socket.listen(0,'127.0.0.1',()=>{const p=socket.address().port;socket.close(()=>resolve(p));});});
-  const workspace=path.join(root,'workspace');await mkdir(workspace);
   Object.assign(env,{DEVBOX_PROJECT_ROOT:root,HOST:'127.0.0.1',PORT:String(port),MCP_AUTH_MODE:'none',PUBLIC_BASE_URL:'',DEVBOX_RUNTIME_MODE:'host',ENABLE_HOST_EXEC:'true',DEVBOX_AUTO_START:'false',HOST_WORKSPACE_PATH:workspace,DEVBOX_WORKSPACE_PATH:workspace,HOST_DEFAULT_WORKDIR:workspace,HOST_SHELL:'/bin/sh',MCP_STATE_ROOT:path.join(root,'run/state'),MCP_JOBS_ROOT:path.join(root,'jobs'),MCP_EXEC_SLOT_ROOT:path.join(root,'slots'),DEVBOX_MCP_RUNTIME_ENV_AUTHORITATIVE:'1'});
   server=child(binary,[],env);
   const base=`http://127.0.0.1:${port}`;
@@ -131,7 +150,7 @@ try {
   display.handle.kill();await display.exited;
   const disconnected=await client.callTool({name:'host_computer_windows',arguments:{}});
   assert.equal(disconnected.isError,true);assert.equal((await fetch(base+'/healthz')).status,200);
-  const result={ok:true,binarySha256:digest,windowManager:process.env.DEVBOX_X11_TEST_WM==='1',checks:['real pixels','native click','single-use IDs','point-targeted vertical and horizontal scroll','literal Unicode','key chord','timed key sequence','drag','stale title and geometry','occlusion rejection','cancellation releases keys','display loss preserves MCP health']};
+  const result={ok:true,binarySha256:digest,windowManager:requireWm,windowManagerImplementation:nativeWm?'native C++23':requireWm?'Openbox':'none',checks:['real pixels','native click','single-use IDs','point-targeted vertical and horizontal scroll','literal Unicode','key chord','timed key sequence','drag','stale title and geometry','occlusion rejection','cancellation releases keys','display loss preserves MCP health']};
   await mkdir(path.join(repo,'.cpp-build'),{recursive:true});
   await writeFile(path.join(repo,'.cpp-build/x11-computer-result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
 } finally {
