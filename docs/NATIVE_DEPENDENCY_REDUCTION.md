@@ -53,19 +53,23 @@ has a different lifecycle from a file-search executable fallback.
 
 On 25 October 2026, Windows MSVC Release measurements used three ABBA cycles
 (six before and six after invocations), matching payload CRCs and 25 paired
-component samples per invocation. Medians of invocation medians:
+component samples per invocation. The median of six invocation medians uses
+the mean of the middle two values:
 
 | Payload | Previous libdeflate ms | Native C++23 ms | Before / after output bytes |
 |---|---:|---:|---:|
-| ASCII, 128 KiB | 0.1433 | 0.1044 | 4,789 / 4,665 |
-| Unicode, 512 KiB | 0.4266 | 0.3214 | 12,504 / 12,372 |
-| ASCII, 1 MiB | 0.7963 | 0.6239 | 37,163 / 36,399 |
-| Poorly compressible, 512 KiB | 0.0513 | 0.0264 | both rejected |
+| ASCII, 128 KiB | 0.13355 | 0.10565 | 4,789 / 4,665 |
+| Unicode, 512 KiB | 0.39400 | 0.33115 | 12,504 / 12,372 |
+| ASCII, 1 MiB | 0.74935 | 0.59920 | 37,163 / 36,399 |
+| Poorly compressible, 512 KiB | 0.04910 | 0.04460 | both rejected |
 
 These are component results, not whole-service latency claims. The new encoder
-uses bounded stack scratch space and no retained/shared dictionary. Verification
+uses a bounded 192 KiB scratch allocation released after each call, small stack
+arrays, and no retained/shared dictionary. Verification
 includes independent decoding, randomized and skewed payloads, both wrappers,
-32 KiB boundaries, exact/undersized output guards and cancellation. Linux ASan
+32 KiB boundaries, exact/undersized output guards, a 128 KiB worker stack and
+cancellation. An integer lower bound on prefix-code size rejects impossible
+compression probes before constructing Huffman trees. Linux ASan
 and UBSan additionally cover the encoder, Xauthority, private Xvfb authentication,
 window lifecycle, duplicate-manager refusal and cancellation during stalled XCB
 setup. The real Chromium/MCP desktop smoke test restricts runtime PATH to Xvfb

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <zlib.h>
 
@@ -114,6 +115,8 @@ unsigned distance_code(unsigned distance) {
 }
 template <std::size_t N>
 bool huffman(std::array<unsigned, N> frequencies, std::array<Code, N>& codes, unsigned maximum) {
+    if (!maximum || maximum > 15)
+        return false;
     struct Node {
         unsigned weight = 0, minimum = 0;
         int parent = -1;
@@ -135,44 +138,49 @@ bool huffman(std::array<unsigned, N> frequencies, std::array<Code, N>& codes, un
         }
     unsigned used = 0, count = 0;
     const auto less = [&](unsigned a, unsigned b) {
-        return nodes[a].weight != nodes[b].weight ? nodes[a].weight < nodes[b].weight
-                                                  : nodes[a].minimum < nodes[b].minimum;
+        const auto& left = nodes.at(a);
+        const auto& right = nodes.at(b);
+        return left.weight != right.weight ? left.weight < right.weight : left.minimum < right.minimum;
     };
     const auto push = [&](unsigned node) {
+        if (count >= heap.size())
+            throw std::logic_error("Native Huffman heap capacity");
         auto at = count++;
-        while (at && less(node, heap[(at - 1) / 2])) {
-            heap[at] = heap[(at - 1) / 2];
+        while (at && less(node, heap.at((at - 1) / 2))) {
+            heap.at(at) = heap.at((at - 1) / 2);
             at = (at - 1) / 2;
         }
-        heap[at] = node;
+        heap.at(at) = node;
     };
     const auto pop = [&] {
-        const auto first = heap[0], value = heap[--count];
+        if (!count || count > heap.size())
+            throw std::logic_error("Native Huffman heap size");
+        const auto first = heap[0], value = heap.at(--count);
         unsigned at = 0;
         while (at * 2 + 1 < count) {
             auto child = at * 2 + 1;
-            if (child + 1 < count && less(heap[child + 1], heap[child]))
+            if (child + 1 < count && less(heap.at(child + 1), heap.at(child)))
                 ++child;
-            if (!less(heap[child], value))
+            if (!less(heap.at(child), value))
                 break;
-            heap[at] = heap[child];
+            heap.at(at) = heap.at(child);
             at = child;
         }
         if (count)
-            heap[at] = value;
+            heap.at(at) = value;
         return first;
     };
     for (unsigned symbol = 0; symbol < N; ++symbol)
         if (frequencies[symbol]) {
-            nodes[used] = {frequencies[symbol], symbol, -1};
+            nodes.at(used) = {frequencies[symbol], symbol, -1};
             leaves[symbol] = static_cast<int>(used);
             push(used++);
         }
     while (count > 1) {
         const auto left = pop(), right = pop();
-        nodes[left].parent = nodes[right].parent = static_cast<int>(used);
-        nodes[used] = {nodes[left].weight + nodes[right].weight,
-                       std::min(nodes[left].minimum, nodes[right].minimum), -1};
+        nodes.at(left).parent = nodes.at(right).parent = static_cast<int>(used);
+        nodes.at(used) = {nodes.at(left).weight + nodes.at(right).weight,
+                          std::min(nodes.at(left).minimum, nodes.at(right).minimum), -1};
         push(used++);
     }
     std::array<unsigned, 16> lengths{}, next{};
@@ -181,9 +189,10 @@ bool huffman(std::array<unsigned, N> frequencies, std::array<Code, N>& codes, un
         if (node < 0)
             continue;
         unsigned width = 0;
-        while (nodes[static_cast<std::size_t>(node)].parent >= 0) {
-            ++width;
-            node = nodes[static_cast<std::size_t>(node)].parent;
+        while (nodes.at(static_cast<std::size_t>(node)).parent >= 0) {
+            if (++width > maximum)
+                return false;
+            node = nodes.at(static_cast<std::size_t>(node)).parent;
         }
         // Rare skewed alphabets use the universally valid fixed tree instead
         // of a heuristic length-limiting repair that could oversubscribe codes.
@@ -299,10 +308,17 @@ std::size_t native_deflate(std::string_view input, std::span<char> destination, 
     }
     if (writer.full())
         return 0;
-    std::array<std::uint32_t, 16384> positions;
+    // musl worker threads can have only a 128 KiB stack. Keep the 192 KiB
+    // dictionary/token scratch off that stack, scoped to this one response.
+    struct Scratch {
+        std::array<std::uint32_t, 16384> positions;
+        std::array<std::uint32_t, 32768> tokens;
+    };
+    auto scratch = std::make_unique_for_overwrite<Scratch>();
+    auto& positions = scratch->positions;
+    auto& tokens = scratch->tokens;
     positions.fill(std::numeric_limits<std::uint32_t>::max());
     std::size_t offset = 0, next_check = 8192;
-    std::array<std::uint32_t, 32768> tokens;
     do {
         const auto block_end = std::min(offset + 32768, input.size());
         unsigned token_count = 0;
@@ -354,6 +370,21 @@ std::size_t native_deflate(std::string_view input, std::span<char> destination, 
             ++literal_frequency[value];
         }
         ++literal_frequency[256];
+        // For any binary prefix code H >= log2(total / largest_frequency).
+        // Rounding that lower bound down with integer bit_width is conservative:
+        // if it alone exceeds the entire destination, no fixed/dynamic tree for
+        // these tokens can fit. Reject noisy probes before building three trees.
+        const auto symbols = token_count + 1;
+        const auto largest = *std::max_element(literal_frequency.begin(), literal_frequency.end());
+        if (!largest || largest > symbols)
+            throw std::logic_error("Native literal frequency invariant");
+        const auto minimum_bits = static_cast<unsigned>(std::bit_width(symbols / largest) - 1);
+        const auto minimum_bytes = (static_cast<std::size_t>(symbols) * minimum_bits + 7) / 8;
+        if (minimum_bytes > destination.size()) {
+            if (check)
+                check();
+            return 0;
+        }
         Dynamic dynamic;
         bool use_dynamic = dynamic_header(literal_frequency, distance_frequency, dynamic);
         if (use_dynamic) {

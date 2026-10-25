@@ -2,11 +2,15 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <exception>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 #include <zlib.h>
+#ifndef _WIN32
+#include <pthread.h>
+#endif
 using namespace devbox;
 namespace {
 void require(bool condition, const char* message) {
@@ -69,6 +73,37 @@ void round_trip(std::string_view input, DeflateWrapper wrapper) {
 } // namespace
 int main() {
     try {
+#ifndef _WIN32
+        // Match musl's small worker stack, even when the test host normally
+        // grants multi-megabyte stacks. The old 192 KiB automatic scratch
+        // crashed the real transport test on Alpine.
+        std::exception_ptr stack_error;
+        pthread_attr_t attributes;
+        require(pthread_attr_init(&attributes) == 0, "Small-stack attributes");
+        const auto configured = pthread_attr_setstacksize(&attributes, 128 * 1024);
+        if (configured) {
+            pthread_attr_destroy(&attributes);
+            throw std::runtime_error("Small-stack size unavailable");
+        }
+        pthread_t worker{};
+        const auto created = pthread_create(
+            &worker, &attributes,
+            [](void* argument) -> void* {
+                try {
+                    for (const auto wrapper : {DeflateWrapper::gzip, DeflateWrapper::zlib})
+                        round_trip(bytes(1024 * 1024, 1, 123), wrapper);
+                } catch (...) {
+                    *static_cast<std::exception_ptr*>(argument) = std::current_exception();
+                }
+                return nullptr;
+            },
+            &stack_error);
+        pthread_attr_destroy(&attributes);
+        require(created == 0, "Small-stack worker creation");
+        require(pthread_join(worker, nullptr) == 0, "Small-stack worker join");
+        if (stack_error)
+            std::rethrow_exception(stack_error);
+#endif
         for (const auto wrapper : {DeflateWrapper::gzip, DeflateWrapper::zlib}) {
             for (const auto size :
                  {0u,   1u,   2u,   3u,    4u,    5u,    7u,     8u,     127u,   255u,    256u,
