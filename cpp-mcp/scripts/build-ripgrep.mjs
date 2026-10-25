@@ -106,15 +106,31 @@ for(const item of metadata.packages) {
   packages.push(row);notices.push(`===== ${item.name} ${item.version} =====\n${notice}`);
 }
 assert.equal(packages.length,used.size,'Every linked/build crate must have an inventory row');
-// Rust's standard library is statically linked as well. Retain its source pin
-// and both upstream license texts in the same redistribution notice.
-for(const name of ['LICENSE-MIT','LICENSE-APACHE']) {
-  const response=await fetch(`https://raw.githubusercontent.com/rust-lang/rust/${pin.rust}/${name}`,{signal:AbortSignal.timeout(20000),redirect:'error'});
-  assert.equal(response.status,200);const text=await response.text();assert(Buffer.byteLength(text)<65536);
-  notices.push(`===== Rust ${pin.rust} ${name} =====\n${text}`);
+// Rust's standard library is statically linked too. Its component copyright
+// report includes notices beyond the project-level MIT/Apache licence pair.
+// Use the authenticated pinned toolchain's installed documents, without another
+// network fetch, and retain the licence texts referenced by that report.
+const sysroot=await run('rustc',[`+${pin.rust}`,'--print','sysroot']);
+const rustDocs=path.join(sysroot,'share/doc/rust');
+const boundedNotice=async(file,limit)=>{
+  const info=await stat(file);assert(info.isFile()&&info.size>0&&info.size<=limit,'Bounded complete Rust notice');
+  return readFile(file,'utf8');
+};
+const libraryCopyright=await boundedNotice(path.join(rustDocs,'COPYRIGHT-library.html'),1024*1024);
+assert(libraryCopyright.includes('Copyright notices for The Rust Standard Library'));
+const rustNotices=[`===== Rust ${pin.rust} COPYRIGHT-library.html =====\n${libraryCopyright}`];
+const licenseDirectory=path.join(rustDocs,'licenses');
+const licenseNames=(await readdir(licenseDirectory)).sort();
+assert(licenseNames.length<=128&&licenseNames.includes('MIT.txt')&&licenseNames.includes('Apache-2.0.txt'));
+for(const name of licenseNames) {
+  assert(/^[A-Za-z0-9.-]{1,72}\.txt$/u.test(name),'Pinned Rust license filename');
+  if(!['MIT.txt','Apache-2.0.txt'].includes(name)&&!libraryCopyright.includes(name.slice(0,-4)))continue;
+  rustNotices.push(`===== Rust ${pin.rust} licenses/${name} =====\n${await boundedNotice(path.join(licenseDirectory,name),256*1024)}`);
 }
-packages.push({name:'rust-standard-library',version:pin.rust,license:'MIT OR Apache-2.0',ecosystem:'generic',
+const rustNotice=rustNotices.join('\n');notices.push(rustNotice);
+packages.push({name:'rust-standard-library',version:pin.rust,license:'NOASSERTION',ecosystem:'generic',
   source:`https://github.com/rust-lang/rust/tree/${pin.rust}`,bundledTool:'ripgrep',buildSupportOnly:false,
+  noticeSha256:createHash('sha256').update(rustNotice).digest('hex'),
   abi:createHash('sha256').update(rustVersion).digest('hex')});
 const file='devbox-rg'+(process.platform==='win32'?'.exe':'');
 await copyFile(binary,path.join(root,file));await chmod(path.join(root,file),0o755);
