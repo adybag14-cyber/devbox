@@ -133,6 +133,8 @@ void write_xauthority(const std::filesystem::path& path, unsigned display, const
             ::unlinkat(directory, name.c_str(), 0);
         }
     } cleanup{directory.value, staged};
+    if (::fchmod(output.value, 0600) != 0)
+        throw std::runtime_error("DESKTOP_AUTHORITY_PERMISSIONS_FAILED");
     std::size_t offset = 0;
     while (offset < data.size()) {
         const auto count = ::write(output.value, data.data() + offset, data.size() - offset);

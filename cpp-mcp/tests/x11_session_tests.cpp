@@ -72,7 +72,16 @@ void live(const char* xvfb, const X11Cookie& cookie) {
         if (!fs::exists("/tmp/.X11-unix/X" + std::to_string(display)) &&
             !fs::exists("/tmp/.X" + std::to_string(display) + "-lock"))
             break;
-    write_xauthority(authority, display, cookie);
+    {
+        const auto prior_mask = ::umask(0777);
+        struct RestoreMask {
+            mode_t value;
+            ~RestoreMask() {
+                ::umask(value);
+            }
+        } restore_mask{prior_mask};
+        write_xauthority(authority, display, cookie);
+    }
     struct stat state{};
     require(::stat(authority.c_str(), &state) == 0 && (state.st_mode & 0777) == 0600 && state.st_nlink == 1,
             "Authority permissions");

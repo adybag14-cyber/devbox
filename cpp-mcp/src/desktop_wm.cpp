@@ -629,7 +629,9 @@ class Manager {
             api_.flush(connection_);
             if (events < 64) {
                 pollfd descriptor{api_.get_file_descriptor(connection_), POLLIN, 0};
-                ::poll(&descriptor, 1, 50);
+                // Incoming events wake immediately. Cancellation shuts down the
+                // pinned socket, so idle health sampling needs only one wake/s.
+                ::poll(&descriptor, 1, 1000);
             }
         }
     }
