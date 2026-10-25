@@ -14,6 +14,8 @@ loopback peer, a loopback Host authority, and no forwarding headers. Public
 hostnames always receive the public metadata view. Direct loopback supervision,
 readiness and operator probes remain available. Forwarded requests retain normal
 authenticated MCP access; forwarding headers do not grant local privileges.
+This metadata boundary also applies when authentication is explicitly disabled;
+it does not add authentication to an intentionally unauthenticated MCP server.
 
 Wire regression coverage includes forged loopback addresses, mixed proxy chains,
 localhost and IPv4-mapped IPv6 forms, empty forwarding headers, and the Forwarded,

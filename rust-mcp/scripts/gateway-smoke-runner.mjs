@@ -185,8 +185,13 @@ try {
     origins: [],
     private_network_access: false,
   });
-  assert.ok(remoteMetadata.runtime, "auth=none JS root still exposes runtime to remote requests");
-  assert.ok(remoteMetadata.devbox, "auth=none JS root still exposes devbox to remote requests");
+  if (remoteMetadata.build?.implementation === "cpp") {
+    for (const key of ["runtime", "devbox", "activity", "admission", "transport_resources"])
+      assert.equal(remoteMetadata[key], undefined, `Native public metadata must not expose ${key} in auth-none mode`);
+  } else {
+    assert.ok(remoteMetadata.runtime, "auth=none frozen reference root exposes runtime to remote requests");
+    assert.ok(remoteMetadata.devbox, "auth=none frozen reference root exposes devbox to remote requests");
+  }
   const initializeBody = JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
