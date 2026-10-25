@@ -116,8 +116,15 @@ try {
   assert.equal(await stat(original.pid),original.startTicks);
   assert.equal(await realpath(`/proc/${original.pid}/exe`),chromium);
   const command=await readFile(`/proc/${original.pid}/cmdline`,'utf8');
-  assert(command.split('\0').includes('--user-data-dir='+path.join(desktopRoot,'browser')),
-    JSON.stringify({expectedProfile:path.join(desktopRoot,'browser'),ownedBrowserArguments:command.split('\0')}));
+  const expectedProfile=path.join(desktopRoot,'browser');
+  assert.equal(first.browser_profile,expectedProfile);
+  const argv=command.split('\0').filter(Boolean),profileFlag='--user-data-dir='+expectedProfile;
+  // Chromium 156 may rewrite /proc argv into one space-separated process title.
+  // Birth identity, exact executable and supervisor profile are checked above;
+  // accept only the exact bounded profile flag, with no duplicate override.
+  const rewritten=argv.length===1&&argv[0].startsWith(chromium+' ')&&
+    argv[0].split(' --user-data-dir=').length===2&&argv[0].includes(' '+profileFlag+' ');
+  assert(argv.includes(profileFlag)||rewritten,JSON.stringify({expectedProfile,ownedBrowserArguments:argv}));
   process.kill(original.pid,'SIGKILL');
   await until(async()=>{
     const next=await status();
