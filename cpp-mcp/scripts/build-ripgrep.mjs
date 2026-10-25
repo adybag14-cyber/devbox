@@ -63,7 +63,9 @@ const fixture=path.join(root,'search-fixture.txt');await writeFile(fixture,'firs
 assert.equal(await run(binary,['--no-config','--fixed-strings','--line-number','phone',fixture]),'2:phone £799');
 let qualified=true,limitation=null;
 try {
-  await run('cargo',[common[0],'test',...common.slice(1),'--profile',pin.profile,'--test','integration','--jobs','2'],source,env,600000);
+  const testLog=await run('cargo',[common[0],'test',...common.slice(1),'--profile',pin.profile,'--test','integration','--jobs','2'],source,env,600000);
+  assert.match(testLog,/test result: ok\./u,'Upstream integration completion is required');
+  await writeFile(path.join(root,'upstream-integration.log'),testLog+'\n');
 } catch(error) {
   const failed=[...String(error.message).matchAll(/^---- (\S+) stdout ----$/gmu)].map(match=>match[1]).sort();
   if(!localDiagnostic||process.platform!=='win32'||!String(error.message).includes('code: 1314')||

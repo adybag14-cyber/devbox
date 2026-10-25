@@ -30,6 +30,7 @@ await symlink(await realpath('/usr/bin/Xvfb'),path.join(helpers,'Xvfb'));
 env.PATH=helpers;
 Object.assign(env,{
   DEVBOX_BROWSER_SHARED:'1',DEVBOX_BROWSER_HEADED:'1',DEVBOX_BROWSER_TEXT_ONLY:'1',
+  DEVBOX_BROWSER_EXECUTABLE:chromium,
   DEVBOX_BROWSER_SHARED_PROFILE:path.join(desktopRoot,'browser'),
   DISPLAY:`:${display}`,XAUTHORITY:path.join(desktopRoot,'authority'),
   XDG_RUNTIME_DIR:path.join(desktopRoot,'runtime'),DEVBOX_NATIVE_DESKTOP_SENTINEL:'must-not-reach-children',
@@ -94,7 +95,7 @@ try {
   const call=args=>client.callTool({name:'devbox_browser',arguments:args},undefined,{timeout:45000});
   let result=await call({action:'status'});
   assert.equal(result.isError,false,JSON.stringify(result));
-  assert.equal(result.structuredContent.data.available,true);
+  assert.equal(result.structuredContent.data.available,true,JSON.stringify(result));
   assert.equal(result.structuredContent.data.headed,true);
   let windows;
   await until(async()=>{
