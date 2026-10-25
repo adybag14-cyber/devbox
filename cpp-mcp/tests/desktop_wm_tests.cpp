@@ -2,7 +2,9 @@
 #include <algorithm>
 #include <csignal>
 #include <cstring>
+#include <fstream>
 #include <iostream>
+#include <pthread.h>
 #include <set>
 #include <stdexcept>
 #include <sys/syscall.h>
@@ -18,6 +20,33 @@ void require(bool condition, const char* message) {
     if (!condition)
         throw std::runtime_error(message);
 }
+struct SigpipeBaseline {
+    struct sigaction previous{};
+    sigset_t previous_mask{};
+    SigpipeBaseline() {
+        require(::sigaction(SIGPIPE, nullptr, &previous) == 0 &&
+                    ::pthread_sigmask(SIG_SETMASK, nullptr, &previous_mask) == 0,
+                "Read inherited SIGPIPE policy");
+        sigset_t pending;
+        require(::sigpending(&pending) == 0 && ::sigismember(&pending, SIGPIPE) == 0,
+                "Fixture inherited a pending SIGPIPE");
+        struct sigaction fatal{};
+        fatal.sa_handler = SIG_DFL;
+        ::sigemptyset(&fatal.sa_mask);
+        require(::sigaction(SIGPIPE, &fatal, nullptr) == 0, "Establish fatal SIGPIPE baseline");
+        sigset_t pipe;
+        ::sigemptyset(&pipe);
+        ::sigaddset(&pipe, SIGPIPE);
+        if (::pthread_sigmask(SIG_UNBLOCK, &pipe, nullptr) != 0) {
+            ::sigaction(SIGPIPE, &previous, nullptr);
+            throw std::runtime_error("Unblock fixture SIGPIPE baseline");
+        }
+    }
+    ~SigpipeBaseline() {
+        ::pthread_sigmask(SIG_SETMASK, &previous_mask, nullptr);
+        ::sigaction(SIGPIPE, &previous, nullptr);
+    }
+};
 template <typename F> void until(F&& condition, const char* message) {
     const auto end = Clock::now() + std::chrono::seconds(2);
     while (!condition()) {
@@ -40,22 +69,29 @@ template <typename T> using Reply = std::unique_ptr<T, Free>;
 std::size_t descriptors() {
     return static_cast<std::size_t>(std::distance(std::filesystem::directory_iterator("/proc/self/fd"), {}));
 }
-std::set<int> threads() {
+std::set<int> window_manager_threads() {
     std::set<int> result;
-    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task"))
-        result.insert(std::stoi(entry.path().filename().string()));
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task")) {
+        std::ifstream comm(entry.path() / "comm");
+        std::string name;
+        if (std::getline(comm, name) && name == "devbox-x11-wm")
+            result.insert(std::stoi(entry.path().filename().string()));
+    }
     return result;
 }
 } // namespace
 void check_window_manager(unsigned display, const X11Cookie& cookie, int server_pid) {
+    const SigpipeBaseline signal_baseline;
     const auto baseline = descriptors();
     {
-        const auto original_threads = threads();
+        const auto original_threads = window_manager_threads();
         struct sigaction original_signal{};
         require(::sigaction(SIGPIPE, nullptr, &original_signal) == 0, "Read original SIGPIPE policy");
         auto wm = std::make_unique<DesktopWindowManager>(display, cookie, [] { return false; });
         require(wm->healthy(), "Native window manager not ready");
-        auto owned_threads = threads();
+        // Sanitizers may create their own helper thread during the first
+        // std::thread construction. Select our explicitly named worker only.
+        auto owned_threads = window_manager_threads();
         for (const auto thread : original_threads)
             owned_threads.erase(thread);
         require(owned_threads.size() == 1, "Native window manager must own exactly one worker");
@@ -68,6 +104,10 @@ void check_window_manager(unsigned display, const X11Cookie& cookie, int server_
         require(::sigaction(SIGPIPE, nullptr, &current_signal) == 0 &&
                     current_signal.sa_handler == original_signal.sa_handler,
                 "Window manager changed process-wide SIGPIPE policy");
+        sigset_t creating_mask;
+        require(::pthread_sigmask(SIG_SETMASK, nullptr, &creating_mask) == 0 &&
+                    ::sigismember(&creating_mask, SIGPIPE) == 0,
+                "Window manager changed its creating thread's SIGPIPE mask");
         bool duplicate_rejected = false;
         try {
             DesktopWindowManager duplicate(display, cookie, [] { return false; });

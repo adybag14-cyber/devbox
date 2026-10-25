@@ -671,6 +671,7 @@ DesktopWindowManager::DesktopWindowManager(unsigned display, const X11Cookie& co
     : state_(std::make_unique<State>()) {
     auto& state = *state_;
     state.worker = std::thread([&state, display, cookie, expected_peer_pid] {
+        (void)::pthread_setname_np(::pthread_self(), "devbox-x11-wm");
         try {
             // XCB can write while cancellation shuts down our pinned socket.
             // Block its thread-directed SIGPIPE for this owned worker's entire
