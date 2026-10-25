@@ -952,6 +952,9 @@ int run_managed_computer_broker(const fs::path& root, std::string_view hash, std
     if (length <= 0 || static_cast<std::size_t>(length) >= sizeof(created))
         throw Error("MANAGED_COMPUTER_PROCESS_TIME_UNAVAILABLE");
     FileLock owner(control_root(root) / "desktop-owner.lock", Millis(2000), {}, true);
+    // An interactive scheduled task may create a console for this executable.
+    // Detach only this background broker; never hide a shared terminal window.
+    (void)FreeConsole();
     const auto status = control_root(root) / "desktop-worker.json";
     Json record{{"pid", process_id()},
                 {"instance", std::to_string(*instance)},
