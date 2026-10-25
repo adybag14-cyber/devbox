@@ -14,6 +14,8 @@
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pthread.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include <xcb/xcb.h>
@@ -669,7 +671,18 @@ DesktopWindowManager::DesktopWindowManager(unsigned display, const X11Cookie& co
     : state_(std::make_unique<State>()) {
     auto& state = *state_;
     state.worker = std::thread([&state, display, cookie, expected_peer_pid] {
+        (void)::pthread_setname_np(::pthread_self(), "devbox-x11-wm");
         try {
+            // XCB can write while cancellation shuts down our pinned socket.
+            // Block its thread-directed SIGPIPE for this owned worker's entire
+            // lifetime: a failed write must become an XCB error, not terminate
+            // the desktop supervisor. Do not change the process-wide policy or
+            // unblock a pending signal before this thread exits.
+            sigset_t blocked;
+            ::sigemptyset(&blocked);
+            ::sigaddset(&blocked, SIGPIPE);
+            if (::pthread_sigmask(SIG_BLOCK, &blocked, nullptr) != 0)
+                throw std::runtime_error("DESKTOP_WINDOW_MANAGER_SIGNAL_MASK_FAILED");
             const auto fd = connect_private_x11(
                 display, Steady::now() + std::chrono::seconds(2), [&] { return state.stopped.load(); },
                 expected_peer_pid);
