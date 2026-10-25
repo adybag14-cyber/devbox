@@ -116,7 +116,8 @@ try {
   assert.equal(await stat(original.pid),original.startTicks);
   assert.equal(await realpath(`/proc/${original.pid}/exe`),chromium);
   const command=await readFile(`/proc/${original.pid}/cmdline`,'utf8');
-  assert(command.split('\0').includes('--user-data-dir='+path.join(desktopRoot,'browser')));
+  assert(command.split('\0').includes('--user-data-dir='+path.join(desktopRoot,'browser')),
+    JSON.stringify({expectedProfile:path.join(desktopRoot,'browser'),ownedBrowserArguments:command.split('\0')}));
   process.kill(original.pid,'SIGKILL');
   await until(async()=>{
     const next=await status();
