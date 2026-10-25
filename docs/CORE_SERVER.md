@@ -3,7 +3,8 @@
 `devbox-core-TARGET.zip` (Windows) or `devbox-core-TARGET.tar.gz` contains one
 C++23 executable, `devbox-mcp`, plus its build manifest, dependency inventory,
 licenses, SBOM and this guide. The full `devbox-TARGET` bundle remains available
-and additionally includes the installer and TUI. Core uses the exact same tested
+and additionally includes the installer, TUI and optional PCRE2-free ripgrep
+fallback on desktop targets. Core uses the exact same tested
 MCP executable and supports the same protocol. Optional computer-use, browser,
 Docker, WSL and development tools require their corresponding OS facilities or
 applications; none are installed or launched by extracting the core archive.
@@ -12,6 +13,11 @@ Node, npm, Git, Python, Rust, a compiler, a browser and a display server are not
 required for the core server or its native management loop. Linux release builds
 bundle GCC's C++/support runtime; the operating system's libc, networking and TLS
 trust remain required. X11 libraries load only when desktop capabilities are used.
+
+The native Linux desktop supervisor needs Xvfb, Chromium and XCB/XTEST, but uses
+its own C++23 authentication, readiness probe and window management instead of
+xauth, xdpyinfo, Openbox or a session D-Bus daemon. Docker and docker-init are not
+part of the native service lifecycle; the host OS service manager supervises it.
 
 ## Verified native installation
 

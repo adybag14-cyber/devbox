@@ -9,11 +9,52 @@ find_path(DEVBOX_LEXBOR_INCLUDE_DIR lexbor/html/interfaces/document.h
 find_package(OpenSSL REQUIRED)
 find_package(CURL REQUIRED)
 find_package(ZLIB REQUIRED)
-find_package(libdeflate CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 set(DEVBOX_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${DEVBOX_GENERATED_DIR}")
+set(DEVBOX_BUNDLED_RG_MANIFEST "" CACHE FILEPATH "Qualified optional ripgrep build manifest; empty leaves the core independent")
+set(rg_sha "")
+set(rg_version "")
+set(rg_source "")
+set(rg_bytes 0)
+set(rg_qualified false)
+if(WIN32)
+  set(rg_file "devbox-rg.exe")
+else()
+  set(rg_file "devbox-rg")
+endif()
+if(DEVBOX_BUNDLED_RG_MANIFEST)
+  file(READ "${DEVBOX_BUNDLED_RG_MANIFEST}" rg_manifest)
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/bundled-ripgrep.json" rg_pin)
+  string(JSON rg_source GET "${rg_manifest}" source)
+  string(JSON rg_expected_source GET "${rg_pin}" source)
+  string(JSON rg_version GET "${rg_manifest}" version)
+  string(JSON rg_expected_version GET "${rg_pin}" version)
+  string(JSON rg_pcre2 GET "${rg_manifest}" pcre2)
+  string(JSON rg_sha GET "${rg_manifest}" sha256)
+  string(JSON rg_bytes GET "${rg_manifest}" bytes)
+  string(JSON rg_manifest_file GET "${rg_manifest}" file)
+  string(JSON rg_features LENGTH "${rg_manifest}" features)
+  string(JSON rg_tested GET "${rg_manifest}" qualified)
+  if(rg_tested)
+    set(rg_qualified true)
+  endif()
+  get_filename_component(rg_root "${DEVBOX_BUNDLED_RG_MANIFEST}" DIRECTORY)
+  file(SHA256 "${rg_root}/${rg_file}" rg_actual_sha)
+  if(NOT rg_source STREQUAL rg_expected_source OR NOT rg_version STREQUAL rg_expected_version OR
+     rg_pcre2 OR NOT rg_features EQUAL 0 OR NOT rg_manifest_file STREQUAL rg_file OR
+     NOT rg_actual_sha STREQUAL rg_sha OR rg_bytes GREATER 16777216 OR rg_bytes LESS 10000)
+    message(FATAL_ERROR "Optional ripgrep must match the pinned source, file and feature policy")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${DEVBOX_BUNDLED_RG_MANIFEST}" "${CMAKE_CURRENT_SOURCE_DIR}/bundled-ripgrep.json")
+  install(PROGRAMS "${rg_root}/${rg_file}" DESTINATION bin)
+  install(FILES "${rg_root}/ripgrep-NOTICES.txt" DESTINATION share/devbox)
+  install(FILES "${DEVBOX_BUNDLED_RG_MANIFEST}" DESTINATION share/devbox RENAME bundled-ripgrep.json)
+endif()
+file(WRITE "${DEVBOX_GENERATED_DIR}/bundled_ripgrep_identity.hpp.tmp"
+  "inline constexpr char bundled_rg_sha256[] = \"${rg_sha}\";\ninline constexpr char bundled_rg_version[] = \"${rg_version}\";\ninline constexpr char bundled_rg_source[] = \"${rg_source}\";\ninline constexpr char bundled_rg_file[] = \"${rg_file}\";\ninline constexpr unsigned long long bundled_rg_bytes = ${rg_bytes};\ninline constexpr bool bundled_rg_qualified = ${rg_qualified};\n")
+file(COPY_FILE "${DEVBOX_GENERATED_DIR}/bundled_ripgrep_identity.hpp.tmp" "${DEVBOX_GENERATED_DIR}/bundled_ripgrep_identity.hpp" ONLY_IF_DIFFERENT)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/contract/tool-registry.json" registry_json)
 string(JSON registry_count LENGTH "${registry_json}" tools)
 string(JSON registry_version GET "${registry_json}" contract_version)
@@ -33,6 +74,7 @@ add_custom_target(devbox-build-identity
   VERBATIM)
 add_library(devbox_core
   src/common.cpp
+  src/fast_deflate.cpp
   src/admission.cpp
   src/json_output.cpp
   src/resource_budget.cpp
@@ -60,6 +102,7 @@ add_library(devbox_core
   src/isolation.cpp
   src/isolation_linux.cpp
   src/runtime.cpp
+  src/bundled_tools.cpp
   src/scheduler.cpp
   src/scheduler_notifications.cpp
   src/job_logs.cpp
@@ -98,6 +141,8 @@ add_library(devbox_core
   src/management_qualification.cpp
   src/management_services.cpp
   src/desktop.cpp
+  src/desktop_wm.cpp
+  src/x11_session.cpp
   src/contract.cpp
   src/monitoring.cpp
   src/engine.cpp
@@ -120,7 +165,6 @@ target_compile_definitions(devbox_core PUBLIC BOOST_ASIO_DISABLE_BOOST_REGEX
   BOOST_ASIO_DISABLE_BOOST_DATE_TIME BOOST_ASIO_DISABLE_BOOST_CONTEXT_FIBER)
 target_compile_definitions(devbox_core PRIVATE DEVBOX_ALLOCATOR_SHARDED=$<BOOL:${DEVBOX_ALLOCATOR_SHARDED}>)
 target_link_libraries(devbox_core PUBLIC nlohmann_json::nlohmann_json Boost::asio Boost::beast OpenSSL::Crypto CURL::libcurl ZLIB::ZLIB Threads::Threads ada::ada re2::re2)
-target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
 target_link_libraries(devbox_core PUBLIC $<IF:$<TARGET_EXISTS:lexbor::lexbor_static>,lexbor::lexbor_static,lexbor::lexbor>)
 target_link_libraries(devbox_core PUBLIC pugixml::pugixml)
 target_link_libraries(devbox_core PUBLIC unofficial::sqlite3::sqlite3)
@@ -141,9 +185,9 @@ if(DEVBOX_FUZZING)
 endif()
 target_link_libraries(devbox-mcp PRIVATE devbox_core)
 if(DEVBOX_BUILD_TESTS OR DEVBOX_BUILD_BENCHMARKS)
-  add_executable(devbox-compression-bench benchmarks/compression.cpp)
-  target_link_libraries(devbox-compression-bench PRIVATE nlohmann_json::nlohmann_json ZLIB::ZLIB
-    $<IF:$<TARGET_EXISTS:libdeflate::libdeflate_shared>,libdeflate::libdeflate_shared,libdeflate::libdeflate_static>)
+  add_executable(devbox-compression-bench benchmarks/compression.cpp src/fast_deflate.cpp)
+  target_include_directories(devbox-compression-bench PRIVATE include)
+  target_link_libraries(devbox-compression-bench PRIVATE nlohmann_json::nlohmann_json ZLIB::ZLIB)
   if(MSVC)
     target_compile_options(devbox-compression-bench PRIVATE /utf-8)
   endif()
@@ -217,6 +261,40 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(devbox_core PUBLIC ${CMAKE_DL_LIBS})
 endif()
 if(DEVBOX_BUILD_TESTS)
+  add_executable(devbox-bundled-tools-tests tests/bundled_tools_tests.cpp)
+  target_link_libraries(devbox-bundled-tools-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-bundled-tools-tests PRIVATE /utf-8)
+  endif()
+  if(DEVBOX_BUNDLED_RG_MANIFEST)
+    add_test(NAME native-bundled-tools COMMAND devbox-bundled-tools-tests "${rg_root}/${rg_file}")
+  else()
+    add_test(NAME native-bundled-tools COMMAND devbox-bundled-tools-tests)
+  endif()
+  set_tests_properties(native-bundled-tools PROPERTIES TIMEOUT 30)
+  add_executable(devbox-x11-session-tests tests/x11_session_tests.cpp src/x11_session.cpp)
+  target_include_directories(devbox-x11-session-tests PRIVATE include)
+  target_link_libraries(devbox-x11-session-tests PRIVATE Threads::Threads)
+  add_test(NAME native-xauthority COMMAND devbox-x11-session-tests)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_program(DEVBOX_XVFB_TEST_PROGRAM Xvfb)
+    if(DEVBOX_XVFB_TEST_PROGRAM)
+      add_test(NAME native-x11-session COMMAND devbox-x11-session-tests "${DEVBOX_XVFB_TEST_PROGRAM}")
+      set_tests_properties(native-x11-session PROPERTIES TIMEOUT 15)
+      find_library(DEVBOX_XCB_TEST_LIBRARY xcb REQUIRED)
+      add_executable(devbox-desktop-wm-tests tests/x11_session_tests.cpp tests/desktop_wm_tests.cpp src/x11_session.cpp src/desktop_wm.cpp)
+      target_compile_definitions(devbox-desktop-wm-tests PRIVATE DEVBOX_TEST_NATIVE_WM)
+      target_include_directories(devbox-desktop-wm-tests PRIVATE include "${DEVBOX_XCB_INCLUDE_DIR}")
+      target_link_libraries(devbox-desktop-wm-tests PRIVATE "${DEVBOX_XCB_TEST_LIBRARY}" ${CMAKE_DL_LIBS} Threads::Threads)
+      add_test(NAME native-desktop-window-manager COMMAND devbox-desktop-wm-tests "${DEVBOX_XVFB_TEST_PROGRAM}")
+      set_tests_properties(native-desktop-window-manager PROPERTIES TIMEOUT 20)
+    endif()
+  endif()
+  add_executable(devbox-fast-deflate-tests tests/fast_deflate_tests.cpp src/fast_deflate.cpp)
+  target_include_directories(devbox-fast-deflate-tests PRIVATE include)
+  target_link_libraries(devbox-fast-deflate-tests PRIVATE ZLIB::ZLIB)
+  add_test(NAME native-fast-deflate COMMAND devbox-fast-deflate-tests)
+  set_tests_properties(native-fast-deflate PROPERTIES TIMEOUT 30)
   add_executable(devbox-http-allocation-tests tests/http_allocation_tests.cpp)
   target_link_libraries(devbox-http-allocation-tests PRIVATE devbox_core)
   add_test(NAME http-header-conversion-cleanup COMMAND devbox-http-allocation-tests conversion)

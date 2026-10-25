@@ -1,7 +1,12 @@
 # Native offline installation
 
 The offline package contains the native C++23 server, installer and setup TUI,
-their source manifest, dependency inventory, SBOM and third-party notices.
+their source manifest, dependency inventory, SBOM and third-party notices, plus
+an optional PCRE2-free ripgrep fallback on desktop targets. Its source and binary
+identities are pinned. Cargo dependencies and notices appear in the full package
+inventory. The native server prefers host `rg` and verifies the bundled fallback
+before use. The separate core archive omits this optional executable.
+No Node, Python or Docker executable is bundled.
 Installation does not download software or require Node, npm, Git, a compiler,
 GitHub CLI, an external archive extractor or administrator privileges.
 

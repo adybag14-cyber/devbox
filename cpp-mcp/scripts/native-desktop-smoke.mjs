@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp,mkdir,readFile,access,rm,writeFile,realpath} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,access,rm,writeFile,realpath,symlink} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -19,10 +19,15 @@ let display;
 for(let n=150;n<250;n++)if(!await exists(`/tmp/.X11-unix/X${n}`)&&!await exists(`/tmp/.X${n}-lock`)){display=n;break;}
 assert(display,'A private unused X11 display is required');
 let chromium;
-for(const file of ['/opt/google/chrome/chrome','/usr/lib/chromium/chromium','/usr/lib/chromium-browser/chromium-browser'])
+for(const file of [process.env.DEVBOX_DESKTOP_TEST_CHROMIUM,'/opt/google/chrome/chrome','/usr/lib/chromium/chromium','/usr/lib/chromium-browser/chromium-browser'].filter(Boolean))
   if(await exists(file)){chromium=await realpath(file);break;}
 assert(chromium,'Fixture requires the actual Chromium executable');
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>['PATH','HOME','LANG','TMPDIR','USER','LOGNAME'].includes(key)));
+// The native supervisor and Chromium need no xauth, xdpyinfo, Openbox, D-Bus
+// daemon, shell, Python or Node executable on their child runtime PATH.
+const helpers=path.join(root,'only-xvfb');await mkdir(helpers);
+await symlink(await realpath('/usr/bin/Xvfb'),path.join(helpers,'Xvfb'));
+env.PATH=helpers;
 Object.assign(env,{
   DEVBOX_BROWSER_SHARED:'1',DEVBOX_BROWSER_HEADED:'1',DEVBOX_BROWSER_TEXT_ONLY:'1',
   DEVBOX_BROWSER_SHARED_PROFILE:path.join(desktopRoot,'browser'),
@@ -59,7 +64,11 @@ try {
   let first=await status();
   assert.equal(first.implementation,'cpp');assert.equal(first.browser_mode,'shared_native');
   assert.equal(first.supervisor_pid,supervisor.child.pid);
-  assert.equal(first.children.length,4);
+  assert.equal(first.children.length,2);
+  assert.equal(first.window_manager,'native C++23');
+  assert.equal(first.window_manager_ready,true);
+  assert.equal(first.session_bus,'disabled');
+  assert.deepEqual(first.children.map(x=>x.name).sort(),['chromium','xvfb']);
   for(const child of first.children) {
     assert.equal(await stat(child.pid),child.startTicks);
     const environment=await readFile(`/proc/${child.pid}/environ`,'utf8');
@@ -116,7 +125,8 @@ try {
   assert(recovered.last_browser_exit?.signal===9||recovered.last_browser_exit?.exit_code===137,
     'Native supervisor must retain the owned browser termination reason');
   assert.equal(typeof recovered.browser_ready_at,'string');
-  for(const name of ['xvfb','openbox','dbus'])assert.equal(recovered.children.find(x=>x.name===name).pid,first.children.find(x=>x.name===name).pid);
+  assert.equal(recovered.children.find(x=>x.name==='xvfb').pid,first.children.find(x=>x.name==='xvfb').pid);
+  assert.equal(recovered.window_manager_ready,true);
   ownedIdentities.push(recovered.children.find(x=>x.name==='chromium'));
   result=await call({action:'status'});assert.equal(result.isError,false,JSON.stringify(result));
   assert.equal(result.structuredContent.data.available,true);

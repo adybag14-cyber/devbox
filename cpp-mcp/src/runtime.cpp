@@ -1,4 +1,5 @@
 #include "devbox/runtime.hpp"
+#include "devbox/bundled_tools.hpp"
 #include "devbox/native.hpp"
 #include "devbox/scoped_thread.hpp"
 #include <algorithm>
@@ -239,6 +240,27 @@ std::string clean_powershell_output(std::string_view value) {
 ProcessOutput RuntimeExecutor::host_program(ProgramRequest request, const Cancel& cancel) const {
     if (!config_->host_exec_enabled)
         throw Error(disabled_message);
+    std::optional<BundledExecutable> bundled;
+    const auto started = Clock::now();
+    if (normalize_program(request.program) == "rg") {
+        if (!request.environment)
+            request.environment = worker_environment();
+        if (const auto host = host_ripgrep(*request.environment))
+            request.program = path_text(*host);
+        else {
+            bundled = verified_bundled_ripgrep(executable_path().parent_path(), cancel);
+            if (!bundled && config_->project_root.is_absolute())
+                bundled = verified_bundled_ripgrep(config_->project_root / "bin", cancel);
+            if (!bundled)
+                throw Error("RIPGREP_UNAVAILABLE: install host rg or use the full Devbox package with its "
+                            "verified fallback");
+            request.program = path_text(bundled->path);
+        }
+        const auto elapsed = std::chrono::duration_cast<Millis>(Clock::now() - started);
+        if (elapsed >= request.timeout)
+            throw Error("RIPGREP_RESOLUTION_DEADLINE");
+        request.timeout -= elapsed;
+    }
     const auto [program, args] = resolve_program(*config_, request.program, request.args);
     return run_resolved(program, args, process_options(request), cancel);
 }

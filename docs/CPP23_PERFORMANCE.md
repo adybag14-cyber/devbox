@@ -69,8 +69,10 @@ Large JSON RPC responses negotiate gzip or zlib-wrapped deflate only when the
 client accepts that content coding. Explicit coding exclusions and higher identity
 preferences are retained, and gateway `Vary` fields are combined. Compression
 uses a fresh dictionary for each response. For responses through one MiB,
-libdeflate's fastest compressor writes directly into the C++23 string overwrite
-buffer. Larger responses use incremental zlib with a 64 KiB output buffer and
+Devbox's bounded native LZ77/Huffman encoder writes directly into the C++23 string
+overwrite buffer. It selects fixed or dynamic Huffman blocks by encoded bit cost,
+uses a fresh 32 KiB dictionary window, and checks cancellation between bounded
+input slices. Larger responses use incremental zlib with a 64 KiB output buffer and
 reduced working memory. That scratch buffer is allocated only on the incremental
 path, keeping small-response coroutine frames compact and avoiding retained
 Windows heap segments after file transfers. An 8 KiB prefix must compress by at least half before
@@ -83,8 +85,10 @@ This is a transport optimization with decoded payload equality tests, including
 varied one MiB results that span multiple compressed blocks. It follows HTTP
 [content coding negotiation](https://www.rfc-editor.org/rfc/rfc9110.html#section-12.5.3)
 and the [zlib stream API](https://www.zlib.net/manual.html). The whole-buffer path
-uses the [libdeflate API](https://github.com/ebiggers/libdeflate), pinned by the
-same vcpkg baseline as the other native dependencies.
+implements [DEFLATE](https://www.rfc-editor.org/rfc/rfc1951) with standard gzip/zlib
+wrappers and is decoded independently by zlib in qualification tests. Libdeflate
+is no longer linked. Callback exceptions are re-thrown after `resize_and_overwrite`
+returns, preserving its no-throw callback contract.
 Each HTTP write is bounded to 64 KiB. Printable JSON strings reserve space for
 their closing delimiters, avoiding a second large allocation and copy.
 

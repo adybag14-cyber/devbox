@@ -65,14 +65,28 @@ for (const name of ['devbox-mcp', 'devbox-setup', 'devbox-tui']) {
 }
 const dependencyTriplet = android ? `${({'arm64-v8a':'arm64','armeabi-v7a':'arm',x86_64:'x64',x86:'x86'})[android]}-android-api21`
   : `${process.arch==='arm64'?'arm64':'x64'}-${process.platform==='win32'?'windows-static':process.platform==='darwin'?'osx':'linux'}`;
+const optionalTools=[],bundledTools=[];
+if(build.bundledRipgrep?.compiledIdentity) {
+  assert.equal(build.bundledRipgrep.releaseQualified,true,'Local diagnostic tool builds are not release inputs');
+  const tool=JSON.parse(await readFile(path.join(packageRoot,'share/devbox/bundled-ripgrep.json'),'utf8'));
+  assert.equal(tool.qualified,true);assert.equal(tool.pcre2,false);assert.deepEqual(tool.features,[]);
+  assert.equal(tool.sha256,build.bundledRipgrep.sha256);assert.equal(tool.source,build.bundledRipgrep.source);
+  const file=path.posix.join(bin,tool.file),bytes=await readFile(path.join(packageRoot,file));
+  assert.equal(bytes.length,tool.bytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),tool.sha256);
+  const notice=await readFile(path.join(packageRoot,'share/devbox',tool.license),'utf8');
+  assert.equal(createHash('sha256').update(notice).digest('hex'),tool.noticeSha256);
+  const runtime=await inspectRuntimeFile(path.join(packageRoot,file));
+  optionalTools.push({...build.bundledRipgrep,file,runtime,license:'share/devbox/'+tool.license,noticeSha256:tool.noticeSha256});
+  bundledTools.push({...tool,notice});
+}
 const assurance = await collectDependencies({
   installed:path.resolve(options.installed || path.join(repo,android?'.cpp-build/android/vcpkg_installed':'.cpp-build/vcpkg_installed')),
   triplet:dependencyTriplet,manifest:JSON.parse(await readFile(path.join(repo,'vcpkg.json'),'utf8')),
-  output:packageRoot,sourceSha:gitSha,
+  output:packageRoot,sourceSha:gitSha,bundledTools,
   compilerRuntime:JSON.parse(await readFile(path.resolve(options.build || (android ? `.cpp-build/android/${android}` : '.cpp-build/ci'),'compiler-runtime.json'),'utf8')),
 });
 const manifest = { schema: 1, assurance, implementation: 'cpp', target, gitSha, sourceTree, setupVersion, releaseReady, build,
   dependencyBaseline: JSON.parse(await readFile(path.join(repo, 'vcpkg.json'), 'utf8'))['builtin-baseline'],
-  ...(android ? { ndk: '29.0.14206865', minimumAndroidApi: 21 } : {}), binaries };
+  ...(android ? { ndk: '29.0.14206865', minimumAndroidApi: 21 } : {}), binaries,optionalTools };
 await writeFile(path.join(packageRoot, 'build-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(JSON.stringify(manifest));

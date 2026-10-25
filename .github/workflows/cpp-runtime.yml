@@ -83,7 +83,22 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends bubblewrap libxcb-xtest0-dev
+          sudo apt-get install -y --no-install-recommends bubblewrap libxcb-xtest0-dev xvfb musl-tools
+      - name: Pinned compiler for the optional PCRE2-free ripgrep fallback
+        if: matrix.sanitizers == '0'
+        shell: bash
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal
+          if [ "$RUNNER_OS" = Linux ]; then
+            if [ "$RUNNER_ARCH" = ARM64 ]; then
+              rustup target add --toolchain 1.97.1 aarch64-unknown-linux-musl
+            else
+              rustup target add --toolchain 1.97.1 x86_64-unknown-linux-musl
+            fi
+          fi
+      - name: Build and qualify optional ripgrep without PCRE2
+        if: matrix.sanitizers == '0'
+        run: node cpp-mcp/scripts/build-ripgrep.mjs
       - name: Select Clang sanitizer compiler
         if: matrix.sanitizers == '1'
         shell: bash

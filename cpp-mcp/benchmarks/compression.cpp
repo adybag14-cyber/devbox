@@ -1,9 +1,9 @@
+#include "devbox/fast_deflate.hpp"
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
-#include <libdeflate.h>
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
@@ -15,16 +15,12 @@ using Json = nlohmann::ordered_json;
 using Clock = std::chrono::steady_clock;
 namespace {
 std::string buffered(std::string_view input) {
-    std::unique_ptr<libdeflate_compressor, decltype(&libdeflate_free_compressor)> codec(
-        libdeflate_alloc_compressor(1), libdeflate_free_compressor);
-    if (!codec)
-        throw std::runtime_error("libdeflate allocation failed");
     std::array<char, 4096> probe{};
-    if (!libdeflate_gzip_compress(codec.get(), input.data(), 8192, probe.data(), probe.size()))
+    if (!devbox::native_deflate(input.substr(0, 8192), probe, devbox::DeflateWrapper::gzip))
         return {};
     std::string output(input.size() / 2, '\0');
     const auto size =
-        libdeflate_gzip_compress(codec.get(), input.data(), input.size(), output.data(), output.size());
+        devbox::native_deflate(input, {output.data(), output.size()}, devbox::DeflateWrapper::gzip);
     output.resize(size);
     return output;
 }
@@ -150,7 +146,7 @@ int main(int argc, char** argv) {
                                  {"input_bytes", input.size()},
                                  {"input_crc32", crc32(0, reinterpret_cast<const Bytef*>(input.data()),
                                                        static_cast<uInt>(input.size()))},
-                                 {"libdeflate_buffered", summarize(std::move(samples[0]), sizes[0])},
+                                 {"native_deflate", summarize(std::move(samples[0]), sizes[0])},
                                  {"zlib_streaming", summarize(std::move(samples[1]), sizes[1])},
                                  {"roundtrip_verified", !noise}});
         }

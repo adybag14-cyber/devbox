@@ -1,0 +1,10 @@
+{
+  "version": "15.2.0",
+  "repository": "https://github.com/BurntSushi/ripgrep",
+  "source": "e89fff89ac9af12e8d4ce9d5fd07beb408ca730f",
+  "signedTag": "15.2.0",
+  "rust": "1.97.1",
+  "features": [],
+  "pcre2": false,
+  "profile": "release-lto"
+}

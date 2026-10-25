@@ -221,6 +221,29 @@ Json pack(const fs::path& package, const fs::path& payload, std::string workflow
     }
     if (!binaries.contains("devbox-mcp"))
         throw Error("OFFLINE_RUNTIME_REQUIRED");
+    if (build.contains("optionalTools")) {
+        const auto& tools = build.at("optionalTools");
+        if (!tools.is_array() || tools.size() > 1)
+            throw Error("OFFLINE_OPTIONAL_TOOL_INVALID");
+        for (const auto& tool : tools) {
+            const auto file =
+                json_string(build, "target").starts_with("windows-") ? "devbox-rg.exe" : "devbox-rg";
+            if (json_string(tool, "name") != "ripgrep" || !json_bool(tool, "releaseQualified") ||
+                json_bool(tool, "pcre2", true) || json_string(tool, "file") != std::string("bin/") + file ||
+                json_string(tool, "license") != "share/devbox/ripgrep-NOTICES.txt" ||
+                json_string(tool, "sha256") != json_string(build.at("build").at("bundledRipgrep"), "sha256"))
+                throw Error("OFFLINE_OPTIONAL_TOOL_INVALID");
+            const auto source = package / "bin" / file;
+            const auto notice = package / "share" / "devbox" / "ripgrep-NOTICES.txt";
+            if (fs::is_symlink(source) || !fs::is_regular_file(source) || fs::is_symlink(notice) ||
+                !fs::is_regular_file(notice) || fs::file_size(source) != json_uint(tool, "bytes") ||
+                sha256_file(source, 16 * 1024 * 1024) != json_string(tool, "sha256") ||
+                sha256_file(notice, 4 * 1024 * 1024) != json_string(tool, "noticeSha256"))
+                throw Error("OFFLINE_OPTIONAL_TOOL_IDENTITY_MISMATCH");
+            files.emplace_back(source, true);
+            files.emplace_back(notice, false);
+        }
+    }
     for (const auto* name : {"build-manifest.json", "THIRD_PARTY_NOTICES.txt", "dependency-inventory.json",
                              "sbom.spdx.json", "OFFLINE.md", "CORE_SERVER.md"})
         files.emplace_back(package / name, false);

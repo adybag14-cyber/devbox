@@ -1,5 +1,6 @@
 #include "devbox/management.hpp"
 #include "devbox/admission.hpp"
+#include "devbox/bundled_tools.hpp"
 #include "devbox/contract.hpp"
 #include "devbox/native.hpp"
 #include "devbox/scoped_thread.hpp"
@@ -1097,15 +1098,24 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
                  {"build-manifest.json", "THIRD_PARTY_NOTICES.txt", "dependency-inventory.json",
                   "sbom.spdx.json", "OFFLINE.md", "CORE_SERVER.md"})
                 fs::copy_file(bundled->contents / name, staging / "share" / name);
-            for (const auto* name : {"devbox-setup", "devbox-tui"}) {
+            for (const auto* name : {"devbox-setup", "devbox-tui", "devbox-rg"}) {
                 const auto file = std::string(name) +
 #ifdef _WIN32
                                   ".exe";
 #else
                                   "";
 #endif
-                if (fs::is_regular_file(bundled->contents / file))
+                if (fs::is_regular_file(bundled->contents / file)) {
+                    std::optional<BundledExecutable> verified;
+                    if (std::string_view(name) == "devbox-rg") {
+                        verified = verified_bundled_ripgrep(bundled->contents);
+                        if (!verified)
+                            throw Error("OFFLINE_RIPGREP_NOT_QUALIFIED");
+                        fs::copy_file(bundled->contents / "ripgrep-NOTICES.txt",
+                                      staging / "share" / "ripgrep-NOTICES.txt");
+                    }
                     fs::copy_file(bundled->contents / file, staging / "bin" / file);
+                }
             }
         }
         config["current"]["file"] = path_text(control_root(root) / release / executable_name());

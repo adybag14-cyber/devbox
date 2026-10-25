@@ -19,7 +19,7 @@ export function installedPackages(text, triplet) {
   assert(packages.size > 0 && packages.size <= 512, 'Bounded resolved dependency graph');
   return [...packages.values()].sort((a,b)=>a.Package.localeCompare(b.Package));
 }
-export async function collectDependencies({installed, triplet, manifest, output, sourceSha, compilerRuntime = {bundledGccRuntime:false}}) {
+export async function collectDependencies({installed, triplet, manifest, output, sourceSha, compilerRuntime = {bundledGccRuntime:false}, bundledTools=[]}) {
   assert.match(triplet, /^[a-z0-9-]+$/u); assert.match(sourceSha, /^[a-f0-9]{40}$/u);
   const entries = installedPackages(await readFile(path.join(installed,'vcpkg/status'),'utf8'),triplet);
   for (const dep of manifest.dependencies) assert(entries.some(x=>x.Package === (typeof dep==='string'?dep:dep.name)),
@@ -68,6 +68,14 @@ export async function collectDependencies({installed, triplet, manifest, output,
       buildSupportOnly:false,bundledRuntime:true,archives:compilerRuntime.archives});
     notices.push(`===== bundled GCC runtime =====\n${notice}\n`);
   }
+  for(const tool of bundledTools) {
+    assert.equal(tool.qualified,true,'An optional executable with incomplete tests cannot be published');
+    assert.equal(tool.name,'ripgrep');assert.equal(tool.pcre2,false);assert.deepEqual(tool.features,[]);
+    assert(Array.isArray(tool.packages)&&tool.packages.length>0&&tool.packages.length<128);
+    assert(tool.packages.every(item=>item.bundledTool==='ripgrep'&&!/^pcre2(?:-sys)?$/u.test(item.name)));
+    inventory.push(...tool.packages);
+    notices.push(`===== Optional ripgrep ${tool.version}; PCRE2 disabled =====\n${tool.notice}`);
+  }
   const componentPresence={};
   const installedTarget=path.join(installed,triplet);
   const exists=async file=>{try{await access(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
@@ -91,8 +99,8 @@ export async function collectDependencies({installed, triplet, manifest, output,
       downloadLocation:item.source||'NOASSERTION',filesAnalyzed:false,licenseConcluded:item.license,
       licenseDeclared:'NOASSERTION',copyrightText:'NOASSERTION',
       externalRefs:[{referenceCategory:'PACKAGE-MANAGER',referenceType:'purl',
-        referenceLocator:`pkg:${item.bundledRuntime?'generic':'vcpkg'}/${item.name}@${encodeURIComponent(item.version)}?arch=${triplet}`}],
-      comment:`Resolved ABI ${item.abi}; notice SHA-256 ${item.noticeSha256}; ${item.bundledRuntime?'compiler archives '+JSON.stringify(item.archives):'resolved SPDX SHA-256 '+item.resolvedSpdxSha256}`})),
+        referenceLocator:`pkg:${item.ecosystem==='crates.io'?'cargo':item.ecosystem==='generic'||item.bundledRuntime?'generic':'vcpkg'}/${item.name}@${encodeURIComponent(item.version)}?arch=${triplet}`}],
+      comment:`Resolved ABI ${item.abi}; notice SHA-256 ${item.noticeSha256||'in bundled tool notices'}; ${item.bundledTool?'optional tool '+item.bundledTool:item.bundledRuntime?'compiler archives '+JSON.stringify(item.archives):'resolved SPDX SHA-256 '+item.resolvedSpdxSha256}`})),
     relationships:inventory.map((_,i)=>({spdxElementId:'SPDXRef-DOCUMENT',relationshipType:'DESCRIBES',relatedSpdxElement:`SPDXRef-package-${i}`}))};
   const documents={'dependency-inventory.json':JSON.stringify({schema:1,sourceSha,triplet,generatedAt,
     dependencyBaseline:manifest['builtin-baseline'],scope:'resolved_target_graph_including_build_support_and_bundled_runtime',compilerRuntime,componentPresence,dependencies:inventory},null,2)+'\n',
