@@ -139,10 +139,30 @@ try {
   ownedIdentities.push(recovered.children.find(x=>x.name==='chromium'));
   result=await call({action:'status'});assert.equal(result.isError,false,JSON.stringify(result));
   assert.equal(result.structuredContent.data.available,true);
+  // A hard desktop-owner crash must not leave Xvfb in a separate orphaned
+  // process group. The native child launch binds these ephemeral children to
+  // the exact creating parent; the independent MCP frontend stays healthy.
+  const supervisorBirth=await stat(supervisor.child.pid);
+  assert(supervisorBirth);assert.equal((await status()).supervisor_pid,supervisor.child.pid);
+  assert.equal(await realpath(`/proc/${supervisor.child.pid}/exe`),await realpath(binary));
+  assert.equal(await stat(supervisor.child.pid),supervisorBirth);
+  supervisor.child.kill('SIGKILL');await supervisor.exited;
+  await until(async()=>{
+    for(const identity of recovered.children)if(await stat(identity.pid)===identity.startTicks)return false;
+    return true;
+  },()=> 'Parent-bound desktop child survived its owned supervisor',15000);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status,200);
+  supervisor=launch(args);
+  await until(async()=>{assert.equal(supervisor.child.exitCode,null,supervisor.log());const next=await status();
+    return next?.ready&&next.supervisor_pid===supervisor.child.pid;},()=>supervisor.log(),180000);
+  const restarted=await status();ownedIdentities.push(...restarted.children);
+  result=await call({action:'status'});assert.equal(result.isError,false,JSON.stringify(result));
+  assert.equal(result.structuredContent.data.available,true,JSON.stringify(result));
   report={ok:true,supervisor:'native C++23',source:process.env.GITHUB_SHA||null,
     checks:['private Xauthority and X11','real headed Chromium CDP readiness','native MCP shared-browser identity',
       'native X11 window capture','no inherited credential sentinel','exclusive supervisor lock',
-      'owned Chromium crash recovery','desktop children retained','owned child shutdown']};
+      'owned Chromium crash recovery','desktop children retained','hard desktop-owner crash leaves no direct children',
+      'fresh desktop restart retains independent MCP health','owned child shutdown']};
 } finally {
   if(client)await client.close().catch(()=>{});
   for(const value of children.reverse()) {
