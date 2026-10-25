@@ -50,6 +50,7 @@ int main(int argc, char** argv) {
         auto config = std::make_shared<Config>();
         config->platform = Platform::detect();
         config->project_root = root;
+        config->host_default_workdir = root;
         config->runtime_mode = RuntimeMode::host;
         config->host_exec_enabled = true;
         config->devbox_program_allowlist = {"rg"};
@@ -89,6 +90,19 @@ int main(int argc, char** argv) {
             require(version.find("ripgrep 15.2.0") != std::string::npos &&
                         version.find("features:-pcre2") != std::string::npos,
                     "Unexpected fallback build/features");
+            {
+                // Reproduce the agent-visible inventory mismatch: execution
+                // worked through the bundle while status said rg=unavailable.
+                const auto old_path = environment("PATH");
+                set_environment("PATH", std::string());
+                ScopeExit restore_path([&] { set_environment("PATH", old_path); });
+                config->host_exec_enabled = false; // Inventory remains read-only metadata.
+                ScopeExit restore_execution([&] { config->host_exec_enabled = true; });
+                const auto versions = runtime.get_versions(true);
+                require(std::any_of(versions.begin(), versions.end(),
+                                    [](const auto& value) { return value.starts_with("rg=ripgrep 15.2.0"); }),
+                        "Agent inventory did not discover the verified bundled fallback");
+            }
             config->devbox_program_allowlist.clear();
             rejects([&] { (void)runtime.run_program(request); }, "DEVBOX_PROGRAM_ALLOWLIST");
             config->devbox_program_allowlist = {"rg"};

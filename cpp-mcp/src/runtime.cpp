@@ -237,9 +237,9 @@ std::string clean_powershell_output(std::string_view value) {
     }
     return result;
 }
-ProcessOutput RuntimeExecutor::host_program(ProgramRequest request, const Cancel& cancel) const {
-    if (!config_->host_exec_enabled)
-        throw Error(disabled_message);
+namespace {
+std::optional<BundledExecutable> resolve_optional_ripgrep(ProgramRequest& request, const Config& config,
+                                                          const Cancel& cancel) {
     std::optional<BundledExecutable> bundled;
     const auto started = Clock::now();
     if (normalize_program(request.program) == "rg") {
@@ -249,8 +249,8 @@ ProcessOutput RuntimeExecutor::host_program(ProgramRequest request, const Cancel
             request.program = path_text(*host);
         else {
             bundled = verified_bundled_ripgrep(executable_path().parent_path(), cancel);
-            if (!bundled && config_->project_root.is_absolute())
-                bundled = verified_bundled_ripgrep(config_->project_root / "bin", cancel);
+            if (!bundled && config.project_root.is_absolute())
+                bundled = verified_bundled_ripgrep(config.project_root / "bin", cancel);
             if (!bundled)
                 throw Error("RIPGREP_UNAVAILABLE: install host rg or use the full Devbox package with its "
                             "verified fallback");
@@ -261,6 +261,13 @@ ProcessOutput RuntimeExecutor::host_program(ProgramRequest request, const Cancel
             throw Error("RIPGREP_RESOLUTION_DEADLINE");
         request.timeout -= elapsed;
     }
+    return bundled;
+}
+} // namespace
+ProcessOutput RuntimeExecutor::host_program(ProgramRequest request, const Cancel& cancel) const {
+    if (!config_->host_exec_enabled)
+        throw Error(disabled_message);
+    const auto bundled = resolve_optional_ripgrep(request, *config_, cancel);
     const auto [program, args] = resolve_program(*config_, request.program, request.args);
     return run_resolved(program, args, process_options(request), cancel);
 }
@@ -454,12 +461,20 @@ std::vector<std::string> RuntimeExecutor::get_versions(bool force, const Cancel&
                     break;
                 const auto& name = programs[i];
                 try {
-                    const auto [program, args] = resolve_program(*config_, name, {"--version"});
-                    ProcessOptions options;
-                    options.cwd = config_->host_default_workdir;
-                    options.timeout = Millis(15000);
-                    options.max_capture_chars = 16384;
-                    const auto output = run_resolved(program, args, options, cancel);
+                    ProgramRequest request;
+                    request.program = name;
+                    request.args = name == "rg" ? std::vector<std::string>{"--no-config", "--version"}
+                                                : std::vector<std::string>{"--version"};
+                    request.working_dir = config_->host_default_workdir;
+                    request.timeout = Millis(15000);
+                    request.max_capture_chars = 16384;
+                    // Inventory must describe the same executable an agent can
+                    // use, including a verified fallback when host rg is absent.
+                    // This fixed version probe retains the inventory's existing
+                    // read-only semantics independently of execution allowlists.
+                    const auto bundled = resolve_optional_ripgrep(request, *config_, cancel);
+                    const auto [program, args] = resolve_program(*config_, request.program, request.args);
+                    const auto output = run_resolved(program, args, process_options(request), cancel);
                     std::string value = "available";
                     for (const auto& line : split(output.stdout_text + output.stderr_text, '\n', false))
                         if (!trim(line).empty()) {
