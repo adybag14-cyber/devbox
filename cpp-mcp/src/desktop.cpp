@@ -118,6 +118,9 @@ class DesktopChild {
     bool started() const {
         return pid_.load() != 0 && instance_.load() != 0 && running();
     }
+    std::uint32_t pid() const {
+        return pid_.load();
+    }
     Json identity(const std::string& name) {
         std::lock_guard lock(identity_mutex_);
         return {{"name", name},
@@ -315,20 +318,21 @@ class Desktop {
         child("xvfb", program("Xvfb"),
               {display_name(options_), "-screen", "0", "1280x800x24", "-nolisten", "tcp", "-auth",
                path_text(authority), "-noreset"});
+        const auto xvfb_pid = children_.at("xvfb")->pid();
         const auto until = Clock::now() + Millis(20000);
         for (;;) {
             if (!alive("xvfb") || stop_())
                 throw Error("DESKTOP_XVFB_EXITED_BEFORE_READY");
             try {
                 if (probe_private_x11(options_.display, cookie, std::min(until, Clock::now() + Millis(1000)),
-                                      stop_))
+                                      stop_, xvfb_pid))
                     break;
             } catch (const std::runtime_error&) {
             }
             if (Clock::now() >= until || !pause(Millis(200)))
                 throw Error("DESKTOP_X11_STARTUP_DEADLINE");
         }
-        window_manager_ = std::make_unique<DesktopWindowManager>(options_.display, cookie, stop_);
+        window_manager_ = std::make_unique<DesktopWindowManager>(options_.display, cookie, stop_, xvfb_pid);
         if (options_.browser_autostart)
             start_browser();
     }

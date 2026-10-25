@@ -446,7 +446,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libxcb-xtest0-dev
+          sudo apt-get install -y --no-install-recommends libxcb-xtest0-dev xvfb
           sh .cpp-build/vcpkg/bootstrap-vcpkg.sh -disableMetrics
           echo 'CC=clang' >> "$GITHUB_ENV"
           echo 'CXX=clang++' >> "$GITHUB_ENV"

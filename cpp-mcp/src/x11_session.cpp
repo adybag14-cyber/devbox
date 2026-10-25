@@ -158,7 +158,8 @@ void write_xauthority(const std::filesystem::path& path, unsigned display, const
     throw std::runtime_error("Native Xauthority requires Linux");
 #endif
 }
-int connect_private_x11(unsigned display, X11Deadline deadline, const std::function<bool()>& stop) {
+int connect_private_x11(unsigned display, X11Deadline deadline, const std::function<bool()>& stop,
+                        std::uint32_t expected_peer_pid) {
 #if defined(__linux__) && !defined(__ANDROID__)
     validate_display(display);
     check(deadline, stop);
@@ -189,7 +190,8 @@ int connect_private_x11(unsigned display, X11Deadline deadline, const std::funct
     }
     ucred peer{};
     socklen_t size = sizeof(peer);
-    if (::getsockopt(socket.value, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 || peer.uid != ::geteuid())
+    if (::getsockopt(socket.value, SOL_SOCKET, SO_PEERCRED, &peer, &size) != 0 || peer.uid != ::geteuid() ||
+        (expected_peer_pid && static_cast<std::uint32_t>(peer.pid) != expected_peer_pid))
         throw std::runtime_error("DESKTOP_X11_PRIVATE_PEER_REQUIRED");
     const auto result = socket.value;
     socket.value = -1;
@@ -198,13 +200,14 @@ int connect_private_x11(unsigned display, X11Deadline deadline, const std::funct
     (void)display;
     (void)deadline;
     (void)stop;
+    (void)expected_peer_pid;
     throw std::runtime_error("Native X11 requires Linux");
 #endif
 }
 bool probe_private_x11(unsigned display, const X11Cookie& cookie, X11Deadline deadline,
-                       const std::function<bool()>& stop) {
+                       const std::function<bool()>& stop, std::uint32_t expected_peer_pid) {
 #if defined(__linux__) && !defined(__ANDROID__)
-    Fd socket(connect_private_x11(display, deadline, stop));
+    Fd socket(connect_private_x11(display, deadline, stop, expected_peer_pid));
     // X11 setup uses little-endian lengths; the authority file uses big-endian.
     std::array<char, 48> setup{};
     setup[0] = 'l';
@@ -230,6 +233,7 @@ bool probe_private_x11(unsigned display, const X11Cookie& cookie, X11Deadline de
     (void)cookie;
     (void)deadline;
     (void)stop;
+    (void)expected_peer_pid;
     throw std::runtime_error("Native X11 requires Linux");
 #endif
 }

@@ -10,7 +10,8 @@ class DesktopWindowManager {
     std::unique_ptr<State> state_;
 
   public:
-    DesktopWindowManager(unsigned display, const X11Cookie& cookie, const std::function<bool()>& stop);
+    DesktopWindowManager(unsigned display, const X11Cookie& cookie, const std::function<bool()>& stop,
+                         std::uint32_t expected_peer_pid = 0);
     ~DesktopWindowManager();
     DesktopWindowManager(const DesktopWindowManager&) = delete;
     DesktopWindowManager& operator=(const DesktopWindowManager&) = delete;

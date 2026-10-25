@@ -122,6 +122,12 @@ void live(const char* xvfb, const X11Cookie& cookie) {
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     require(ready, "Xvfb did not accept native authority and handshake");
+    require(probe_private_x11(display, cookie, std::chrono::steady_clock::now() + std::chrono::seconds(1), {},
+                              static_cast<std::uint32_t>(server.pid)),
+            "Exact Xvfb peer identity rejected");
+    rejects(
+        [&] { (void)probe_private_x11(display, cookie, until, {}, static_cast<std::uint32_t>(::getpid())); },
+        "An unrelated same-user X server peer was accepted");
     auto wrong = cookie;
     wrong[0] ^= 255;
     require(

@@ -665,13 +665,14 @@ struct DesktopWindowManager::State {
     }
 };
 DesktopWindowManager::DesktopWindowManager(unsigned display, const X11Cookie& cookie,
-                                           const std::function<bool()>& stop)
+                                           const std::function<bool()>& stop, std::uint32_t expected_peer_pid)
     : state_(std::make_unique<State>()) {
     auto& state = *state_;
-    state.worker = std::thread([&state, display, cookie] {
+    state.worker = std::thread([&state, display, cookie, expected_peer_pid] {
         try {
-            const auto fd = connect_private_x11(display, Steady::now() + std::chrono::seconds(2),
-                                                [&] { return state.stopped.load(); });
+            const auto fd = connect_private_x11(
+                display, Steady::now() + std::chrono::seconds(2), [&] { return state.stopped.load(); },
+                expected_peer_pid);
             {
                 std::lock_guard lock(state.mutex);
                 state.pinned_socket = ::fcntl(fd, F_DUPFD_CLOEXEC, 3);
@@ -716,7 +717,8 @@ bool DesktopWindowManager::healthy() const {
 }
 #else
 struct DesktopWindowManager::State {};
-DesktopWindowManager::DesktopWindowManager(unsigned, const X11Cookie&, const std::function<bool()>&) {
+DesktopWindowManager::DesktopWindowManager(unsigned, const X11Cookie&, const std::function<bool()>&,
+                                           std::uint32_t) {
     throw std::runtime_error("Native private desktop window management requires Linux");
 }
 DesktopWindowManager::~DesktopWindowManager() = default;
