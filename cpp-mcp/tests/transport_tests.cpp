@@ -108,8 +108,8 @@ struct FixtureBackend : McpBackend {
         }
         co_return result;
     }
-    asio::awaitable<Json> metadata(const HttpRequest&) override {
-        co_return Json{{"name", "fixture"}};
+    asio::awaitable<Json> metadata(const HttpRequest& request) override {
+        co_return Json{{"name", "fixture"}, {"local", request.is_local}};
     }
     bool ready() const override {
         if (pause_ready) {
@@ -186,6 +186,7 @@ int main(int argc, char** argv) {
         config->oauth_state_file_path = root / "oauth.json";
         config->gateway_bridge_enabled = true;
         config->gateway_bridge_origins = {"https://chatgpt.com"};
+        config->public_base_url = "https://devbox.example";
         config->mcp_json_body_limit_bytes = 4096;
         auto backend = std::make_shared<FixtureBackend>();
         HttpServer server(config, backend);
@@ -669,6 +670,28 @@ int main(int argc, char** argv) {
         require(http_request("OPTIONS", base, {}, bridge).status == 405,
                 "forwarded remote requests cannot expose local bridge");
         bridge.erase("x-forwarded-for");
+        require(json_bool(Json::parse(http_request("GET", base + "/", {}, headers()).body), "local"),
+                "direct loopback operator metadata remains local");
+        auto public_host = headers();
+        public_host["host"] = "devbox.example";
+        require(!json_bool(Json::parse(http_request("GET", base + "/", {}, public_host).body), "local"),
+                "public authority on a tunnel socket must remain remote without forwarding hints");
+        for (const auto& forwarded :
+             {Json{{"x-forwarded-for", "127.0.0.1"}}, Json{{"x-forwarded-for", "127.0.0.1, 203.0.113.4"}},
+              Json{{"x-forwarded-for", "localhost"}}, Json{{"x-forwarded-for", "::ffff:127.0.0.1"}},
+              Json{{"x-forwarded-for", ""}}, Json{{"forwarded", "for=127.0.0.1"}},
+              Json{{"cf-connecting-ip", "127.0.0.1"}}, Json{{"x-real-ip", "127.0.0.1"}},
+              Json{{"true-client-ip", "127.0.0.1"}}}) {
+            auto proxy_headers = bridge;
+            proxy_headers.update(forwarded);
+            require(http_request("OPTIONS", base, {}, proxy_headers).status == 405,
+                    "proxy hints cannot activate the local browser bridge");
+            require(!json_bool(Json::parse(http_request("GET", base + "/", {}, proxy_headers).body), "local"),
+                    "forwarded requests cannot claim local metadata with a spoofed loopback value");
+            proxy_headers["host"] = "devbox.example";
+            require(!json_bool(Json::parse(http_request("GET", base + "/", {}, proxy_headers).body), "local"),
+                    "public authority and spoofed forwarding chain remain remote");
+        }
         bridge["origin"] = "https://attacker.invalid";
         require(http_request("OPTIONS", base, {}, bridge).status == 403, "origin allowlist");
         asio::io_context io;

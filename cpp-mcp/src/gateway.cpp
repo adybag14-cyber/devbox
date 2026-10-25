@@ -59,6 +59,7 @@ Json Gateway::bridge_info(bool is_local) const {
 }
 GatewayDecision Gateway::inspect(const HttpRequest& request) const {
     GatewayDecision result;
+    bool local_authority = false;
     const auto host = json_string(request.headers, "host");
     if (host.empty()) {
         result.response.emplace(host_failure("Missing Host header"));
@@ -72,13 +73,20 @@ GatewayDecision Gateway::inspect(const HttpRequest& request) const {
             result.response.emplace(host_failure("Invalid Host: " + url.host));
             return result;
         }
+        local_authority = loopback(url.host, true);
     } catch (...) {
         result.response.emplace(host_failure("Invalid Host header: " + host));
         return result;
     }
-    result.is_local = loopback(request.peer);
-    if (result.is_local && request.headers.contains("x-forwarded-for"))
-        result.is_local = loopback(split(json_string(request.headers, "x-forwarded-for"), ',')[0], true);
+    // A tunnel's loopback socket does not make its public client local. Forwarding
+    // headers are untrusted hints, never authority to expose private metadata or
+    // the local bridge. Direct operator probes use a loopback authority and no
+    // proxy headers; a deployment's public hostname always gets the public view.
+    result.is_local = loopback(request.peer) && local_authority;
+    for (const auto* name :
+         {"x-forwarded-for", "forwarded", "cf-connecting-ip", "true-client-ip", "x-real-ip"})
+        if (request.headers.contains(name))
+            result.is_local = false;
     const auto requested_origin = origin(json_string(request.headers, "origin"));
     const auto expose =
         config_.gateway_bridge_enabled && config_.auth_mode == AuthMode::none && result.is_local;
