@@ -1,6 +1,7 @@
 #include "devbox/bundled_tools.hpp"
 #include "devbox/runtime.hpp"
 #include "devbox/state_store.hpp"
+#include <algorithm>
 #include <fstream>
 #include <iostream>
 using namespace devbox;
@@ -106,6 +107,9 @@ int main(int argc, char** argv) {
             config->devbox_program_allowlist.clear();
             rejects([&] { (void)runtime.run_program(request); }, "DEVBOX_PROGRAM_ALLOWLIST");
             config->devbox_program_allowlist = {"rg"};
+            config->host_program_allowlist.clear();
+            rejects([&] { (void)runtime.run_host_program_only(request); }, "HOST_PROGRAM_ALLOWLIST");
+            config->host_program_allowlist = {"rg"};
             config->host_exec_enabled = false;
             rejects([&] { (void)runtime.run_program(request); }, "execution is disabled");
             config->host_exec_enabled = true;
