@@ -130,6 +130,9 @@ jobs:
       - name: Native supervision without Node or Git on runtime PATH
         if: matrix.sanitizers == '0'
         run: node cpp-mcp/scripts/native-management-smoke.mjs
+      - name: Native interactive desktop broker without a PowerShell wrapper
+        if: matrix.name == 'Windows MSVC'
+        run: node cpp-mcp/scripts/managed-broker-smoke.mjs
       - name: Native packaged setup without development tools
         if: matrix.sanitizers == '0'
         run: node cpp-bootstrap/scripts/native-install.mjs

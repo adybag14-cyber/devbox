@@ -13,6 +13,7 @@ or a Docker engine. Existing host tools are not uninstalled.
 | xdpyinfo | Authenticated local X11 setup handshake with response-size, deadline, cancellation and peer-identity bounds. |
 | Openbox | A bounded native window manager on Devbox's private Xvfb: map/configure, stacking, focus, fullscreen, maximize, minimize/restore and WM_DELETE_WINDOW. Existing managers are never replaced. |
 | D-Bus daemon | Devbox has no bus service to host. Its private browser desktop disables bus auto-launch/host discovery and needs no idle daemon. Chromium sandbox settings remain enabled. |
+| Windows PowerShell desktop wrapper | The selected C++23 executable validates its installation/source/digest/pipe, owns the interactive broker directly, and atomically records its exact process identity. The scheduled task starts that executable without an interpreter. |
 | Docker and docker-init | Native C++ management under the OS service manager. The host init handles orphan adoption; native process ownership/cancellation handles Devbox children. Container compatibility is optional. |
 | Node/npm, Python, shells, Git, curl CLI and archive helpers | Normal installation, core startup, supervision, local file operations, network fetch and offline extraction already use C++/OS/library implementations. Optional user commands retain their existing execution controls. |
 | ripgrep | Devbox's own structured file search is native. Explicit `rg` program requests prefer an installed host tool, then a verified optional bundled executable. |

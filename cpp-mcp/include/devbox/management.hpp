@@ -39,5 +39,10 @@ ServiceMemoryPlan service_memory_plan(std::string_view membership, std::string_v
 // Never exposed as an MCP tool; it cannot select an arbitrary cgroup or raise limits.
 Json apply_service_memory_guard(std::string_view unit, std::uint64_t physical_bytes,
                                 std::uint64_t total_bytes);
+void validate_managed_computer_selection(const fs::path& root, const Json& config, const Json& build,
+                                         std::string_view hash, std::string_view source,
+                                         std::string_view pipe);
+int run_managed_computer_broker(const fs::path& root, std::string_view hash, std::string_view source,
+                                std::string_view pipe, const std::function<bool()>& stopping);
 int management_main(const std::vector<std::string>& args, const BundledQualification* bundled = nullptr);
 } // namespace devbox

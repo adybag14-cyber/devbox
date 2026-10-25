@@ -110,18 +110,22 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                       << '\n';
             return 0;
         }
-        if (mode == "--computer-use-broker") {
-            if (args.size() != 2)
-                throw Error("--computer-use-broker requires one local pipe name");
+        if (mode == "--computer-use-broker" || mode == "--managed-computer-use-broker") {
+            const bool managed = mode == "--managed-computer-use-broker";
+            if (args.size() != (managed ? 5u : 2u))
+                throw Error(managed ? "Managed broker requires ROOT SHA256 SOURCE PIPE"
+                                    : "--computer-use-broker requires one local pipe name");
             std::signal(SIGINT, signal_handler);
             std::signal(SIGTERM, signal_handler);
 #ifdef _WIN32
             SetConsoleCtrlHandler(console_handler, TRUE);
-            return run_computer_broker(
-                args[1], [] { return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0; });
+            const auto stop = [] { return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0; };
 #else
-            return run_computer_broker(args[1], [] { return shutdown_requested != 0; });
+            const auto stop = [] { return shutdown_requested != 0; };
 #endif
+            return managed
+                       ? run_managed_computer_broker(path_from_utf8(args[1]), args[2], args[3], args[4], stop)
+                       : run_computer_broker(args[1], stop);
         }
         if (mode == "--help" || mode == "-h") {
             std::cout << "Devbox C++ MCP " << build_version()
@@ -129,7 +133,8 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                          "[--build-info|--parity-report|--dump-contract|"
                          "--desktop-supervisor --project-root PATH --workspace PATH|--job-runner "
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
-                         "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|--admission "
+                         "--computer-use-broker PIPE|--managed-computer-use-broker ROOT SHA256 SOURCE PIPE|"
+                         "--computer-use-probe PIPE|--migrate-state|--admission "
                          "drain|resume|status|"
                          "--stop-state-coordinator ROOT|--grant-create-workspace ID|--grant-issue JSON|"
                          "--grant-revoke ID|--grant-inspect ID|--execute-granted JSON|--state-export REPORT|"

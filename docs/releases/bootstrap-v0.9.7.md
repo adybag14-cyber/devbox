@@ -25,6 +25,10 @@ not include those interpreters or a Docker engine.
 - Desktop shutdown now allows its supervisor to clean up owned children before
   forced termination. Linux ephemeral Xvfb/Chromium children are bound to their
   parent's lifetime. Manager and frontend recovery preserve the private browser.
+- Windows interactive desktop tasks can use `--managed-computer-use-broker ROOT
+  SHA256 SOURCE PIPE` to replace the PowerShell startup wrapper. The selected
+  native executable validates source, digest, installation and pipe identity,
+  refuses path aliases and duplicate ownership, and runs the broker directly.
 - The frozen Rust compatibility implementation tolerates contention in its
   derived queue-head cache and retries transient Windows atomic-rename sharing
   conflicts without deleting the previously committed state. JavaScript test

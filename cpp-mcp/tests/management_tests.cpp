@@ -32,6 +32,46 @@ int main() {
         fs::remove_all(root, ec);
     });
     try {
+        {
+            const std::string hash(64, 'a'), source(40, 'b'), pipe = "Devbox-Owned-Test";
+#ifdef _WIN32
+            const auto file = root / "run/native/releases" / hash / "devbox-mcp.exe";
+#else
+            const auto file = root / "run/native/releases" / hash / "devbox-mcp";
+#endif
+            const Json build{{"binarySha256", hash}, {"gitSha", source}, {"sourceDirty", false}};
+            const Json selection{
+                {"schema", 1},
+                {"root", path_text(root)},
+                {"desired", true},
+                {"policy", "signed-qualified"},
+                {"environment", {{"DEVBOX_COMPUTER_USE_PIPE", pipe}}},
+                {"current", {{"file", path_text(file)}, {"sha256", hash}, {"source", source}}}};
+            validate_managed_computer_selection(root, selection, build, hash, source, pipe);
+            for (const auto* field : {"file", "sha256", "source"}) {
+                auto changed = selection;
+                changed["current"][field] = "different";
+                rejects(
+                    [&] { validate_managed_computer_selection(root, changed, build, hash, source, pipe); },
+                    "SELECTION_MISMATCH");
+            }
+            auto dirty = build;
+            dirty["sourceDirty"] = true;
+            rejects([&] { validate_managed_computer_selection(root, selection, dirty, hash, source, pipe); },
+                    "SELECTION_MISMATCH");
+            auto stopped = selection;
+            stopped["desired"] = false;
+            rejects([&] { validate_managed_computer_selection(root, stopped, build, hash, source, pipe); },
+                    "SELECTION_MISMATCH");
+            rejects(
+                [&] {
+                    validate_managed_computer_selection(root, selection, build, hash, source, "different");
+                },
+                "SELECTION_MISMATCH");
+            rejects(
+                [&] { validate_managed_computer_selection(root, selection, build, hash, source, "../pipe"); },
+                "ARGUMENTS_INVALID");
+        }
         const std::string memory_unit = "devbox-native-fallback.service";
         constexpr std::uint64_t physical = 576 * 1024 * 1024, combined = 1024 * 1024 * 1024;
         const auto legacy = service_memory_plan("8:memory:/system.slice/" + memory_unit + "\n0::/other\n",

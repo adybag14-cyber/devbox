@@ -1,6 +1,7 @@
 #include "devbox/management.hpp"
 #include "devbox/admission.hpp"
 #include "devbox/bundled_tools.hpp"
+#include "devbox/computer_use.hpp"
 #include "devbox/contract.hpp"
 #include "devbox/native.hpp"
 #include "devbox/scoped_thread.hpp"
@@ -9,6 +10,7 @@
 #include <algorithm>
 #include <charconv>
 #include <csignal>
+#include <cstdio>
 #include <future>
 #include <iostream>
 #include <thread>
@@ -885,6 +887,119 @@ Json send_control(const ManagementOptions& options, std::string action, const Js
 }
 } // namespace
 
+void validate_managed_computer_selection(const fs::path& root, const Json& config, const Json& build,
+                                         std::string_view hash, std::string_view source,
+                                         std::string_view pipe) {
+    const auto hex = [](std::string_view value, std::size_t size) {
+        return value.size() == size && std::all_of(value.begin(), value.end(), [](char c) {
+                   return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+               });
+    };
+    if (!root.is_absolute() || root == root.root_path() || root.lexically_normal() != root ||
+        !hex(hash, 64) || !hex(source, 40) || pipe.empty() || pipe.size() > 100 ||
+        !std::all_of(pipe.begin(), pipe.end(), [](char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+        }))
+        throw Error("MANAGED_COMPUTER_ARGUMENTS_INVALID");
+    const auto& current = config.at("current");
+    const auto expected = control_root(root) / "releases" / hash / executable_name();
+    const auto policy = json_string(config, "policy");
+    if (json_uint(config, "schema") != 1 || json_string(config, "root") != path_text(root) ||
+        !json_bool(config, "desired") ||
+        (policy != "signed-qualified" && policy != "bundled-qualified" && policy != "local-development") ||
+        json_string(current, "file") != path_text(expected) || json_string(current, "sha256") != hash ||
+        json_string(current, "source") != source ||
+        json_string(config.at("environment"), "DEVBOX_COMPUTER_USE_PIPE") != pipe ||
+        json_string(build, "binarySha256") != hash || json_string(build, "gitSha") != source ||
+        build.at("sourceDirty") != false)
+        throw Error("MANAGED_COMPUTER_SELECTION_MISMATCH");
+}
+int run_managed_computer_broker(const fs::path& root, std::string_view hash, std::string_view source,
+                                std::string_view pipe, const std::function<bool()>& stopping) {
+#ifdef _WIN32
+    const auto config = config_read(root);
+    validate_managed_computer_selection(root, config, build_snapshot(), hash, source, pipe);
+    const auto selected = control_root(root) / "releases" / hash / executable_name();
+    for (auto directory = selected.parent_path(); !directory.empty();) {
+        const auto attributes = GetFileAttributesW(directory.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            throw Error("MANAGED_COMPUTER_PATH_ALIAS");
+        if (directory == directory.root_path())
+            break;
+        directory = directory.parent_path();
+    }
+    verify_stored(root, config.at("current"), json_string(config, "policy"));
+    if (fs::canonical(executable_path()) != selected)
+        throw Error("MANAGED_COMPUTER_EXECUTABLE_MISMATCH");
+    DWORD session = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &session) || !session)
+        throw Error("COMPUTER_BROKER_SESSION: an interactive account session is required");
+    const auto instance = process_instance(process_id());
+    if (!instance)
+        throw Error("MANAGED_COMPUTER_PROCESS_IDENTITY_UNAVAILABLE");
+    const FILETIME birth{static_cast<DWORD>(*instance), static_cast<DWORD>(*instance >> 32)};
+    SYSTEMTIME calendar{};
+    if (!FileTimeToSystemTime(&birth, &calendar))
+        throw Error("MANAGED_COMPUTER_PROCESS_TIME_UNAVAILABLE");
+    char created[40]{};
+    const auto length =
+        std::snprintf(created, sizeof(created), "%04u-%02u-%02uT%02u:%02u:%02u.%07uZ",
+                      static_cast<unsigned>(calendar.wYear), static_cast<unsigned>(calendar.wMonth),
+                      static_cast<unsigned>(calendar.wDay), static_cast<unsigned>(calendar.wHour),
+                      static_cast<unsigned>(calendar.wMinute), static_cast<unsigned>(calendar.wSecond),
+                      static_cast<unsigned>(*instance % 10000000));
+    if (length <= 0 || static_cast<std::size_t>(length) >= sizeof(created))
+        throw Error("MANAGED_COMPUTER_PROCESS_TIME_UNAVAILABLE");
+    FileLock owner(control_root(root) / "desktop-owner.lock", Millis(2000), {}, true);
+    const auto status = control_root(root) / "desktop-worker.json";
+    Json record{{"pid", process_id()},
+                {"instance", std::to_string(*instance)},
+                {"createdAtUtc", created},
+                {"executable", path_text(selected)},
+                {"sha256", hash},
+                {"source", source},
+                {"pipe", pipe},
+                {"sessionId", session},
+                {"state", "running"},
+                {"implementation", "native C++23"}};
+    bool published = false;
+    const auto finish = [&](int code) {
+        if (published) {
+            record["state"] = "exited";
+            record["exitCode"] = code;
+            record["finishedAtUtc"] = utc_now();
+            write_json_atomic(status, record);
+        }
+    };
+    try {
+        const auto result = run_computer_broker(pipe, [&] {
+            // The broker invokes this only after acquiring its private pipe.
+            // A duplicate/failed launch must not overwrite the live owner's record.
+            if (!published) {
+                write_json_atomic(status, record);
+                published = true;
+            }
+            return stopping && stopping();
+        });
+        finish(result);
+        return result;
+    } catch (...) {
+        try {
+            finish(1);
+        } catch (...) {
+        }
+        throw;
+    }
+#else
+    (void)root;
+    (void)hash;
+    (void)source;
+    (void)pipe;
+    (void)stopping;
+    throw Error("Managed computer-use broker requires Windows");
+#endif
+}
 std::uint64_t management_instance(const Json& identity) {
     if (!identity.contains("instance"))
         return 0;
