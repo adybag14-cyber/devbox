@@ -3,7 +3,9 @@
 #include <csignal>
 #include <cstring>
 #include <iostream>
+#include <set>
 #include <stdexcept>
+#include <sys/syscall.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -38,12 +40,34 @@ template <typename T> using Reply = std::unique_ptr<T, Free>;
 std::size_t descriptors() {
     return static_cast<std::size_t>(std::distance(std::filesystem::directory_iterator("/proc/self/fd"), {}));
 }
+std::set<int> threads() {
+    std::set<int> result;
+    for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task"))
+        result.insert(std::stoi(entry.path().filename().string()));
+    return result;
+}
 } // namespace
 void check_window_manager(unsigned display, const X11Cookie& cookie, int server_pid) {
     const auto baseline = descriptors();
     {
+        const auto original_threads = threads();
+        struct sigaction original_signal{};
+        require(::sigaction(SIGPIPE, nullptr, &original_signal) == 0, "Read original SIGPIPE policy");
         auto wm = std::make_unique<DesktopWindowManager>(display, cookie, [] { return false; });
         require(wm->healthy(), "Native window manager not ready");
+        auto owned_threads = threads();
+        for (const auto thread : original_threads)
+            owned_threads.erase(thread);
+        require(owned_threads.size() == 1, "Native window manager must own exactly one worker");
+        // The real cancellation race can produce SIGPIPE while XCB is writing
+        // the handshake. Deliver it deterministically to that exact owned
+        // worker; normal X11 operations and teardown must still succeed.
+        require(::syscall(SYS_tgkill, ::getpid(), *owned_threads.begin(), SIGPIPE) == 0,
+                "Deliver SIGPIPE to owned window-manager worker");
+        struct sigaction current_signal{};
+        require(::sigaction(SIGPIPE, nullptr, &current_signal) == 0 &&
+                    current_signal.sa_handler == original_signal.sa_handler,
+                "Window manager changed process-wide SIGPIPE policy");
         bool duplicate_rejected = false;
         try {
             DesktopWindowManager duplicate(display, cookie, [] { return false; });
