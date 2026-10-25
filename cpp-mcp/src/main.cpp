@@ -7,6 +7,7 @@
 #include "devbox/run_service.hpp"
 #include "devbox/state_coordinator.hpp"
 #include "server_main.hpp"
+#include <charconv>
 #include <csignal>
 #include <iostream>
 namespace {
@@ -44,6 +45,19 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
         const auto mode = args.empty() ? "" : args.front();
         if (mode == "manage")
             return management_main(std::vector<std::string>(args.begin() + 1, args.end()));
+        if (mode == "--service-memory-guard") {
+            if (args.size() != 4)
+                throw Error("Service memory guard requires UNIT PHYSICAL_BYTES TOTAL_BYTES");
+            const auto bytes = [](const std::string& text) {
+                std::uint64_t value = 0;
+                const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+                if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+                    throw Error("SERVICE_MEMORY_BOUNDS_INVALID");
+                return value;
+            };
+            std::cout << apply_service_memory_guard(args[1], bytes(args[2]), bytes(args[3])).dump() << '\n';
+            return 0;
+        }
         if (mode == "--desktop-supervisor") {
             const auto options =
                 parse_desktop_options(std::vector<std::string>(args.begin() + 1, args.end()));
@@ -96,18 +110,22 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                       << '\n';
             return 0;
         }
-        if (mode == "--computer-use-broker") {
-            if (args.size() != 2)
-                throw Error("--computer-use-broker requires one local pipe name");
+        if (mode == "--computer-use-broker" || mode == "--managed-computer-use-broker") {
+            const bool managed = mode == "--managed-computer-use-broker";
+            if (args.size() != (managed ? 5u : 2u))
+                throw Error(managed ? "Managed broker requires ROOT SHA256 SOURCE PIPE"
+                                    : "--computer-use-broker requires one local pipe name");
             std::signal(SIGINT, signal_handler);
             std::signal(SIGTERM, signal_handler);
 #ifdef _WIN32
             SetConsoleCtrlHandler(console_handler, TRUE);
-            return run_computer_broker(
-                args[1], [] { return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0; });
+            const auto stop = [] { return InterlockedCompareExchange(&shutdown_requested, 0, 0) != 0; };
 #else
-            return run_computer_broker(args[1], [] { return shutdown_requested != 0; });
+            const auto stop = [] { return shutdown_requested != 0; };
 #endif
+            return managed
+                       ? run_managed_computer_broker(path_from_utf8(args[1]), args[2], args[3], args[4], stop)
+                       : run_computer_broker(args[1], stop);
         }
         if (mode == "--help" || mode == "-h") {
             std::cout << "Devbox C++ MCP " << build_version()
@@ -115,7 +133,8 @@ int devbox::run_mcp(const std::vector<std::string>& args) {
                          "[--build-info|--parity-report|--dump-contract|"
                          "--desktop-supervisor --project-root PATH --workspace PATH|--job-runner "
                          "PATH|--elevated-shell-worker PATH|--capture-worker OUTPUT MODE QUALITY [PID TREE]|"
-                         "--computer-use-broker PIPE|--computer-use-probe PIPE|--migrate-state|--admission "
+                         "--computer-use-broker PIPE|--managed-computer-use-broker ROOT SHA256 SOURCE PIPE|"
+                         "--computer-use-probe PIPE|--migrate-state|--admission "
                          "drain|resume|status|"
                          "--stop-state-coordinator ROOT|--grant-create-workspace ID|--grant-issue JSON|"
                          "--grant-revoke ID|--grant-inspect ID|--execute-granted JSON|--state-export REPORT|"

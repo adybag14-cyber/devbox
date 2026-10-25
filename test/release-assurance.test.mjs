@@ -39,6 +39,16 @@ test('vulnerability reports preserve findings and explicitly limited coverage',a
   pull(controller){controller.enqueue(new Uint8Array(3*1024*1024));}
  }))),/Bounded OSV result/u);
 });
+test('optional Cargo components participate in the blocking vulnerability gate',async()=>{
+ const inventory={dependencies:[{name:'regex',version:'1.12.2',ecosystem:'crates.io',bundledTool:'ripgrep'}]};
+ const result=await vulnerabilityReport([inventory],async(url,options)=>{
+  assert.deepEqual(JSON.parse(options.body).queries,[{package:{name:'regex',ecosystem:'crates.io'},version:'1.12.2'}]);
+  return new Response(JSON.stringify({results:[{vulns:[{id:'SYNTHETIC-CARGO-FINDING'}]}]}));
+ });
+ assert.deepEqual(result.blockingFindings,['SYNTHETIC-CARGO-FINDING']);
+ assert.deepEqual(result.unmapped,[]);
+});
+
 test('promotion refuses wrong bytes, missing required gates and signature rejection before execution',async()=>{
  const bytes=Buffer.from('controlled binary fixture');const sourceSha='c'.repeat(40);
  const receipt={schema:1,sourceSha,workflowRunId:'123',qualification:'complete_required_workflow_dependency_graph',

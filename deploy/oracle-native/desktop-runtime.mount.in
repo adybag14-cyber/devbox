@@ -1,0 +1,8 @@
+[Unit]
+Description=Bounded private Devbox desktop runtime
+
+[Mount]
+What=tmpfs
+Where=@DESKTOP_ROOT@
+Type=tmpfs
+Options=mode=0700,uid=996,gid=996,size=96M,nosuid,nodev,noexec

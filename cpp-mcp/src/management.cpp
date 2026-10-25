@@ -1,5 +1,7 @@
 #include "devbox/management.hpp"
 #include "devbox/admission.hpp"
+#include "devbox/bundled_tools.hpp"
+#include "devbox/computer_use.hpp"
 #include "devbox/contract.hpp"
 #include "devbox/native.hpp"
 #include "devbox/scoped_thread.hpp"
@@ -8,6 +10,7 @@
 #include <algorithm>
 #include <charconv>
 #include <csignal>
+#include <cstdio>
 #include <future>
 #include <iostream>
 #include <thread>
@@ -292,6 +295,7 @@ struct Child {
     std::atomic<std::uint32_t> pid{0};
     std::optional<std::uint64_t> instance;
     bool adopted = false;
+    Millis stop_grace{250};
     std::string generation;
     ~Child() {
         if (task.valid()) {
@@ -309,11 +313,11 @@ struct Child {
     }
     void stop() {
         if (adopted) {
-            if (alive() && !terminate_process_tree(pid, instance))
+            if (alive() && !terminate_process_tree(pid, instance, stop_grace))
                 throw Error("NATIVE_OWNED_STOP_UNCONFIRMED");
         } else if (task.valid()) {
             cancel->cancel();
-            if (task.wait_for(Millis(10000)) != std::future_status::ready)
+            if (task.wait_for(Millis(15000)) != std::future_status::ready)
                 throw Error("NATIVE_CHILD_STOP_TIMED_OUT");
             task.get();
         }
@@ -327,6 +331,7 @@ struct Child {
 std::unique_ptr<Child> launch_owned(std::string file, std::vector<std::string> arguments,
                                     ProcessOptions options, std::string generation = {}) {
     auto child = std::make_unique<Child>();
+    child->stop_grace = options.termination_signal_grace;
     child->generation = generation.empty() ? uuid() : std::move(generation);
     auto* state = child.get();
     options.on_pid = [state](std::uint32_t pid) { state->pid.store(pid); };
@@ -353,6 +358,8 @@ std::unique_ptr<Child> launch(const fs::path& root, const Json& config, const Js
     options.cwd = root;
     options.env = managed_environment(root, config, generation);
     options.max_capture_chars = 16384;
+    options.termination_signal_grace = Millis(2000);
+    options.termination_grace = Millis(5000);
     options.allow_durable_children = true;
     options.on_output = [root](OutputStream stream, std::string_view text) {
         log(root, std::string(stream == OutputStream::stderr_stream ? "mcp stderr: " : "mcp stdout: ") +
@@ -397,6 +404,7 @@ class Companions {
                 entry.child->instance = management_instance(identity);
                 entry.child->generation = json_string(identity, "generation");
                 entry.child->adopted = true;
+                entry.child->stop_grace = Millis(8000);
             }
             entries_.push_back(std::move(entry));
         }
@@ -445,6 +453,8 @@ class Companions {
                     for (const auto& [key, data] : configured.items())
                         options.env->insert_or_assign(key, data.get<std::string>());
                     options.max_capture_chars = 4096;
+                    options.termination_signal_grace = Millis(8000);
+                    options.termination_grace = Millis(10000);
                     options.on_output = [this, name](OutputStream, std::string_view data) {
                         log(root_, name + ": " + std::string(data));
                     };
@@ -607,6 +617,7 @@ int supervise(const ManagementOptions& options) {
         child->instance = management_instance(previous);
         child->generation = json_string(previous, "generation");
         child->adopted = true;
+        child->stop_grace = Millis(2000);
     }
     auto publish = [&] {
         state["updatedAt"] = utc_now();
@@ -876,6 +887,122 @@ Json send_control(const ManagementOptions& options, std::string action, const Js
 }
 } // namespace
 
+void validate_managed_computer_selection(const fs::path& root, const Json& config, const Json& build,
+                                         std::string_view hash, std::string_view source,
+                                         std::string_view pipe) {
+    const auto hex = [](std::string_view value, std::size_t size) {
+        return value.size() == size && std::all_of(value.begin(), value.end(), [](char c) {
+                   return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+               });
+    };
+    if (!root.is_absolute() || root == root.root_path() || root.lexically_normal() != root ||
+        !hex(hash, 64) || !hex(source, 40) || pipe.empty() || pipe.size() > 100 ||
+        !std::all_of(pipe.begin(), pipe.end(), [](char c) {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-';
+        }))
+        throw Error("MANAGED_COMPUTER_ARGUMENTS_INVALID");
+    const auto& current = config.at("current");
+    const auto expected = control_root(root) / "releases" / hash / executable_name();
+    const auto policy = json_string(config, "policy");
+    if (json_uint(config, "schema") != 1 || json_string(config, "root") != path_text(root) ||
+        !json_bool(config, "desired") ||
+        (policy != "signed-qualified" && policy != "bundled-qualified" && policy != "local-development") ||
+        json_string(current, "file") != path_text(expected) || json_string(current, "sha256") != hash ||
+        json_string(current, "source") != source ||
+        json_string(config.at("environment"), "DEVBOX_COMPUTER_USE_PIPE") != pipe ||
+        json_string(build, "binarySha256") != hash || json_string(build, "gitSha") != source ||
+        build.at("sourceDirty") != false)
+        throw Error("MANAGED_COMPUTER_SELECTION_MISMATCH");
+}
+int run_managed_computer_broker(const fs::path& root, std::string_view hash, std::string_view source,
+                                std::string_view pipe, const std::function<bool()>& stopping) {
+#ifdef _WIN32
+    const auto config = config_read(root);
+    validate_managed_computer_selection(root, config, build_snapshot(), hash, source, pipe);
+    const auto selected = control_root(root) / "releases" / hash / executable_name();
+    for (auto directory = selected.parent_path(); !directory.empty();) {
+        const auto attributes = GetFileAttributesW(directory.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || !(attributes & FILE_ATTRIBUTE_DIRECTORY) ||
+            (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
+            throw Error("MANAGED_COMPUTER_PATH_ALIAS");
+        if (directory == directory.root_path())
+            break;
+        directory = directory.parent_path();
+    }
+    verify_stored(root, config.at("current"), json_string(config, "policy"));
+    if (fs::canonical(executable_path()) != selected)
+        throw Error("MANAGED_COMPUTER_EXECUTABLE_MISMATCH");
+    DWORD session = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &session) || !session)
+        throw Error("COMPUTER_BROKER_SESSION: an interactive account session is required");
+    const auto instance = process_instance(process_id());
+    if (!instance)
+        throw Error("MANAGED_COMPUTER_PROCESS_IDENTITY_UNAVAILABLE");
+    const FILETIME birth{static_cast<DWORD>(*instance), static_cast<DWORD>(*instance >> 32)};
+    SYSTEMTIME calendar{};
+    if (!FileTimeToSystemTime(&birth, &calendar))
+        throw Error("MANAGED_COMPUTER_PROCESS_TIME_UNAVAILABLE");
+    char created[40]{};
+    const auto length =
+        std::snprintf(created, sizeof(created), "%04u-%02u-%02uT%02u:%02u:%02u.%07uZ",
+                      static_cast<unsigned>(calendar.wYear), static_cast<unsigned>(calendar.wMonth),
+                      static_cast<unsigned>(calendar.wDay), static_cast<unsigned>(calendar.wHour),
+                      static_cast<unsigned>(calendar.wMinute), static_cast<unsigned>(calendar.wSecond),
+                      static_cast<unsigned>(*instance % 10000000));
+    if (length <= 0 || static_cast<std::size_t>(length) >= sizeof(created))
+        throw Error("MANAGED_COMPUTER_PROCESS_TIME_UNAVAILABLE");
+    FileLock owner(control_root(root) / "desktop-owner.lock", Millis(2000), {}, true);
+    // An interactive scheduled task may create a console for this executable.
+    // Detach only this background broker; never hide a shared terminal window.
+    (void)FreeConsole();
+    const auto status = control_root(root) / "desktop-worker.json";
+    Json record{{"pid", process_id()},
+                {"instance", std::to_string(*instance)},
+                {"createdAtUtc", created},
+                {"executable", path_text(selected)},
+                {"sha256", hash},
+                {"source", source},
+                {"pipe", pipe},
+                {"sessionId", session},
+                {"state", "running"},
+                {"implementation", "native C++23"}};
+    bool published = false;
+    const auto finish = [&](int code) {
+        if (published) {
+            record["state"] = "exited";
+            record["exitCode"] = code;
+            record["finishedAtUtc"] = utc_now();
+            write_json_atomic(status, record);
+        }
+    };
+    try {
+        const auto result = run_computer_broker(pipe, [&] {
+            // The broker invokes this only after acquiring its private pipe.
+            // A duplicate/failed launch must not overwrite the live owner's record.
+            if (!published) {
+                write_json_atomic(status, record);
+                published = true;
+            }
+            return stopping && stopping();
+        });
+        finish(result);
+        return result;
+    } catch (...) {
+        try {
+            finish(1);
+        } catch (...) {
+        }
+        throw;
+    }
+#else
+    (void)root;
+    (void)hash;
+    (void)source;
+    (void)pipe;
+    (void)stopping;
+    throw Error("Managed computer-use broker requires Windows");
+#endif
+}
 std::uint64_t management_instance(const Json& identity) {
     if (!identity.contains("instance"))
         return 0;
@@ -1097,15 +1224,24 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
                  {"build-manifest.json", "THIRD_PARTY_NOTICES.txt", "dependency-inventory.json",
                   "sbom.spdx.json", "OFFLINE.md", "CORE_SERVER.md"})
                 fs::copy_file(bundled->contents / name, staging / "share" / name);
-            for (const auto* name : {"devbox-setup", "devbox-tui"}) {
+            for (const auto* name : {"devbox-setup", "devbox-tui", "devbox-rg"}) {
                 const auto file = std::string(name) +
 #ifdef _WIN32
                                   ".exe";
 #else
                                   "";
 #endif
-                if (fs::is_regular_file(bundled->contents / file))
+                if (fs::is_regular_file(bundled->contents / file)) {
+                    std::optional<BundledExecutable> verified;
+                    if (std::string_view(name) == "devbox-rg") {
+                        verified = verified_bundled_ripgrep(bundled->contents);
+                        if (!verified)
+                            throw Error("OFFLINE_RIPGREP_NOT_QUALIFIED");
+                        fs::copy_file(bundled->contents / "ripgrep-NOTICES.txt",
+                                      staging / "share" / "ripgrep-NOTICES.txt");
+                    }
                     fs::copy_file(bundled->contents / file, staging / "bin" / file);
+                }
             }
         }
         config["current"]["file"] = path_text(control_root(root) / release / executable_name());

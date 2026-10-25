@@ -1,5 +1,10 @@
 # Native dependency resilience
 
+The current native replacement work and measurements are documented in
+[C++23 dependency reduction](NATIVE_DEPENDENCY_REDUCTION.md). It replaces
+libdeflate and the private Linux desktop's helper processes. The measurements
+below describe the earlier 0.8.0 decision and are retained as historical context.
+
 Bundle 0.8.0 reduces external failure points and unnecessary compilation work while
 retaining maintained networking, cryptography, storage and parsing libraries.
 Full and core release archives remain available; publishing does not migrate a

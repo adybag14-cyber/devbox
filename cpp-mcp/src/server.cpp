@@ -22,7 +22,7 @@
 #include <boost/beast/http/string_body.hpp>
 #include <boost/beast/http/write.hpp>
 #include <iostream>
-#include <libdeflate.h>
+#include "devbox/fast_deflate.hpp"
 #include <set>
 #include <unordered_map>
 #include <zlib.h>
@@ -103,20 +103,27 @@ std::string_view preferred_encoding(std::string_view accept) {
 std::optional<std::string> compress_bounded(std::string_view body, std::string_view coding,
                                             const Cancel& cancel) {
     cancel->check();
-    const std::unique_ptr<libdeflate_compressor, decltype(&libdeflate_free_compressor)> compressor(
-        libdeflate_alloc_compressor(1), libdeflate_free_compressor);
-    if (!compressor)
-        return std::nullopt;
-    const auto encode = coding == "gzip" ? libdeflate_gzip_compress : libdeflate_zlib_compress;
+    const auto wrapper = coding == "gzip" ? DeflateWrapper::gzip : DeflateWrapper::zlib;
+    const auto checkpoint = [&] { cancel->check(); };
     std::array<char, 4 * 1024> probe;
-    if (!encode(compressor.get(), body.data(), 8 * 1024, probe.data(), probe.size()))
+    if (!native_deflate(body.substr(0, 8 * 1024), probe, wrapper, checkpoint))
         return std::nullopt;
     cancel->check();
     std::string output;
     const auto limit = body.size() / 2;
-    output.resize_and_overwrite(limit, [&](char* buffer, std::size_t) {
-        return encode(compressor.get(), body.data(), body.size(), buffer, limit);
+    std::exception_ptr failure;
+    output.resize_and_overwrite(limit, [&](char* buffer, std::size_t) noexcept -> std::size_t {
+        // resize_and_overwrite's operation must not throw. Preserve cancellation
+        // and other errors, and propagate them only after the string is valid.
+        try {
+            return native_deflate(body, {buffer, limit}, wrapper, checkpoint);
+        } catch (...) {
+            failure = std::current_exception();
+            return 0;
+        }
     });
+    if (failure)
+        std::rethrow_exception(failure);
     cancel->check();
     if (output.empty())
         return std::nullopt;

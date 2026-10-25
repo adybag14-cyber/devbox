@@ -1,8 +1,10 @@
 #include "devbox/desktop.hpp"
 #include "devbox/browser_protocol.hpp"
+#include "devbox/desktop_wm.hpp"
 #include "devbox/native.hpp"
 #include "devbox/state_store.hpp"
 #include "devbox/storage.hpp"
+#include "devbox/x11_session.hpp"
 #include <array>
 #include <charconv>
 #include <future>
@@ -93,6 +95,8 @@ class DesktopChild {
     DesktopChild(const fs::path& program, const std::vector<std::string>& args, ProcessOptions process)
         : program_(fs::canonical(program)) {
         process.termination_grace = Millis(5000);
+        process.termination_signal_grace = Millis(1000);
+        process.linux_parent_bound = true;
         process.max_capture_chars = 4096;
         process.on_pid = [this](std::uint32_t pid) {
             const auto instance = process_instance(pid);
@@ -115,6 +119,9 @@ class DesktopChild {
     }
     bool started() const {
         return pid_.load() != 0 && instance_.load() != 0 && running();
+    }
+    std::uint32_t pid() const {
+        return pid_.load();
     }
     Json identity(const std::string& name) {
         std::lock_guard lock(identity_mutex_);
@@ -166,6 +173,7 @@ class Desktop {
     fs::path logs_;
     DesktopLog log_;
     std::map<std::string, std::unique_ptr<DesktopChild>> children_;
+    std::unique_ptr<DesktopWindowManager> window_manager_;
     std::uint64_t browser_restarts_ = 0, desktop_restarts_ = 0;
     unsigned browser_failures_ = 0;
     Clock::time_point browser_started_{};
@@ -234,6 +242,9 @@ class Desktop {
              {"supervisor_pid", process_id()},
              {"browser", options_.browser_autostart ? "headed Chromium" : "on-demand native browser"},
              {"backend", "native C++23 XCB/XTEST"},
+             {"window_manager", "native C++23"},
+             {"window_manager_ready", window_manager_ && window_manager_->healthy()},
+             {"session_bus", "disabled"},
              {"browser_mode", options_.shared              ? "shared_native"
                               : options_.browser_autostart ? "desktop"
                                                            : "on_demand"},
@@ -302,43 +313,28 @@ class Desktop {
     }
     void start_desktop() {
         const auto authority = options_.desktop_root / "authority";
-        if (fs::is_symlink(fs::symlink_status(authority)))
-            throw Error("DESKTOP_AUTHORITY_SYMLINK");
-        const auto staged = options_.desktop_root / ("authority-" + uuid());
-        ScopeExit remove_staged([&] {
-            std::error_code ignored;
-            fs::remove(staged, ignored);
-        });
-        write_file(staged, "");
-        fs::permissions(staged, fs::perms::owner_read | fs::perms::owner_write);
-        replace_state_file(staged, authority);
-        auto auth = process("xauth");
-        auth.timeout = Millis(5000);
-        auth.input = "add " + display_name(options_) + " . " + hex(random_bytes(16)) + "\n";
-        const auto initialized =
-            spawn_process(path_text(program("xauth")), {"-f", path_text(authority), "source", "-"}, auth);
-        if (initialized.exit_code)
-            throw Error("DESKTOP_AUTHENTICATION_FAILED");
+        X11Cookie cookie;
+        const auto bytes = random_bytes(cookie.size());
+        std::copy(bytes.begin(), bytes.end(), cookie.begin());
+        write_xauthority(authority, options_.display, cookie);
         child("xvfb", program("Xvfb"),
               {display_name(options_), "-screen", "0", "1280x800x24", "-nolisten", "tcp", "-auth",
                path_text(authority), "-noreset"});
+        const auto xvfb_pid = children_.at("xvfb")->pid();
         const auto until = Clock::now() + Millis(20000);
         for (;;) {
             if (!alive("xvfb") || stop_())
                 throw Error("DESKTOP_XVFB_EXITED_BEFORE_READY");
-            auto probe = process("xdpyinfo");
-            probe.timeout = Millis(3000);
             try {
-                if (!spawn_process(path_text(program("xdpyinfo")), {}, probe).exit_code)
+                if (probe_private_x11(options_.display, cookie, std::min(until, Clock::now() + Millis(1000)),
+                                      stop_, xvfb_pid))
                     break;
-            } catch (const ProcessError&) {
+            } catch (const std::runtime_error&) {
             }
             if (Clock::now() >= until || !pause(Millis(200)))
                 throw Error("DESKTOP_X11_STARTUP_DEADLINE");
         }
-        child("dbus", program("dbus-daemon"),
-              {"--session", "--nofork", "--address=" + environment_.at("DBUS_SESSION_BUS_ADDRESS")});
-        child("openbox", program("openbox"), {"--sm-disable"});
+        window_manager_ = std::make_unique<DesktopWindowManager>(options_.display, cookie, stop_, xvfb_pid);
         if (options_.browser_autostart)
             start_browser();
     }
@@ -351,8 +347,9 @@ class Desktop {
         stop_children();
     }
     void stop_children() {
-        for (const auto* name : {"chromium", "openbox", "dbus", "xvfb"})
-            stop_child(name);
+        stop_child("chromium");
+        window_manager_.reset();
+        stop_child("xvfb");
     }
     void run() {
         while (!stop_()) {
@@ -361,9 +358,10 @@ class Desktop {
                 status(true);
                 auto next_status = Clock::now() + Millis(5000);
                 while (!stop_()) {
-                    for (const auto* name : {"xvfb", "dbus", "openbox"})
-                        if (!alive(name))
-                            throw Error("DESKTOP_CHILD_EXITED: " + std::string(name));
+                    if (!alive("xvfb"))
+                        throw Error("DESKTOP_CHILD_EXITED: xvfb");
+                    if (!window_manager_ || !window_manager_->healthy())
+                        throw Error("DESKTOP_WINDOW_MANAGER_EXITED_OR_STALLED");
                     if (options_.browser_autostart && !alive("chromium")) {
                         last_browser_exit_ = children_.at("chromium")->exit_result();
                         if (last_browser_exit_.is_object())
@@ -469,9 +467,15 @@ Environment desktop_environment(const DesktopOptions& options) {
     env["DISPLAY"] = display_name(options);
     env["XAUTHORITY"] = path_text(options.desktop_root / "authority");
     env["XDG_RUNTIME_DIR"] = path_text(options.desktop_root / "runtime");
-    env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + path_text(options.desktop_root / "runtime" / "bus");
+    // Devbox owns no D-Bus service. Explicitly disable auto-launch and host-bus
+    // discovery rather than starting an idle daemon for Chromium.
+    env["DBUS_SESSION_BUS_ADDRESS"] =
+        "unix:path=" + path_text(options.desktop_root / "runtime" / "bus-disabled");
+    env["DBUS_SYSTEM_BUS_ADDRESS"] = env.at("DBUS_SESSION_BUS_ADDRESS");
     env.erase("SESSION_MANAGER");
     env.erase("WAYLAND_DISPLAY");
+    env.erase("DBUS_STARTER_ADDRESS");
+    env.erase("DBUS_STARTER_BUS_TYPE");
     return env;
 }
 int run_desktop_supervisor(const DesktopOptions& options, const std::function<bool()>& stop) {

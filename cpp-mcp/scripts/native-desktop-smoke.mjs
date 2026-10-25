@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {mkdtemp,mkdir,readFile,access,rm,writeFile,realpath} from 'node:fs/promises';
+import {mkdtemp,mkdir,readFile,access,rm,writeFile,realpath,symlink} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
@@ -19,12 +19,18 @@ let display;
 for(let n=150;n<250;n++)if(!await exists(`/tmp/.X11-unix/X${n}`)&&!await exists(`/tmp/.X${n}-lock`)){display=n;break;}
 assert(display,'A private unused X11 display is required');
 let chromium;
-for(const file of ['/opt/google/chrome/chrome','/usr/lib/chromium/chromium','/usr/lib/chromium-browser/chromium-browser'])
+for(const file of [process.env.DEVBOX_DESKTOP_TEST_CHROMIUM,'/opt/google/chrome/chrome','/usr/lib/chromium/chromium','/usr/lib/chromium-browser/chromium-browser'].filter(Boolean))
   if(await exists(file)){chromium=await realpath(file);break;}
 assert(chromium,'Fixture requires the actual Chromium executable');
 const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>['PATH','HOME','LANG','TMPDIR','USER','LOGNAME'].includes(key)));
+// The native supervisor and Chromium need no xauth, xdpyinfo, Openbox, D-Bus
+// daemon, shell, Python or Node executable on their child runtime PATH.
+const helpers=path.join(root,'only-xvfb');await mkdir(helpers);
+await symlink(await realpath('/usr/bin/Xvfb'),path.join(helpers,'Xvfb'));
+env.PATH=helpers;
 Object.assign(env,{
   DEVBOX_BROWSER_SHARED:'1',DEVBOX_BROWSER_HEADED:'1',DEVBOX_BROWSER_TEXT_ONLY:'1',
+  DEVBOX_BROWSER_EXECUTABLE:chromium,
   DEVBOX_BROWSER_SHARED_PROFILE:path.join(desktopRoot,'browser'),
   DISPLAY:`:${display}`,XAUTHORITY:path.join(desktopRoot,'authority'),
   XDG_RUNTIME_DIR:path.join(desktopRoot,'runtime'),DEVBOX_NATIVE_DESKTOP_SENTINEL:'must-not-reach-children',
@@ -59,7 +65,11 @@ try {
   let first=await status();
   assert.equal(first.implementation,'cpp');assert.equal(first.browser_mode,'shared_native');
   assert.equal(first.supervisor_pid,supervisor.child.pid);
-  assert.equal(first.children.length,4);
+  assert.equal(first.children.length,2);
+  assert.equal(first.window_manager,'native C++23');
+  assert.equal(first.window_manager_ready,true);
+  assert.equal(first.session_bus,'disabled');
+  assert.deepEqual(first.children.map(x=>x.name).sort(),['chromium','xvfb']);
   for(const child of first.children) {
     assert.equal(await stat(child.pid),child.startTicks);
     const environment=await readFile(`/proc/${child.pid}/environ`,'utf8');
@@ -85,7 +95,7 @@ try {
   const call=args=>client.callTool({name:'devbox_browser',arguments:args},undefined,{timeout:45000});
   let result=await call({action:'status'});
   assert.equal(result.isError,false,JSON.stringify(result));
-  assert.equal(result.structuredContent.data.available,true);
+  assert.equal(result.structuredContent.data.available,true,JSON.stringify(result));
   assert.equal(result.structuredContent.data.headed,true);
   let windows;
   await until(async()=>{
@@ -106,7 +116,15 @@ try {
   assert.equal(await stat(original.pid),original.startTicks);
   assert.equal(await realpath(`/proc/${original.pid}/exe`),chromium);
   const command=await readFile(`/proc/${original.pid}/cmdline`,'utf8');
-  assert(command.split('\0').includes('--user-data-dir='+path.join(desktopRoot,'browser')));
+  const expectedProfile=path.join(desktopRoot,'browser');
+  assert.equal(first.browser_profile,expectedProfile);
+  const argv=command.split('\0').filter(Boolean),profileFlag='--user-data-dir='+expectedProfile;
+  // Chromium 156 may rewrite /proc argv into one space-separated process title.
+  // Birth identity, exact executable and supervisor profile are checked above;
+  // accept only the exact bounded profile flag, with no duplicate override.
+  const rewritten=argv.length===1&&argv[0].startsWith(chromium+' ')&&
+    argv[0].split(' --user-data-dir=').length===2&&argv[0].includes(' '+profileFlag+' ');
+  assert(argv.includes(profileFlag)||rewritten,JSON.stringify({expectedProfile,ownedBrowserArguments:argv}));
   process.kill(original.pid,'SIGKILL');
   await until(async()=>{
     const next=await status();
@@ -116,14 +134,35 @@ try {
   assert(recovered.last_browser_exit?.signal===9||recovered.last_browser_exit?.exit_code===137,
     'Native supervisor must retain the owned browser termination reason');
   assert.equal(typeof recovered.browser_ready_at,'string');
-  for(const name of ['xvfb','openbox','dbus'])assert.equal(recovered.children.find(x=>x.name===name).pid,first.children.find(x=>x.name===name).pid);
+  assert.equal(recovered.children.find(x=>x.name==='xvfb').pid,first.children.find(x=>x.name==='xvfb').pid);
+  assert.equal(recovered.window_manager_ready,true);
   ownedIdentities.push(recovered.children.find(x=>x.name==='chromium'));
   result=await call({action:'status'});assert.equal(result.isError,false,JSON.stringify(result));
   assert.equal(result.structuredContent.data.available,true);
+  // A hard desktop-owner crash must not leave Xvfb in a separate orphaned
+  // process group. The native child launch binds these ephemeral children to
+  // the exact creating parent; the independent MCP frontend stays healthy.
+  const supervisorBirth=await stat(supervisor.child.pid);
+  assert(supervisorBirth);assert.equal((await status()).supervisor_pid,supervisor.child.pid);
+  assert.equal(await realpath(`/proc/${supervisor.child.pid}/exe`),await realpath(binary));
+  assert.equal(await stat(supervisor.child.pid),supervisorBirth);
+  supervisor.child.kill('SIGKILL');await supervisor.exited;
+  await until(async()=>{
+    for(const identity of recovered.children)if(await stat(identity.pid)===identity.startTicks)return false;
+    return true;
+  },()=> 'Parent-bound desktop child survived its owned supervisor',15000);
+  assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status,200);
+  supervisor=launch(args);
+  await until(async()=>{assert.equal(supervisor.child.exitCode,null,supervisor.log());const next=await status();
+    return next?.ready&&next.supervisor_pid===supervisor.child.pid;},()=>supervisor.log(),180000);
+  const restarted=await status();ownedIdentities.push(...restarted.children);
+  result=await call({action:'status'});assert.equal(result.isError,false,JSON.stringify(result));
+  assert.equal(result.structuredContent.data.available,true,JSON.stringify(result));
   report={ok:true,supervisor:'native C++23',source:process.env.GITHUB_SHA||null,
     checks:['private Xauthority and X11','real headed Chromium CDP readiness','native MCP shared-browser identity',
       'native X11 window capture','no inherited credential sentinel','exclusive supervisor lock',
-      'owned Chromium crash recovery','desktop children retained','owned child shutdown']};
+      'owned Chromium crash recovery','desktop children retained','hard desktop-owner crash leaves no direct children',
+      'fresh desktop restart retains independent MCP health','owned child shutdown']};
 } finally {
   if(client)await client.close().catch(()=>{});
   for(const value of children.reverse()) {

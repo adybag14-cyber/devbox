@@ -65,6 +65,8 @@ jobs:
           Android runtime certification runs in real Termux x86-64 userspace.
 
           Full archives contain all three native executables and their build manifest.
+          Full desktop/offline bundles also include a verified optional ripgrep fallback,
+          built from pinned source without PCRE2. Host rg takes precedence.
           Separate devbox-core-TARGET archives contain only the server/native management
           executable, documentation, manifest and dependency notices. Core startup and
           supervision require no Node/npm/Git, compiler, browser or desktop packages.
@@ -79,6 +81,8 @@ jobs:
           Core offline packages do not bundle Chromium or a Cloudflare tunnel.
           SHA256SUMS and build-provenance.json cover the standalone binaries and archives.
           Packaged installation does not require Rust or a C++ compiler.
+          Node, Python and a Docker engine are not bundled.
+          Version-specific changes are documented in the tagged source's docs/releases directory.
 
           Canonical Termux app: https://github.com/adybag14-cyber/termux-app
           EOF

@@ -52,9 +52,6 @@ function assertArchitecture(bytes, target) {
 }
 await mkdir(output, { recursive: true });
 assert.deepEqual(await readdir(output), [], 'Refuse to mix release assets with an earlier packaging attempt');
-const licenseName = 'libdeflate.LICENSE.txt';
-const license = await readFile(path.join(repo, 'cpp-mcp', licenseName));
-await writeFile(path.join(output, licenseName), license, {flag: 'wx'});
 const manifests = [];
 const offlineBundles = [];
 let offlineAssets = 0;
@@ -87,6 +84,20 @@ try {
       await copyFile(standalone, path.join(bundle, binary.name + extension));
       await chmod(path.join(bundle, binary.name + extension), 0o755);
     }
+    const optionalNames=[];
+    assert(Array.isArray(manifest.optionalTools)&&manifest.optionalTools.length<=1);
+    for(const tool of manifest.optionalTools) {
+      assert.equal(tool.name,'ripgrep');assert.equal(tool.releaseQualified,true);assert.equal(tool.pcre2,false);
+      assert.equal(tool.file,`bin/devbox-rg${extension}`);assert.equal(tool.license,'share/devbox/ripgrep-NOTICES.txt');
+      assert.equal(tool.sha256,manifest.build.bundledRipgrep.sha256);
+      const bytes=await readFile(path.join(source,tool.file));
+      assert.equal(bytes.length,tool.bytes);assert.equal(digest(bytes),tool.sha256);assertArchitecture(bytes,target);
+      assert.deepEqual(runtimeImports(bytes),tool.runtime);assertCoreImports(tool.runtime);
+      const notice=await readFile(path.join(source,tool.license));assert.equal(digest(notice),tool.noticeSha256);
+      await writeFile(path.join(bundle,`devbox-rg${extension}`),bytes,{flag:'wx',mode:0o755});
+      await writeFile(path.join(bundle,'ripgrep-NOTICES.txt'),notice,{flag:'wx'});
+      optionalNames.push(`devbox-rg${extension}`,'ripgrep-NOTICES.txt');
+    }
     assert.equal(manifest.assurance?.schema,1,'Resolved dependency assurance is mandatory');
     assert.deepEqual(manifest.assurance.files.map(x=>x.file).sort(),['THIRD_PARTY_NOTICES.txt','dependency-inventory.json','sbom.spdx.json'].sort());
     for(const item of manifest.assurance.files) {
@@ -97,9 +108,8 @@ try {
       await writeFile(path.join(output,sidecar),bytes,{flag:'wx'});
     }
     await writeFile(path.join(bundle, 'build-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
-    await writeFile(path.join(bundle, licenseName), license);
     const archive = path.join(output, `devbox-${target}.${extension ? 'zip' : 'tar.gz'}`);
-    const names = [...manifest.binaries.map(binary => binary.name + extension), 'build-manifest.json', licenseName, ...manifest.assurance.files.map(x=>x.file)];
+    const names = [...manifest.binaries.map(binary => binary.name + extension), 'build-manifest.json', ...manifest.assurance.files.map(x=>x.file),...optionalNames];
     if (extension) await run('zip', ['-j', archive, ...names.map(name => path.join(bundle, name))]);
     else await run('tar', ['-czf', archive, '-C', bundle, ...names]);
     const extracted = path.join(scratch, `${target}-extracted`); await mkdir(extracted);
@@ -108,11 +118,30 @@ try {
     for (const name of names) assert.equal(digest(await readFile(path.join(extracted, name))), digest(await readFile(path.join(bundle, name))));
     // Core is a separate distribution of the exact qualified server binary. No
     // installer, TUI, interpreter, browser or desktop package is bundled with it.
-    const coreManifest = {...manifest, profile: 'core', binaries: manifest.binaries.filter(row => row.name === 'devbox-mcp')};
+    const coreManifest = {...manifest, profile: 'core',optionalTools:[], binaries: manifest.binaries.filter(row => row.name === 'devbox-mcp')};
     const coreDirectory = path.join(scratch, `${target}-core`); await mkdir(coreDirectory);
-    const coreNames = ['devbox-mcp' + extension, 'build-manifest.json', licenseName, 'CORE_SERVER.md', ...manifest.assurance.files.map(row => row.file)];
+    const coreNames = ['devbox-mcp' + extension, 'build-manifest.json', 'CORE_SERVER.md', ...manifest.assurance.files.map(row => row.file)];
     for (const name of coreNames.filter(name => !['build-manifest.json', 'CORE_SERVER.md'].includes(name)))
       await copyFile(path.join(bundle, name), path.join(coreDirectory, name));
+    // The lean archive has its own inventory and assurance digests. Cargo
+    // components belong to the optional executable, not the C++ core binary.
+    if(optionalNames.length) {
+      const inventory=JSON.parse(await readFile(path.join(coreDirectory,'dependency-inventory.json'),'utf8'));
+      const omitted=new Set(inventory.dependencies.flatMap((item,index)=>item.bundledTool?[`SPDXRef-package-${index}`]:[]));
+      inventory.dependencies=inventory.dependencies.filter(item=>!item.bundledTool);
+      inventory.distributionProfile='core';inventory.omittedOptionalExecutables=['ripgrep'];
+      const bom=JSON.parse(await readFile(path.join(coreDirectory,'sbom.spdx.json'),'utf8'));
+      bom.packages=bom.packages.filter(item=>!omitted.has(item.SPDXID));
+      bom.documentDescribes=bom.documentDescribes.filter(id=>!omitted.has(id));
+      bom.relationships=bom.relationships.filter(item=>!omitted.has(item.spdxElementId)&&!omitted.has(item.relatedSpdxElement));
+      const notices=(await readFile(path.join(coreDirectory,'THIRD_PARTY_NOTICES.txt'),'utf8')).split('===== Optional ripgrep ')[0];
+      const documents={'dependency-inventory.json':JSON.stringify(inventory,null,2)+'\n','sbom.spdx.json':JSON.stringify(bom,null,2)+'\n','THIRD_PARTY_NOTICES.txt':notices};
+      coreManifest.assurance={...manifest.assurance,dependencyCount:inventory.dependencies.length,files:[]};
+      for(const [file,body] of Object.entries(documents)) {
+        await writeFile(path.join(coreDirectory,file),body);
+        coreManifest.assurance.files.push({file,bytes:Buffer.byteLength(body),sha256:digest(body)});
+      }
+    }
     await chmod(path.join(coreDirectory, 'devbox-mcp' + extension), 0o755);
     await writeFile(path.join(coreDirectory, 'build-manifest.json'), JSON.stringify(coreManifest, null, 2) + '\n');
     await copyFile(path.join(repo, 'docs/CORE_SERVER.md'), path.join(coreDirectory, 'CORE_SERVER.md'));
@@ -145,6 +174,12 @@ try {
         const rows=offline.payload.files.filter(row=>row.name===binary.name+extension);
         assert.equal(rows.length,1);assert.equal(rows[0].sha256,binary.sha256);assert.equal(rows[0].bytes,binary.bytes);
       }
+      for(const tool of manifest.optionalTools) {
+        const row=offline.payload.files.find(item=>item.name===path.basename(tool.file));
+        assert(row&&row.sha256===tool.sha256&&row.bytes===tool.bytes);
+      }
+      assert(offline.payload.files.every(item=>!/^(?:node|python(?:\d+(?:\.\d+)?)?|docker)(?:\.exe)?$/iu.test(item.name)),
+        'Language interpreters and Docker are not release payloads');
       const offlineDirectory=path.join(scratch,target+'-offline');await mkdir(offlineDirectory);
       for(const item of offline.files) {
         const bytes=await readFile(path.join(directory,item.file));
@@ -245,7 +280,7 @@ try {
   const sums=[];
   for(const name of names)sums.push(`${await fileDigest(path.join(output,name))}  ${name}\n`);
   await writeFile(path.join(output, 'SHA256SUMS'), sums.join(''));
-  assert.equal(names.length, Object.keys(targets).length * 8 + 4 + offlineAssets, 'Every target requires binaries, full/core archives, resolved dependency sidecars and global qualification evidence');
+  assert.equal(names.length, Object.keys(targets).length * 8 + 3 + offlineAssets, 'Every target requires binaries, full/core archives, resolved dependency sidecars and global qualification evidence');
   console.log(JSON.stringify({ ok: true, source: expectedSha, version, targets: Object.keys(targets), verifiedFiles: names.length, output }));
 } finally {
   await rm(scratch, { recursive: true, force: true });

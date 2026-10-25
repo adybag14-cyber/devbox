@@ -27,5 +27,22 @@ Environment managed_environment(const fs::path& root, const Json& config, std::s
 Json qualify_managed_binary(const ManagementOptions& options, const Environment& env,
                             const ManagementRunner& runner = {});
 std::string native_service_definition(std::string_view kind, const fs::path& binary, const fs::path& root);
+struct ServiceMemoryPlan {
+    bool unified = false;
+    std::string group;
+    std::uint64_t physical_bytes = 0, total_bytes = 0;
+};
+ServiceMemoryPlan service_memory_plan(std::string_view membership, std::string_view unit,
+                                      std::uint64_t physical_bytes, std::uint64_t total_bytes);
+// Operator-only startup check. Limit writes require an otherwise empty system
+// service cgroup; recovery may re-verify existing limits without changing them.
+// Never exposed as an MCP tool; it cannot select an arbitrary cgroup or raise limits.
+Json apply_service_memory_guard(std::string_view unit, std::uint64_t physical_bytes,
+                                std::uint64_t total_bytes);
+void validate_managed_computer_selection(const fs::path& root, const Json& config, const Json& build,
+                                         std::string_view hash, std::string_view source,
+                                         std::string_view pipe);
+int run_managed_computer_broker(const fs::path& root, std::string_view hash, std::string_view source,
+                                std::string_view pipe, const std::function<bool()>& stopping);
 int management_main(const std::vector<std::string>& args, const BundledQualification* bundled = nullptr);
 } // namespace devbox

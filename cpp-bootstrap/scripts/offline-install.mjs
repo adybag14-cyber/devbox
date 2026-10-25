@@ -45,6 +45,15 @@ try {
   const initialStatus=JSON.parse((await run(binary,['manage','status','--root',root])).stdout);
   assert.equal(initialStatus.running,true,'Default start must survive the installer process exit');
   assert.equal(initialStatus.healthy,true);
+  const optional=metadata.payload.files.find(item=>/^devbox-rg(?:\.exe)?$/u.test(item.name));
+  if(optional) {
+    const tool=path.join(root,'bin',optional.name);
+    assert.equal(createHash('sha256').update(await readFile(tool)).digest('hex'),optional.sha256);
+    assert.match((await run(tool,['--version'])).stdout,/features:-pcre2/u);
+    await access(path.join(root,'share','ripgrep-NOTICES.txt'));
+  }
+  for(const name of ['node','node.exe','python','python.exe','python3','python3.exe','docker','docker.exe'])
+    await assert.rejects(access(path.join(root,'bin',name)),{code:'ENOENT'});
   await assert.rejects(run(installer,['--portable',root,'--no-start']),/NEW_USER_DIRECTORY_REQUIRED/u);
   assert.deepEqual(JSON.parse(await readFile(configFile,'utf8')),config);
   await assert.rejects(run(binary,['manage','promote','--root',root,'--binary',binary,'--allow-local-build']),/DOWNGRADE_REFUSED/u);

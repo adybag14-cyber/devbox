@@ -1,0 +1,9 @@
+ca-certificates
+xvfb
+libxcb1
+libxcb-xtest0
+fonts-dejavu-core
+fonts-noto-color-emoji
+chromium
+chromium-common
+chromium-sandbox

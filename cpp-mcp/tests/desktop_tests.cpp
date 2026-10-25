@@ -23,7 +23,11 @@ int main() {
         const auto env = desktop_environment(options);
         if (env.contains("DESKTOP_PRIVATE_CREDENTIAL_SENTINEL") || env.contains("SESSION_MANAGER") ||
             env.contains("WAYLAND_DISPLAY") || env.at("HOME") != path_text(options.workspace / ".home") ||
-            env.at("XAUTHORITY") != path_text(options.desktop_root / "authority"))
+            env.at("XAUTHORITY") != path_text(options.desktop_root / "authority") ||
+            env.at("DBUS_SESSION_BUS_ADDRESS") !=
+                "unix:path=" + path_text(options.desktop_root / "runtime" / "bus-disabled") ||
+            env.at("DBUS_SYSTEM_BUS_ADDRESS") != env.at("DBUS_SESSION_BUS_ADDRESS") ||
+            env.contains("DBUS_STARTER_ADDRESS") || env.contains("DBUS_STARTER_BUS_TYPE"))
             throw Error("Native desktop environment isolation failed");
         const auto args = desktop_browser_arguments(options);
         if (std::find(args.begin(), args.end(), "--no-sandbox") != args.end() ||

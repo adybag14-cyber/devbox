@@ -12,6 +12,13 @@ The vulnerability report uses keyless OSV OSS-Fuzz project/version queries for d
 
 Native dependency cache keys include a CMake probe of the selected compiler, SDK, generator/platform/toolset, target triplet, standard/runtime, instrumentation/configuration, relevant flags and dependency manifest/baseline. vcpkg's per-package ABI checks remain authoritative inside the restored cache. Android and Alpine additionally retain their platform-specific baseline/toolchain configuration; their cache receipts require separate hosted verification.
 
+The optional ripgrep bundle is built from its pinned source with PCRE2 disabled.
+Its used Cargo dependency graph and Rust runtime notices accompany full packages;
+OSV crates.io queries join the same blocking vulnerability gate. The native core
+embeds the tool's exact digest. Local builds with incomplete upstream tests are
+explicitly marked unqualified and cannot pass artifact recording. Core archives
+omit the executable and its Cargo entries from their separate SBOM/inventory.
+
 Security jobs are separate from production artifacts: Windows MSVC ASan plus static analysis; Linux ThreadSanitizer for concurrent core/coordinator/scheduler paths; and Clang ASan/UBSan libFuzzer coverage of bounded HTML, JSON, product-offer and Retry-After parsing. These instrumented binaries cannot pass the production-artifact verifier. New lanes must pass hosted qualification before this audit is marked complete.
 
 

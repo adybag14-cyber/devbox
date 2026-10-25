@@ -336,9 +336,18 @@ impl QueueTicket {
         {
             invalidate_aged_background_cache(root);
         }
-        refresh_queue_head(&self.root, &self.class, Duration::from_secs(1)).await?;
         self.released = true;
-        Ok(())
+        // The unique ticket is already removed. A contended derived head cache
+        // must not discard a successfully acquired weighted lease; waiters
+        // reconcile a missing head before advancing, under the same lock.
+        match refresh_queue_head(&self.root, &self.class, Duration::from_secs(1)).await {
+            Ok(_) => Ok(()),
+            Err(error) if error.downcast_ref::<QueueHeadLockTimeout>().is_some() => {
+                tracing::debug!(class = %self.class, "queue head cache refresh deferred after ticket removal");
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -862,6 +871,21 @@ struct ClaimLock {
     released: bool,
 }
 
+#[derive(Debug)]
+struct QueueHeadLockTimeout(String);
+
+impl fmt::Display for QueueHeadLockTimeout {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "timed out acquiring queue-head lock for {}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for QueueHeadLockTimeout {}
+
 impl ClaimLock {
     async fn release(&mut self) -> Result<()> {
         if self.released {
@@ -1013,7 +1037,7 @@ async fn acquire_queue_head_lock(
             Err(error) => return Err(error),
         }
         if Instant::now() >= deadline {
-            anyhow::bail!("timed out acquiring queue-head lock for {class}");
+            return Err(QueueHeadLockTimeout(class.to_owned()).into());
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -1124,11 +1148,21 @@ async fn refresh_queue_head(
         (Err(error), _) | (Ok(_), Err(error)) => Err(error),
     }
 }
+async fn refresh_queue_head_when_available(queue_root: &Path, class: &str) -> Result<bool> {
+    match refresh_queue_head(queue_root, class, Duration::from_secs(1)).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.downcast_ref::<QueueHeadLockTimeout>().is_some() => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
 async fn queue_ticket_is_head(_root: &Path, ticket: &QueueTicket) -> Result<bool> {
     let prefix = format!("{}-", ticket.class);
     loop {
         let Some(head_name) = read_queue_head(&ticket.root, &ticket.class).await? else {
-            refresh_queue_head(&ticket.root, &ticket.class, Duration::from_secs(1)).await?;
+            if !refresh_queue_head_when_available(&ticket.root, &ticket.class).await? {
+                return Ok(false);
+            }
             continue;
         };
         if head_name == ticket.name {
@@ -1150,13 +1184,17 @@ async fn queue_ticket_is_head(_root: &Path, ticket: &QueueTicket) -> Result<bool
                 return Ok(false);
             }
             remove_slot_file(&head_path).await.ok();
-            refresh_queue_head(&ticket.root, &ticket.class, Duration::from_secs(1)).await?;
+            if !refresh_queue_head_when_available(&ticket.root, &ticket.class).await? {
+                return Ok(false);
+            }
             continue;
         }
         let owner = owner.expect("queue head owner checked above");
         if queue_ticket_should_reap(&head_name, &prefix, &owner) {
             remove_slot_file(&head_path).await.ok();
-            refresh_queue_head(&ticket.root, &ticket.class, Duration::from_secs(1)).await?;
+            if !refresh_queue_head_when_available(&ticket.root, &ticket.class).await? {
+                return Ok(false);
+            }
             continue;
         }
         return Ok(false);
@@ -2716,6 +2754,35 @@ mod tests {
             .await
             .unwrap();
         lease.release().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn removed_ticket_survives_contended_derived_head_cache() {
+        let temp = tempfile::tempdir().unwrap();
+        let request = AcquireRequest::background("derived-cache", ResourceClass::Heavy, 2);
+        let mut ticket = create_queue_ticket(
+            temp.path(),
+            "execution-background",
+            &request,
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let mut held = acquire_queue_head_lock(&ticket.root, &ticket.class, Duration::from_secs(1))
+            .await
+            .unwrap();
+        // Intentionally keep the cache lock past the bounded refresh attempt.
+        // Removing the authoritative unique ticket must still succeed.
+        ticket.release().await.unwrap();
+        assert!(ticket.released);
+        assert!(!ticket.path.exists());
+        held.release().await.unwrap();
+        assert!(
+            refresh_queue_head(&ticket.root, &ticket.class, Duration::from_secs(1))
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

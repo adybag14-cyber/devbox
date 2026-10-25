@@ -1,4 +1,5 @@
 #include "build_identity.hpp"
+#include "devbox/bundled_tools.hpp"
 #include "devbox/contract.hpp"
 #include "devbox/state_store.hpp"
 namespace devbox {
@@ -32,6 +33,7 @@ Json build_snapshot() {
                     {"stateSchemaVersion", state_store_schema_version},
                     {"stateCoordinatorProtocol", 1},
                     {"nativeManagementVersion", 1},
+                    {"bundledRipgrep", bundled_ripgrep_identity()},
                     {"sanitizers",
 #ifdef DEVBOX_SANITIZERS
                      true

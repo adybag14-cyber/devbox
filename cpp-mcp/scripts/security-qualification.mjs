@@ -18,12 +18,12 @@ let targets,pattern;
 if(mode==='windows-asan-analysis') {
   assert.equal(process.platform,'win32');flags.push('-DDEVBOX_MSVC_ASAN=ON','-DDEVBOX_STATIC_ANALYSIS=ON',
     `-DVCPKG_OVERLAY_TRIPLETS=${path.join(repo,'cpp-mcp/triplets')}`);
-  targets=['devbox-core-tests','devbox-process-tests','devbox-storage-tests','devbox-security-tests','devbox-provider-tests','devbox-web-offer-tests','devbox-state-coordinator-tests','devbox-state-read-reuse-tests','devbox-state-read-bench','devbox-state-transport-tests','devbox-state-ipc-bench'];
-  pattern='^(core|process|storage|security|providers|web-offers|state-coordinator|state-read-reuse|state-read-benchmark-smoke|state-transport|state-ipc-benchmark-smoke)$';
+  targets=['devbox-core-tests','devbox-process-tests','devbox-storage-tests','devbox-security-tests','devbox-provider-tests','devbox-web-offer-tests','devbox-state-coordinator-tests','devbox-state-read-reuse-tests','devbox-state-read-bench','devbox-state-transport-tests','devbox-state-ipc-bench','devbox-fast-deflate-tests','devbox-x11-session-tests'];
+  pattern='^(core|process|storage|security|providers|web-offers|state-coordinator|state-read-reuse|state-read-benchmark-smoke|state-transport|state-ipc-benchmark-smoke|native-fast-deflate|native-xauthority)$';
 } else if(mode==='linux-tsan') {
   assert.equal(process.platform,'linux');flags.push('-DDEVBOX_THREAD_SANITIZER=ON','-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O1 -g -DNDEBUG');
-  targets=['devbox-async-tests','devbox-security-tests','devbox-state-coordinator-tests','devbox-scheduler-notification-tests','devbox-state-read-reuse-tests','devbox-state-read-bench','devbox-state-transport-tests','devbox-state-ipc-bench'];
-  pattern='^(async|security|state-coordinator|scheduler-notifications|state-read-reuse|state-read-benchmark-smoke|state-transport|state-ipc-benchmark-smoke)$';
+  targets=['devbox-async-tests','devbox-security-tests','devbox-state-coordinator-tests','devbox-scheduler-notification-tests','devbox-state-read-reuse-tests','devbox-state-read-bench','devbox-state-transport-tests','devbox-state-ipc-bench','devbox-desktop-wm-tests'];
+  pattern='^(async|security|state-coordinator|scheduler-notifications|state-read-reuse|state-read-benchmark-smoke|state-transport|state-ipc-benchmark-smoke|native-desktop-window-manager)$';
 } else {
   assert.equal(process.platform,'linux');flags.push('-DDEVBOX_SANITIZERS=ON','-DDEVBOX_FUZZING=ON','-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=-O1 -g -DNDEBUG');
   targets=['devbox-fuzz-parsers'];
@@ -62,4 +62,4 @@ else {
   await run(path.join(build,'cpp-mcp/devbox-fuzz-parsers'),[corpus,'-runs=20000','-max_len=65536','-timeout=5','-rss_limit_mb=2048']);
 }
 await writeFile(path.join(build,'security-result.json'),JSON.stringify({schema:1,mode,passed:true,
-  scope:pattern||'bounded_html_json_offer_and_retry_after_fuzz',productionArtifact:false},null,2)+'\n');
+  scope:pattern||'bounded_html_json_offer_retry_after_and_independent_deflate_roundtrip_fuzz',productionArtifact:false},null,2)+'\n');
