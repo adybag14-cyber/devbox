@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {access,chmod,copyFile,mkdir,readFile,readdir,stat,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {runCheckedProcess} from '../../src/mcp-implementation.js';
+import {inspectRuntimeFile} from './runtime-imports.mjs';
 
 const repo=path.resolve(import.meta.dirname,'../..');
 const pin=JSON.parse(await readFile(path.join(repo,'cpp-mcp/bundled-ripgrep.json'),'utf8'));
@@ -16,8 +17,11 @@ const localDiagnostic=process.argv[3]==='--local-diagnostic';
 assert(!localDiagnostic||!process.env.GITHUB_ACTIONS,'Hosted bundles require every upstream test');
 const source=path.join(root,'source');
 await mkdir(root,{recursive:true});
-const run=async(file,args,cwd=root,env=process.env,timeoutMs=180000)=>(await runCheckedProcess(file,args,
-  {cwd,env,timeoutMs,maxCaptureChars:4*1024*1024,label:'Pinned optional ripgrep build'})).stdout.trim();
+const run=async(file,args,cwd=root,env=process.env,timeoutMs=180000)=>{
+  console.log(`ripgrep qualification: ${path.basename(file)} ${args.join(' ')}`);
+  return (await runCheckedProcess(file,args,
+    {cwd,env,timeoutMs,maxCaptureChars:4*1024*1024,label:'Pinned optional ripgrep build'})).stdout.trim();
+};
 const exists=async file=>{try{await access(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
 if(!await exists(path.join(source,'.git'))) {
   await mkdir(source,{recursive:true});
@@ -34,8 +38,11 @@ const host=(await run('rustc',[`+${pin.rust}`,'-vV'])).split('\n').find(line=>li
 assert(/^(?:x86_64|aarch64)-(?:pc-windows-msvc|unknown-linux-gnu|apple-darwin)$/u.test(host));
 const target=process.platform==='linux'?host.replace('unknown-linux-gnu','unknown-linux-musl'):host;
 const env={...process.env,CARGO_TARGET_DIR:path.join(root,'target'),CARGO_INCREMENTAL:'0',
-  CARGO_ENCODED_RUSTFLAGS:[`--remap-path-prefix=${source}=/ripgrep`,...(process.platform==='win32'?['-Ctarget-feature=+crt-static']:[])].join('\x1f')};
-if(process.platform==='linux')env[`CARGO_TARGET_${target.replaceAll('-','_').toUpperCase()}_LINKER`]='musl-gcc';
+  CARGO_ENCODED_RUSTFLAGS:[`--remap-path-prefix=${source}=/ripgrep`,...(['win32','linux'].includes(process.platform)?['-Ctarget-feature=+crt-static']:[])].join('\x1f')};
+// Rust supplies the matching musl CRT/linker inputs. An older host musl-gcc
+// wrapper can inject a dynamic interpreter into a static PIE, so leave final
+// linking to Rust's target defaults; musl-gcc remains a build-only C compiler.
+if(process.platform==='linux')delete env[`CARGO_TARGET_${target.replaceAll('-','_').toUpperCase()}_LINKER`];
 const common=[`+${pin.rust}`,'--locked','--no-default-features','--package','ripgrep','--target',target];
 // Validate the resolved *used* graph, not every optional workspace member in
 // Cargo.lock. In particular PCRE2 must be absent, including transitive edges.
@@ -47,6 +54,8 @@ const used=new Set(tree.split('\n').filter(Boolean).map(line=>{
 const metadata=JSON.parse(await run('cargo',[common[0],'metadata','--locked','--no-default-features','--format-version','1','--filter-platform',target],source,env));
 await run('cargo',[common[0],'build',...common.slice(1),'--profile',pin.profile,'--jobs','2'],source,env,600000);
 const binary=path.join(root,'target',target,pin.profile,'rg'+(process.platform==='win32'?'.exe':''));
+const runtime=await inspectRuntimeFile(binary);
+if(process.platform==='linux')assert.deepEqual(runtime.imports,[],'The portable Linux fallback must have no dynamic runtime dependency');
 const version=await run(binary,['--version']);
 assert(version.startsWith(`ripgrep ${pin.version} `));assert.match(version,/features:-pcre2/u);
 assert.match(version,/PCRE2 is not available/u);
@@ -102,7 +111,7 @@ const bytes=await readFile(path.join(root,file));
 const license='ripgrep-NOTICES.txt';const notice=notices.join('\n');
 await writeFile(path.join(root,license),notice);
 const result={schema:1,name:'ripgrep',version:pin.version,source:pin.source,repository:pin.repository,
-  compiler:rustVersion,target,features:[],pcre2:false,file,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),
+  compiler:rustVersion,target,runtime,features:[],pcre2:false,file,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),
   license,noticeSha256:createHash('sha256').update(notice).digest('hex'),packages,qualified,limitation,
   tests:qualified?'upstream integration and actual file search passed':'local test environment incomplete; not release qualified'};
 await writeFile(path.join(root,'manifest.json'),JSON.stringify(result,null,2)+'\n');
