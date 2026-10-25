@@ -562,11 +562,21 @@ fn replace_file_windows(temporary: &std::path::Path, path: &std::path::Path) -> 
         .chain(std::iter::once(0))
         .collect::<Vec<_>>();
     let flags = MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH;
-    let moved = unsafe { MoveFileExW(temporary_wide.as_ptr(), path_wide.as_ptr(), flags) };
-    if moved != 0 {
-        return Ok(());
-    }
-    let code = unsafe { GetLastError() };
+    // Readers and file scanners can briefly deny replacement on Windows.
+    // Retry the atomic operation itself; never remove the old file to make
+    // room. This function runs on spawn_blocking, not Tokio's event loop.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1000);
+    let code = loop {
+        let moved = unsafe { MoveFileExW(temporary_wide.as_ptr(), path_wide.as_ptr(), flags) };
+        if moved != 0 {
+            return Ok(());
+        }
+        let code = unsafe { GetLastError() };
+        if !matches!(code, 5 | 32 | 33) || std::time::Instant::now() >= deadline {
+            break code;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     std::fs::remove_file(temporary).ok();
     Err(std::io::Error::from_raw_os_error(
         i32::try_from(code).unwrap_or(i32::MAX),
@@ -590,6 +600,39 @@ fn unique_suffix() -> String {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(windows)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn atomic_replace_waits_for_a_reader_without_blocking_the_runtime() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("head.json");
+        let temporary = root.path().join("head.pending");
+        std::fs::write(&target, "previous").unwrap();
+        std::fs::write(&temporary, "complete replacement").unwrap();
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&target)
+            .unwrap();
+        let destination = target.clone();
+        let replacement = tokio::spawn(async move {
+            replace_file_preserving_previous(&temporary, &destination).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(
+            !replacement.is_finished(),
+            "replacement must wait for the held reader"
+        );
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "previous");
+        drop(reader);
+        replacement.await.unwrap().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "complete replacement"
+        );
+    }
 
     #[tokio::test]
     async fn state_file_replacement_preserves_or_restores_previous_value() {
