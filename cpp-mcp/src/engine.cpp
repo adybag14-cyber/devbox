@@ -619,7 +619,7 @@ asio::awaitable<Json> Engine::metadata(const HttpRequest& request) {
                                            : "No authentication mode is active. ") +
                                "The " + config_->runtime_label() +
                                " is the main execution environment; host tools are separate and explicit.";
-    if (config_->auth_mode != AuthMode::none && !request.is_local)
+    if (!request.is_local)
         co_return value;
     const auto active_requests = server_ ? server_->active_requests() : 0;
     value["activity"] = usage_.active_counts();

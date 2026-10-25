@@ -185,8 +185,13 @@ try {
     origins: [],
     private_network_access: false,
   });
-  assert.ok(remoteMetadata.runtime, "auth=none JS root still exposes runtime to remote requests");
-  assert.ok(remoteMetadata.devbox, "auth=none JS root still exposes devbox to remote requests");
+  if (remoteMetadata.build?.implementation === "cpp") {
+    for (const key of ["runtime", "devbox", "activity", "admission", "transport_resources"])
+      assert.equal(remoteMetadata[key], undefined, `Native public metadata must not expose ${key} in auth-none mode`);
+  } else {
+    assert.ok(remoteMetadata.runtime, "auth=none frozen reference root exposes runtime to remote requests");
+    assert.ok(remoteMetadata.devbox, "auth=none frozen reference root exposes devbox to remote requests");
+  }
   const initializeBody = JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
@@ -288,6 +293,37 @@ try {
     origins: [],
     private_network_access: false,
   });
+
+  if (metadata.build?.implementation === "cpp") {
+    const forwardingHints = [
+      {}, { "X-Forwarded-For": "127.0.0.1" }, { "X-Forwarded-For": "" },
+      { "X-Forwarded-For": "127.0.0.1, 203.0.113.8" },
+      { "Forwarded": "for=127.0.0.1" }, { "CF-Connecting-IP": "127.0.0.1" },
+      { "X-Forwarded-Host": "localhost" }, { "X-Forwarded-Proto": "https" }, { Via: "1.1 localhost" },
+      { "X-Real-IP": "127.0.0.1" }, { "True-Client-IP": "127.0.0.1" },
+    ];
+    for (const hints of forwardingHints) {
+      const response = await rawRequest({ port: oauth.port, headers: { Host: "devbox.example", ...hints } });
+      assert.equal(response.status, 200);
+      const value = JSON.parse(response.body);
+      assert.equal(value.local_base_url, null, "A public authority must not acquire local metadata privileges");
+      for (const key of ["runtime", "devbox", "activity", "admission", "transport_resources"])
+        assert.equal(value[key], undefined, `Proxy request leaked internal ${key}`);
+      if (Object.keys(hints).length) {
+        // Node sends an explicitly empty header; curl's header API instead
+        // removes empty fields, so this is the authoritative empty-header case.
+        const loopback = await rawRequest({port: oauth.port, headers: {Host: `127.0.0.1:${oauth.port}`, ...hints}});
+        assert.equal(loopback.status, 200);
+        assert.equal(JSON.parse(loopback.body).runtime, undefined, "Proxy hints cannot acquire local privileges through a loopback authority");
+      }
+    }
+    const direct = JSON.parse((await rawRequest({port: oauth.port, headers: {Host: `127.0.0.1:${oauth.port}`}})).body);
+    assert.ok(direct.runtime, "Direct loopback operator metadata remains available");
+    const denied = await rawRequest({port: oauth.port, method: "POST", pathname: "/mcp",
+      headers: {Host: "devbox.example", "X-Forwarded-For": "127.0.0.1", "Content-Type": "application/json"},
+      body: JSON.stringify({jsonrpc: "2.0", id: 1, method: "initialize", params: {}})});
+    assert.equal(denied.status, 401, "Forwarding hints do not bypass MCP authentication");
+  }
 
   const oauthPreflight = await rawRequest({
     port: oauth.port,
