@@ -35,9 +35,9 @@ int main() {
         {
             const std::string hash(64, 'a'), source(40, 'b'), pipe = "Devbox-Owned-Test";
 #ifdef _WIN32
-            const auto file = root / "run/native/releases" / hash / "devbox-mcp.exe";
+            const auto file = root / "run" / "native" / "releases" / hash / "devbox-mcp.exe";
 #else
-            const auto file = root / "run/native/releases" / hash / "devbox-mcp";
+            const auto file = root / "run" / "native" / "releases" / hash / "devbox-mcp";
 #endif
             const Json build{{"binarySha256", hash}, {"gitSha", source}, {"sourceDirty", false}};
             const Json selection{
