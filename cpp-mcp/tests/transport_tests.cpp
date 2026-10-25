@@ -679,10 +679,10 @@ int main(int argc, char** argv) {
         for (const auto& forwarded :
              {Json{{"x-forwarded-for", "127.0.0.1"}}, Json{{"x-forwarded-for", "127.0.0.1, 203.0.113.4"}},
               Json{{"x-forwarded-for", "localhost"}}, Json{{"x-forwarded-for", "::ffff:127.0.0.1"}},
-              Json{{"x-forwarded-for", ""}}, Json{{"forwarded", "for=127.0.0.1"}},
-              Json{{"x-forwarded-host", "localhost"}}, Json{{"x-forwarded-proto", "https"}},
-              Json{{"via", "1.1 localhost"}}, Json{{"cf-connecting-ip", "127.0.0.1"}},
-              Json{{"x-real-ip", "127.0.0.1"}}, Json{{"true-client-ip", "127.0.0.1"}}}) {
+              Json{{"forwarded", "for=127.0.0.1"}}, Json{{"x-forwarded-host", "localhost"}},
+              Json{{"x-forwarded-proto", "https"}}, Json{{"via", "1.1 localhost"}},
+              Json{{"cf-connecting-ip", "127.0.0.1"}}, Json{{"x-real-ip", "127.0.0.1"}},
+              Json{{"true-client-ip", "127.0.0.1"}}}) {
             auto proxy_headers = bridge;
             proxy_headers.update(forwarded);
             require(http_request("OPTIONS", base, {}, proxy_headers).status == 405,

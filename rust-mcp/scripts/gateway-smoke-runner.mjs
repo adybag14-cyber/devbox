@@ -291,7 +291,7 @@ try {
 
   if (metadata.build?.implementation === "cpp") {
     const forwardingHints = [
-      {}, { "X-Forwarded-For": "127.0.0.1" },
+      {}, { "X-Forwarded-For": "127.0.0.1" }, { "X-Forwarded-For": "" },
       { "X-Forwarded-For": "127.0.0.1, 203.0.113.8" },
       { "Forwarded": "for=127.0.0.1" }, { "CF-Connecting-IP": "127.0.0.1" },
       { "X-Forwarded-Host": "localhost" }, { "X-Forwarded-Proto": "https" }, { Via: "1.1 localhost" },
@@ -304,6 +304,13 @@ try {
       assert.equal(value.local_base_url, null, "A public authority must not acquire local metadata privileges");
       for (const key of ["runtime", "devbox", "activity", "admission", "transport_resources"])
         assert.equal(value[key], undefined, `Proxy request leaked internal ${key}`);
+      if (Object.keys(hints).length) {
+        // Node sends an explicitly empty header; curl's header API instead
+        // removes empty fields, so this is the authoritative empty-header case.
+        const loopback = await rawRequest({port: oauth.port, headers: {Host: `127.0.0.1:${oauth.port}`, ...hints}});
+        assert.equal(loopback.status, 200);
+        assert.equal(JSON.parse(loopback.body).runtime, undefined, "Proxy hints cannot acquire local privileges through a loopback authority");
+      }
     }
     const direct = JSON.parse((await rawRequest({port: oauth.port, headers: {Host: `127.0.0.1:${oauth.port}`}})).body);
     assert.ok(direct.runtime, "Direct loopback operator metadata remains available");
