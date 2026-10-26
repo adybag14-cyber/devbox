@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "upstreamSource": "e89fff89ac9af12e8d4ce9d5fd07beb408ca730f",
+  "scope": "test-fixtures-only",
+  "files": [
+    {
+      "path": "tests/util.rs",
+      "beforeSha256": "1ad1581ae80a35b5aec02eeaca61d36699009d3a52d57ede18f314bdf488fda1",
+      "afterSha256": "9b576657d83fc0fae51f1aa7ce725671171d9b0fe37d19ff5ca4c05cd93686af",
+      "replacements": [
+        {
+          "before": "    /// Create a new file with the given name and contents in this directory,\n    /// or panic on error.\n    pub fn create<P: AsRef<Path>>",
+          "after": "    /// Assign a fixed, whole-second access time without changing file contents.\n    /// Read it back after closing the handle so fixture failures are explicit.\n    pub fn accessed<P: AsRef<Path>>(&self, name: P, rank: u64) {\n        use std::{fs::FileTimes, time::{Duration, UNIX_EPOCH}};\n        let path = self.dir.join(name);\n        let expected = UNIX_EPOCH + Duration::from_secs(1_000_000_000 + rank * 120);\n        {\n            let file = nice_err(&path, File::options().write(true).open(&path));\n            nice_err(&path, file.set_times(FileTimes::new().set_accessed(expected)));\n        }\n        let actual = nice_err(&path, nice_err(&path, fs::metadata(&path)).accessed());\n        assert_eq!(actual, expected, \"access-time fixture was not preserved: {path:?}\");\n    }\n\n    /// Create a new file with the given name and contents in this directory,\n    /// or panic on error.\n    pub fn create<P: AsRef<Path>>"
+        }
+      ]
+    },
+    {
+      "path": "tests/misc.rs",
+      "beforeSha256": "4fe2caae7e791339a154172b65a54905d1660a1d8869a790309076818264f335",
+      "afterSha256": "1dbff7f3d3020a17bef575b4b5499bdd8966504b8b513bdcd6915b7a5575755c",
+      "replacements": [
+        {
+          "before": "fn sort_setup(dir: Dir) {\n    use std::{thread::sleep, time::Duration};\n    // As reported in https://github.com/BurntSushi/ripgrep/issues/3071\n    // this test fails if sufficient delay is not given on Windows/Aarch64.\n    let delay = if cfg!(all(windows, target_arch = \"aarch64\")) {\n        Duration::from_millis(1000)\n    } else {\n        Duration::from_millis(100)\n    };\n    let sub_dir = dir.path().join(\"dir\");\n    dir.create(\"a\", \"test\");\n    sleep(delay);\n    dir.create_dir(&sub_dir);\n    sleep(delay);\n    dir.create(sub_dir.join(\"c\"), \"test\");\n    sleep(delay);\n    dir.create(\"b\", \"test\");\n    sleep(delay);\n    dir.create(sub_dir.join(\"d\"), \"test\");\n}",
+          "after": "fn sort_setup(dir: Dir) {\n    // Creation-time sleeps do not establish the access-time precondition.\n    // Use explicit timestamps, preserving the existing sort assertions.\n    dir.create_dir(\"dir\");\n    for (rank, name) in [\"a\", \"dir/c\", \"b\", \"dir/d\"].iter().enumerate() {\n        dir.create(name, \"test\");\n        dir.accessed(name, rank as u64);\n    }\n}"
+        }
+      ]
+    },
+    {
+      "path": "tests/feature.rs",
+      "beforeSha256": "fbc6455c5d2cb73580cde4b390c0a43315107598200a6ca6023c3bfc155d8706",
+      "afterSha256": "3d8ffb8409350f230658483eadfcd93b715657cb50435d6ba3567eae021bcb8c",
+      "replacements": [
+        {
+          "before": "rgtest!(f2361_sort_nested_files, |dir: Dir, mut cmd: TestCommand| {\n    use std::{thread::sleep, time::Duration};\n\n    if crate::util::is_cross() {\n        return;\n    }\n    dir.create(\"foo\", \"1\");\n    sleep(Duration::from_millis(200));\n    dir.create_dir(\"dir\");\n    sleep(Duration::from_millis(200));\n    dir.create(dir.path().join(\"dir\").join(\"bar\"), \"1\");\n\n    cmd.arg(\"--sort\").arg(\"accessed\").arg(\"--files\");\n    eqnice!(\"foo\\ndir/bar\\n\", cmd.stdout());\n\n    dir.create(\"foo\", \"2\");\n    sleep(Duration::from_millis(200));\n    dir.create(dir.path().join(\"dir\").join(\"bar\"), \"2\");\n    sleep(Duration::from_millis(200));\n\n    cmd.arg(\"--sort\").arg(\"accessed\").arg(\"--files\");\n    eqnice!(\"foo\\ndir/bar\\n\", cmd.stdout());\n});",
+          "after": "rgtest!(f2361_sort_nested_files, |dir: Dir, mut cmd: TestCommand| {\n    if crate::util::is_cross() {\n        return;\n    }\n    dir.create(\"foo\", \"1\");\n    dir.create_dir(\"dir\");\n    dir.create(\"dir/bar\", \"1\");\n    dir.accessed(\"foo\", 0);\n    dir.accessed(\"dir/bar\", 1);\n\n    cmd.arg(\"--sort\").arg(\"accessed\").arg(\"--files\");\n    eqnice!(\"foo\\ndir/bar\\n\", cmd.stdout());\n\n    dir.create(\"foo\", \"2\");\n    dir.create(\"dir/bar\", \"2\");\n    dir.accessed(\"foo\", 2);\n    dir.accessed(\"dir/bar\", 3);\n\n    cmd.arg(\"--sort\").arg(\"accessed\").arg(\"--files\");\n    eqnice!(\"foo\\ndir/bar\\n\", cmd.stdout());\n});"
+        }
+      ]
+    }
+  ]
+}

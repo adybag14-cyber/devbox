@@ -7,6 +7,7 @@ import {access,chmod,copyFile,mkdir,mkdtemp,readFile,readdir,stat,writeFile} fro
 import path from 'node:path';
 import {runCheckedProcess} from '../../src/mcp-implementation.js';
 import {inspectRuntimeFile} from './runtime-imports.mjs';
+import {applyRipgrepFixtures,fixtureHash} from './ripgrep-fixtures.mjs';
 
 const repo=path.resolve(import.meta.dirname,'../..');
 const pin=JSON.parse(await readFile(path.join(repo,'cpp-mcp/bundled-ripgrep.json'),'utf8'));
@@ -71,6 +72,8 @@ assert.match(version,/PCRE2 is not available/u);
 const fixture=path.join(root,'search-fixture.txt');await writeFile(fixture,'first\nphone £799\nlast\n');
 assert.equal(await run(binary,['--no-config','--fixed-strings','--line-number','phone',fixture]),'2:phone £799');
 let qualified=true,limitation=null;
+const runtimeBeforeTests=fixtureHash(await readFile(binary));
+const fixtureUpdate=await applyRipgrepFixtures(source,pin.source);
 try {
   const testLog=await run('cargo',[common[0],'test',...common.slice(1),'--profile',pin.profile,'--test','integration','--jobs','2'],source,env,600000);
   assert.match(testLog,/test result: ok\./u,'Upstream integration completion is required');
@@ -82,7 +85,11 @@ try {
   qualified=false;limitation={kind:'local_symbolic_link_privilege_unavailable',failed,
     releaseAllowed:false,message:'The two upstream symlink fixtures require Windows privileges absent from this development shell.'};
   await writeFile(path.join(root,'local-test-environment-failure.txt'),String(error.message));
+} finally {
+  await fixtureUpdate.restore();
 }
+assert.equal(await run('git',['status','--porcelain','--untracked-files=all'],source),'');
+assert.equal(fixtureHash(await readFile(binary)),runtimeBeforeTests,'Test-only fixture edits must not alter the shipped ripgrep binary');
 const packages=[],notices=[];
 for(const item of metadata.packages) {
   if(!used.has(`${item.name}@${item.version}`))continue;
@@ -140,6 +147,7 @@ await writeFile(path.join(root,license),notice);
 const result={schema:1,name:'ripgrep',version:pin.version,source:pin.source,repository:pin.repository,
   compiler:rustVersion,target,runtime,features:[],pcre2:false,file,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),
   license,noticeSha256:createHash('sha256').update(notice).digest('hex'),packages,qualified,limitation,
+  testFixtures:{...fixtureUpdate.metadata,runtimeBinaryUnchanged:true},
   tests:qualified?'upstream integration and actual file search passed':'local test environment incomplete; not release qualified'};
 await writeFile(path.join(root,'manifest.json'),JSON.stringify(result,null,2)+'\n');
 console.log(JSON.stringify({ok:true,manifest:path.join(root,'manifest.json'),sha256:result.sha256,bytes:result.bytes,crates:used.size,pcre2:false}));

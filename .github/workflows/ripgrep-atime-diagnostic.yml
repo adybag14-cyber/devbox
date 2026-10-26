@@ -28,6 +28,15 @@ jobs:
         run: rustup toolchain install 1.97.1 --profile minimal
       - name: Record fixture timestamps and reproduce ordering failures
         run: python3 .github/scripts/ripgrep-atime-diagnostic.py
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - name: Qualify deterministic timestamp fixtures and unchanged runtime
+        run: |
+          node --test cpp-mcp/scripts/ripgrep-fixtures.test.mjs
+          node cpp-mcp/scripts/build-ripgrep.mjs
+          cp .cpp-build/bundled-ripgrep/manifest.json .cpp-build/atime-evidence/corrected-manifest.json
+          cp .cpp-build/bundled-ripgrep/upstream-integration.log .cpp-build/atime-evidence/corrected-upstream-integration.log
       - name: Preserve diagnostics even if a check fails
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
