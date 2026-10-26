@@ -477,6 +477,8 @@ struct BrowserService::State {
         options.headed = env_bool("DEVBOX_BROWSER_HEADED", options.headed);
         options.text_only = env_bool("DEVBOX_BROWSER_TEXT_ONLY", options.text_only);
         options.compatibility = env_bool("DEVBOX_BROWSER_COMPATIBILITY", options.compatibility);
+        options.software_rendering =
+            env_bool("DEVBOX_BROWSER_SOFTWARE_RENDERING", options.software_rendering);
         if (env_bool("DEVBOX_BROWSER_SHARED", false)) {
             if (!config->platform.is_linux)
                 throw Error("BROWSER_SHARED_UNSUPPORTED: managed shared mode requires Linux");
@@ -815,6 +817,8 @@ struct BrowserService::State {
                 args.insert(args.begin(), "--ozone-platform=x11");
             if (options.compatibility)
                 args.insert(args.begin(), "--disable-blink-features=AutomationControlled");
+            if (options.software_rendering)
+                args.insert(args.begin(), "--disable-gpu");
 #ifdef _WIN32
             // Chrome otherwise may relaunch through the interactive shell with
             // a different token and exit this owned process before DevTools is

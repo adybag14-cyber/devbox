@@ -29,6 +29,9 @@ struct BrowserOptions {
     bool headed = false;
     bool text_only = false;
     bool compatibility = false;
+    // Operator choice for virtual displays without a GPU. Retains Chromium's
+    // sandbox and software rendering; ordinary host browsers keep their default.
+    bool software_rendering = false;
     // Native regression injection only. Models and environment cannot set this.
     bool defer_initial_navigation = false;
     // Qualification injections only; never supplied through MCP or environment.
