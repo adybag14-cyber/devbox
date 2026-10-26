@@ -1,6 +1,7 @@
 #pragma once
 #include "background.hpp"
 #include "gateway.hpp"
+#include "performance_window.hpp"
 #include <deque>
 #include <map>
 namespace devbox {
@@ -65,12 +66,11 @@ class UsageTelemetry {
 };
 Json allocator_snapshot();
 class PerformanceMonitor {
-    struct Sample {
-        Clock::time_point at;
-        double ms;
-    };
+    using Sample = detail::PerformanceSample;
     mutable std::mutex mutex_;
-    std::deque<Sample> delays_, drifts_;
+    detail::PerformanceWindow delays_{15000};
+    // Drift is sampled at most once per second; inclusive expiry needs 301.
+    detail::PerformanceWindow drifts_{301};
     std::mutex persist_mutex_;
     Json cache_;
     Clock::time_point started_ = Clock::now(), cached_at_ = Clock::now();
