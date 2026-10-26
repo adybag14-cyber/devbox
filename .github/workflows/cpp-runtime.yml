@@ -98,7 +98,9 @@ jobs:
           fi
       - name: Build and qualify optional ripgrep without PCRE2
         if: matrix.sanitizers == '0'
-        run: node cpp-mcp/scripts/build-ripgrep.mjs
+        run: |
+          node --test cpp-mcp/scripts/ripgrep-fixtures.test.mjs
+          node cpp-mcp/scripts/build-ripgrep.mjs
       - name: Select Clang sanitizer compiler
         if: matrix.sanitizers == '1'
         shell: bash
