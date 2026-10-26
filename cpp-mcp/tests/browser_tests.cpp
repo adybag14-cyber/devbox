@@ -765,9 +765,14 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
             "real JPEG screenshot");
 #ifdef __linux__
-    const auto launch_arguments =
+    auto launch_arguments =
         read_file(fs::path("/proc") / std::to_string(launched_pid.load()) / "cmdline", 16384);
-    require((launch_arguments.find(std::string("\0--disable-gpu\0", 15)) != std::string::npos) == headed,
+    // Chromium can rewrite Linux argv as one space-separated process title.
+    // Both the initial NUL-separated argv and that published title are valid.
+    std::replace(launch_arguments.begin(), launch_arguments.end(), '\0', ' ');
+    const auto launch_tokens = split(launch_arguments, ' ');
+    require((std::find(launch_tokens.begin(), launch_tokens.end(), "--disable-gpu") != launch_tokens.end()) ==
+                headed,
             "software rendering is opt-in and reaches the owned Chromium process");
     require(launch_arguments.find("--no-sandbox") == std::string::npos,
             "software rendering retains Chromium sandboxing");
