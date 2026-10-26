@@ -690,6 +690,9 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     BrowserOptions options;
     options.headed = headed;
     options.compatibility = compatibility;
+    // The headed Linux qualification display is Xvfb. Exercise software
+    // rendering with the actual price/HTML/screenshot/input fixture below.
+    options.software_rendering = headed;
     options.defer_initial_navigation = !headed && !compatibility;
     options.launch_diagnostics = [&](std::string_view message) {
         browser_diagnostics(message);
@@ -761,6 +764,14 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                             "test");
     require(!value.image_base64.empty() && base64_decode(value.image_base64).at(0) == 0xff,
             "real JPEG screenshot");
+#ifdef __linux__
+    const auto launch_arguments =
+        read_file(fs::path("/proc") / std::to_string(launched_pid.load()) / "cmdline", 16384);
+    require((launch_arguments.find(std::string("\0--disable-gpu\0", 15)) != std::string::npos) == headed,
+            "software rendering is opt-in and reaches the owned Chromium process");
+    require(launch_arguments.find("--no-sandbox") == std::string::npos,
+            "software rendering retains Chromium sandboxing");
+#endif
     std::cerr << "[browser] initial owned screenshot passed\n" << std::flush;
     require(json_string(value.data, "text")
                     .find(compatibility ? "Fixture webdriver=false" : "Fixture webdriver=true") !=
