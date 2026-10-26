@@ -177,15 +177,10 @@ asio::awaitable<void> PerformanceMonitor::sample(Cancel cancel) {
         };
         {
             std::lock_guard lock(mutex_);
-            delays_.push_back({now, late(now, expected)});
-            while (delays_.size() > 15000 ||
-                   (!delays_.empty() && now - delays_.front().at > std::chrono::minutes(5)))
-                delays_.pop_front();
+            delays_.push({now, late(now, expected)});
             if (now >= drift) {
-                drifts_.push_back({now, late(now, drift)});
+                drifts_.push({now, late(now, drift)});
                 drift = now + Millis(1000);
-                while (!drifts_.empty() && now - drifts_.front().at > std::chrono::minutes(5))
-                    drifts_.pop_front();
                 background_.attempt("performance-sampler");
                 background_.success("performance-sampler");
             }
@@ -196,13 +191,13 @@ asio::awaitable<void> PerformanceMonitor::sample(Cancel cancel) {
     }
 }
 Json PerformanceMonitor::capture() {
-    // Copy into contiguous storage. On MSVC, deque copies allocate a separate
-    // block for each Sample, extending the sampler lock and idle CPU work.
+    // Copy the bounded histories into contiguous storage while holding the
+    // sampler lock. Percentile calculations remain outside the lock.
     std::vector<Sample> delays, drifts;
     {
         std::lock_guard lock(mutex_);
-        delays.assign(delays_.begin(), delays_.end());
-        drifts.assign(drifts_.begin(), drifts_.end());
+        delays_.copy_to(delays);
+        drifts_.copy_to(drifts);
     }
     const auto now = Clock::now();
     auto window = [&](std::uint64_t seconds) {
