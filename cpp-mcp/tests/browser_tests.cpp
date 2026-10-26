@@ -658,6 +658,10 @@ void proxy_tests() {
     require(json_uint(gate.metrics(), "accepted_connections") == 0, "no private connections admitted");
 }
 void browser_tests(bool headed = false, bool compatibility = false) {
+    const auto saved_software_rendering = environment("DEVBOX_BROWSER_SOFTWARE_RENDERING");
+    ScopeExit restore_software_rendering(
+        [&] { set_environment("DEVBOX_BROWSER_SOFTWARE_RENDERING", saved_software_rendering); });
+    set_environment("DEVBOX_BROWSER_SOFTWARE_RENDERING", std::nullopt);
 #ifdef _WIN32
     const auto shadow = fs::temp_directory_path() / ("devbox-browser-path-" + uuid());
     require(fs::create_directory(shadow), "owned discovery fixture directory");
