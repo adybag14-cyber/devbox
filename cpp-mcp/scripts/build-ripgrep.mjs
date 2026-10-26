@@ -7,7 +7,7 @@ import {access,chmod,copyFile,mkdir,mkdtemp,readFile,readdir,stat,writeFile} fro
 import path from 'node:path';
 import {runCheckedProcess} from '../../src/mcp-implementation.js';
 import {inspectRuntimeFile} from './runtime-imports.mjs';
-import {applyRipgrepFixtures,fixtureHash} from './ripgrep-fixtures.mjs';
+import {applyRipgrepFixtures,fixtureHash,qualifyRipgrepAccessOrder} from './ripgrep-fixtures.mjs';
 
 const repo=path.resolve(import.meta.dirname,'../..');
 const pin=JSON.parse(await readFile(path.join(repo,'cpp-mcp/bundled-ripgrep.json'),'utf8'));
@@ -71,6 +71,8 @@ assert(version.startsWith(`ripgrep ${pin.version} `));assert.match(version,/feat
 assert.match(version,/PCRE2 is not available/u);
 const fixture=path.join(root,'search-fixture.txt');await writeFile(fixture,'first\nphone £799\nlast\n');
 assert.equal(await run(binary,['--no-config','--fixed-strings','--line-number','phone',fixture]),'2:phone £799');
+const accessTimeProbes=await qualifyRipgrepAccessOrder(path.join(testTemp,'controlled-access-order'),
+  (args,cwd)=>run(binary,args,cwd,env));
 let qualified=true,limitation=null;
 const runtimeBeforeTests=fixtureHash(await readFile(binary));
 const fixtureUpdate=await applyRipgrepFixtures(source,pin.source);
@@ -147,7 +149,7 @@ await writeFile(path.join(root,license),notice);
 const result={schema:1,name:'ripgrep',version:pin.version,source:pin.source,repository:pin.repository,
   compiler:rustVersion,target,runtime,features:[],pcre2:false,file,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),
   license,noticeSha256:createHash('sha256').update(notice).digest('hex'),packages,qualified,limitation,
-  testFixtures:{...fixtureUpdate.metadata,runtimeBinaryUnchanged:true},
+  testFixtures:{...fixtureUpdate.metadata,runtimeBinaryUnchanged:true,accessTimeProbes},
   tests:qualified?'upstream integration and actual file search passed':'local test environment incomplete; not release qualified'};
 await writeFile(path.join(root,'manifest.json'),JSON.stringify(result,null,2)+'\n');
 console.log(JSON.stringify({ok:true,manifest:path.join(root,'manifest.json'),sha256:result.sha256,bytes:result.bytes,crates:used.size,pcre2:false}));

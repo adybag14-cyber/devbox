@@ -1,7 +1,7 @@
 // Build-time test fixtures only. No runtime source or dependency is changed.
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
-import {lstat,readFile,realpath,writeFile} from 'node:fs/promises';
+import {lstat,mkdir,readFile,realpath,stat,utimes,writeFile} from 'node:fs/promises';
 import path from 'node:path';
 
 const allowed=new Set(['tests/util.rs','tests/misc.rs','tests/feature.rs']);
@@ -49,4 +49,30 @@ export async function applyRipgrepFixtures(source,expectedSource,descriptor) {
       files:prepared.map(({path,beforeSha256,afterSha256})=>({path,beforeSha256,afterSha256}))},
     restore,
   };
+}
+
+export async function qualifyRipgrepAccessOrder(directory,invoke) {
+  await mkdir(directory);await mkdir(path.join(directory,'dir'));
+  const names=['a','dir/c','b','dir/d'];
+  for(const name of names)await writeFile(path.join(directory,name),'test\n');
+  const reports=[];
+  // Deliberately disagree with both creation order and pathname order. Check
+  // subsecond values too, so whole-second upstream fixtures cannot conceal a
+  // regression in the runtime's timestamp comparison.
+  for(const [spacingMs,ranks] of [[100,[3,0,2,1]],[2000,[1,3,0,2]]]) {
+    for(let i=0;i<names.length;i++)await utimes(path.join(directory,names[i]),
+      new Date(1_000_000_000_000+ranks[i]*spacingMs),new Date(1_000_001_000_000));
+    const before=await Promise.all(names.map(async name=>({name,atime:(await stat(path.join(directory,name),{bigint:true})).atimeNs})));
+    assert.equal(new Set(before.map(row=>row.atime.toString())).size,names.length,'Qualification filesystem must preserve distinct requested access times');
+    const sorted=[...before].sort((a,b)=>a.atime<b.atime?-1:a.atime>b.atime?1:0).map(row=>row.name);
+    for(const reverse of [false,true]) {
+      const expected=reverse?[...sorted].reverse():sorted;
+      const output=await invoke(['--no-config','--no-ignore','--path-separator','/',reverse?'--sortr':'--sort','accessed','--files'],directory);
+      assert.deepEqual(output.trim().split(/\r?\n/u),expected,'ripgrep must sort by the observed access times');
+      const after=await Promise.all(names.map(async name=>(await stat(path.join(directory,name),{bigint:true})).atimeNs));
+      assert.deepEqual(after,before.map(row=>row.atime),'Access times changed during the controlled --files probe');
+      reports.push({spacingMs,reverse,order:expected,accessTimes:before.map(row=>({name:row.name,nanoseconds:row.atime.toString()}))});
+    }
+  }
+  return reports;
 }

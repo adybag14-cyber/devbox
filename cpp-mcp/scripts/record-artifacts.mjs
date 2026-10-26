@@ -71,12 +71,19 @@ if(build.bundledRipgrep?.compiledIdentity) {
   const tool=JSON.parse(await readFile(path.join(packageRoot,'share/devbox/bundled-ripgrep.json'),'utf8'));
   assert.equal(tool.qualified,true);assert.equal(tool.pcre2,false);assert.deepEqual(tool.features,[]);
   assert.equal(tool.sha256,build.bundledRipgrep.sha256);assert.equal(tool.source,build.bundledRipgrep.source);
+  const fixtureBytes=await readFile(path.join(repo,'cpp-mcp/patches/ripgrep-atime-fixtures.json'));
+  const fixtures=JSON.parse(fixtureBytes);
+  assert.equal(tool.testFixtures?.scope,'test-fixtures-only');
+  assert.equal(tool.testFixtures.upstreamSource,tool.source);assert.equal(tool.testFixtures.runtimeBinaryUnchanged,true);
+  assert.equal(tool.testFixtures.descriptorSha256,createHash('sha256').update(fixtureBytes).digest('hex'));
+  assert.deepEqual(tool.testFixtures.files,fixtures.files.map(({path,beforeSha256,afterSha256})=>({path,beforeSha256,afterSha256})));
+  assert.deepEqual(tool.testFixtures.accessTimeProbes.map(row=>[row.spacingMs,row.reverse]),[[100,false],[100,true],[2000,false],[2000,true]]);
   const file=path.posix.join(bin,tool.file),bytes=await readFile(path.join(packageRoot,file));
   assert.equal(bytes.length,tool.bytes);assert.equal(createHash('sha256').update(bytes).digest('hex'),tool.sha256);
   const notice=await readFile(path.join(packageRoot,'share/devbox',tool.license),'utf8');
   assert.equal(createHash('sha256').update(notice).digest('hex'),tool.noticeSha256);
   const runtime=await inspectRuntimeFile(path.join(packageRoot,file));
-  optionalTools.push({...build.bundledRipgrep,file,runtime,license:'share/devbox/'+tool.license,noticeSha256:tool.noticeSha256});
+  optionalTools.push({...build.bundledRipgrep,file,runtime,license:'share/devbox/'+tool.license,noticeSha256:tool.noticeSha256,testFixtures:tool.testFixtures});
   bundledTools.push({...tool,notice});
 }
 const assurance = await collectDependencies({

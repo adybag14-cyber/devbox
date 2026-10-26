@@ -17,6 +17,11 @@ The fixture descriptor and file digests are retained in the optional-tool build
 manifest. No runtime code, Cargo dependency, regex feature or installed payload
 is changed by the fixture correction.
 
+Independent probes also assign shuffled access times at 100-millisecond and
+two-second spacing. They check forward and reverse ordering against the actual
+filesystem metadata and verify that the metadata remained stable during the
+probe. This retains explicit coverage of subsecond timestamp comparison.
+
 The earlier macOS ARM64 qualification failure is retained as evidence. Diagnostic
 runs on a fresh macOS host did not reproduce it, so no specific filesystem or
 clock failure is asserted as its cause. The corrected fixtures remove the
