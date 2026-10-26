@@ -76,6 +76,21 @@ try:
                 print(json.dumps(row), flush=True)
         if index % 10 == 9:
             print(json.dumps({'iterations': index + 1, 'failures': sum(r['exitCode'] != 0 for r in report['runs'])}), flush=True)
+    report['fullSuiteRuns'] = []
+    for index in range(20):
+        result = subprocess.run([str(integration), '--nocapture'], cwd=source, env=env, capture_output=True, timeout=30)
+        output = (result.stdout + result.stderr).decode(errors='replace')
+        records = [json.loads(line.split('DEVBOX_ATIME ', 1)[1]) for line in output.splitlines() if line.startswith('DEVBOX_ATIME ')]
+        for record in records:
+            values = [int(row['accessed']) for row in record['stamps']]
+            record['strictCreationOrder'] = all(a < b for a, b in zip(values, values[1:]))
+        row = {'index': index, 'exitCode': result.returncode, 'timestampRecords': records}
+        report['fullSuiteRuns'].append(row)
+        if result.returncode or any(not row['strictCreationOrder'] for row in records):
+            (evidence / f'full-suite-{index}.log').write_text(output)
+            print(json.dumps(row), flush=True)
+        if index % 5 == 4:
+            print(json.dumps({'fullSuites': index + 1, 'failures': sum(r['exitCode'] != 0 for r in report['fullSuiteRuns'])}), flush=True)
     report['binaryAfter'] = hashlib.sha256(binary.read_bytes()).hexdigest()
     report['runtimeBinaryUnchanged'] = report['binaryBefore'] == report['binaryAfter']
 finally:
