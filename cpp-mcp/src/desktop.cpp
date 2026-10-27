@@ -177,7 +177,7 @@ class Desktop {
     std::uint64_t browser_restarts_ = 0, desktop_restarts_ = 0;
     unsigned browser_failures_ = 0;
     Clock::time_point browser_started_{};
-    Json last_browser_exit_, browser_ready_at_;
+    Json last_browser_exit_, last_desktop_exit_, browser_ready_at_;
 
     bool pause(Millis duration) const {
         const auto until = Clock::now() + duration;
@@ -253,6 +253,7 @@ class Desktop {
              {"browser_restarts", browser_restarts_},
              {"desktop_restarts", desktop_restarts_},
              {"last_browser_exit", last_browser_exit_},
+             {"last_desktop_exit", last_desktop_exit_},
              {"browser_ready_at", browser_ready_at_},
              {"error", error.substr(0, 1024)}});
     }
@@ -361,7 +362,9 @@ class Desktop {
                     if (!alive("xvfb"))
                         throw Error("DESKTOP_CHILD_EXITED: xvfb");
                     if (!window_manager_ || !window_manager_->healthy())
-                        throw Error("DESKTOP_WINDOW_MANAGER_EXITED_OR_STALLED");
+                        throw Error("DESKTOP_WINDOW_MANAGER_EXITED_OR_STALLED: " +
+                                    (window_manager_ ? window_manager_->failure_reason()
+                                                     : "DESKTOP_WINDOW_MANAGER_MISSING"));
                     if (options_.browser_autostart && !alive("chromium")) {
                         last_browser_exit_ = children_.at("chromium")->exit_result();
                         if (last_browser_exit_.is_object())
@@ -385,6 +388,8 @@ class Desktop {
                     pause(Millis(500));
                 }
             } catch (const std::exception& error) {
+                last_desktop_exit_ = {{"error", std::string(error.what()).substr(0, 1024)},
+                                      {"observed_at", utc_now()}};
                 status(false, error.what());
                 std::cerr << error.what() << '\n';
             }
