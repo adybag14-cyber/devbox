@@ -511,6 +511,7 @@ struct PageFixture {
     Tcp::acceptor listener{io, {asio::ip::make_address("127.0.0.1"), 0}};
     std::atomic_bool stop{false};
     std::atomic_bool reject_requests{false};
+    std::atomic_uint accepted_connections{0};
     std::atomic_uint requests{0};
     std::atomic_uint picture_requests{0};
     std::atomic_uint continuation_requests{0}, capture_requests{0};
@@ -527,6 +528,7 @@ struct PageFixture {
                     std::this_thread::sleep_for(Millis(2));
                     continue;
                 }
+                ++accepted_connections;
                 try {
                     beast::flat_buffer b;
                     http::request_parser<http::string_body> parser;
@@ -664,6 +666,31 @@ update();
         return listener.local_endpoint().port();
     }
 };
+void fixture_transport_tests() {
+    PageFixture page;
+    asio::io_context io;
+    Tcp::socket idle(io);
+    idle.connect({asio::ip::make_address("127.0.0.1"), page.port()});
+    const auto accepted_by = Clock::now() + Millis(2000);
+    while (page.accepted_connections == 0) {
+        require(Clock::now() < accepted_by, "fixture accepts the deliberately idle preconnection");
+        std::this_thread::sleep_for(Millis(2));
+    }
+    const auto started = Clock::now();
+    try {
+        const auto response = http_request("GET", "http://127.0.0.1:" + std::to_string(page.port()) + "/", {},
+                                           Json::object(), Millis(1000), 65536, {}, true);
+        require(response.status == 200 && response.body.find("Fixture Phone") != std::string::npos,
+                "a ready request progresses while another accepted connection remains idle");
+    } catch (...) {
+        std::cerr << "Fixture idle-peer regression: accepted=" << page.accepted_connections.load()
+                  << " completed=" << page.requests.load()
+                  << " elapsed_ms=" << std::chrono::duration_cast<Millis>(Clock::now() - started).count()
+                  << '\n';
+        throw;
+    }
+    std::cout << "idle preconnection does not block a ready fixture request\n";
+}
 void proxy_tests() {
     BrowserProxy gate;
     auto request = [&](std::string target) {
@@ -1495,6 +1522,9 @@ void session_allowance_tests() {
 }
 int main(int argc, char** argv) {
     try {
+        fixture_transport_tests();
+        if (argc == 2 && std::string_view(argv[1]) == "--fixture-transport")
+            return 0;
         protocol_tests();
         proxy_tests();
         if (argc > 1) {
