@@ -515,6 +515,7 @@ struct PageFixture {
     };
     asio::io_context io;
     Tcp::acceptor listener{io, {asio::ip::make_address("127.0.0.1"), 0}};
+    const std::uint16_t port_number = listener.local_endpoint().port();
     std::atomic_bool stop{false};
     std::atomic_bool reject_requests{false};
     std::atomic_uint accepted_connections{0};
@@ -706,7 +707,7 @@ update();
                       << " capacity_denials=" << capacity_denials.load() << '\n';
     }
     std::uint16_t port() {
-        return listener.local_endpoint().port();
+        return port_number;
     }
 };
 void fixture_transport_tests() {
