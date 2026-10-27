@@ -144,6 +144,7 @@ add_library(devbox_core
   src/management_services.cpp
   src/desktop.cpp
   src/desktop_wm.cpp
+  src/browser_memory.cpp
   src/x11_session.cpp
   src/contract.cpp
   src/monitoring.cpp
@@ -279,6 +280,10 @@ if(DEVBOX_BUILD_TESTS)
   endif()
   set_tests_properties(native-bundled-tools PROPERTIES TIMEOUT 30)
   add_executable(devbox-x11-session-tests tests/x11_session_tests.cpp src/x11_session.cpp)
+  add_executable(devbox-browser-memory-tests tests/browser_memory_tests.cpp src/browser_memory.cpp)
+  target_include_directories(devbox-browser-memory-tests PRIVATE include)
+  add_test(NAME native-browser-memory COMMAND devbox-browser-memory-tests)
+  set_tests_properties(native-browser-memory PROPERTIES TIMEOUT 10)
   target_include_directories(devbox-x11-session-tests PRIVATE include)
   target_link_libraries(devbox-x11-session-tests PRIVATE Threads::Threads)
   add_test(NAME native-xauthority COMMAND devbox-x11-session-tests)
