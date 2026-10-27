@@ -39,6 +39,16 @@ headless sessions omit the flag when `DEVBOX_BROWSER_SOFTWARE_RENDERING` is unse
 The fixture clears and restores any inherited setting to test that default.
 GPU-dependent content still requires deployment-specific testing.
 
+The browser qualification fixture now handles bounded concurrent HTTP connections
+on one I/O thread. Idle preconnections and deliberately slow fixture resources no
+longer block ready requests. Transient accept errors retry, and teardown cancels
+pending requests and scripted delays. The existing image-count, rendering and
+context-isolation assertions remain required.
+
+The optional JavaScript and Rust reference dependencies are updated to MCP SDK
+1.32.2, jose 6.2.13, rmcp 3.7.0 / macros 3.8.0, and tokio 1.54.1. These reference
+dependencies are separate from the packaged C++ server and its dependency set.
+
 This release continues the native server, supervisor, desktop broker, installer
 and setup packaging from [0.9.10](bootstrap-v0.9.10.md). Full desktop and offline
 packages retain the verified optional ripgrep fallback; separate core archives
