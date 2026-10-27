@@ -1101,6 +1101,8 @@ void continuation_budget_tests(bool compatibility) {
         require(pending.data["pending_phase"] == "document" && pending.data["navigation_started"] == true &&
                     pending.data["observation_id"].is_null() && pending.image_base64.empty(),
                 "slow document returns owned pending state without invented observation or screenshot");
+        check_navigation_timing(pending.data);
+        const auto submitted_timing = pending.data["timing"]["navigation"];
         rejects(
             [&] {
                 browser.perform({{"action", "click"},
@@ -1124,6 +1126,11 @@ void continuation_budget_tests(bool compatibility) {
         require(page.continuation_requests == 1 &&
                     json_string(pending.data, "text").find("Visit 1") != std::string::npos,
                 "observing pending navigation must not submit Page.navigate again");
+        check_navigation_timing(pending.data);
+        require(pending.data["timing"]["navigation"]["submission_ms"] == submitted_timing["submission_ms"] &&
+                    json_uint(pending.data["timing"]["navigation"], "document_wait_ms") >=
+                        json_uint(submitted_timing, "document_wait_ms"),
+                "continuation retains one submission duration and accumulates document waiting");
         require(pending.image_base64.empty() && pending.data["html_artifact"].is_object(),
                 "contract validation preserves original false screenshot and true HTML choices");
         browser.perform({{"action", "close"}, {"session_id", id}}, "owner");
@@ -1137,6 +1144,9 @@ void continuation_budget_tests(bool compatibility) {
                                         {"screenshot", true},
                                         {"include_html", true}},
                                        "capture-owner");
+        check_startup_timing(pending.data);
+        check_navigation_timing(pending.data);
+        const auto settled_timing = pending.data["timing"]["navigation"];
         require(pending.data["pending_phase"] == "observation" &&
                     pending.data["navigation_started"] == true && pending.data["observation_id"].is_null() &&
                     pending.image_base64.empty(),
@@ -1149,6 +1159,9 @@ void continuation_budget_tests(bool compatibility) {
                     json_string(observed.data, "text").find("Capture visit 1") != std::string::npos &&
                     page.capture_requests == 1,
                 "deferred snapshot captures JPEG and HTML from the same single navigation");
+        require(observed.data["timing"]["navigation"] == settled_timing &&
+                    !observed.data["timing"].contains("startup"),
+                "capture-only continuation preserves navigation timings without repeating startup metadata");
         browser.perform({{"action", "close"}, {"session_id", id}}, "capture-owner");
     }
     options.defer_initial_observation = false;
