@@ -1,3 +1,4 @@
+#include "desktop_wm_proxy.hpp"
 #include "devbox/desktop_wm.hpp"
 #include <algorithm>
 #include <csignal>
@@ -285,6 +286,63 @@ void check_window_manager(unsigned display, const X11Cookie& cookie, int server_
         require(Clock::now() - stop_start < std::chrono::seconds(1), "Native WM shutdown exceeded bound");
     }
     require(descriptors() == baseline, "Window manager leaked descriptors after close or duplicate refusal");
+    {
+        SlowX11Relay relay(display, static_cast<std::uint32_t>(server_pid));
+        DesktopWindowManager wm(
+            relay.display(), cookie, [] { return false; }, static_cast<std::uint32_t>(::getpid()));
+        xcb_auth_info_t auth{18, const_cast<char*>("MIT-MAGIC-COOKIE-1"), 16,
+                             reinterpret_cast<char*>(const_cast<std::uint8_t*>(cookie.data()))};
+        Connection client{xcb_connect_to_fd(
+            connect_private_x11(display, Clock::now() + std::chrono::seconds(1), {}), &auth)};
+        require(!xcb_connection_has_error(client.value), "Slow-reply fixture client");
+        const auto screen = xcb_setup_roots_iterator(xcb_get_setup(client.value)).data;
+        const auto window = xcb_generate_id(client.value);
+        xcb_create_window(client.value, XCB_COPY_FROM_PARENT, window, screen->root, 10, 10, 300, 200, 0,
+                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+        relay.delay(700);
+        const auto start = Clock::now();
+        xcb_map_window(client.value, window);
+        xcb_flush(client.value);
+        bool mapped = false;
+        while (!mapped || Clock::now() - start < std::chrono::seconds(7)) {
+            require(Clock::now() - start < std::chrono::seconds(18), "Slow progressive map deadline");
+            require(!relay.failed(), "Private slow X11 relay failed");
+            require(wm.healthy(), "Progressing X11 replies were misclassified as a stalled window manager");
+            Reply<xcb_get_window_attributes_reply_t> attributes(xcb_get_window_attributes_reply(
+                client.value, xcb_get_window_attributes(client.value, window), nullptr));
+            require(!!attributes, "Slow-reply fixture attributes");
+            mapped = attributes->map_state == XCB_MAP_STATE_VIEWABLE;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        relay.delay(0);
+        std::cout << "Native WM: replies progressing for over five seconds remain healthy\n";
+    }
+    require(descriptors() == baseline, "Slow-reply WM fixture leaked descriptors");
+    {
+        SlowX11Relay relay(display, static_cast<std::uint32_t>(server_pid));
+        DesktopWindowManager wm(
+            relay.display(), cookie, [] { return false; }, static_cast<std::uint32_t>(::getpid()));
+        xcb_auth_info_t auth{18, const_cast<char*>("MIT-MAGIC-COOKIE-1"), 16,
+                             reinterpret_cast<char*>(const_cast<std::uint8_t*>(cookie.data()))};
+        Connection client{xcb_connect_to_fd(
+            connect_private_x11(display, Clock::now() + std::chrono::seconds(1), {}), &auth)};
+        const auto screen = xcb_setup_roots_iterator(xcb_get_setup(client.value)).data;
+        const auto window = xcb_generate_id(client.value);
+        xcb_create_window(client.value, XCB_COPY_FROM_PARENT, window, screen->root, 10, 10, 200, 100, 0,
+                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
+        // Deliver the map event immediately, then withhold its first requested
+        // reply. An idle event loop is not a stalled request.
+        relay.delay_next_reply(5000);
+        const auto start = Clock::now();
+        xcb_map_window(client.value, window);
+        xcb_flush(client.value);
+        while (wm.healthy() && Clock::now() - start < std::chrono::seconds(4))
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        require(!wm.healthy() && wm.failure_reason() == "DESKTOP_WINDOW_MANAGER_REPLY_DEADLINE",
+                "A stalled X11 reply escaped its deadline or lost the diagnostic reason");
+        std::cout << "Native WM: nonprogressing reply still fails within its bounded deadline\n";
+    }
+    require(descriptors() == baseline, "Stalled-reply WM fixture leaked descriptors");
     // Stall only our still-unreaped Xvfb child. Cancellation must unblock XCB's
     // synchronous setup using the pinned socket and leave no worker behind.
     require(::kill(server_pid, SIGSTOP) == 0, "Could not suspend owned Xvfb fixture");
