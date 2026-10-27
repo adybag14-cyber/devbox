@@ -1,4 +1,5 @@
 #pragma once
+#include "browser_memory.hpp"
 #include "config.hpp"
 namespace devbox {
 std::string browser_page_status(const Json& observation, int http_status = 0);
@@ -15,8 +16,6 @@ std::string read_browser_endpoint(const fs::path& profile, Clock::time_point dea
                                   const Cancel& cancel = {});
 bool browser_process_arguments_match(std::string_view command, std::string_view executable,
                                      std::string_view profile, bool require_compatibility = false);
-std::uint64_t browser_cgroup_headroom(std::uint64_t limit, std::uint64_t usage,
-                                      std::uint64_t inactive_file_cache);
 struct BrowserOptions {
     // Native qualification injection only. Neither is an MCP argument.
     std::optional<fs::path> executable;

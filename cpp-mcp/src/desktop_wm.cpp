@@ -178,6 +178,12 @@ class Manager {
             void* value = nullptr;
             xcb_generic_error_t* error = nullptr;
             if (api_.poll_for_reply(connection_, cookie.sequence, &value, &error)) {
+                // One event (for example mapping/focusing a new Chromium window)
+                // can make several successful round trips on a throttled host.
+                // Count each received reply as progress, not only the completed
+                // event. Do not refresh this while waiting: an unresponsive X
+                // server still reaches the unchanged per-reply deadline.
+                heartbeat_.store(ticks());
                 Reply<xcb_generic_error_t> owned_error(error);
                 Reply<T> owned(static_cast<T*>(value));
                 if (error || !owned)
@@ -728,6 +734,17 @@ DesktopWindowManager::~DesktopWindowManager() = default;
 bool DesktopWindowManager::healthy() const {
     return state_->ready.load() && !state_->exited.load() && ticks() - state_->heartbeat.load() < 5000;
 }
+std::string DesktopWindowManager::failure_reason() const {
+    if (state_->exited.load()) {
+        std::lock_guard lock(state_->mutex);
+        return state_->error.empty() ? "DESKTOP_WINDOW_MANAGER_EXITED" : state_->error;
+    }
+    if (!state_->ready.load())
+        return "DESKTOP_WINDOW_MANAGER_NOT_READY";
+    if (ticks() - state_->heartbeat.load() >= 5000)
+        return "DESKTOP_WINDOW_MANAGER_PROGRESS_STALLED";
+    return {};
+}
 #else
 struct DesktopWindowManager::State {};
 DesktopWindowManager::DesktopWindowManager(unsigned, const X11Cookie&, const std::function<bool()>&,
@@ -737,6 +754,9 @@ DesktopWindowManager::DesktopWindowManager(unsigned, const X11Cookie&, const std
 DesktopWindowManager::~DesktopWindowManager() = default;
 bool DesktopWindowManager::healthy() const {
     return false;
+}
+std::string DesktopWindowManager::failure_reason() const {
+    return "DESKTOP_WINDOW_MANAGER_UNSUPPORTED";
 }
 #endif
 } // namespace devbox

@@ -16,5 +16,6 @@ class DesktopWindowManager {
     DesktopWindowManager(const DesktopWindowManager&) = delete;
     DesktopWindowManager& operator=(const DesktopWindowManager&) = delete;
     bool healthy() const;
+    std::string failure_reason() const;
 };
 } // namespace devbox

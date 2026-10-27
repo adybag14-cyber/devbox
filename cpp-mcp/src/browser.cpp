@@ -56,13 +56,6 @@ bool browser_click_controls_match(const Json& previous, const Json& current, dou
     // Blank/non-control clicks retain the complete original snapshot guard.
     return unchanged_target;
 }
-std::uint64_t browser_cgroup_headroom(std::uint64_t limit, std::uint64_t usage,
-                                      std::uint64_t inactive_file_cache) {
-    // Match Linux working-set accounting: inactive file cache can be reclaimed.
-    // Inconsistent/non-atomic counters receive no cache credit; swap is never credited.
-    const auto working = inactive_file_cache < usage ? usage - inactive_file_cache : usage;
-    return limit > working ? limit - working : 0;
-}
 bool browser_process_arguments_match(std::string_view command, std::string_view executable,
                                      std::string_view profile, bool require_compatibility) {
     if (command.empty() || command.size() >= 16384)
@@ -274,39 +267,7 @@ std::optional<fs::path> chromium_path(const BrowserOptions& options) {
     return {};
 }
 std::optional<std::uint64_t> available_memory() {
-#ifndef _WIN32
-    std::ifstream stream("/proc/meminfo");
-    std::string name, unit;
-    std::uint64_t value;
-    std::optional<std::uint64_t> available;
-    while (stream >> name >> value >> unit)
-        if (name == "MemAvailable:") {
-            available = value * 1024;
-            break;
-        }
-    // Container namespace mount roots expose the applicable hard memory budget.
-    for (const auto& pair : {std::pair{"/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"},
-                             std::pair{"/sys/fs/cgroup/memory/memory.limit_in_bytes",
-                                       "/sys/fs/cgroup/memory/memory.usage_in_bytes"}}) {
-        std::ifstream cap(pair.first), used(pair.second);
-        std::uint64_t limit = 0, current = 0;
-        if ((cap >> limit) && (used >> current) && limit < (1ULL << 60)) {
-            std::ifstream stats(fs::path(pair.first).parent_path() / "memory.stat");
-            const std::string_view field = std::string_view(pair.first).ends_with("memory.max")
-                                               ? "inactive_file"
-                                               : "total_inactive_file";
-            std::string key;
-            std::uint64_t count = 0, inactive = 0;
-            while (stats >> key >> count)
-                if (key == field)
-                    inactive = count;
-            const auto left = browser_cgroup_headroom(limit, current, inactive);
-            available = available ? std::min(*available, left) : left;
-        }
-    }
-    return available;
-#endif
-    return {};
+    return browser_available_memory();
 }
 } // namespace
 std::string read_browser_endpoint(const fs::path& profile, Clock::time_point deadline, const Cancel& cancel) {
