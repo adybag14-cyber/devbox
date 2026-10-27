@@ -1,4 +1,5 @@
 #include "devbox/native.hpp"
+#include "devbox/performance_statistics.hpp"
 #include "devbox/telemetry.hpp"
 #include <algorithm>
 #include <boost/asio/co_spawn.hpp>
@@ -200,24 +201,18 @@ Json PerformanceMonitor::capture() {
         drifts_.copy_to(drifts);
     }
     const auto now = Clock::now();
+    std::vector<double> scratch;
+    scratch.reserve(delays.size());
     auto window = [&](std::uint64_t seconds) {
         const auto cutoff = now - std::chrono::seconds(seconds);
-        std::vector<double> values;
-        double drift = 0;
-        for (const auto& sample : delays)
-            if (sample.at >= cutoff)
-                values.push_back(sample.ms);
-        for (const auto& sample : drifts)
-            if (sample.at >= cutoff)
-                drift = std::max(drift, sample.ms);
-        std::sort(values.begin(), values.end());
-        auto percentile = [&](std::size_t p) {
-            return values.empty() ? 0.0 : values[((values.size() - 1) * p + 50) / 100];
-        };
-        return Json{{"windowSeconds", seconds}, {"sampleCount", values.size()},
-                    {"p50Ms", percentile(50)},  {"p95Ms", percentile(95)},
-                    {"p99Ms", percentile(99)},  {"maxMs", values.empty() ? 0.0 : values.back()},
-                    {"timerDriftMaxMs", drift}};
+        const auto value = detail::performance_statistics(delays, drifts, cutoff, scratch);
+        return Json{{"windowSeconds", seconds},
+                    {"sampleCount", value.count},
+                    {"p50Ms", value.p50},
+                    {"p95Ms", value.p95},
+                    {"p99Ms", value.p99},
+                    {"maxMs", value.maximum},
+                    {"timerDriftMaxMs", value.drift_maximum}};
     };
     auto short_window = window(10);
     short_window.erase("windowSeconds");
