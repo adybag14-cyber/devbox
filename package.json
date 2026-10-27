@@ -24,9 +24,9 @@
     "repo:freshness": "node scripts/check-repo-freshness.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.32.1",
+    "@modelcontextprotocol/sdk": "1.32.2",
     "express": "5.3.0",
-    "jose": "^6.2.12",
+    "jose": "^6.2.13",
     "zod": "4.6.7"
   },
   "engines": {
