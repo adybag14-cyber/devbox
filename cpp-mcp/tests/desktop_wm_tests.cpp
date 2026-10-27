@@ -332,13 +332,14 @@ void check_window_manager(unsigned display, const X11Cookie& cookie, int server_
                           XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, 0, nullptr);
         // Deliver the map event immediately, then withhold its first requested
         // reply. An idle event loop is not a stalled request.
-        relay.delay_next_reply(5000);
+        relay.delay_window_attributes(window, 5000);
         const auto start = Clock::now();
         xcb_map_window(client.value, window);
         xcb_flush(client.value);
         while (wm.healthy() && Clock::now() - start < std::chrono::seconds(4))
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        require(!wm.healthy() && wm.failure_reason() == "DESKTOP_WINDOW_MANAGER_REPLY_DEADLINE",
+        require(relay.selected_delay_triggered() && !wm.healthy() &&
+                    wm.failure_reason() == "DESKTOP_WINDOW_MANAGER_REPLY_DEADLINE",
                 "A stalled X11 reply escaped its deadline or lost the diagnostic reason");
         std::cout << "Native WM: nonprogressing reply still fails within its bounded deadline\n";
     }

@@ -24,7 +24,9 @@ class SlowX11Relay {
         }
     } listener_;
     std::atomic<bool> stopping_{false}, failed_{false};
-    std::atomic<unsigned> delay_ms_{0}, next_reply_delay_ms_{0};
+    std::atomic<unsigned> delay_ms_{0}, selected_reply_delay_ms_{0};
+    std::atomic<std::uint32_t> selected_window_{0};
+    std::atomic<bool> selected_delay_triggered_{false};
     std::thread worker_;
     unsigned display_ = 0;
 
@@ -54,7 +56,60 @@ class SlowX11Relay {
                     return offset == data.size();
                 }
             } to_server, to_client;
-            const auto receive = [&](int fd, Queue& queue, unsigned delay) {
+            std::vector<char> protocol;
+            bool handshake = false, little = true;
+            const auto inspect_requests = [&](const char* data, std::size_t count) {
+                if (protocol.size() + count > 1024 * 1024)
+                    throw std::runtime_error("Relay bounded protocol frame");
+                protocol.insert(protocol.end(), data, data + count);
+                const auto integer = [&](std::size_t offset, unsigned bytes) {
+                    std::uint32_t value = 0;
+                    for (unsigned i = 0; i < bytes; ++i) {
+                        const auto index = offset + (little ? bytes - i - 1 : i);
+                        value = (value << 8) | static_cast<unsigned char>(protocol[index]);
+                    }
+                    return value;
+                };
+                std::size_t consumed = 0;
+                if (!handshake) {
+                    if (protocol.size() < 12)
+                        return;
+                    if (protocol[0] != 'l' && protocol[0] != 'B')
+                        throw std::runtime_error("Relay X11 byte order");
+                    little = protocol[0] == 'l';
+                    const auto size = 12u + ((integer(6, 2) + 3u) & ~3u) + ((integer(8, 2) + 3u) & ~3u);
+                    if (protocol.size() < size)
+                        return;
+                    consumed = size;
+                    handshake = true;
+                }
+                while (protocol.size() - consumed >= 4) {
+                    auto units = integer(consumed + 2, 2);
+                    if (!units) {
+                        if (protocol.size() - consumed < 8)
+                            break;
+                        units = integer(consumed + 4, 4);
+                    }
+                    if (!units || units > 1024 * 1024 / 4)
+                        throw std::runtime_error("Relay X11 request size");
+                    const auto size = static_cast<std::size_t>(units) * 4;
+                    if (protocol.size() - consumed < size)
+                        break;
+                    // GetWindowAttributes is opcode 3 and carries its window at
+                    // byte 4. Inspect complete requests across socket fragments;
+                    // unrelated startup traffic must not consume this delay.
+                    const auto selected = selected_window_.load();
+                    if (selected && protocol[consumed] == 3 && size == 8 &&
+                        integer(consumed + 4, 4) == selected) {
+                        delay_ms_.store(selected_reply_delay_ms_.load());
+                        selected_window_.store(0);
+                        selected_delay_triggered_.store(true);
+                    }
+                    consumed += size;
+                }
+                protocol.erase(protocol.begin(), protocol.begin() + static_cast<std::ptrdiff_t>(consumed));
+            };
+            const auto receive = [&](int fd, Queue& queue, unsigned delay, bool request) {
                 char data[8192];
                 const auto count = ::recv(fd, data, sizeof(data), 0);
                 if (!count)
@@ -64,6 +119,8 @@ class SlowX11Relay {
                         return true;
                     throw std::runtime_error("Relay receive");
                 }
+                if (request)
+                    inspect_requests(data, static_cast<std::size_t>(count));
                 if (queue.empty()) {
                     queue.data.clear();
                     queue.offset = 0;
@@ -89,13 +146,11 @@ class SlowX11Relay {
                 if (::poll(descriptors, 2, 5) < 0 && errno != EINTR)
                     throw std::runtime_error("Relay poll");
                 if (descriptors[0].revents & POLLIN) {
-                    if (!receive(client.value, to_server, 0))
+                    if (!receive(client.value, to_server, 0, true))
                         break;
-                    if (const auto delay = next_reply_delay_ms_.exchange(0))
-                        delay_ms_.store(delay);
                 }
                 if (descriptors[1].revents & POLLIN)
-                    if (!receive(server.value, to_client, delay_ms_.load()))
+                    if (!receive(server.value, to_client, delay_ms_.load(), false))
                         break;
                 if ((descriptors[0].revents | descriptors[1].revents) & (POLLERR | POLLHUP | POLLNVAL))
                     break;
@@ -143,8 +198,12 @@ class SlowX11Relay {
     void delay(unsigned ms) {
         delay_ms_.store(ms);
     }
-    void delay_next_reply(unsigned ms) {
-        next_reply_delay_ms_.store(ms);
+    void delay_window_attributes(std::uint32_t window, unsigned ms) {
+        selected_reply_delay_ms_.store(ms);
+        selected_window_.store(window);
+    }
+    bool selected_delay_triggered() const {
+        return selected_delay_triggered_.load();
     }
     bool failed() const {
         return failed_.load();
