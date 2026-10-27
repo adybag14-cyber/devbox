@@ -3,8 +3,9 @@
 The performance monitor now retains its bounded delay and drift histories in
 contiguous C++23 buffers. Sampling cadence, chronological order, expiry boundaries
 and published percentile fields remain unchanged. On the measured Windows MSVC
-build, retained history storage fell by 160,720 bytes and ingestion allocations
-fell from 16,919 to four across the accelerated one-hour component trace. The
+build, retained history storage fell by 160,720 bytes and allocation calls for
+ingestion plus the final checksum snapshot fell from 16,919 to four across the
+accelerated one-hour component trace. The
 buffers reserve about 239 KiB at construction. Capture timing ranges overlap;
 these results do not establish a whole-server response-time improvement. See
 [the component measurements and correctness checks](../performance-telemetry-window.md).
@@ -18,8 +19,9 @@ not change sandboxing, network restrictions, session limits or deadlines. See
 
 The real-browser qualification checks the requested Chromium argument, rendered
 prices, HTML, screenshots, scrolling and input. It also verifies that ordinary
-headless sessions omit the flag by default, independent of an inherited operator
-environment. GPU-dependent content still requires deployment-specific testing.
+headless sessions omit the flag when `DEVBOX_BROWSER_SOFTWARE_RENDERING` is unset.
+The fixture clears and restores any inherited setting to test that default.
+GPU-dependent content still requires deployment-specific testing.
 
 This release continues the native server, supervisor, desktop broker, installer
 and setup packaging from [0.9.10](bootstrap-v0.9.10.md). Full desktop and offline
