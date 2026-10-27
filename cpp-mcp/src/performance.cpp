@@ -192,33 +192,38 @@ asio::awaitable<void> PerformanceMonitor::sample(Cancel cancel) {
     }
 }
 Json PerformanceMonitor::capture() {
-    // Copy the bounded histories into contiguous storage while holding the
-    // sampler lock. Percentile calculations remain outside the lock.
-    std::vector<Sample> delays, drifts;
+    Clock::time_point now;
+    Json short_window;
     {
-        std::lock_guard lock(mutex_);
-        delays_.copy_to(delays);
-        drifts_.copy_to(drifts);
+        // Copy the bounded histories while holding the sampler lock. Statistics
+        // stay outside the lock; their working storage is released before the
+        // process and live-allocation measurements below.
+        std::vector<Sample> delays, drifts;
+        {
+            std::lock_guard lock(mutex_);
+            delays_.copy_to(delays);
+            drifts_.copy_to(drifts);
+        }
+        now = Clock::now();
+        std::vector<double> scratch;
+        scratch.reserve(delays.size());
+        auto window = [&](std::uint64_t seconds) {
+            const auto cutoff = now - std::chrono::seconds(seconds);
+            const auto value = detail::performance_statistics(delays, drifts, cutoff, scratch);
+            return Json{{"windowSeconds", seconds},
+                        {"sampleCount", value.count},
+                        {"p50Ms", value.p50},
+                        {"p95Ms", value.p95},
+                        {"p99Ms", value.p99},
+                        {"maxMs", value.maximum},
+                        {"timerDriftMaxMs", value.drift_maximum}};
+        };
+        short_window = window(10);
+        short_window.erase("windowSeconds");
+        short_window["sampledAtUtc"] = utc_now();
+        short_window["oneMinute"] = window(60);
+        short_window["fiveMinute"] = window(300);
     }
-    const auto now = Clock::now();
-    std::vector<double> scratch;
-    scratch.reserve(delays.size());
-    auto window = [&](std::uint64_t seconds) {
-        const auto cutoff = now - std::chrono::seconds(seconds);
-        const auto value = detail::performance_statistics(delays, drifts, cutoff, scratch);
-        return Json{{"windowSeconds", seconds},
-                    {"sampleCount", value.count},
-                    {"p50Ms", value.p50},
-                    {"p95Ms", value.p95},
-                    {"p99Ms", value.p99},
-                    {"maxMs", value.maximum},
-                    {"timerDriftMaxMs", value.drift_maximum}};
-    };
-    auto short_window = window(10);
-    short_window.erase("windowSeconds");
-    short_window["sampledAtUtc"] = utc_now();
-    short_window["oneMinute"] = window(60);
-    short_window["fiveMinute"] = window(300);
     const auto process = process_metrics();
     return Json{{"eventLoop", short_window},
                 {"process",
