@@ -9,6 +9,7 @@
 #include <fstream>
 #include <future>
 #include <iostream>
+#include <map>
 #include <sstream>
 #include <thread>
 #ifdef _WIN32
@@ -507,113 +508,109 @@ void protocol_tests() {
         "ENDPOINT");
 }
 struct PageFixture {
+    struct Connection {
+        beast::tcp_stream stream;
+        asio::steady_timer delay;
+        explicit Connection(Tcp::socket socket) : stream(std::move(socket)), delay(stream.get_executor()) {}
+    };
     asio::io_context io;
     Tcp::acceptor listener{io, {asio::ip::make_address("127.0.0.1"), 0}};
+    const std::uint16_t port_number = listener.local_endpoint().port();
     std::atomic_bool stop{false};
     std::atomic_bool reject_requests{false};
+    std::atomic_uint accepted_connections{0};
+    std::atomic_uint failed_requests{0}, capacity_denials{0}, accept_failures{0};
     std::atomic_uint requests{0};
     std::atomic_uint picture_requests{0};
     std::atomic_uint continuation_requests{0}, capture_requests{0};
     std::atomic_uint href_revision{0}, href_applied{0};
+    // All connection ownership and cancellation run on this one I/O thread.
+    std::map<std::uint64_t, std::shared_ptr<Connection>> connections;
+    std::uint64_t sequence = 0;
     std::thread worker;
-    explicit PageFixture(bool storage = false) {
-        listener.non_blocking(true);
-        worker = std::thread([this, storage] {
-            while (!stop) {
-                Tcp::socket socket(io);
-                boost::system::error_code ec;
-                listener.accept(socket, ec);
-                if (ec) {
-                    std::this_thread::sleep_for(Millis(2));
-                    continue;
-                }
-                try {
-                    beast::flat_buffer b;
-                    http::request_parser<http::string_body> parser;
-                    parser.header_limit(8192);
-                    parser.body_limit(4096);
-                    socket.non_blocking(true);
-                    const auto read_until = Clock::now() + Millis(2000);
-                    while (!stop && !parser.is_done() && Clock::now() < read_until) {
-                        boost::system::error_code error;
-                        http::read(socket, b, parser, error);
-                        if (error == asio::error::would_block || error == asio::error::try_again)
-                            std::this_thread::sleep_for(Millis(2));
-                        else if (error)
-                            break;
-                    }
-                    if (stop || !parser.is_done())
-                        continue;
-                    auto request = parser.release();
-                    socket.non_blocking(false);
-                    ++requests;
-                    if (reject_requests)
-                        continue;
-                    http::response<http::string_body> response{http::status::ok, 11};
-                    response.set(http::field::content_type, "text/html; charset=utf-8");
-                    response.keep_alive(false);
-                    response.body() =
-                        R"HTML(<!doctype html><title>Native dynamic phone fixture</title><style>body{font:20px sans-serif}#panel{height:250px;overflow:auto;width:500px}#inside{height:1800px;background:linear-gradient(white,lightblue)}</style><h1>Fixture Phone 256GB Blue</h1><p id="price">Loading price</p><button onclick="this.innerText='Clicked'">Choose variant</button><input aria-label="Search fixture"><div id="panel"><div id="inside">Scrollable panel<div style="padding-top:1400px">Panel bottom</div></div></div><div style="height:2500px">Long page</div><p>Page bottom</p><script>setTimeout(()=>{document.querySelector('#price').innerText='Live fixture price GBP 649.00';let s=document.createElement('script');s.type='application/ld+json';s.textContent=JSON.stringify({'@context':'https://schema.org','@type':'Product',name:'Fixture Phone 256GB Blue',offers:{'@type':'Offer',price:'649.00',priceCurrency:'GBP',availability:'https://schema.org/InStock'}});document.head.appendChild(s);},150)</script>)HTML";
-                    if (storage)
-                        response.body() += R"HTML(<script>
+    asio::awaitable<void> pause(const std::shared_ptr<Connection>& connection, Millis duration) {
+        connection->delay.expires_after(duration);
+        co_await connection->delay.async_wait(asio::use_awaitable);
+    }
+    asio::awaitable<void> respond(std::shared_ptr<Connection> connection, bool storage) {
+        try {
+            beast::flat_buffer b(16384);
+            http::request_parser<http::string_body> parser;
+            parser.header_limit(8192);
+            parser.body_limit(4096);
+            connection->stream.expires_after(Millis(2000));
+            co_await http::async_read(connection->stream, b, parser, asio::use_awaitable);
+            if (stop)
+                co_return;
+            auto request = parser.release();
+            ++requests;
+            if (reject_requests)
+                co_return;
+            http::response<http::string_body> response{http::status::ok, 11};
+            response.set(http::field::content_type, "text/html; charset=utf-8");
+            response.keep_alive(false);
+            response.body() =
+                R"HTML(<!doctype html><title>Native dynamic phone fixture</title><style>body{font:20px sans-serif}#panel{height:250px;overflow:auto;width:500px}#inside{height:1800px;background:linear-gradient(white,lightblue)}</style><h1>Fixture Phone 256GB Blue</h1><p id="price">Loading price</p><button onclick="this.innerText='Clicked'">Choose variant</button><input aria-label="Search fixture"><div id="panel"><div id="inside">Scrollable panel<div style="padding-top:1400px">Panel bottom</div></div></div><div style="height:2500px">Long page</div><p>Page bottom</p><script>setTimeout(()=>{document.querySelector('#price').innerText='Live fixture price GBP 649.00';let s=document.createElement('script');s.type='application/ld+json';s.textContent=JSON.stringify({'@context':'https://schema.org','@type':'Product',name:'Fixture Phone 256GB Blue',offers:{'@type':'Offer',price:'649.00',priceCurrency:'GBP',availability:'https://schema.org/InStock'}});document.head.appendChild(s);},150)</script>)HTML";
+            if (storage)
+                response.body() += R"HTML(<script>
 const state=document.createElement('p');state.id='storage-state';document.body.prepend(state);
 function showStorage(){state.innerText='Cookie: '+(document.cookie||'empty')+'; Storage: '+(localStorage.getItem('devbox-fixture')||'empty');}
 const save=document.createElement('button');save.innerText='Store fixture state';save.onclick=()=>{document.cookie='devboxFixture=stored; SameSite=Lax; path=/';localStorage.setItem('devbox-fixture','stored');showStorage();};document.querySelector('button').after(save);showStorage();
 </script>)HTML";
-                    response.body() +=
-                        R"HTML(<script>const flag=document.createElement('p');flag.textContent='Fixture webdriver='+navigator.webdriver;document.body.appendChild(flag);</script>)HTML";
-                    response.body() += R"HTML(<p id="image-state">Fixture image pending</p><script>
+            response.body() +=
+                R"HTML(<script>const flag=document.createElement('p');flag.textContent='Fixture webdriver='+navigator.webdriver;document.body.appendChild(flag);</script>)HTML";
+            response.body() += R"HTML(<p id="image-state">Fixture image pending</p><script>
 for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>document.querySelector('#image-state').innerText='Fixture image loaded';image.onerror=()=>document.querySelector('#image-state').innerText='Fixture image omitted';}image.src='/fixture-picture?i='+n;document.body.appendChild(image);}
 </script>)HTML";
-                    if (request.target().starts_with("/fixture-picture")) {
-                        ++picture_requests;
-                        response.set(http::field::content_type, "image/svg+xml");
-                        response.body() =
-                            R"(<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="blue"/></svg>)";
-                    }
-                    if (request.target() == "/client-redirect")
-                        response.body() =
-                            R"HTML(<!doctype html><title>Redirecting fixture</title><script>setTimeout(()=>location.replace('/redirect-target'),25)</script><script src="/hold-script"></script>)HTML";
-                    if (request.target() == "/hold-script") {
-                        std::this_thread::sleep_for(Millis(800));
-                        response.set(http::field::content_type, "application/javascript");
-                        response.body() = "/* delayed parser-blocking resource */";
-                    }
-                    if (request.target() == "/hash-route")
-                        response.body() =
-                            R"HTML(<!doctype html><title>Hash route fixture</title><p id="route">Initial route</p><script>setTimeout(()=>{location.hash='phone';document.querySelector('#route').innerText='Loading hash route';setTimeout(()=>document.querySelector('#route').innerText='Hash route price GBP 749.00',450)},300)</script>)HTML";
-                    if (request.target() == "/slow-readable")
-                        response.body() =
-                            R"HTML(<!doctype html><title>Slow readable fixture</title><p id="slow">Loading fixture offer</p><script src="/slow-script"></script>)HTML";
-                    if (request.target() == "/slow-script") {
-                        std::this_thread::sleep_for(Millis(16000));
-                        response.set(http::field::content_type, "application/javascript");
-                        response.body() =
-                            "document.querySelector('#slow').innerText='Slow fixture price GBP 849.00';";
-                    }
-                    if (request.target() == "/continuation") {
-                        const auto visit = ++continuation_requests;
-                        response.body() = "<!doctype html><title>Continuation fixture</title><p>Visit " +
-                                          std::to_string(visit) +
-                                          "</p><p id='price'>Loading the product price</p>"
-                                          "<script src='/continuation-script'></script>";
-                    }
-                    if (request.target() == "/continuation-script") {
-                        std::this_thread::sleep_for(Millis(3000));
-                        response.set(http::field::content_type, "application/javascript");
-                        response.body() = "document.querySelector('#price').innerText='Continuation product "
-                                          "price GBP 749.00';";
-                    }
-                    if (request.target() == "/capture-continuation") {
-                        const auto visit = ++capture_requests;
-                        response.body() = "<!doctype html><title>Capture continuation</title><h1>Fixture "
-                                          "phone GBP 699.00</h1><p>Capture visit " +
-                                          std::to_string(visit) +
-                                          "</p><p>The requested product observation must retain its original "
-                                          "image and HTML choices.</p><img src='/fixture-picture?capture=1'>";
-                    }
-                    if (request.target() == "/control-change")
-                        response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
+            if (request.target().starts_with("/fixture-picture")) {
+                ++picture_requests;
+                response.set(http::field::content_type, "image/svg+xml");
+                response.body() =
+                    R"(<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="blue"/></svg>)";
+            }
+            if (request.target() == "/client-redirect")
+                response.body() =
+                    R"HTML(<!doctype html><title>Redirecting fixture</title><script>setTimeout(()=>location.replace('/redirect-target'),25)</script><script src="/hold-script"></script>)HTML";
+            if (request.target() == "/hold-script") {
+                co_await pause(connection, Millis(800));
+                response.set(http::field::content_type, "application/javascript");
+                response.body() = "/* delayed parser-blocking resource */";
+            }
+            if (request.target() == "/hash-route")
+                response.body() =
+                    R"HTML(<!doctype html><title>Hash route fixture</title><p id="route">Initial route</p><script>setTimeout(()=>{location.hash='phone';document.querySelector('#route').innerText='Loading hash route';setTimeout(()=>document.querySelector('#route').innerText='Hash route price GBP 749.00',450)},300)</script>)HTML";
+            if (request.target() == "/slow-readable")
+                response.body() =
+                    R"HTML(<!doctype html><title>Slow readable fixture</title><p id="slow">Loading fixture offer</p><script src="/slow-script"></script>)HTML";
+            if (request.target() == "/slow-script") {
+                co_await pause(connection, Millis(16000));
+                response.set(http::field::content_type, "application/javascript");
+                response.body() =
+                    "document.querySelector('#slow').innerText='Slow fixture price GBP 849.00';";
+            }
+            if (request.target() == "/continuation") {
+                const auto visit = ++continuation_requests;
+                response.body() = "<!doctype html><title>Continuation fixture</title><p>Visit " +
+                                  std::to_string(visit) +
+                                  "</p><p id='price'>Loading the product price</p>"
+                                  "<script src='/continuation-script'></script>";
+            }
+            if (request.target() == "/continuation-script") {
+                co_await pause(connection, Millis(3000));
+                response.set(http::field::content_type, "application/javascript");
+                response.body() = "document.querySelector('#price').innerText='Continuation product "
+                                  "price GBP 749.00';";
+            }
+            if (request.target() == "/capture-continuation") {
+                const auto visit = ++capture_requests;
+                response.body() = "<!doctype html><title>Capture continuation</title><h1>Fixture "
+                                  "phone GBP 699.00</h1><p>Capture visit " +
+                                  std::to_string(visit) +
+                                  "</p><p>The requested product observation must retain its original "
+                                  "image and HTML choices.</p><img src='/fixture-picture?capture=1'>";
+            }
+            if (request.target() == "/control-change")
+                response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
 <style>button,a{display:block;width:200px;height:40px;margin:15px}</style>
 <p>Verify a stable product control while an unrelated help link changes its destination.</p>
 <button onclick="this.textContent='Selected White'">Choose White</button>
@@ -635,35 +632,148 @@ async function update(){
 }
 update();
 </script>)HTML";
-                    if (request.target() == "/href-revision") {
-                        response.set(http::field::content_type, "text/plain");
-                        response.body() = std::to_string(href_revision.load());
-                    }
-                    if (request.target().starts_with("/href-applied/")) {
-                        href_applied =
-                            static_cast<unsigned>(std::stoul(std::string(request.target().substr(14))));
-                        response.set(http::field::content_type, "text/plain");
-                        response.body() = "ack";
-                    }
-                    response.prepare_payload();
-                    http::write(socket, response);
-                } catch (...) {
-                }
+            if (request.target() == "/href-revision") {
+                response.set(http::field::content_type, "text/plain");
+                response.body() = std::to_string(href_revision.load());
             }
-        });
+            if (request.target().starts_with("/href-applied/")) {
+                href_applied = static_cast<unsigned>(std::stoul(std::string(request.target().substr(14))));
+                response.set(http::field::content_type, "text/plain");
+                response.body() = "ack";
+            }
+            response.prepare_payload();
+            connection->stream.expires_after(Millis(2000));
+            co_await http::async_write(connection->stream, response, asio::use_awaitable);
+        } catch (...) {
+            if (!stop)
+                ++failed_requests;
+        }
+    }
+    explicit PageFixture(bool storage = false) {
+        asio::co_spawn(
+            io,
+            [this, storage]() -> asio::awaitable<void> {
+                while (!stop) {
+                    boost::system::error_code error;
+                    auto socket =
+                        co_await listener.async_accept(asio::redirect_error(asio::use_awaitable, error));
+                    // A successful accept may already be queued when shutdown
+                    // cancels the listener. Do not start another read afterward.
+                    if (stop || !listener.is_open())
+                        co_return;
+                    if (error) {
+                        ++accept_failures;
+                        asio::steady_timer backoff(io);
+                        backoff.expires_after(Millis(10));
+                        co_await backoff.async_wait(asio::use_awaitable);
+                        continue;
+                    }
+                    ++accepted_connections;
+                    if (connections.size() >= 64) {
+                        ++capacity_denials;
+                        continue;
+                    }
+                    const auto id = ++sequence;
+                    auto connection = std::make_shared<Connection>(std::move(socket));
+                    connections.emplace(id, connection);
+                    asio::co_spawn(io, respond(std::move(connection), storage),
+                                   [this, id](std::exception_ptr error) {
+                                       if (error && !stop)
+                                           ++failed_requests;
+                                       connections.erase(id);
+                                   });
+                }
+            },
+            [this](std::exception_ptr error) {
+                if (error && !stop)
+                    ++failed_requests;
+            });
+        worker = std::thread([this] { io.run(); });
     }
     ~PageFixture() {
-        stop = true;
+        // Drain cancelled reads/writes and scripted delays while the owner and
+        // its counters are alive. No speculative Chrome connection can hold up
+        // another request or keep fixture teardown waiting for a script delay.
+        asio::post(io, [this] {
+            stop = true;
+            boost::system::error_code ignored;
+            listener.cancel(ignored);
+            listener.close(ignored);
+            for (const auto& [id, connection] : connections) {
+                (void)id;
+                connection->delay.cancel();
+                connection->stream.socket().cancel(ignored);
+                connection->stream.socket().close(ignored);
+            }
+        });
         if (worker.joinable())
             worker.join();
         if (std::uncaught_exceptions())
             std::cerr << "Browser HTTP fixture completed " << requests.load() << " requests and "
-                      << picture_requests.load() << " image requests before failure\n";
+                      << picture_requests.load()
+                      << " image requests before failure; accepted=" << accepted_connections.load()
+                      << " failed=" << failed_requests.load()
+                      << " capacity_denials=" << capacity_denials.load()
+                      << " accept_failures=" << accept_failures.load() << '\n';
     }
     std::uint16_t port() {
-        return listener.local_endpoint().port();
+        return port_number;
     }
 };
+void fixture_transport_tests() {
+    PageFixture page;
+    asio::io_context io;
+    Tcp::socket idle(io);
+    idle.connect({asio::ip::make_address("127.0.0.1"), page.port()});
+    const auto accepted_by = Clock::now() + Millis(2000);
+    while (page.accepted_connections == 0) {
+        require(Clock::now() < accepted_by, "fixture accepts the deliberately idle preconnection");
+        std::this_thread::sleep_for(Millis(2));
+    }
+    const auto started = Clock::now();
+    try {
+        const auto response = http_request("GET", "http://127.0.0.1:" + std::to_string(page.port()) + "/", {},
+                                           Json::object(), Millis(1000), 65536, {}, true);
+        require(response.status == 200 && response.body.find("Fixture Phone") != std::string::npos,
+                "a ready request progresses while another accepted connection remains idle");
+    } catch (...) {
+        std::cerr << "Fixture idle-peer regression: accepted=" << page.accepted_connections.load()
+                  << " completed=" << page.requests.load()
+                  << " elapsed_ms=" << std::chrono::duration_cast<Millis>(Clock::now() - started).count()
+                  << '\n';
+        throw;
+    }
+    // Cancel only the pending accept while the listener remains open. This
+    // deterministic transient error must not strand later ready requests.
+    asio::post(page.io, [&page] {
+        boost::system::error_code ignored;
+        page.listener.cancel(ignored);
+    });
+    const auto retried_by = Clock::now() + Millis(2000);
+    while (page.accept_failures == 0) {
+        require(Clock::now() < retried_by, "fixture observes the injected transient accept error");
+        std::this_thread::sleep_for(Millis(2));
+    }
+    const auto after_retry = http_request("GET", "http://127.0.0.1:" + std::to_string(page.port()) + "/", {},
+                                          Json::object(), Millis(1000), 65536, {}, true);
+    require(after_retry.status == 200, "fixture resumes acceptance after a transient error");
+    // A scripted delayed response must also be cancellable during teardown.
+    auto delayed = std::make_unique<PageFixture>();
+    Tcp::socket waiting(io);
+    waiting.connect({asio::ip::make_address("127.0.0.1"), delayed->port()});
+    const std::string request = "GET /slow-script HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n";
+    asio::write(waiting, asio::buffer(request));
+    const auto requested_by = Clock::now() + Millis(2000);
+    while (delayed->requests == 0) {
+        require(Clock::now() < requested_by, "fixture accepts the deliberately delayed response");
+        std::this_thread::sleep_for(Millis(2));
+    }
+    const auto stopping = Clock::now();
+    delayed.reset();
+    require(Clock::now() - stopping < Millis(1000),
+            "fixture shutdown cancels the pending sixteen-second script delay");
+    std::cout << "idle preconnection, transient accept recovery and cancellable fixture teardown passed\n";
+}
 void proxy_tests() {
     BrowserProxy gate;
     auto request = [&](std::string target) {
@@ -1495,6 +1605,9 @@ void session_allowance_tests() {
 }
 int main(int argc, char** argv) {
     try {
+        fixture_transport_tests();
+        if (argc == 2 && std::string_view(argv[1]) == "--fixture-transport")
+            return 0;
         protocol_tests();
         proxy_tests();
         if (argc > 1) {
