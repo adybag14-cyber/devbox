@@ -5,8 +5,8 @@ contiguous C++23 buffers. Sampling cadence, chronological order, expiry boundari
 and published percentile fields remain unchanged. On the measured Windows MSVC
 build, retained history storage fell by 160,720 bytes and allocation calls for
 ingestion plus the final checksum snapshot fell from 16,919 to four across the
-accelerated one-hour component trace. The
-buffers reserve about 239 KiB at construction. Capture timing ranges overlap;
+accelerated one-hour component trace. The buffers reserve about 239 KiB at
+construction. Capture timing ranges overlap;
 these results do not establish a whole-server response-time improvement. See
 [the component measurements and correctness checks](../performance-telemetry-window.md).
 
@@ -17,6 +17,14 @@ accelerated one-hour capture traces at the steady ten-second persistence cadence
 allocation calls fell from 23,265 to 1,082. Outputs match a full-sort reference;
 component timings and their limits are documented in
 [the percentile comparison](../performance-percentiles.md).
+
+Browser `open` results now separate startup into browser/proxy preparation,
+endpoint readiness, debugger connection and session setup durations. Navigation
+and its continuation calls report cumulative submission and document-wait time,
+excluding the agent's thinking time between calls. Existing screenshot, HTML and
+observation timings remain available. These native monotonic-clock measurements
+add no browser commands or changed deadlines. See
+[the browser phase timing fields](../browser-phase-timing.md).
 
 Operators can set `DEVBOX_BROWSER_SOFTWARE_RENDERING=1` for Devbox's owned
 on-demand Chromium sessions. This adds `--disable-gpu`, matching the existing
