@@ -85,7 +85,8 @@ std::optional<std::string> mount_path(std::string_view value) {
     std::string result;
     std::array<char, 4096> buffer{};
     while (file) {
-        file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const auto wanted = std::min(buffer.size(), limit - result.size() + 1);
+        file.read(buffer.data(), static_cast<std::streamsize>(wanted));
         const auto count = static_cast<std::size_t>(file.gcount());
         if (count > limit - result.size())
             return {};
@@ -204,11 +205,13 @@ std::optional<std::uint64_t> browser_memory_headroom(std::string_view meminfo, s
         const auto file = [&](std::string_view name, std::size_t limit) {
             return read((group.directory == "/" ? "" : group.directory) + "/" + std::string(name), limit);
         };
-        if (!group.unified && !group.member) {
+        bool hierarchical = true;
+        if (!group.unified) {
             const auto hierarchy = file("memory.use_hierarchy", 64);
-            if (hierarchy && number(*hierarchy) == 0)
-                continue;
+            hierarchical = !hierarchy || hierarchy->size() > 64 || number(*hierarchy) != 0;
         }
+        if (!group.member && !hierarchical)
+            continue;
         const auto cap = file(group.unified ? "memory.max" : "memory.limit_in_bytes", 64);
         const auto limit = cap && cap->size() <= 64 ? number(*cap) : std::nullopt;
         if (!limit || *limit >= (1ULL << 60))
@@ -224,7 +227,7 @@ std::optional<std::uint64_t> browser_memory_headroom(std::string_view meminfo, s
             std::string key, value;
             bool found = false;
             while (fields >> key >> value) {
-                if (key != (group.unified ? "inactive_file" : "total_inactive_file"))
+                if (key != (group.unified || !hierarchical ? "inactive_file" : "total_inactive_file"))
                     continue;
                 if (found) {
                     inactive = 0;

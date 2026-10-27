@@ -113,6 +113,11 @@ int main() {
                         {}};
         require(browser_memory_headroom("", "6:memory:/unit\n", v1_mount, hierarchy.reader()) == 1280,
                 "Non-hierarchical legacy parent was applied to its child");
+        hierarchy.values["/sys/fs/cgroup/memory/unit/memory.use_hierarchy"] = "0";
+        hierarchy.values["/sys/fs/cgroup/memory/unit/memory.stat"] =
+            "inactive_file 32\ntotal_inactive_file 256\n";
+        require(browser_memory_headroom("", "6:memory:/unit\n", v1_mount, hierarchy.reader()) == 1056,
+                "Non-hierarchical member credited its descendants' cache");
 
         Files counters{{{"/sys/fs/cgroup/memory.max", "512"},
                         {"/sys/fs/cgroup/memory.current", "400"},

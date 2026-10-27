@@ -17,6 +17,7 @@ and mount-point mapping. See the [kernel cgroup v2 documentation](https://docs.k
 and [Linux mountinfo specification](https://man7.org/linux/man-pages/man5/proc_pid_mountinfo.5.html).
 
 Each finite budget uses its own usage and reclaimable inactive-file counters.
+Legacy groups without hierarchical accounting use their local cache counter.
 The existing conservative cache-credit calculation is retained; inconsistent or
 duplicate cache counters receive no credit. Swap is not counted as available
 physical memory. Integer parsing rejects negative, overflowing and trailing
