@@ -10,6 +10,14 @@ buffers reserve about 239 KiB at construction. Capture timing ranges overlap;
 these results do not establish a whole-server response-time improvement. See
 [the component measurements and correctness checks](../performance-telemetry-window.md).
 
+Snapshot calculations also reuse one scratch buffer across the three windows and
+select the exact percentile ranks without fully sorting every sample. A bounded
+frequency table handles windows with at most eight distinct values. In the
+accelerated one-hour capture traces at the steady ten-second persistence cadence,
+allocation calls fell from 23,265 to 1,082. Outputs match a full-sort reference;
+component timings and their limits are documented in
+[the percentile comparison](../performance-percentiles.md).
+
 Operators can set `DEVBOX_BROWSER_SOFTWARE_RENDERING=1` for Devbox's owned
 on-demand Chromium sessions. This adds `--disable-gpu`, matching the existing
 managed desktop browser policy on virtual displays. The default remains off.
