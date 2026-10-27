@@ -29,6 +29,28 @@ void require(bool v, const char* message) {
     if (!v)
         throw Error(message);
 }
+void check_startup_timing(const Json& data) {
+    const auto& startup = data.at("timing").at("startup");
+    std::uint64_t sum = 0;
+    for (const auto* key :
+         {"resolve_and_proxy_ms", "endpoint_ready_ms", "cdp_connect_ms", "session_setup_ms"}) {
+        require(startup.at(key).is_number_integer() && startup.at(key).get<std::int64_t>() >= 0,
+                "startup phase durations are nonnegative integers");
+        sum += json_uint(startup, key);
+    }
+    const auto total = json_uint(startup, "total_ms");
+    require(startup.size() == 5 && total >= sum && total - sum <= 3,
+            "startup phases partition total duration within millisecond rounding");
+    require(json_uint(data.at("timing"), "action_ms") >= total,
+            "startup duration fits inside its open action");
+}
+void check_navigation_timing(const Json& data) {
+    const auto& navigation = data.at("timing").at("navigation");
+    require(navigation.size() == 2, "navigation timing contains only bounded phase durations");
+    for (const auto* key : {"submission_ms", "document_wait_ms"})
+        require(navigation.at(key).is_number_integer() && navigation.at(key).get<std::int64_t>() >= 0,
+                "navigation phase durations are nonnegative integers");
+}
 template <class F> void rejects(F f, std::string_view part) {
     try {
         f();
@@ -78,6 +100,8 @@ void send(auto& socket, const Json& j) {
 }
 BrowserObservation initial_observation(BrowserService& browser, const Json& args, std::string_view owner) {
     auto value = browser.perform(args, owner);
+    if (json_string(args, "action") == "open")
+        check_startup_timing(value.data);
     for (unsigned attempt = 0; json_string(value.data, "next_action") == "observe" && attempt < 4;
          ++attempt) {
         const auto id = json_string(value.data, "session_id");
@@ -85,6 +109,7 @@ BrowserObservation initial_observation(BrowserService& browser, const Json& args
         require(json_string(value.data, "session_id") == id, "initial observation retains session identity");
     }
     require(json_string(value.data, "next_action") != "observe", "bounded fixture continuation completes");
+    check_navigation_timing(value.data);
     return value;
 }
 void protocol_tests() {
@@ -719,6 +744,7 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                                             {"screenshot", false},
                                             {"include_html", true}}),
                         "test");
+    check_startup_timing(value.data);
     if (json_string(value.data, "pending_phase") == "navigation") {
         const auto pending_id = json_string(value.data, "session_id");
         require(!pending_id.empty() && value.image_base64.empty() && value.data["observation_id"].is_null() &&
@@ -760,6 +786,7 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     }
     require(json_string(value.data, "text").find("GBP 649.00") != std::string::npos,
             "JavaScript-rendered live price text");
+    check_navigation_timing(value.data);
     require(value.image_base64.empty(), "explicit screenshot=false survives initial navigation");
     value = browser.perform(contract.arguments("devbox_browser", {{"action", "observe"},
                                                                   {"session_id", value.data.at("session_id")},
@@ -1074,6 +1101,8 @@ void continuation_budget_tests(bool compatibility) {
         require(pending.data["pending_phase"] == "document" && pending.data["navigation_started"] == true &&
                     pending.data["observation_id"].is_null() && pending.image_base64.empty(),
                 "slow document returns owned pending state without invented observation or screenshot");
+        check_navigation_timing(pending.data);
+        const auto submitted_timing = pending.data["timing"]["navigation"];
         rejects(
             [&] {
                 browser.perform({{"action", "click"},
@@ -1097,6 +1126,11 @@ void continuation_budget_tests(bool compatibility) {
         require(page.continuation_requests == 1 &&
                     json_string(pending.data, "text").find("Visit 1") != std::string::npos,
                 "observing pending navigation must not submit Page.navigate again");
+        check_navigation_timing(pending.data);
+        require(pending.data["timing"]["navigation"]["submission_ms"] == submitted_timing["submission_ms"] &&
+                    json_uint(pending.data["timing"]["navigation"], "document_wait_ms") >=
+                        json_uint(submitted_timing, "document_wait_ms"),
+                "continuation retains one submission duration and accumulates document waiting");
         require(pending.image_base64.empty() && pending.data["html_artifact"].is_object(),
                 "contract validation preserves original false screenshot and true HTML choices");
         browser.perform({{"action", "close"}, {"session_id", id}}, "owner");
@@ -1110,6 +1144,9 @@ void continuation_budget_tests(bool compatibility) {
                                         {"screenshot", true},
                                         {"include_html", true}},
                                        "capture-owner");
+        check_startup_timing(pending.data);
+        check_navigation_timing(pending.data);
+        const auto settled_timing = pending.data["timing"]["navigation"];
         require(pending.data["pending_phase"] == "observation" &&
                     pending.data["navigation_started"] == true && pending.data["observation_id"].is_null() &&
                     pending.image_base64.empty(),
@@ -1122,6 +1159,9 @@ void continuation_budget_tests(bool compatibility) {
                     json_string(observed.data, "text").find("Capture visit 1") != std::string::npos &&
                     page.capture_requests == 1,
                 "deferred snapshot captures JPEG and HTML from the same single navigation");
+        require(observed.data["timing"]["navigation"] == settled_timing &&
+                    !observed.data["timing"].contains("startup"),
+                "capture-only continuation preserves navigation timings without repeating startup metadata");
         browser.perform({{"action", "close"}, {"session_id", id}}, "capture-owner");
     }
     options.defer_initial_observation = false;

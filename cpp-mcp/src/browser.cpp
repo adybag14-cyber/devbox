@@ -349,6 +349,10 @@ struct BrowserService::State {
             bool screenshot, html;
             enum class Phase { navigation, document, observation } phase = Phase::navigation;
             std::string previous_loader, loader;
+            std::int64_t submission_ms = 0, document_wait_ms = 0;
+            Json timing() const {
+                return {{"submission_ms", submission_ms}, {"document_wait_ms", document_wait_ms}};
+            }
         };
         std::optional<PendingNavigation> pending_navigation;
         std::string id = uuid(), owner, target, cdp_session, observation, html, html_hash, main_frame;
@@ -733,7 +737,7 @@ struct BrowserService::State {
             throw Error("BROWSER_EVALUATION_FAILED: page observation is unavailable");
         return result["result"]["value"];
     }
-    void open(const std::string& owner, bool text_only, Clock::time_point deadline, const Cancel& cancel) {
+    Json open(const std::string& owner, bool text_only, Clock::time_point deadline, const Cancel& cancel) {
         const auto began = Clock::now();
         const auto diagnose = [&](std::string_view phase) {
             if (options.launch_diagnostics) {
@@ -769,6 +773,7 @@ struct BrowserService::State {
         owned->text_only = text_only;
         owned->shared = options.shared_profile.has_value();
         owned->proxy = std::make_unique<BrowserProxy>(options.fixture_port);
+        const auto proxy_ready = Clock::now();
         diagnose("proxy-ready");
         fs::path endpoint_profile;
         if (owned->shared) {
@@ -888,6 +893,7 @@ struct BrowserService::State {
             endpoint_profile = session->profile;
             diagnose("endpoint-file-ready");
         }
+        const auto endpoint_ready = Clock::now();
         session->protocol = std::make_unique<BrowserProtocol>();
         // Keep stale shared endpoints bounded while allowing a fresh owned
         // debugger to finish starting within this same operation deadline.
@@ -899,6 +905,7 @@ struct BrowserService::State {
         } catch (const std::exception& error) {
             throw Error(std::string(error.what()) + " [CDP connect]");
         }
+        const auto connected = Clock::now();
         diagnose("cdp-connected");
         const auto version = command("Browser.getVersion", Json::object(), connection_deadline, cancel, true);
         session->browser_version = {{"product", json_string(version, "product")},
@@ -980,6 +987,15 @@ struct BrowserService::State {
         command("Emulation.setDeviceMetricsOverride",
                 {{"width", 1280}, {"height", 800}, {"deviceScaleFactor", 1}, {"mobile", false}}, deadline,
                 cancel);
+        const auto ready = Clock::now();
+        const auto duration = [](auto from, auto to) {
+            return std::chrono::duration_cast<Millis>(to - from).count();
+        };
+        return {{"resolve_and_proxy_ms", duration(began, proxy_ready)},
+                {"endpoint_ready_ms", duration(proxy_ready, endpoint_ready)},
+                {"cdp_connect_ms", duration(endpoint_ready, connected)},
+                {"session_setup_ms", duration(connected, ready)},
+                {"total_ms", duration(began, ready)}};
     }
     BrowserObservation observe(const Json& args, Clock::time_point deadline, const Cancel& cancel) {
         const auto began = Clock::now();
@@ -1113,7 +1129,8 @@ struct BrowserService::State {
                  {"session_protocol", session->protocol->metrics()},
                  {"timing",
                   {{"action_ms",
-                    std::chrono::duration_cast<Millis>(Clock::now() - (deadline - Millis(40000))).count()}}}},
+                    std::chrono::duration_cast<Millis>(Clock::now() - (deadline - Millis(40000))).count()},
+                   {"navigation", session->pending_navigation->timing()}}}},
                 {}};
     }
     BrowserObservation continue_navigation(const Json& args, Clock::time_point deadline,
@@ -1121,6 +1138,7 @@ struct BrowserService::State {
         using Phase = Session::PendingNavigation::Phase;
         auto& pending = *session->pending_navigation;
         if (pending.phase == Phase::navigation) {
+            const auto submission_began = Clock::now();
             pending.previous_loader = json_string(frame(deadline, cancel), "loaderId");
             // Mark submission before issuing the effect. A continuation never
             // repeats Page.navigate after a successful command acknowledgement.
@@ -1137,6 +1155,8 @@ struct BrowserService::State {
                 end_session("navigation_uncertain");
                 throw;
             }
+            pending.submission_ms +=
+                std::chrono::duration_cast<Millis>(Clock::now() - submission_began).count();
             if (nav.contains("errorText")) {
                 const auto message = "BROWSER_NAVIGATION: " + json_string(nav, "errorText");
                 // A negative acknowledgement permits an explicit caller retry.
@@ -1148,7 +1168,10 @@ struct BrowserService::State {
             pending.loader = json_string(nav, "loaderId");
         }
         if (pending.phase == Phase::document) {
-            if (!settle(pending.loader, pending.previous_loader, deadline, cancel))
+            const auto wait_began = Clock::now();
+            const bool settled = settle(pending.loader, pending.previous_loader, deadline, cancel);
+            pending.document_wait_ms += std::chrono::duration_cast<Millis>(Clock::now() - wait_began).count();
+            if (!settled)
                 return pending_navigation(deadline);
             pending.phase = Phase::observation;
             if (options.defer_initial_observation)
@@ -1162,6 +1185,7 @@ struct BrowserService::State {
         if (!resumed.contains("include_html"))
             resumed["include_html"] = pending.html;
         auto result = observe(resumed, deadline, cancel);
+        result.data["timing"]["navigation"] = pending.timing();
         session->pending_navigation.reset();
         return result;
     }
@@ -1230,16 +1254,17 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
             throw Error("BROWSER_RENDER_MODE: expected auto, full or text");
         const bool text_only = render_mode == "text" || (render_mode == "auto" && state.options.text_only);
         try {
-            state.open(std::string(principal), text_only, deadline, cancel);
+            const auto startup = state.open(std::string(principal), text_only, deadline, cancel);
             state.session->pending_navigation = BrowserService::State::Session::PendingNavigation{
                 target, json_bool(args, "screenshot", true), json_bool(args, "include_html", false)};
             // Keep a slow cold launch instead of spending its remaining few
             // seconds on navigation and then discarding the owned process.
             // Every caller still has the same 40-second hard action deadline.
-            if (state.options.defer_initial_navigation || deadline - Clock::now() < Millis(20000)) {
-                return state.pending_navigation(deadline);
-            }
-            return state.continue_navigation(args, deadline, cancel);
+            auto result = state.options.defer_initial_navigation || deadline - Clock::now() < Millis(20000)
+                              ? state.pending_navigation(deadline)
+                              : state.continue_navigation(args, deadline, cancel);
+            result.data["timing"]["startup"] = startup;
+            return result;
         } catch (const Cancelled&) {
             if (state.session && state.session->owner == principal)
                 state.end_session("open_cancelled");
