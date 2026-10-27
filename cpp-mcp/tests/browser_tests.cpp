@@ -519,7 +519,7 @@ struct PageFixture {
     std::atomic_bool stop{false};
     std::atomic_bool reject_requests{false};
     std::atomic_uint accepted_connections{0};
-    std::atomic_uint failed_requests{0}, capacity_denials{0};
+    std::atomic_uint failed_requests{0}, capacity_denials{0}, accept_failures{0};
     std::atomic_uint requests{0};
     std::atomic_uint picture_requests{0};
     std::atomic_uint continuation_requests{0}, capture_requests{0};
@@ -657,8 +657,17 @@ update();
                     boost::system::error_code error;
                     auto socket =
                         co_await listener.async_accept(asio::redirect_error(asio::use_awaitable, error));
-                    if (error)
+                    // A successful accept may already be queued when shutdown
+                    // cancels the listener. Do not start another read afterward.
+                    if (stop || !listener.is_open())
                         co_return;
+                    if (error) {
+                        ++accept_failures;
+                        asio::steady_timer backoff(io);
+                        backoff.expires_after(Millis(10));
+                        co_await backoff.async_wait(asio::use_awaitable);
+                        continue;
+                    }
                     ++accepted_connections;
                     if (connections.size() >= 64) {
                         ++capacity_denials;
@@ -704,7 +713,8 @@ update();
                       << picture_requests.load()
                       << " image requests before failure; accepted=" << accepted_connections.load()
                       << " failed=" << failed_requests.load()
-                      << " capacity_denials=" << capacity_denials.load() << '\n';
+                      << " capacity_denials=" << capacity_denials.load()
+                      << " accept_failures=" << accept_failures.load() << '\n';
     }
     std::uint16_t port() {
         return port_number;
@@ -733,6 +743,20 @@ void fixture_transport_tests() {
                   << '\n';
         throw;
     }
+    // Cancel only the pending accept while the listener remains open. This
+    // deterministic transient error must not strand later ready requests.
+    asio::post(page.io, [&page] {
+        boost::system::error_code ignored;
+        page.listener.cancel(ignored);
+    });
+    const auto retried_by = Clock::now() + Millis(2000);
+    while (page.accept_failures == 0) {
+        require(Clock::now() < retried_by, "fixture observes the injected transient accept error");
+        std::this_thread::sleep_for(Millis(2));
+    }
+    const auto after_retry = http_request("GET", "http://127.0.0.1:" + std::to_string(page.port()) + "/", {},
+                                          Json::object(), Millis(1000), 65536, {}, true);
+    require(after_retry.status == 200, "fixture resumes acceptance after a transient error");
     // A scripted delayed response must also be cancellable during teardown.
     auto delayed = std::make_unique<PageFixture>();
     Tcp::socket waiting(io);
@@ -748,7 +772,7 @@ void fixture_transport_tests() {
     delayed.reset();
     require(Clock::now() - stopping < Millis(1000),
             "fixture shutdown cancels the pending sixteen-second script delay");
-    std::cout << "idle preconnection and cancellable fixture teardown passed\n";
+    std::cout << "idle preconnection, transient accept recovery and cancellable fixture teardown passed\n";
 }
 void proxy_tests() {
     BrowserProxy gate;
