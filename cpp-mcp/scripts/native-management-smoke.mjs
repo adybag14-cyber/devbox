@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {access, mkdtemp, mkdir, open, readFile, rename, writeFile, rm} from 'node:fs/promises';
+import {access, mkdtemp, mkdir, open, readFile, readlink, rename, writeFile, rm} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import net from 'node:net';
 import os from 'node:os';
@@ -90,6 +90,40 @@ try {
   const companionBy=performance.now()+10000;
   while(!(first.companions?.[0]?.healthy) && performance.now()<companionBy) {await delay(100);first=await invoke('status');}
   assert.equal(first.companions[0].healthy,true);const companionPid=first.companions[0].process.pid;
+  if(process.platform==='linux') {
+    // Stall only this fixture's identity-checked frontend. Its supervisor must
+    // preserve unconfirmed work, then report recovery without replacing it.
+    const beforeStall=await invoke('status');
+    const observed=await (await fetch(`http://127.0.0.1:${port}/`)).json();
+    assert.equal(observed.build.deploymentGeneration,beforeStall.child.generation);
+    assert.equal(observed.build.binarySha256,initialized.sha256);
+    const pid=beforeStall.child.pid;
+    const birth=async()=>{const stat=await readFile(`/proc/${pid}/stat`,'utf8');return stat.slice(stat.lastIndexOf(')')+2).split(' ')[19];};
+    const instance=await birth(), image=await readlink(`/proc/${pid}/exe`);
+    const sameChild=async()=>{assert.equal(await birth(),instance);assert.equal(await readlink(`/proc/${pid}/exe`),image);};
+    let suspended=false;
+    try {
+      await sameChild();process.kill(pid,'SIGSTOP');suspended=true;
+      const stalledBy=performance.now()+45000;let stalled;
+      do {await delay(200);stalled=await invoke('status');}
+      while((stalled.phase!=='unhealthy'||!stalled.error?.includes('NATIVE_DRAIN_BUSY_OR_UNCONFIRMED'))&&performance.now()<stalledBy);
+      assert.equal(stalled.phase,'unhealthy',JSON.stringify(stalled));
+      assert.match(stalled.error,/NATIVE_DRAIN_BUSY_OR_UNCONFIRMED/);
+      assert.equal(stalled.child.generation,beforeStall.child.generation);
+      const heartbeat=JSON.parse(await readFile(path.join(root,'run/native/heartbeat.json'),'utf8'));
+      assert(Date.parse(heartbeat.updatedAt)>Date.now()-15000,'heartbeat continues during a failed health drain');
+    } finally {
+      if(suspended){await sameChild();process.kill(pid,'SIGCONT');}
+    }
+    const recoveryBy=performance.now()+15000;let healthyAgain;
+    do {await delay(150);healthyAgain=await invoke('status');}
+    while((!healthyAgain.healthy||healthyAgain.phase!=='ready')&&performance.now()<recoveryBy);
+    assert.equal(healthyAgain.healthy,true,JSON.stringify(healthyAgain));
+    assert.equal(healthyAgain.phase,'ready','a recovered probe clears the stale unhealthy phase');
+    assert(!Object.hasOwn(healthyAgain,'error'),'a recovered probe clears the stale health error');
+    assert.deepEqual(healthyAgain.child,beforeStall.child,'health recovery does not replace a preserved frontend');
+    assert.deepEqual(healthyAgain.lastRequest,beforeStall.lastRequest,'probe recovery preserves operator history');
+  }
   const duplicate = await invoke('start'); assert.equal(duplicate.owner.pid,foreground.pid);
   const file = path.join(root,'workspace','roundtrip.txt');
   await rpc('devbox_write_file_atomic',{path:file,content_base64:Buffer.from('native-core-effect').toString('base64'),expected_file_sha256:'missing'});
@@ -245,6 +279,7 @@ try {
     'live MCP file effect','duplicate suppression','restart/state preservation',
     'busy request and durable-job drain refusal','frontend crash recovery without replay','supervisor crash recovery',
     'independent owned companion lifecycle','service definition without activation','missing proof rejection',
+    ...(process.platform==='linux'?['transient health recovery clears stale status without replacing the frontend']:[]),
     'failed candidate startup rollback','foreground and detached stop',
     'modified selected runtime rejected without changing restart intent',
     'preparation does not alter existing production paths or database',
