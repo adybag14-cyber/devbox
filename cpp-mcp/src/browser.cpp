@@ -867,11 +867,19 @@ struct BrowserService::State {
             throw Error(std::string(error.what()) + " [CDP connect]");
         }
         const auto connected = Clock::now();
+        Json setup_phases = Json::object();
+        auto phase_started = connected;
+        const auto phase = [&](const char* name) {
+            const auto ended = Clock::now();
+            setup_phases[name] = std::chrono::duration_cast<Micros>(ended - phase_started).count();
+            phase_started = ended;
+        };
         diagnose("cdp-connected");
         const auto version = command("Browser.getVersion", Json::object(), connection_deadline, cancel, true);
         session->browser_version = {{"product", json_string(version, "product")},
                                     {"protocol_version", json_string(version, "protocolVersion")}};
         diagnose("version=" + json_string(version, "product"));
+        phase("browser_version");
         if (session->shared) {
             session->context = json_string(
                 command("Target.createBrowserContext",
@@ -882,8 +890,10 @@ struct BrowserService::State {
                 "browserContextId");
             if (session->context.empty())
                 throw Error("BROWSER_CONTEXT_MISSING");
+            phase("context_create");
             command("Browser.setDownloadBehavior",
                     {{"behavior", "deny"}, {"browserContextId", session->context}}, deadline, cancel, true);
+            phase("download_policy");
             Json target_args{{"url", "about:blank"}, {"browserContextId", session->context}};
             if (options.headed) {
                 target_args["newWindow"] = true;
@@ -892,14 +902,17 @@ struct BrowserService::State {
             }
             session->target =
                 json_string(command("Target.createTarget", target_args, deadline, cancel, true), "targetId");
+            phase("target_create");
         } else {
             command("Browser.setDownloadBehavior", {{"behavior", "deny"}}, deadline, cancel, true);
+            phase("download_policy");
             const auto targets = command("Target.getTargets", Json::object(), deadline, cancel, true);
             for (const auto& target : targets.at("targetInfos"))
                 if (json_string(target, "type") == "page") {
                     session->target = json_string(target, "targetId");
                     break;
                 }
+            phase("target_discovery");
         }
         if (session->target.empty())
             throw Error("BROWSER_PAGE_MISSING");
@@ -907,9 +920,12 @@ struct BrowserService::State {
             json_string(command("Target.attachToTarget", {{"targetId", session->target}, {"flatten", true}},
                                 deadline, cancel, true),
                         "sessionId");
+        phase("target_attach");
         command("Page.enable", Json::object(), deadline, cancel);
         diagnose("page-enabled");
+        phase("page_enable");
         session->main_frame = json_string(frame(deadline, cancel), "id");
+        phase("frame_tree");
         session->protocol->on_event([this, owned = session.get()](const Json& event,
                                                                   Clock::time_point event_deadline,
                                                                   const Cancel& event_cancel) {
@@ -940,14 +956,18 @@ struct BrowserService::State {
                           {{{"urlPattern", "*"}, {"resourceType", "Image"}, {"requestStage", "Request"}},
                            {{"urlPattern", "*"}, {"resourceType", "Media"}, {"requestStage", "Request"}}})}},
                     deadline, cancel);
+        phase("resource_policy");
         command("Network.enable",
                 {{"maxTotalBufferSize", 1024 * 1024}, {"maxResourceBufferSize", 256 * 1024}}, deadline,
                 cancel);
+        phase("network_enable");
         command("Network.setCacheDisabled", {{"cacheDisabled", true}}, deadline, cancel);
         command("Network.setBypassServiceWorker", {{"bypass", true}}, deadline, cancel);
+        phase("cache_and_service_worker");
         command("Emulation.setDeviceMetricsOverride",
                 {{"width", 1280}, {"height", 800}, {"deviceScaleFactor", 1}, {"mobile", false}}, deadline,
                 cancel);
+        phase("viewport");
         const auto ready = Clock::now();
         const auto duration = [](auto from, auto to) {
             return std::chrono::duration_cast<Millis>(to - from).count();
@@ -956,6 +976,7 @@ struct BrowserService::State {
                 {"endpoint_ready_ms", duration(proxy_ready, endpoint_ready)},
                 {"cdp_connect_ms", duration(endpoint_ready, connected)},
                 {"session_setup_ms", duration(connected, ready)},
+                {"session_setup_phases_us", std::move(setup_phases)},
                 {"total_ms", duration(began, ready)}};
     }
     BrowserObservation observe(const Json& args, Clock::time_point deadline, const Cancel& cancel) {
