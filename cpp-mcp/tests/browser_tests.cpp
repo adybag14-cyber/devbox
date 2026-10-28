@@ -10,6 +10,7 @@
 #include <future>
 #include <iostream>
 #include <map>
+#include <set>
 #include <sstream>
 #include <thread>
 #ifdef _WIN32
@@ -40,10 +41,30 @@ void check_startup_timing(const Json& data) {
         sum += json_uint(startup, key);
     }
     const auto total = json_uint(startup, "total_ms");
-    require(startup.size() == 5 && total >= sum && total - sum <= 3,
+    require(startup.size() == 6 && total >= sum && total - sum <= 3,
             "startup phases partition total duration within millisecond rounding");
     require(json_uint(data.at("timing"), "action_ms") >= total,
             "startup duration fits inside its open action");
+    const auto& setup = startup.at("session_setup_phases_us");
+    const bool shared = setup.contains("context_create");
+    const std::set<std::string> common{
+        "browser_version", "download_policy", "target_attach",  "page_enable",
+        "frame_tree",      "resource_policy", "network_enable", "cache_and_service_worker",
+        "viewport"};
+    require(setup.is_object() && setup.size() == (shared ? 11 : 10) &&
+                setup.contains(shared ? "target_create" : "target_discovery"),
+            "setup phase shape distinguishes context creation from owned target discovery");
+    std::uint64_t setup_sum = 0;
+    for (const auto& [name, value] : setup.items()) {
+        require(common.contains(name) || (shared && (name == "context_create" || name == "target_create")) ||
+                    (!shared && name == "target_discovery"),
+                "setup timing contains only fixed phase names");
+        require(value.is_number_integer() && value.get<std::int64_t>() >= 0,
+                "setup phase durations are nonnegative microseconds");
+        setup_sum += value.get<std::uint64_t>();
+    }
+    require(setup_sum <= (json_uint(startup, "session_setup_ms") + 1) * 1000,
+            "setup detail fits within the enclosing duration and its rounding interval");
 }
 void check_navigation_timing(const Json& data) {
     const auto& navigation = data.at("timing").at("navigation");
@@ -826,6 +847,7 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     config->platform = Platform::detect();
     std::atomic_uint32_t launched_pid{0};
     std::atomic_bool cleanup_attempted{false};
+    std::atomic_bool startup_delay_injected{false};
     BrowserOptions options;
     options.headed = headed;
     options.compatibility = compatibility;
@@ -835,6 +857,8 @@ void browser_tests(bool headed = false, bool compatibility = false) {
     options.defer_initial_navigation = !headed && !compatibility;
     options.launch_diagnostics = [&](std::string_view message) {
         browser_diagnostics(message);
+        if (message.starts_with("phase=version=") && !startup_delay_injected.exchange(true))
+            std::this_thread::sleep_for(Millis(80));
         if (message.starts_with("cleanup profile="))
             cleanup_attempted = true;
     };
@@ -855,6 +879,9 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                                             {"include_html", true}}),
                         "test");
     check_startup_timing(value.data);
+    require(startup_delay_injected && json_uint(value.data["timing"]["startup"]["session_setup_phases_us"],
+                                                "browser_version") >= 60000,
+            "a delayed startup version phase is attributed to that phase");
     if (json_string(value.data, "pending_phase") == "navigation") {
         const auto pending_id = json_string(value.data, "session_id");
         require(!pending_id.empty() && value.image_base64.empty() && value.data["observation_id"].is_null() &&
