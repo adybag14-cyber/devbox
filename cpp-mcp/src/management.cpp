@@ -823,8 +823,16 @@ int supervise(const ManagementOptions& options) {
             const bool healthy = ready(env, current, child->generation);
             if (healthy && Clock::now() - child->started >= Millis(30000))
                 failures = 0;
-            if (healthy)
+            if (healthy) {
                 complete_handoff();
+                // A failed health drain preserves the existing frontend. If it
+                // recovers, clear only that transient health state; retain the
+                // operator acknowledgement and its historical error, if any.
+                if (json_string(state, "phase") == "unhealthy") {
+                    state["phase"] = "ready";
+                    state.erase("error");
+                }
+            }
             state["healthy"] = healthy;
             unhealthy = healthy ? 0 : unhealthy + 1;
             // Public route failures are diagnostic only; they never authorize killing MCP.

@@ -89,8 +89,8 @@ int run(const fs::path& root) {
     const auto state_root = root / "state";
     StateClientOptions options;
     options.executable = executable_path();
-    auto index = open_coordinated_state(state_root, options);
     ScopeExit stop([&] { (void)stop_state_coordinator(state_root); });
+    auto index = open_coordinated_state(state_root, options);
     scheduler_config.root = root / "indexed-slots";
     scheduler_config.lease_index = [index] { return index; };
     ExecutionScheduler indexed_scheduler(scheduler_config);
@@ -105,6 +105,8 @@ int main(int argc, char** argv) {
     try {
         if (argc == 3 && std::string_view(argv[1]) == "--state-coordinator")
             return run_state_coordinator(path_from_utf8(argv[2]), [] { return false; });
+        if (argc == 3 && std::string_view(argv[1]) == "--stop-fixture-coordinator")
+            return stop_state_coordinator(path_from_utf8(argv[2])) ? 0 : 1;
         if (argc != 2)
             throw Error("Usage: devbox-idle-components-bench NEW_FIXTURE_DIRECTORY");
         return run(path_from_utf8(argv[1]));
