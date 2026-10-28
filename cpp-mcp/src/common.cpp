@@ -721,15 +721,15 @@ void write_json_atomic(const fs::path& path, const Json& value) {
     }
 }
 std::string json_string(const Json& object, std::string_view key, std::string fallback) {
-    const auto it = object.find(std::string(key));
+    const auto it = object.find(key);
     return it == object.end() || it->is_null() ? fallback : it->get<std::string>();
 }
 bool json_bool(const Json& object, std::string_view key, bool fallback) {
-    const auto it = object.find(std::string(key));
+    const auto it = object.find(key);
     return it == object.end() || it->is_null() ? fallback : it->get<bool>();
 }
 std::uint64_t json_uint(const Json& object, std::string_view key, std::uint64_t fallback) {
-    const auto it = object.find(std::string(key));
+    const auto it = object.find(key);
     if (it == object.end() || it->is_null())
         return fallback;
     if (!it->is_number_integer() || it->get<double>() < 0)
@@ -737,7 +737,7 @@ std::uint64_t json_uint(const Json& object, std::string_view key, std::uint64_t 
     return it->get<std::uint64_t>();
 }
 double json_number(const Json& object, std::string_view key, double fallback) {
-    const auto it = object.find(std::string(key));
+    const auto it = object.find(key);
     return it == object.end() || it->is_null() ? fallback : it->get<double>();
 }
 std::vector<std::string> json_strings(const Json& object, std::string_view key) {
