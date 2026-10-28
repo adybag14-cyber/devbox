@@ -157,6 +157,23 @@ int main(int argc, char** argv) {
                     "filesystem unknown-value sentinels are rejected at the probe boundary");
         }
         {
+            const auto before = unix_millis();
+            const auto old = snapshot_age(Json{{"sampledAtUtc", "1969-12-31T23:59:59.000Z"}});
+            const auto after = unix_millis();
+            require(old && *old >= before && *old <= after &&
+                        snapshot_age(Json{{"sampledAtUtc", "2099-01-01T00:00:00.000Z"}}) == 0,
+                    "Snapshot ages clamp pre-epoch and future wall-clock timestamps safely");
+            for (const auto& invalid : {Json(), Json::array(), Json(1), Json::object(),
+                                       Json{{"sampledAtUtc", nullptr}}, Json{{"sampledAtUtc", 17}},
+                                       Json{{"sampledAtUtc", "invalid"}}})
+                require(!snapshot_age(invalid), "Missing or malformed snapshot timestamps remain unavailable");
+            const Json named{{"sampledAtUtc", utc_now()}};
+            const std::string extended_key = "sampledAtUtc-suffix";
+            require(snapshot_age(named, std::string_view(extended_key).substr(0, 12)).has_value() &&
+                        !snapshot_age(named, extended_key),
+                    "Snapshot timestamp lookup respects bounded string views");
+        }
+        {
             auto probe_config = std::make_shared<Config>(*config);
             probe_config->jobs_root = root / "blocked-jobs";
             probe_config->execution_slot_root = root / "probe-slots";
@@ -190,6 +207,21 @@ int main(int argc, char** argv) {
             require(health["warningFreeBytes"] == disk_warning_free_bytes(json_uint(health, "totalBytes")) &&
                         health["warningFreePercent"] == 5.0 && health["minimumFreeBytes"] == 536870912ULL,
                     "live storage status reports the actual warning allowance and unchanged critical floor");
+            monitor.start();
+            ScopeExit stop_monitor([&] { background.stop(); });
+            const auto readiness_deadline = Clock::now() + Millis(10000);
+            while (!monitor.ready(cpp_tool_count) && Clock::now() < readiness_deadline)
+                std::this_thread::sleep_for(Millis(10));
+            require(monitor.ready(cpp_tool_count) && !monitor.ready(cpp_tool_count - 1),
+                    "Readiness requires a real fresh scheduler/store probe and the complete tool contract");
+            background.failure("execution-store-probe", "readiness regression fixture");
+            require(!monitor.ready(cpp_tool_count), "A failed background store probe rejects readiness");
+            background.success("execution-store-probe");
+            require(monitor.ready(cpp_tool_count), "A successful store probe restores readiness");
+            background.mark_stopped("execution-store-probe");
+            require(!monitor.ready(cpp_tool_count), "A stopped store probe rejects readiness");
+            background.stop();
+            stop_monitor.disarm();
             usage.stop();
         }
         auto engine = std::make_shared<Engine>(config);

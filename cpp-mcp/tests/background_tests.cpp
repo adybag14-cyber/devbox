@@ -1,4 +1,5 @@
 #include "devbox/background.hpp"
+#include "devbox/allocator.hpp"
 #include "devbox/scoped_thread.hpp"
 #include <array>
 #include <iostream>
@@ -48,6 +49,8 @@ int main() {
     try {
         BackgroundTasks background;
         require(background.snapshot() == Json::object(), "Unused background registry is not empty");
+        require(!background.healthy("missing", 150000) && background.snapshot().empty(),
+                "A readiness lookup must not create a missing worker");
         background.mark_stopped("z-unstarted");
         const auto unstarted = background.snapshot()["z-unstarted"];
         require(
@@ -55,6 +58,7 @@ int main() {
                 R"({"kind":"","running":false,"starts":0,"restarts":0,"lastTickUnixMs":null,"lastAttemptUnixMs":null,"lastSuccessUnixMs":null,"lastFailureUnixMs":null,"consecutiveFailures":0,"lastError":null,"lastTickAgeMs":null,"lastSuccessAgeMs":null,"lastFailureAgeMs":null,"idleForMs":null})",
             "Initial state no longer matches the established JSON contract");
         background.mark_started("a-events");
+        require(!background.healthy("a-events", 150000), "Starting does not establish a successful probe");
         auto value = background.snapshot()["a-events"];
         shape(value);
         require(value["kind"] == "event-driven" && value["starts"] == 1 && value["restarts"] == 0 &&
@@ -78,6 +82,19 @@ int main() {
         background.mark_started("a-events", "periodic");
         background.attempt("a-events");
         background.success("a-events");
+        require(background.healthy("a-events", 150000) && !background.healthy("a-events", 0),
+                "A successful running worker requires a strictly positive freshness allowance");
+        const std::string bounded_name = "a-events-suffix";
+        require(background.healthy(std::string_view(bounded_name).substr(0, 8), 150000) &&
+                    !background.healthy(bounded_name, 150000),
+                "Readiness lookup must respect the exact string-view boundary");
+        const auto allocations_before = allocator_counters();
+        for (unsigned check = 0; check < 1000; ++check)
+            if (!background.healthy("a-events", 150000))
+                throw Error("Stable readiness unexpectedly changed");
+        const auto allocations_after = allocator_counters();
+        require(allocations_after.calls == allocations_before.calls,
+                "Typed background readiness must not allocate diagnostic objects");
         const auto before = unix_millis();
         auto detached_snapshot = background.snapshot();
         const auto after = unix_millis();
@@ -94,9 +111,17 @@ int main() {
         detached_snapshot["a-events"]["starts"] = 99;
         require(background.snapshot()["a-events"]["starts"] == 2, "Snapshots must own detached values");
         background.mark_stopped("a-events", error);
+        require(!background.healthy("a-events", 150000), "A stopped or failed worker is not ready");
         value = background.snapshot()["a-events"];
         require(value["running"] == false && value["lastError"] == error && value["consecutiveFailures"] == 1,
                 "Terminal failure must retain its exact text and stopped status");
+        background.success("age-check");
+        std::this_thread::sleep_for(Millis(10));
+        require(!background.healthy("age-check", 1), "An expired successful probe is not ready");
+        background.failure("age-check", "failed after success");
+        require(!background.healthy("age-check", 150000), "A recent success must not hide a later failure");
+        background.success("age-check");
+        require(background.healthy("age-check", 150000), "A later successful probe must restore readiness");
 
         // Multiple workers update the same diagnostic name while snapshots are
         // collected. Exact totals catch lost updates; snapshots must remain valid.
@@ -110,6 +135,8 @@ int main() {
                 ++finished;
             });
         while (finished < 4) {
+            require(!background.healthy("concurrent", 150000),
+                    "Concurrent failures must not fabricate successful readiness");
             const auto concurrent = background.snapshot()["concurrent"];
             shape(concurrent);
             require(json_uint(concurrent, "consecutiveFailures") <= 8000,
