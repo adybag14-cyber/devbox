@@ -57,84 +57,88 @@ void BackgroundTasks::stop() {
     if (thread_.joinable())
         thread_.join();
 }
-Json& BackgroundTasks::state_locked(const std::string& name) {
-    auto [entry, inserted] = states_.try_emplace(name);
-    if (inserted)
-        entry->second = Json{{"kind", ""},
-                             {"running", false},
-                             {"starts", 0},
-                             {"restarts", 0},
-                             {"lastTickUnixMs", nullptr},
-                             {"lastAttemptUnixMs", nullptr},
-                             {"lastSuccessUnixMs", nullptr},
-                             {"lastFailureUnixMs", nullptr},
-                             {"consecutiveFailures", 0},
-                             {"lastError", nullptr}};
-    return entry->second;
+BackgroundTasks::State& BackgroundTasks::state_locked(const std::string& name) {
+    return states_.try_emplace(name).first->second;
 }
 void BackgroundTasks::mark_started(const std::string& name, std::string kind) {
     std::lock_guard lock(mutex_);
     auto& state = state_locked(name);
-    const auto count = json_uint(state, "starts");
-    state["kind"] = std::move(kind);
-    state["starts"] = count + 1;
-    if (count)
-        state["restarts"] = json_uint(state, "restarts") + 1;
-    state["running"] = true;
-    state["lastAttemptUnixMs"] = unix_millis();
+    state.kind = std::move(kind);
+    if (state.starts++)
+        ++state.restarts;
+    state.running = true;
+    state.last_attempt = unix_millis();
 }
 void BackgroundTasks::mark_stopped(const std::string& name, std::optional<std::string> error) {
     std::lock_guard lock(mutex_);
     auto& state = state_locked(name);
-    state["running"] = false;
+    state.running = false;
     if (error) {
-        state["lastFailureUnixMs"] = unix_millis();
-        state["consecutiveFailures"] = json_uint(state, "consecutiveFailures") + 1;
-        state["lastError"] = *error;
+        state.last_failure = unix_millis();
+        ++state.consecutive_failures;
+        state.last_error = std::move(error);
     }
 }
 void BackgroundTasks::attempt(const std::string& name) {
     std::lock_guard lock(mutex_);
     auto& state = state_locked(name);
-    state["running"] = true;
-    state["lastAttemptUnixMs"] = unix_millis();
+    state.running = true;
+    state.last_attempt = unix_millis();
 }
 void BackgroundTasks::success(const std::string& name) {
     std::lock_guard lock(mutex_);
     auto& state = state_locked(name);
     const auto now = unix_millis();
-    state["running"] = true;
-    state["lastTickUnixMs"] = now;
-    state["lastSuccessUnixMs"] = now;
-    state["consecutiveFailures"] = 0;
-    state["lastError"] = nullptr;
+    state.running = true;
+    state.last_tick = now;
+    state.last_success = now;
+    state.consecutive_failures = 0;
+    state.last_error.reset();
 }
 void BackgroundTasks::failure(const std::string& name, const std::string& error) {
     std::lock_guard lock(mutex_);
     auto& state = state_locked(name);
-    state["running"] = true;
-    state["lastFailureUnixMs"] = unix_millis();
-    state["consecutiveFailures"] = json_uint(state, "consecutiveFailures") + 1;
-    state["lastError"] = error;
+    state.running = true;
+    state.last_failure = unix_millis();
+    ++state.consecutive_failures;
+    state.last_error = error;
 }
 Json BackgroundTasks::snapshot() const {
     std::lock_guard lock(mutex_);
-    Json result = Json::object();
+    Json::object_t workers;
+    workers.reserve(states_.size());
     const auto now = unix_millis();
     for (const auto& [name, state] : states_) {
-        auto value = state;
-        const auto age = [&](const char* key) -> Json {
-            return state[key].is_number() ? Json(now - std::min(now, json_uint(state, key))) : Json(nullptr);
+        Json::object_t fields;
+        // These fixed fields and the names in states_ are already unique.
+        // Append directly to ordered_json's vector so constructing a snapshot
+        // does not repeatedly scan earlier fields or worker names for duplicates.
+        fields.reserve(14);
+        const auto timestamp = [](const std::optional<std::uint64_t>& at) -> Json {
+            return at ? Json(*at) : Json(nullptr);
         };
-        value["lastTickAgeMs"] = age("lastTickUnixMs");
-        value["lastSuccessAgeMs"] = age("lastSuccessUnixMs");
-        value["lastFailureAgeMs"] = age("lastFailureUnixMs");
-        value["idleForMs"] = json_string(state, "kind") == "event-driven"
-                                 ? Json(now - std::min(now, json_uint(state, "lastAttemptUnixMs", now)))
-                                 : Json(nullptr);
-        result[name] = std::move(value);
+        const auto age = [&](const std::optional<std::uint64_t>& at) -> Json {
+            return at ? Json(now - std::min(now, *at)) : Json(nullptr);
+        };
+        fields.emplace_back("kind", state.kind);
+        fields.emplace_back("running", state.running);
+        fields.emplace_back("starts", state.starts);
+        fields.emplace_back("restarts", state.restarts);
+        fields.emplace_back("lastTickUnixMs", timestamp(state.last_tick));
+        fields.emplace_back("lastAttemptUnixMs", timestamp(state.last_attempt));
+        fields.emplace_back("lastSuccessUnixMs", timestamp(state.last_success));
+        fields.emplace_back("lastFailureUnixMs", timestamp(state.last_failure));
+        fields.emplace_back("consecutiveFailures", state.consecutive_failures);
+        fields.emplace_back("lastError", state.last_error ? Json(*state.last_error) : Json(nullptr));
+        fields.emplace_back("lastTickAgeMs", age(state.last_tick));
+        fields.emplace_back("lastSuccessAgeMs", age(state.last_success));
+        fields.emplace_back("lastFailureAgeMs", age(state.last_failure));
+        fields.emplace_back("idleForMs", state.kind == "event-driven"
+                                             ? Json(now - std::min(now, state.last_attempt.value_or(now)))
+                                             : Json(nullptr));
+        workers.emplace_back(name, Json(std::move(fields)));
     }
-    return result;
+    return Json(std::move(workers));
 }
 asio::awaitable<void> BackgroundTasks::run_periodic(std::string name, Millis initial, Millis interval,
                                                     std::function<void(const Cancel&)> action, bool once) {

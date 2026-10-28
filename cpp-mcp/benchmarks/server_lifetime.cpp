@@ -54,6 +54,13 @@ int run(const fs::path& root) {
         engine->stop();
         (void)stop_state_coordinator(config->state_root);
     });
+    // Readiness alone does not prove a working durable backend. Refuse a
+    // degraded benchmark (for example a wrapper that forbids coordinator
+    // breakaway) before measuring idle work or HTTP requests.
+    StateClientOptions state_options;
+    state_options.executable = executable_path();
+    const auto state = open_coordinated_state(config->state_root, state_options);
+    (void)state->diagnostics();
     const auto base = "http://127.0.0.1:" + std::to_string(server.start());
     engine->attach(server);
     const auto deadline = Clock::now() + Millis(10000);
@@ -82,6 +89,11 @@ int run(const fs::path& root) {
             get("/");
     });
     phase("idle_after_20_seconds", [] { std::this_thread::sleep_for(Millis(20000)); });
+    for (const auto* name : {"job-maintenance.json", "job-quota.json"}) {
+        const auto status = read_json(root / "run" / name);
+        if (!status.value("error", Json()).is_null())
+            throw Error("Isolated maintenance worker failed: " + status.at("error").dump());
+    }
     std::cout << Json{{"resources", server.resource_snapshot()}, {"ready", engine->ready()}}.dump() << '\n';
     phase("stop", [&] {
         server.stop();
@@ -97,6 +109,8 @@ int main(int argc, char** argv) {
     try {
         if (argc == 3 && std::string_view(argv[1]) == "--state-coordinator")
             return run_state_coordinator(path_from_utf8(argv[2]), [] { return false; });
+        if (argc == 3 && std::string_view(argv[1]) == "--stop-fixture-coordinator")
+            return stop_state_coordinator(path_from_utf8(argv[2])) ? 0 : 1;
         if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
             return run_filesystem_worker();
         if (argc != 2)
