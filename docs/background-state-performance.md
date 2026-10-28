@@ -26,12 +26,12 @@ Each process reported five trials per phase. The following are medians of those
 
 | Workers | Operation | Before, us | After, us | Allocations before | Allocations after |
 | ---: | --- | ---: | ---: | ---: | ---: |
-| 1 | Attempt and success | 0.23 | 0.05 | 3 | 0 |
-| 1 | Snapshot | 1.47 | 0.99 | 32 | 19 |
-| 14 | Attempt and success | 0.24 | 0.06 | 3 | 0 |
+| 1 | Attempt and success | 0.22 | 0.06 | 3 | 0 |
+| 1 | Snapshot | 1.48 | 1.03 | 32 | 19 |
+| 14 | Attempt and success | 0.24 | 0.07 | 3 | 0 |
 | 14 | Failure and recovery | 0.49 | 0.09 | 7 | 1 |
-| 14 | Snapshot | 34.47 | 7.05 | 693 | 131 |
-| 128 | Snapshot | 341.45 | 103.38 | 5608 | 1156 |
+| 14 | Snapshot | 34.06 | 7.44 | 693 | 131 |
+| 128 | Snapshot | 339.06 | 114.10 | 5608 | 1156 |
 
 Every measured phase ended with zero retained allocation growth. The benchmark
 uses a mixture of periodic and event-driven workers. Its results are component
