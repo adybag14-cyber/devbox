@@ -1,4 +1,5 @@
 #include "devbox/background.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <array>
 #include <iostream>
 
@@ -101,7 +102,7 @@ int main() {
         // collected. Exact totals catch lost updates; snapshots must remain valid.
         background.mark_started("concurrent");
         std::atomic<unsigned> finished{0};
-        std::vector<std::jthread> writers;
+        std::vector<ScopedThread> writers;
         for (unsigned worker = 0; worker < 4; ++worker)
             writers.emplace_back([&] {
                 for (unsigned n = 0; n < 2000; ++n)
