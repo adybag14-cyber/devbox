@@ -1,0 +1,235 @@
+{
+  "startedAtUtc": "2026-10-28T18:51:40.145128+00:00",
+  "finishedAtUtc": "2026-10-28T18:55:45.538140+00:00",
+  "scope": "Loopback native engine plus native HTTP client in one process; separate private durable state per trial",
+  "productionChanged": false,
+  "medians": {
+    "baseline": {
+      "idle_20_seconds": {
+        "seconds": 20.0073859,
+        "allocation_calls": 43290,
+        "allocated_bytes": 12321289,
+        "retained_bytes_delta": -42126
+      },
+      "readyz_200_requests": {
+        "seconds": 0.2491774,
+        "allocation_calls": 158477,
+        "allocated_bytes": 15325227,
+        "retained_bytes_delta": 80869
+      },
+      "metadata_200_requests": {
+        "seconds": 0.2568453,
+        "allocation_calls": 254943,
+        "allocated_bytes": 25677703,
+        "retained_bytes_delta": 4584
+      },
+      "idle_after_20_seconds": {
+        "seconds": 20.0143121,
+        "allocation_calls": 29899,
+        "allocated_bytes": 7960998,
+        "retained_bytes_delta": -17262
+      }
+    },
+    "candidate": {
+      "idle_20_seconds": {
+        "seconds": 20.0089741,
+        "allocation_calls": 43607,
+        "allocated_bytes": 12332533,
+        "retained_bytes_delta": -41966
+      },
+      "readyz_200_requests": {
+        "seconds": 0.2375703,
+        "allocation_calls": 101047,
+        "allocated_bytes": 9519847,
+        "retained_bytes_delta": 89437
+      },
+      "metadata_200_requests": {
+        "seconds": 0.242374,
+        "allocation_calls": 254037,
+        "allocated_bytes": 25692123,
+        "retained_bytes_delta": -2328
+      },
+      "idle_after_20_seconds": {
+        "seconds": 20.0068308,
+        "allocation_calls": 30160,
+        "allocated_bytes": 7986064,
+        "retained_bytes_delta": -20358
+      }
+    }
+  },
+  "limitations": [
+    "Three process trials per variant on a shared workstation; order alternates to reduce drift.",
+    "Counters cover the benchmark engine and its in-process client, including periodic background activity.",
+    "These short trials do not prove long-run leak freedom or end-to-end model/browser speedup."
+  ],
+  "trials": [
+    {
+      "variant": "baseline",
+      "round": 1,
+      "source": "fed56adce6321c3fe64f78a1b27203e2fc0f7270",
+      "tree": "5c43d41c23295a64d16a68e87db58f551c3ea149",
+      "binarySha256": "d2f9d93ddb83b62d3836226f694c3e45ce2b4d1c592fa6b24557cb35ea95fa08",
+      "compiler": "MSVC 19.51.36260.0",
+      "sourceDirty": false,
+      "coordinatorStopped": true,
+      "phases": [
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.2280581,
+          "allocation_calls": 158513,
+          "allocated_bytes": 15326495,
+          "current_bytes": 1359184,
+          "retained_bytes_delta": 79997
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2528,
+          "allocation_calls": 253996,
+          "allocated_bytes": 25654251,
+          "current_bytes": 1363560,
+          "retained_bytes_delta": 4584
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "round": 1,
+      "source": "196f9907a040d45acc996e57b955f6c12001c5d7",
+      "tree": "ea80f97c0e33969e61b5cf385ffedb050c376e6f",
+      "binarySha256": "47ba84ce1280e2858d4095c380c43736e52582d395619b83194ce83c6b2f1905",
+      "compiler": "MSVC 19.51.36260.0",
+      "sourceDirty": false,
+      "coordinatorStopped": true,
+      "phases": [
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.2126354,
+          "allocation_calls": 100932,
+          "allocated_bytes": 9513183,
+          "current_bytes": 1370768,
+          "retained_bytes_delta": 91357
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2347871,
+          "allocation_calls": 253996,
+          "allocated_bytes": 25692123,
+          "current_bytes": 1356824,
+          "retained_bytes_delta": -11784
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "round": 2,
+      "source": "196f9907a040d45acc996e57b955f6c12001c5d7",
+      "tree": "ea80f97c0e33969e61b5cf385ffedb050c376e6f",
+      "binarySha256": "47ba84ce1280e2858d4095c380c43736e52582d395619b83194ce83c6b2f1905",
+      "compiler": "MSVC 19.51.36260.0",
+      "sourceDirty": false,
+      "coordinatorStopped": true,
+      "phases": [
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.2397474,
+          "allocation_calls": 101148,
+          "allocated_bytes": 9552267,
+          "current_bytes": 1359152,
+          "retained_bytes_delta": 79741
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.242374,
+          "allocation_calls": 254037,
+          "allocated_bytes": 25639295,
+          "current_bytes": 1365824,
+          "retained_bytes_delta": 6672
+        }
+      ]
+    },
+    {
+      "variant": "baseline",
+      "round": 2,
+      "source": "fed56adce6321c3fe64f78a1b27203e2fc0f7270",
+      "tree": "5c43d41c23295a64d16a68e87db58f551c3ea149",
+      "binarySha256": "d2f9d93ddb83b62d3836226f694c3e45ce2b4d1c592fa6b24557cb35ea95fa08",
+      "compiler": "MSVC 19.51.36260.0",
+      "sourceDirty": false,
+      "coordinatorStopped": true,
+      "phases": [
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.2496249,
+          "allocation_calls": 158426,
+          "allocated_bytes": 15294871,
+          "current_bytes": 1368640,
+          "retained_bytes_delta": 89453
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2605539,
+          "allocation_calls": 255087,
+          "allocated_bytes": 25748787,
+          "current_bytes": 1359064,
+          "retained_bytes_delta": -9224
+        }
+      ]
+    },
+    {
+      "variant": "baseline",
+      "round": 3,
+      "source": "fed56adce6321c3fe64f78a1b27203e2fc0f7270",
+      "tree": "5c43d41c23295a64d16a68e87db58f551c3ea149",
+      "binarySha256": "d2f9d93ddb83b62d3836226f694c3e45ce2b4d1c592fa6b24557cb35ea95fa08",
+      "compiler": "MSVC 19.51.36260.0",
+      "sourceDirty": false,
+      "coordinatorStopped": true,
+      "phases": [
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.2491774,
+          "allocation_calls": 158477,
+          "allocated_bytes": 15325227,
+          "current_bytes": 1360056,
+          "retained_bytes_delta": 80869
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2568453,
+          "allocation_calls": 254943,
+          "allocated_bytes": 25677703,
+          "current_bytes": 1371776,
+          "retained_bytes_delta": 12536
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "round": 3,
+      "source": "196f9907a040d45acc996e57b955f6c12001c5d7",
+      "tree": "ea80f97c0e33969e61b5cf385ffedb050c376e6f",
+      "binarySha256": "47ba84ce1280e2858d4095c380c43736e52582d395619b83194ce83c6b2f1905",
+      "compiler": "MSVC 19.51.36260.0",
+      "sourceDirty": false,
+      "coordinatorStopped": true,
+      "phases": [
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.2375703,
+          "allocation_calls": 101047,
+          "allocated_bytes": 9519847,
+          "current_bytes": 1368848,
+          "retained_bytes_delta": 89437
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2604469,
+          "allocation_calls": 254817,
+          "allocated_bytes": 25706475,
+          "current_bytes": 1366184,
+          "retained_bytes_delta": -2328
+        }
+      ]
+    }
+  ]
+}
