@@ -89,7 +89,31 @@
           "current_bytes": 1363560,
           "retained_bytes_delta": 4584
         }
-      ]
+      ],
+      "ready": true,
+      "resources": {
+        "request_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "response_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "connections": 0,
+        "connection_limit": 512,
+        "reserved_control_request_bytes_per_connection": 4096,
+        "reserved_control_response_bytes_per_connection": 16384,
+        "write_idle_ms": 15000,
+        "response_deadline_ms": 300000,
+        "codec_workers": 2,
+        "codec_queue_limit": 16
+      },
+      "rawLogSha256": "5373cb7484aace46b55310421a8bf03ef47b5d5f1971d29239174c564fa196d8"
     },
     {
       "variant": "candidate",
@@ -117,7 +141,31 @@
           "current_bytes": 1356824,
           "retained_bytes_delta": -11784
         }
-      ]
+      ],
+      "ready": true,
+      "resources": {
+        "request_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "response_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "connections": 0,
+        "connection_limit": 512,
+        "reserved_control_request_bytes_per_connection": 4096,
+        "reserved_control_response_bytes_per_connection": 16384,
+        "write_idle_ms": 15000,
+        "response_deadline_ms": 300000,
+        "codec_workers": 2,
+        "codec_queue_limit": 16
+      },
+      "rawLogSha256": "e432e38a13c990bb32fd1d24a451ddc631ab583efe73bcf5db79f1179b9a0802"
     },
     {
       "variant": "candidate",
@@ -145,7 +193,31 @@
           "current_bytes": 1365824,
           "retained_bytes_delta": 6672
         }
-      ]
+      ],
+      "ready": true,
+      "resources": {
+        "request_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "response_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "connections": 0,
+        "connection_limit": 512,
+        "reserved_control_request_bytes_per_connection": 4096,
+        "reserved_control_response_bytes_per_connection": 16384,
+        "write_idle_ms": 15000,
+        "response_deadline_ms": 300000,
+        "codec_workers": 2,
+        "codec_queue_limit": 16
+      },
+      "rawLogSha256": "494db13ae71e539201d9573d69d63f799f675022122c3e965787963c18a05626"
     },
     {
       "variant": "baseline",
@@ -173,7 +245,31 @@
           "current_bytes": 1359064,
           "retained_bytes_delta": -9224
         }
-      ]
+      ],
+      "ready": true,
+      "resources": {
+        "request_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "response_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "connections": 0,
+        "connection_limit": 512,
+        "reserved_control_request_bytes_per_connection": 4096,
+        "reserved_control_response_bytes_per_connection": 16384,
+        "write_idle_ms": 15000,
+        "response_deadline_ms": 300000,
+        "codec_workers": 2,
+        "codec_queue_limit": 16
+      },
+      "rawLogSha256": "3328678356ccc97e41356afa5749989b7b2dcf897c5802289b7c12c8cdf46ccb"
     },
     {
       "variant": "baseline",
@@ -201,7 +297,31 @@
           "current_bytes": 1371776,
           "retained_bytes_delta": 12536
         }
-      ]
+      ],
+      "ready": true,
+      "resources": {
+        "request_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "response_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "connections": 0,
+        "connection_limit": 512,
+        "reserved_control_request_bytes_per_connection": 4096,
+        "reserved_control_response_bytes_per_connection": 16384,
+        "write_idle_ms": 15000,
+        "response_deadline_ms": 300000,
+        "codec_workers": 2,
+        "codec_queue_limit": 16
+      },
+      "rawLogSha256": "56631337e27bbba1738aeae582d52d017dc119f424228970897c084ddaff699c"
     },
     {
       "variant": "candidate",
@@ -229,7 +349,45 @@
           "current_bytes": 1366184,
           "retained_bytes_delta": -2328
         }
-      ]
+      ],
+      "ready": true,
+      "resources": {
+        "request_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "response_bytes": {
+          "capacity_bytes": 268435456,
+          "used_bytes": 0,
+          "peak_bytes": 0,
+          "rejected": 0
+        },
+        "connections": 0,
+        "connection_limit": 512,
+        "reserved_control_request_bytes_per_connection": 4096,
+        "reserved_control_response_bytes_per_connection": 16384,
+        "write_idle_ms": 15000,
+        "response_deadline_ms": 300000,
+        "codec_workers": 2,
+        "codec_queue_limit": 16
+      },
+      "rawLogSha256": "ab19248d38bba859eaf2b2de79c805e67ce4b9311e83e488a34787d4d94caba9"
     }
-  ]
+  ],
+  "allocationCounterScope": "Standard C++ operator new forms; direct C-library malloc and allocator headers/padding excluded",
+  "environment": {
+    "cpu": "AMD Ryzen 9 7950X3D",
+    "physicalCores": 16,
+    "logicalProcessors": 32,
+    "os": "Windows 11 Pro x64",
+    "osBuild": "26300",
+    "physicalMemoryBytes": 67736338432,
+    "vcpkgCommit": "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
+    "triplet": "x64-windows-static",
+    "installedStatusSha256": "da74397ce9a646610d990e1f1616279a9d51850fe57d24ea3aaa865f18d99c3e",
+    "releaseIpo": true,
+    "sharedWorkstation": true
+  }
 }
