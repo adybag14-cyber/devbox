@@ -17,7 +17,7 @@ class BackgroundTasks {
     std::thread thread_;
     Cancel cancel_ = std::make_shared<Cancellation>();
     mutable std::mutex mutex_;
-    std::map<std::string, State> states_;
+    std::map<std::string, State, std::less<>> states_;
     bool started_ = false;
     State& state_locked(const std::string& name);
     asio::awaitable<void> run_periodic(std::string name, Millis initial, Millis interval,
@@ -39,6 +39,7 @@ class BackgroundTasks {
     void attempt(const std::string& name);
     void success(const std::string& name);
     void failure(const std::string& name, const std::string& error);
+    bool healthy(std::string_view name, std::uint64_t max_success_age_ms) const;
     Json snapshot() const;
 };
 } // namespace devbox

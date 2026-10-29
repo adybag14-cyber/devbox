@@ -94,7 +94,11 @@ int run(const fs::path& root) {
         if (!status.value("error", Json()).is_null())
             throw Error("Isolated maintenance worker failed: " + status.at("error").dump());
     }
-    std::cout << Json{{"resources", server.resource_snapshot()}, {"ready", engine->ready()}}.dump() << '\n';
+    const auto resources = server.resource_snapshot();
+    const bool final_ready = engine->ready();
+    std::cout << Json{{"resources", resources}, {"ready", final_ready}}.dump() << '\n';
+    if (!final_ready || json_uint(resources, "connections") != 0)
+        throw Error("Isolated server did not finish ready with no active connections");
     phase("stop", [&] {
         server.stop();
         engine->stop();

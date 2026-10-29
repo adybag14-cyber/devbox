@@ -42,11 +42,14 @@ Json nullable_field(const Json& value, std::string_view name) {
 }
 } // namespace
 std::optional<std::uint64_t> snapshot_age(const Json& value, std::string_view key) {
-    const auto stamp = parse_utc(json_string(value, key));
+    const auto found = value.find(key);
+    if (found == value.end() || !found->is_string())
+        return {};
+    const auto stamp = parse_utc(found->get_ref<const std::string&>());
     if (!stamp)
         return {};
-    return *stamp < 0 ? unix_millis()
-                      : unix_millis() - std::min(unix_millis(), static_cast<std::uint64_t>(*stamp));
+    const auto now = unix_millis();
+    return *stamp < 0 ? now : now - std::min(now, static_cast<std::uint64_t>(*stamp));
 }
 Json read_status_snapshot(const fs::path& path, std::uint64_t stale_ms) {
     try {
@@ -386,17 +389,22 @@ Json OperationalMonitor::store_health() const {
     return store_;
 }
 bool OperationalMonitor::ready(std::size_t tools) const {
-    if (tools != cpp_tool_count || !execution())
+    if (tools != cpp_tool_count)
         return false;
-    const auto bg = background_.snapshot();
-    if (!bg.contains("execution-store-probe"))
+    {
+        std::lock_guard lock(mutex_);
+        const auto age = snapshot_age(execution_);
+        const auto snapshot = execution_.find("snapshot");
+        if (!age || *age >= 5000 || snapshot == execution_.end() || snapshot->is_null())
+            return false;
+    }
+    // Read the one worker's typed state without constructing diagnostic JSON.
+    // Keep the monitor and background locks separate, as in the snapshot path.
+    if (!background_.healthy("execution-store-probe", 150000))
         return false;
-    const auto& task = bg["execution-store-probe"];
-    const auto health = store_health();
-    const auto age = snapshot_age(health);
-    return json_bool(task, "running") && nullable_field(task, "lastSuccessAgeMs").is_number() &&
-           json_uint(task, "lastSuccessAgeMs") < 150000 && json_uint(task, "consecutiveFailures") == 0 &&
-           json_bool(health, "ok") && age && *age < 150000;
+    std::lock_guard lock(mutex_);
+    const auto age = snapshot_age(store_);
+    return json_bool(store_, "ok") && age && *age < 150000;
 }
 std::optional<Json> OperationalMonitor::reject_disk_work(ResourceClass resource, bool read_only,
                                                          std::string_view operation) const {

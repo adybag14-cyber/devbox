@@ -103,6 +103,17 @@ void BackgroundTasks::failure(const std::string& name, const std::string& error)
     ++state.consecutive_failures;
     state.last_error = error;
 }
+bool BackgroundTasks::healthy(std::string_view name, std::uint64_t max_success_age_ms) const {
+    std::lock_guard lock(mutex_);
+    const auto found = states_.find(name);
+    if (found == states_.end())
+        return false;
+    const auto& state = found->second;
+    if (!state.running || !state.last_success || state.consecutive_failures != 0)
+        return false;
+    const auto now = unix_millis();
+    return now - std::min(now, *state.last_success) < max_success_age_ms;
+}
 Json BackgroundTasks::snapshot() const {
     std::lock_guard lock(mutex_);
     Json::object_t workers;
