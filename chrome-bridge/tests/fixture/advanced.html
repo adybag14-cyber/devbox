@@ -3,6 +3,8 @@
 <h1>Advanced local fixture</h1><p>Only local test input. No external network or account actions.</p>
 <div id="rich" contenteditable="true" role="textbox" aria-label="Rich editor">Alpha <b>beta</b> gamma</div>
 <div id="shadow"></div>
+<div style="position:relative;height:36px"><input id="coveredRadio" type="radio" aria-label="Label covered radio" style="position:absolute;left:0;top:0;width:32px;height:32px"><label for="coveredRadio" style="position:absolute;left:0;top:0;padding:6px;background:#cdf;z-index:2">Choose this labelled radio</label></div>
+<div style="position:relative;height:36px"><button id="blocked" aria-label="Actually blocked button" style="position:absolute;inset:0;width:200px">Do not click</button><span style="position:absolute;inset:0;background:#ccd;width:200px;z-index:2">Unrelated overlay</span></div>
 <div id="drag" draggable="true" aria-label="Drag source">Drag source</div>
 <div id="drop" tabindex="0" aria-label="Drop target">Drop target</div>
 <button id="double">Double click test</button><output id="doubleState">DOUBLE: 0</output>

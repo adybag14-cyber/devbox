@@ -99,6 +99,10 @@ management, arbitrary JavaScript evaluation and cookie APIs are not exposed.
 The extension navigation API rejects privileged URLs. Its native fallback is
 a desktop UI interface and remains subject to the user's action permissions.
 Chrome coordinates use CSS viewport pixels; prefer returned element IDs.
+Control names include associated HTML labels and `aria-labelledby`. A label
+covering its own control is an allowed click target; unrelated overlays still
+reject input. The compact text view normalizes whitespace; retained HTML keeps
+the underlying DOM serialization separately.
 
 The native fallback currently supports Windows Google Chrome only. It pins the
 window handle, process birth, title, geometry and foreground; inputs expire

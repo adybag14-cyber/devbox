@@ -95,7 +95,7 @@ export class ChromeBridge {
   async page(context,id,request,input=false){
     const world=await this.world(context,id);
     const value=await this.command(context,id,'Runtime.evaluate',{contextId:world,expression:`(${pageTask.toString()})(${JSON.stringify(request)})`,returnByValue:true,awaitPromise:true},input);
-    if(value.exceptionDetails)throw new Error(value.exceptionDetails.exception?.description??value.exceptionDetails.text);
+    if(value.exceptionDetails){const description=value.exceptionDetails.exception?.description??value.exceptionDetails.text;throw new Error(String(description).replace(/^\w*Error:\s*/,'').split('\n')[0]);}
     return value.result.value;
   }
   async ensureOrigin(context,id){

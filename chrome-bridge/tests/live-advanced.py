@@ -10,7 +10,10 @@ def call(action,**args):
     if image:(out/f'{number:02d}-{action}.jpg').write_bytes(base64.b64decode(image['base64']))
     elapsed=(time.perf_counter()-started)*1000
     (out/f'{number:02d}-{action}.json').write_text(json.dumps({'request':request,'response':result,'elapsedMs':elapsed},indent=2),encoding='utf-8')
-    calls.append({'action':action,'ok':result.get('ok'),'elapsedMs':elapsed});assert result.get('ok'),result
+    calls.append({'action':action,'ok':result.get('ok'),'elapsedMs':elapsed})
+    if args.get('request_id')==run+'-blocked':
+        assert not result.get('ok') and result['error']['code']=='TARGET_OBSCURED' and not result['input_sent'];return result
+    assert result.get('ok'),result
     return result['data']
 def element(data,label):return next(e for e in data['elements'] if e['label']==label)
 def mutate(action,data,**args):return call(action,observation_id=data['observation_id'],request_id=run+'-'+str(len(calls)),screenshot=False,**args)
@@ -22,6 +25,9 @@ try:
     data=mutate('type',data,text='BETA Δ');assert 'BETA Δ' in data['text'];checks.append('rich text selection and Unicode replacement')
     data=mutate('type',data,target_id=element(data,'Shadow editor')['id'],text='Shadow 🌍',replace=True)
     assert element(data,'Shadow editor')['value']=='Shadow 🌍';checks.append('open shadow root input')
+    data=mutate('click',data,target_id=element(data,'Label covered radio')['id']);assert element(data,'Label covered radio')['checked'];checks.append('associated label can activate its covered radio')
+    call('click',observation_id=data['observation_id'],target_id=element(data,'Actually blocked button')['id'],request_id=run+'-blocked',screenshot=False)
+    data=call('observe',screenshot=False);checks.append('unrelated overlay rejects input')
     data=mutate('double_click',data,target_id=element(data,'Double click test')['id']);assert 'DOUBLE: 1' in data['text'];checks.append('double click once')
     target=element(data,'Drop target')['rect']
     data=mutate('drag',data,target_id=element(data,'Drag source')['id'],to_x=target['x']+target['width']/2,to_y=target['y']+target['height']/2)

@@ -102,3 +102,10 @@ test('an attempted press with a lost response gets one bounded release cleanup',
  const result=await f.call({action:'click',tab_id:41,observation_id,request_id:'lost-press',x:10,y:20,screenshot:false});
  assert(!result.ok);assert(result.input_sent);assert.equal(presses,1);assert.equal(releases,1);
 });
+
+test('page failures expose the stable code instead of the JavaScript stack prefix',async()=>{
+ const f=fixture(),observation_id=await allowed(f),original=f.api.debugger.sendCommand;
+ f.api.debugger.sendCommand=async(source,method,params)=>method==='Runtime.evaluate'&&params.expression.includes('"action":"point"')?{exceptionDetails:{exception:{description:'Error: TARGET_OBSCURED\n at pageTask'}}}:original(source,method,params);
+ const result=await f.call({action:'click',tab_id:41,observation_id,request_id:'blocked',x:10,y:20,screenshot:false});
+ assert.equal(result.error.code,'TARGET_OBSCURED');assert.equal(result.input_sent,false);assert.equal(f.state.clicks,0);
+});
