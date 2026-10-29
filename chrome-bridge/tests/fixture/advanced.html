@@ -3,6 +3,8 @@
 <h1>Advanced local fixture</h1><p>Only local test input. No external network or account actions.</p>
 <div id="rich" contenteditable="true" role="textbox" aria-label="Rich editor">Alpha <b>beta</b> gamma</div>
 <div id="shadow"></div>
+<div id="shadowClick" tabindex="0" aria-label="Shadow host" style="display:inline-block"></div><output id="shadowState">SHADOW_HOST: 0</output>
+<form id="keyForm"><input id="keyInput" aria-label="Keyboard field"><button>Submit fixture</button><output id="keyState">SUBMITS: 0</output></form>
 <div style="position:relative;height:36px"><input id="coveredRadio" type="radio" aria-label="Label covered radio" style="position:absolute;left:0;top:0;width:32px;height:32px"><label for="coveredRadio" style="position:absolute;left:0;top:0;padding:6px;background:#cdf;z-index:2">Choose this labelled radio</label></div>
 <div style="position:relative;height:36px"><button id="blocked" aria-label="Actually blocked button" style="position:absolute;inset:0;width:200px">Do not click</button><span style="position:absolute;inset:0;background:#ccd;width:200px;z-index:2">Unrelated overlay</span></div>
 <div id="drag" draggable="true" aria-label="Drag source">Drag source</div>
@@ -11,6 +13,8 @@
 <button id="large">Create large DOM</button><output id="largeState"></output><div id="payload" hidden></div>
 <script>
 const root=document.querySelector('#shadow').attachShadow({mode:'open'});root.innerHTML='<label>Shadow input <input aria-label="Shadow editor"></label><button aria-label="Shadow button">Shadow button</button><output>Shadow count: 0</output>';let shadowCount=0;root.querySelector('button').onclick=()=>root.querySelector('output').textContent='Shadow count: '+(++shadowCount);
+const hostRoot=shadowClick.attachShadow({mode:'open'});hostRoot.innerHTML='<button style="font:18px system-ui;padding:8px">Shadow host action</button>';let hostClicks=0;hostRoot.querySelector('button').onclick=()=>shadowState.textContent='SHADOW_HOST: '+(++hostClicks);
+let submits=0;keyForm.onsubmit=e=>{e.preventDefault();keyState.textContent='SUBMITS: '+(++submits)};
 drag.ondragstart=e=>e.dataTransfer.setData('text/plain','bridge-drag');drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();drop.textContent=e.dataTransfer.getData('text/plain')==='bridge-drag'?'DROP_CONFIRMED':'DROP_REJECTED'};
 let doubles=0;double.ondblclick=()=>doubleState.textContent='DOUBLE: '+(++doubles);
 large.onclick=()=>{payload.textContent='x'.repeat(3*1024*1024);largeState.textContent='Large DOM ready'};

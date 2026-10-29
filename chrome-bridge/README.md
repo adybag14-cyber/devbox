@@ -36,6 +36,15 @@ an available remote MCP connection to reach this computer.
 
 ## Build and install on Windows
 
+From an extracted portable ZIP, run the bundled installer directly. Rust and
+other build tools are not needed:
+
+```powershell
+.\devbox-chrome-bridge.exe --install
+```
+
+To build from the repository instead, run these commands in `chrome-bridge`:
+
 ```powershell
 cargo test --locked --jobs 3
 cargo build --release --locked --jobs 3
@@ -99,6 +108,10 @@ management, arbitrary JavaScript evaluation and cookie APIs are not exposed.
 The extension navigation API rejects privileged URLs. Its native fallback is
 a desktop UI interface and remains subject to the user's action permissions.
 Chrome coordinates use CSS viewport pixels; prefer returned element IDs.
+Use `type` for text including punctuation. `key` accepts named navigation keys
+and ASCII letter/digit shortcuts; it rejects punctuation key names instead of
+guessing a Windows virtual-key code. `BRIDGE_BUSY` means another request is
+still running: wait for it, without switching to native fallback input.
 Control names include associated HTML labels and `aria-labelledby`. A label
 covering its own control is an allowed click target; unrelated overlays still
 reject input. The compact text view normalizes whitespace; retained HTML keeps

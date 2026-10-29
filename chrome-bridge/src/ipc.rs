@@ -171,8 +171,12 @@ fn connect_to(name: &str) -> io::Result<Pipe> {
                     deadline: Instant::now() + Duration::from_secs(35),
                 });
             }
-            if GetLastError() != ERROR_PIPE_BUSY || Instant::now() >= deadline {
-                return Err(io::Error::last_os_error());
+            let code = GetLastError();
+            if code != ERROR_PIPE_BUSY {
+                return Err(io::Error::from_raw_os_error(code as i32));
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(io::ErrorKind::WouldBlock, "bridge busy"));
             }
             WaitNamedPipeW(name.as_ptr(), 200);
         }
@@ -184,6 +188,13 @@ pub fn request(value: &Value) -> Value {
     }
     let mut pipe = match connect() {
         Ok(p) => p,
+        Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+            return error(
+                "BRIDGE_BUSY",
+                "Another bridge request is in progress; wait instead of using a fallback",
+                false,
+            );
+        }
         Err(e) => {
             return error(
                 "BRIDGE_UNAVAILABLE",
@@ -479,6 +490,22 @@ mod tests {
         let name = format!("\\\\.\\pipe\\devbox-chrome-test-{}", nonce().unwrap());
         let server = listen(&name).unwrap();
         (name, server)
+    }
+    #[test]
+    fn busy_pipe_is_distinct_from_an_unavailable_bridge() {
+        let (name, mut server) = pair();
+        let (tx, rx) = mpsc::channel();
+        let task = std::thread::spawn(move || {
+            accept(&mut server, 5000).unwrap();
+            rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let _client = connect_to(&name).unwrap();
+        match connect_to(&name) {
+            Err(error) => assert_eq!(error.kind(), io::ErrorKind::WouldBlock),
+            Ok(_) => panic!("a single-instance pipe admitted a concurrent client"),
+        }
+        tx.send(()).unwrap();
+        task.join().unwrap();
     }
     #[test]
     fn buffered_reply_survives_a_slow_reader_until_acknowledged() {

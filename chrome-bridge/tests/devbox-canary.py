@@ -17,8 +17,11 @@ def call(args):
  result=value['result'];calls.append({'action':args['action'],'elapsedMs':(time.perf_counter()-start)*1000,'isError':result.get('isError')})
  (root/f'call-{len(calls)}.json').write_text(json.dumps(value),encoding='utf-8')
  assert not result.get('isError'),result
- for item in result.get('content',[]):
-  if item['type']=='image':(root/f'call-{len(calls)}.jpg').write_bytes(base64.b64decode(item['data']))
+ images=[item for item in result.get('content',[]) if item['type']=='image'];calls[-1]['images']=len(images)
+ for item in images:
+  assert item['mimeType'] in ['image/png','image/jpeg'];extension='png' if item['mimeType']=='image/png' else 'jpg'
+  image=base64.b64decode(item['data'],validate=True);assert image.startswith(b'\x89PNG\r\n\x1a\n' if extension=='png' else b'\xff\xd8\xff')
+  (root/f'call-{len(calls)}.{extension}').write_bytes(image)
  return result['structuredContent']['data']
 with (root/'server.log').open('w',encoding='utf-8') as log:
  process=subprocess.Popen([str(binary)],cwd=root,env=env,stdin=subprocess.DEVNULL,stdout=log,stderr=subprocess.STDOUT,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
@@ -37,6 +40,7 @@ with (root/'server.log').open('w',encoding='utf-8') as log:
   if a.tab:
    assert a.tab in [t['tab_id'] for t in tabs['data']['tabs']]
    observed=call({'action':'observe','tab_id':a.tab});assert observed['ok'] and observed['data']['url'].startswith('http://127.0.0.1:')
+   assert calls[-1]['images']==1,'observe returned no image'
    html=call({'action':'read_html','tab_id':a.tab,'observation_id':observed['data']['observation_id'],'max_bytes':800});assert html['ok'] and html['data']['bytes']==800
    record['imageReturned']=True;record['htmlBytes']=800;record['retainedHtmlSha256']=html['data']['retained_sha256']
   record['ok']=True

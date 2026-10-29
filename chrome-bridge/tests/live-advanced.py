@@ -25,6 +25,11 @@ try:
     data=mutate('type',data,text='BETA Δ');assert 'BETA Δ' in data['text'];checks.append('rich text selection and Unicode replacement')
     data=mutate('type',data,target_id=element(data,'Shadow editor')['id'],text='Shadow 🌍',replace=True)
     assert element(data,'Shadow editor')['value']=='Shadow 🌍';checks.append('open shadow root input')
+    data=mutate('click',data,target_id=element(data,'Shadow host')['id']);assert 'SHADOW_HOST: 1' in data['text'];checks.append('shadow host hit testing')
+    data=mutate('type',data,target_id=element(data,'Keyboard field')['id'],text='',replace=True)
+    data=mutate('key',data,key='a');data=mutate('key',data,key='Shift+b');assert element(data,'Keyboard field')['value']=='aB'
+    data=mutate('key',data,key='Ctrl+A');data=mutate('type',data,text='.-()');assert element(data,'Keyboard field')['value']=='.-()'
+    data=mutate('key',data,key='Enter');assert 'SUBMITS: 1' in data['text'];checks.append('printable keys shortcuts punctuation typing and Enter submission')
     data=mutate('click',data,target_id=element(data,'Label covered radio')['id']);assert element(data,'Label covered radio')['checked'];checks.append('associated label can activate its covered radio')
     call('click',observation_id=data['observation_id'],target_id=element(data,'Actually blocked button')['id'],request_id=run+'-blocked',screenshot=False)
     data=call('observe',screenshot=False);checks.append('unrelated overlay rejects input')

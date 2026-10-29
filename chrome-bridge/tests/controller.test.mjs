@@ -117,3 +117,30 @@ test('maximum HTML ranges encode exact bytes without a large browser argument li
  try{for(const offset of [0,1,16382,63999,129999]){const result=await f.call({action:'read_html',tab_id:41,observation_id,offset,max_bytes:64000});assert(result.ok);assert.deepEqual(Buffer.from(result.data.content_base64,'base64'),Buffer.from(bytes.slice(offset,offset+64000)));}}
  finally{String.fromCharCode=original;}
 });
+
+test('printable keys and Enter carry text only on key down, while shortcuts do not',async()=>{
+ for(const [key,text]of [['a','a'],['Shift+b','B'],['Shift+1','!'],['Enter','\r'],['Ctrl+A',undefined]]){
+  const f=fixture(),observation_id=await allowed(f),original=f.api.debugger.sendCommand,events=[];
+  f.api.debugger.sendCommand=async(source,method,params)=>{if(method==='Input.dispatchKeyEvent')events.push(params);return original(source,method,params);};
+  assert((await f.call({action:'key',tab_id:41,observation_id,request_id:'key',key,screenshot:false})).ok);
+  assert.equal(events[0].text,text);assert.equal(events[1].text,undefined);assert.equal(events[1].type,'keyUp');
+ }
+ for(const key of ['.','-',',','(']){const f=fixture(),observation_id=await allowed(f),result=await f.call({action:'key',tab_id:41,observation_id,request_id:'punctuation',key});assert.equal(result.error.code,'UNSUPPORTED_KEY');assert.equal(result.input_sent,false);}
+});
+
+test('origin mismatches revoke grants in both initial reads and mutation checks',async()=>{
+ for(const mutation of [false,true]){
+  const f=fixture(),observation_id=await allowed(f),original=f.api.debugger.sendCommand;
+  if(mutation)f.api.debugger.sendCommand=async(source,method,params)=>method==='Page.getFrameTree'?{frameTree:{frame:{id:'other',url:'https://other.test/'}}}:original(source,method,params);
+  else f.state.tabs.get(41).url='https://other.test/';
+  const result=await f.call({action:mutation?'click':'observe',tab_id:41,observation_id,request_id:'origin',x:10,y:20,screenshot:false});
+  assert.equal(result.error.code,'ORIGIN_CHANGED');assert.equal(result.input_sent,false);assert.equal(f.bridge.state.grants.size,0);
+ }
+});
+
+test('post-input context destruction retries only the observation',async()=>{
+ const f=fixture(),observation_id=await allowed(f),original=f.api.debugger.sendCommand;let destroyed=false;
+ f.api.debugger.sendCommand=async(source,method,params)=>{if(method==='Runtime.evaluate'&&params.expression.startsWith('new Promise')&&!destroyed){destroyed=true;throw new Error('Cannot find context with specified id');}return original(source,method,params);};
+ const result=await f.call({action:'click',tab_id:41,observation_id,request_id:'navigate-once',x:10,y:20,screenshot:false});
+ assert(result.ok&&result.data.recovered_after_navigation);assert.equal(f.state.clicks,1);
+});

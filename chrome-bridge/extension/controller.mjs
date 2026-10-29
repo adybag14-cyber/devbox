@@ -14,9 +14,12 @@ function keySpec(value){
   const parts=value.split('+'),name=parts.pop();let modifiers=0;
   for(const part of parts){if(part==='Ctrl'||part==='Control')modifiers|=2;else if(part==='Alt')modifiers|=1;else if(part==='Shift')modifiers|=8;else if(part==='Meta')modifiers|=4;else throw new Error('INVALID_KEY_MODIFIER');}
   const codes={Enter:13,Return:13,Tab:9,Escape:27,Backspace:8,Delete:46,ArrowDown:40,ArrowUp:38,ArrowLeft:37,ArrowRight:39,Home:36,End:35,PageDown:34,PageUp:33,Space:32};
-  const code=codes[name]??(name.length===1?name.toUpperCase().charCodeAt(0):null);
+  const code=codes[name]??(/^[A-Za-z0-9]$/.test(name)?name.toUpperCase().charCodeAt(0):null);
   if(code===null)throw new Error('UNSUPPORTED_KEY');
-  return {key:name==='Return'?'Enter':name==='Space'?' ':name,windowsVirtualKeyCode:code,modifiers};
+  let key=name==='Return'?'Enter':name==='Space'?' ':name;
+  if(modifiers&8){if(/^[A-Za-z]$/.test(key))key=key.toUpperCase();else if(/^[0-9]$/.test(key))key=')!@#$%^&*('[Number(key)];}
+  const text=!(modifiers&~8)?key==='Enter'?'\r':key.length===1?key:undefined:undefined;
+  return {key,windowsVirtualKeyCode:code,modifiers,...(text?{text}:{})};
 }
 
 export class ChromeBridge {
@@ -55,6 +58,7 @@ export class ChromeBridge {
   }
   forget(id){this.state.grants.delete(id);this.state.observations.delete(id);this.contexts.delete(id);this.attached.delete(id);for(const context of this.activeRequests.values())if(context.tabId===id&&!context.closing)context.cancel();}
   async revoke(id){const attached=this.attached.has(id);this.forget(id);if(attached)try{await this.chrome.debugger.detach({tabId:id});}catch{}}
+  async revokeOriginFailure(context,error){if(context?.grantNonce&&/^(ORIGIN_CHANGED|URL_SCHEME_DENIED)/.test(String(error.message))&&this.state.grants.get(context.tabId)?.nonce===context.grantNonce)await this.revoke(context.tabId);}
   async popup(message){
     if(message.action==='connect')this.connect();
     if(message.action==='grant'){
@@ -147,7 +151,7 @@ export class ChromeBridge {
         if(!grant||grant.nonce!==receipt.grantNonce||Date.now()>=grant.expires)return {ok:receipt.response.ok,replayed:true,data:{details_expired:true,input_sent:receipt.response.data?.input_sent??receipt.response.input_sent??false,next:'Grant and observe before further actions'}};
         return {...structuredClone(receipt.response),replayed:true};
       }
-      const grant=this.state.grants.get(id);if(!grant||Date.now()>=grant.expires)throw new Error('TAB_NOT_GRANTED: grant the tab in the extension popup');
+      const grant=this.state.grants.get(id);if(!grant||Date.now()>=grant.expires)throw new Error('TAB_NOT_GRANTED: grant the tab in the extension popup');context.grantNonce=grant.nonce;
       context.valid=()=>this.port===destination&&this.state.grants.get(id)?.nonce===grant.nonce&&Date.now()<grant.expires;
       const tab=await this.tabInfo(context,id);authorize(grant,tab,request,this.state.observations.get(id));
       if(request.action==='observe')return await this.observe(context,id,request.screenshot!==false);
@@ -161,10 +165,10 @@ export class ChromeBridge {
         return {ok:true,data:{tab_id:id,observation_id:observation.id,offset,bytes:chunk.length,retained_bytes:observation.html.length,retained_sha256:observation.sha256,content_base64:encoded,content_untrusted:true,next_offset:offset+chunk.length<observation.html.length?offset+chunk.length:null}};
       }
       this.state.observations.delete(id);
-      let response;try{response=await this.mutate(context,id,tab,request,grant);}catch(error){response=failure(error,context);}
+      let response;try{response=await this.mutate(context,id,tab,request,grant);}catch(error){await this.revokeOriginFailure(context,error);response=failure(error,context);}
       const retained=structuredClone(response);delete retained.image;
       this.state.rememberReceipt(request.request_id,{signature,grantNonce:grant.nonce,response:retained});return response;
-    }catch(error){return failure(error,context);}finally{this.activeRequests.delete(request.id??context);this.cancelledRequests.delete(request.id);}
+    }catch(error){await this.revokeOriginFailure(context,error);return failure(error,context);}finally{this.activeRequests.delete(request.id??context);this.cancelledRequests.delete(request.id);}
   }
   async mutate(context,id,tab,request,grant){
     const action=request.action;
@@ -207,14 +211,22 @@ export class ChromeBridge {
       await this.page(context,id,{action:'editable'});await this.ensureOrigin(context,id);
       await this.command(context,id,'Input.insertText',{text:request.text??''},true);
     }else if(action==='key'){
-      const key=keySpec(request.key);let down=false;
-      try{await this.command(context,id,'Input.dispatchKeyEvent',{type:'keyDown',...key},true,()=>{down=true;});await this.command(context,id,'Input.dispatchKeyEvent',{type:'keyUp',...key},true,()=>{down=false;});}
-      finally{if(down)await this.release(id,'Input.dispatchKeyEvent',{type:'keyUp',...key});}
+      const key=keySpec(request.key),{text,...up}=key;let down=false;
+      try{await this.command(context,id,'Input.dispatchKeyEvent',{type:'keyDown',...key},true,()=>{down=true;});await this.command(context,id,'Input.dispatchKeyEvent',{type:'keyUp',...up},true,()=>{down=false;});}
+      finally{if(down)await this.release(id,'Input.dispatchKeyEvent',{type:'keyUp',...up});}
     }else if(['select_text','select_option'].includes(action)){await this.page(context,id,request,true);}
     else if(action==='wait'){await context.run(()=>new Promise(resolve=>setTimeout(resolve,boundedInteger(request.wait_ms,250,0,1000))));}
     else throw new Error('UNSUPPORTED_ACTION');
-    await this.settle(context,id);let movement;
-    if(beforeScroll){const after=await this.page(context,id,{action:'scroll_state',...point});movement={before:beforeScroll,after,movement_observed:JSON.stringify(beforeScroll)!==JSON.stringify(after)};}
-    const result=await this.observe(context,id,request.screenshot!==false);result.data.input_sent=context.inputSent;if(movement)result.data.movement=movement;return result;
+    let movement,result;
+    try{
+      await this.settle(context,id);
+      if(beforeScroll){const after=await this.page(context,id,{action:'scroll_state',...point});movement={before:beforeScroll,after,movement_observed:JSON.stringify(beforeScroll)!==JSON.stringify(after)};}
+      result=await this.observe(context,id,request.screenshot!==false);
+    }catch(error){
+      if(!/Cannot find context|Execution context was destroyed|NAVIGATION_CHANGED/.test(String(error.message)))throw error;
+      // Retry only the read after navigation, never the input that caused it.
+      this.contexts.delete(id);await this.ensureOrigin(context,id);result=await this.observe(context,id,request.screenshot!==false);result.data.recovered_after_navigation=true;
+    }
+    result.data.input_sent=context.inputSent;if(movement)result.data.movement=movement;return result;
   }
 }
