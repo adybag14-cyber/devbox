@@ -128,6 +128,11 @@ are rejected; partial input cleanup releases only accepted key/button downs.
 Scroll units
 are wheel notches for native input and pixels for the extension. Input delivery
 does not prove the intended page effect; inspect the returned screenshot.
+Native `type` accepts printable single-line Unicode text. Newlines, tabs and
+other control characters are rejected before any input because Chrome editors
+can discard Unicode control packets. Use extension `type` for multiline text,
+or explicit `key` actions for controls; the native tool never converts a text
+newline into an implicit form submission.
 
 There is no claim of complete parity or universal site access. Chrome policies,
 site authentication, user permissions, interstitials, CAPTCHAs and other access
