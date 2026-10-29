@@ -45,6 +45,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python chrome-bridge/tests/mcp-smoke.py chrome-bridge/target/release/devbox-chrome-bridge.exe
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python chrome-bridge/tests/pe-imports.py chrome-bridge/target/release/devbox-chrome-bridge.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
       - name: Assemble the user-only portable package
         shell: pwsh
         run: ./chrome-bridge/package.ps1 -OutputRoot "${{ runner.temp }}/chrome-bridge"

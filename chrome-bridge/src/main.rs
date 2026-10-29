@@ -207,7 +207,39 @@ fn install() -> Result<(), Box<dyn std::error::Error>> {
         }
         let manifest = root.join("com.devbox.chrome_bridge.json");
         let value = json!({"name":"com.devbox.chrome_bridge","description":"Devbox independent Rust Chrome bridge","path":binary,"type":"stdio","allowed_origins":[format!("chrome-extension://{}/",extension_id())]});
-        std::fs::write(&manifest, serde_json::to_vec_pretty(&value)?)?;
+        // A crash while installing must not truncate the host manifest Chrome reads.
+        // Keep the previous complete registration until the replacement is durable.
+        let temporary = root.join(format!("manifest-{}.tmp", protocol::nonce()?));
+        let replace = (|| -> Result<(), Box<dyn std::error::Error>> {
+            use std::os::windows::ffi::OsStrExt;
+            use windows_sys::Win32::Storage::FileSystem::{
+                MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+            };
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.write_all(&serde_json::to_vec_pretty(&value)?)?;
+            file.sync_all()?;
+            drop(file);
+            let from: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+            let to: Vec<u16> = manifest.as_os_str().encode_wide().chain(Some(0)).collect();
+            if unsafe {
+                MoveFileExW(
+                    from.as_ptr(),
+                    to.as_ptr(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                )
+            } == 0
+            {
+                return Err(io::Error::last_os_error().into());
+            }
+            Ok(())
+        })();
+        if replace.is_err() {
+            let _ = std::fs::remove_file(&temporary);
+        }
+        replace?;
         ipc::register_host(&manifest)?;
         println!(
             "{}",

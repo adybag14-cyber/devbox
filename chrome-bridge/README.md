@@ -47,6 +47,9 @@ executable to a version-and-hash-specific path under
 `%LOCALAPPDATA%/DevboxChromeBridge`. Existing versions remain available. No admin
 rights, browser restart, browser policy change, or machine-wide service is
 required. Registration alone does not load the Chrome extension.
+The x64 Windows build links the C runtime statically. CI inspects the produced
+PE imports to reject a dependency on a separately installed VC++ redistributable.
+The host manifest is replaced atomically after its contents have been flushed.
 
 In Google Chrome's Extensions page, use the normal developer **Load unpacked**
 flow and select this package's `extension` directory. Review the permissions.
