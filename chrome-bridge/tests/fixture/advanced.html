@@ -1,0 +1,15 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Devbox Bridge Advanced Qualification</title>
+<style>body{font:18px system-ui;margin:24px;background:#f5f8fc;color:#142c43}button,input{font:inherit;padding:8px}#rich,#drop,#drag,#shadow{border:2px solid #456;padding:16px;margin:12px 0;max-width:600px}#drag{width:160px;background:#c8e7f5;cursor:grab}#drop{min-height:55px}#rich{background:white}</style>
+<h1>Advanced local fixture</h1><p>Only local test input. No external network or account actions.</p>
+<div id="rich" contenteditable="true" role="textbox" aria-label="Rich editor">Alpha <b>beta</b> gamma</div>
+<div id="shadow"></div>
+<div id="drag" draggable="true" aria-label="Drag source">Drag source</div>
+<div id="drop" tabindex="0" aria-label="Drop target">Drop target</div>
+<button id="double">Double click test</button><output id="doubleState">DOUBLE: 0</output>
+<button id="large">Create large DOM</button><output id="largeState"></output><div id="payload" hidden></div>
+<script>
+const root=document.querySelector('#shadow').attachShadow({mode:'open'});root.innerHTML='<label>Shadow input <input aria-label="Shadow editor"></label><button aria-label="Shadow button">Shadow button</button><output>Shadow count: 0</output>';let shadowCount=0;root.querySelector('button').onclick=()=>root.querySelector('output').textContent='Shadow count: '+(++shadowCount);
+drag.ondragstart=e=>e.dataTransfer.setData('text/plain','bridge-drag');drop.ondragover=e=>e.preventDefault();drop.ondrop=e=>{e.preventDefault();drop.textContent=e.dataTransfer.getData('text/plain')==='bridge-drag'?'DROP_CONFIRMED':'DROP_REJECTED'};
+let doubles=0;double.ondblclick=()=>doubleState.textContent='DOUBLE: '+(++doubles);
+large.onclick=()=>{payload.textContent='x'.repeat(3*1024*1024);largeState.textContent='Large DOM ready'};
+</script></html>
