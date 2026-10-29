@@ -109,3 +109,11 @@ test('page failures expose the stable code instead of the JavaScript stack prefi
  const result=await f.call({action:'click',tab_id:41,observation_id,request_id:'blocked',x:10,y:20,screenshot:false});
  assert.equal(result.error.code,'TARGET_OBSCURED');assert.equal(result.input_sent,false);assert.equal(f.state.clicks,0);
 });
+
+test('maximum HTML ranges encode exact bytes without a large browser argument list',async()=>{
+ const f=fixture(),observation_id=await allowed(f),saved=f.bridge.state.observations.get(41),bytes=Uint8Array.from({length:130000},(_,i)=>i%251);
+ f.bridge.state.rememberObservation(41,{...saved,html:bytes});
+ const original=String.fromCharCode;String.fromCharCode=(...values)=>{assert(values.length<=32768,'browser argument stack exceeded');return original(...values);};
+ try{for(const offset of [0,1,16382,63999,129999]){const result=await f.call({action:'read_html',tab_id:41,observation_id,offset,max_bytes:64000});assert(result.ok);assert.deepEqual(Buffer.from(result.data.content_base64,'base64'),Buffer.from(bytes.slice(offset,offset+64000)));}}
+ finally{String.fromCharCode=original;}
+});

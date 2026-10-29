@@ -155,7 +155,10 @@ export class ChromeBridge {
       if(request.action==='read_html'){
         const observation=this.state.observations.get(id);if(!observation||request.observation_id!==observation.id||Date.now()-observation.at>30000)throw new Error('OBSERVATION_STALE');
         const offset=boundedInteger(request.offset,0,0,MAX_HTML),maximum=boundedInteger(request.max_bytes,800,1,64000),chunk=observation.html.slice(offset,offset+maximum);
-        return {ok:true,data:{tab_id:id,observation_id:observation.id,offset,bytes:chunk.length,retained_bytes:observation.html.length,retained_sha256:observation.sha256,content_base64:btoa(String.fromCharCode(...chunk)),content_untrusted:true,next_offset:offset+chunk.length<observation.html.length?offset+chunk.length:null}};
+        // Stay below Chrome's argument-stack limit. Every nonfinal block is a
+        // multiple of three so concatenating its base64 adds no inner padding.
+        let encoded='';for(let at=0;at<chunk.length;at+=16383)encoded+=btoa(String.fromCharCode(...chunk.subarray(at,at+16383)));
+        return {ok:true,data:{tab_id:id,observation_id:observation.id,offset,bytes:chunk.length,retained_bytes:observation.html.length,retained_sha256:observation.sha256,content_base64:encoded,content_untrusted:true,next_offset:offset+chunk.length<observation.html.length?offset+chunk.length:null}};
       }
       this.state.observations.delete(id);
       let response;try{response=await this.mutate(context,id,tab,request,grant);}catch(error){response=failure(error,context);}

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Devbox Chrome Bridge",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "An independent Rust bridge for explicitly granted Chrome tabs.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtyoafZ84+S5Ya/NpmsnXQhj+W+N5LqtRxQUAwRNDaVDX16fHP1lB//fV0s4UAUfi8Kn338NxKRxwhnt4lot6dwO5GIkkkyrBQJBDHpjws39jX4qfzQmwc9XeHQGf0S3GVTMB5cQabGly+6Mv68k0lLe9t65TEwmA1epAb20g3wFXZtpUTaCftzZq35QC2C/Z72uMJ3A1KrLgZxpeVMXKfJxOO3RDF4/R6/YSEH8B5QHbZK38C5rgEsmPs06sxdzFwPN+4pgGgZwLu5g2umG+Ki76XsmbqoXw7YKfdtnf94ZjTB0ith47o9iXy6OiWKZrqsHFGsUh1OsumwFIjBfVnQIDAQAB",
   "permissions": [
