@@ -242,7 +242,7 @@ ToolContract::ToolContract(const Config& config) {
         if (agent_names.contains(name))
             set("content_base64", "maxLength",
                 std::min<std::uint64_t>(config.max_mcp_transfer_chars, max_safe_integer));
-        else if (name != "devbox_browser") {
+        else if (name != "devbox_browser" && name != "devbox_chrome_bridge") {
             if (name != "devbox_wsl")
                 set("working_dir", "default",
                     path_text(name.starts_with("host_") || name.starts_with("windows_host_")

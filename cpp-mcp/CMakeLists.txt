@@ -91,6 +91,7 @@ add_library(devbox_core
   src/storage.cpp
   src/filesystem_worker.cpp
   src/wsl.cpp
+  src/chrome_bridge.cpp
   src/child_reaper.cpp
   src/artifacts.cpp
   src/security.cpp

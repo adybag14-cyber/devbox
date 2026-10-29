@@ -1,5 +1,6 @@
 #include "devbox/engine.hpp"
 #include "devbox/artifacts.hpp"
+#include "devbox/chrome_bridge.hpp"
 #include "devbox/filesystem_worker.hpp"
 #include "devbox/result.hpp"
 #include "devbox/run_service.hpp"
@@ -223,6 +224,11 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
                     return result_success(summary, value);
                 },
                 cancel);
+            co_return co_await std::move(pending);
+        }
+        if (name == "devbox_chrome_bridge") {
+            auto pending = computer_workers_.run(
+                [this, args, cancel] { return chrome_bridge_call(*config_, args, cancel); }, cancel);
             co_return co_await std::move(pending);
         }
         if (name == "host_computer_windows" || name == "host_computer_use") {

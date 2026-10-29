@@ -72,6 +72,11 @@ bool AdmissionControl::permits(std::string_view tool, const Json& arguments) con
         const auto action = json_string(arguments, "action");
         return action == "status" || action == "close" || action == "read_html";
     }
+    if (tool == "devbox_chrome_bridge") {
+        const auto action = json_string(arguments, "action");
+        return action == "status" || action == "tabs" || action == "observe" || action == "screenshot" ||
+               action == "read_html";
+    }
     return false;
 }
 } // namespace devbox

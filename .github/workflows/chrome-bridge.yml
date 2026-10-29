@@ -1,0 +1,55 @@
+name: Chrome bridge
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: chrome-bridge-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  windows:
+    name: Rust Chrome bridge Windows
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - name: Install pinned Rust build tools
+        shell: pwsh
+        run: |
+          rustup toolchain install 1.91.1 --profile minimal --component clippy --component rustfmt
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Rust protocol and native input checks
+        shell: pwsh
+        working-directory: chrome-bridge
+        run: |
+          cargo +1.91.1 fmt --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.91.1 test --locked --jobs 3
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.91.1 clippy --locked --all-targets --jobs 3 -- -D warnings
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo +1.91.1 build --release --locked --jobs 3
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Extension policy and MCP checks
+        shell: pwsh
+        run: |
+          node --test chrome-bridge/tests/policy.test.mjs chrome-bridge/tests/state.test.mjs chrome-bridge/tests/controller.test.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python chrome-bridge/tests/mcp-smoke.py chrome-bridge/target/release/devbox-chrome-bridge.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Assemble the user-only portable package
+        shell: pwsh
+        run: ./chrome-bridge/package.ps1 -OutputRoot "${{ runner.temp }}/chrome-bridge"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: devbox-chrome-bridge-windows-x86_64
+          path: ${{ runner.temp }}/chrome-bridge/*.zip
+          if-no-files-found: error
