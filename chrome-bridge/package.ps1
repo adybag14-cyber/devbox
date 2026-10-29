@@ -10,6 +10,23 @@ if(Test-Path -LiteralPath $destination){throw 'Preserve existing package'}
 New-Item -ItemType Directory -Path $destination -Force|Out-Null
 Copy-Item -LiteralPath $binary,(Join-Path $root 'README.md'),(Join-Path $root 'Cargo.lock') -Destination $destination
 Copy-Item -LiteralPath (Join-Path $root 'extension') -Destination $destination -Recurse
+$metadataText=& cargo +1.91.1 metadata --manifest-path (Join-Path $root 'Cargo.toml') --locked --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc
+if($LASTEXITCODE -ne 0){throw 'Dependency license metadata unavailable'}
+$metadata=$metadataText|ConvertFrom-Json
+$resolved=@($metadata.resolve.nodes|ForEach-Object id)
+$licenses=Join-Path $destination 'licenses'
+New-Item -ItemType Directory -Path $licenses|Out-Null
+$notices=@()
+foreach($package in $metadata.packages|Where-Object{$_.source -and $_.id -in $resolved}){
+  $packageDir=Split-Path -Parent $package.manifest_path
+  $documents=@(Get-ChildItem -LiteralPath $packageDir -File|Where-Object Name -match '^(LICENSE|LICENCE|COPYING|NOTICE)([._-]|$)')
+  if(!$documents.Count){throw "Missing license text for $($package.name) $($package.version)"}
+  $licenseDir=Join-Path $licenses "$($package.name)-$($package.version)"
+  New-Item -ItemType Directory -Path $licenseDir|Out-Null
+  $documents|ForEach-Object{Copy-Item -LiteralPath $_.FullName -Destination $licenseDir}
+  $notices+=@{name=$package.name;version=$package.version;license=$package.license;source=$package.source;files=@($documents.Name)}
+}
+$notices|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $licenses 'dependencies.json')
 $source=(git -C $root rev-parse HEAD|Out-String).Trim()
 if($LASTEXITCODE -ne 0){throw 'Source identity unavailable'}
 $dirty=!!(git -C $root status --porcelain)
