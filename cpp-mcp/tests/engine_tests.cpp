@@ -114,6 +114,28 @@ int main(int argc, char** argv) {
             require(missing["snapshot"].is_null() && missing["sampledAtUtc"].is_null() &&
                         !snapshot_age(missing) && missing["ok"] == false,
                     "An initial scheduler failure must not fabricate a sample or timestamp");
+            const auto absent = scheduler_status_summary(missing);
+            const auto expired = scheduler_status_summary(cache);
+            require(absent["available"] == false && absent["stale"] == true && absent["ageMs"].is_null() &&
+                        absent["occupied"].is_null() && absent["max_concurrent"].is_null() &&
+                        absent["unavailableReason"] == "not_sampled" &&
+                        absent["error"] == "No successful snapshot",
+                    "Missing scheduler samples retain errors without fabricated queue counts");
+            require(expired["available"] == false && expired["stale"] == true &&
+                        expired["global_queued"].is_null() && expired["resource_capacity"].is_null() &&
+                        expired["sampledAtUtc"] == sampled_at && expired["unavailableReason"] == "expired" &&
+                        expired["error"] == "repeated failed probe",
+                    "Expired queue data cannot masquerade as live capacity");
+            const Json recovered{{"ok", true},
+                                 {"sampledAtUtc", utc_now()},
+                                 {"probeSampledAtUtc", utc_now()},
+                                 {"snapshot", snapshot},
+                                 {"error", nullptr}};
+            const auto fresh = scheduler_status_summary(recovered);
+            require(fresh["available"] == true && fresh["stale"] == false && fresh["occupied"] == 7 &&
+                        fresh["global_queued"] == 3 && fresh["unavailableReason"].is_null() &&
+                        fresh["error"].is_null(),
+                    "A recovered fresh sample restores actual counts and clears the unavailable reason");
         }
         for (const auto& entry : tool_registry()["tools"])
             require(required_tool_scope(json_string(entry, "name")) == json_string(entry, "scope"),
@@ -494,8 +516,8 @@ int main(int argc, char** argv) {
                     parse_utc(json_string(compact["execution"], "sampledAtUtc")).has_value() &&
                     parse_utc(json_string(compact["execution"], "probeSampledAtUtc")).has_value() &&
                     json_uint(compact["execution"], "ageMs") < 5000 &&
-                    compact["execution"]["stale"] == false && compact["execution"]["ok"] == true &&
-                    compact["execution"]["error"].is_null() &&
+                    compact["execution"]["available"] == true && compact["execution"]["stale"] == false &&
+                    compact["execution"]["ok"] == true && compact["execution"]["error"].is_null() &&
                     parse_utc(json_string(compact, "observedAtUtc")).has_value() &&
                     compact["performance"].contains("stale") &&
                     compact["executionStore"].contains("sampledAtUtc"),

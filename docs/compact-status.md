@@ -27,6 +27,12 @@ A first failed probe has no queue sample. This also corrects the existing
 readiness/status cache path, which previously timestamped a retained snapshot
 with the time of the failed attempt.
 
+The compact action remains useful when queue data is absent or expired. Its
+query succeeds with `ready: false`, queue `available: false`, and null capacity/
+occupancy fields. It retains the sample age, probe error, and a `not_sampled` or
+`expired` reason while returning other health information. Unknown counts are
+not zero. The detailed status action retains its existing stale-cache failure.
+
 The compact action avoids copying and serializing the full tool catalogue and
 does not construct successful background-worker histories, and avoids reading the detailed startup
 and maintenance record files. It uses compact JSON for the model-visible text.
