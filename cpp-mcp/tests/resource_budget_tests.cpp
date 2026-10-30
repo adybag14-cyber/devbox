@@ -1,5 +1,6 @@
 #include "devbox/resource_budget.hpp"
 #include <iostream>
+#include <limits>
 #include <thread>
 using namespace devbox;
 void require(bool value, const char* message) {
@@ -23,9 +24,10 @@ int main() {
         require(budget.snapshot()["used_bytes"] == 0 && budget.snapshot()["peak_bytes"] == 100,
                 "all reservation ownership released");
         const auto binary = Json::binary({0, 1, 255});
-        const Json fixtures =
-            Json::array({nullptr, false, 1.2, -0.0, UINT64_MAX, "é😀", std::string("a\xffz", 3),
-                         Json{{"large", std::string(1024 * 1024, 'x')}, {"escape", "\n\t\""}}, binary});
+        const Json fixtures = Json::array(
+            {nullptr, false, true, 1.2, -0.0, UINT64_MAX, std::numeric_limits<std::int64_t>::min(),
+             std::numeric_limits<double>::infinity(), "é😀", std::string("a\xffz", 3),
+             Json{{"large", std::string(1024 * 1024, 'x')}, {"escape", "\n\t\""}}, binary});
         for (const auto& fixture : fixtures) {
             const auto expected = fixture.dump(-1, ' ', false, Json::error_handler_t::replace);
             require(bounded_json_dump(fixture, expected.size()) == expected,
@@ -59,6 +61,22 @@ int main() {
             cancelled = true;
         }
         require(cancelled, "large encoding observes cancellation");
+        for (const auto& value : {Json(), Json(true), Json::array(), Json::object(), Json(123)}) {
+            bool zero_denied = false;
+            try {
+                (void)bounded_json_dump(value, 0);
+            } catch (const ResourceExhausted&) {
+                zero_denied = true;
+            }
+            require(zero_denied, "zero byte capacity must reject even a short scalar or empty container");
+            bool short_cancelled = false;
+            try {
+                (void)bounded_json_dump(value, 64, cancel);
+            } catch (const Cancelled&) {
+                short_cancelled = true;
+            }
+            require(short_cancelled, "short scalar and container writes must also observe cancellation");
+        }
         std::cout << "Response byte accounting and bounded JSON serialization passed\n";
         return 0;
     } catch (const std::exception& e) {
