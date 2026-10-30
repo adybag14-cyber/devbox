@@ -112,9 +112,10 @@ Use `type` for text including punctuation. `key` accepts named navigation keys
 and ASCII letter/digit shortcuts; it rejects punctuation key names instead of
 guessing a Windows virtual-key code. `BRIDGE_BUSY` means another request is
 still running: wait for it, without switching to native fallback input.
-Control names include associated HTML labels and `aria-labelledby`. A label
-covering its own control is an allowed click target; unrelated overlays still
-reject input. The compact text view normalizes whitespace; retained HTML keeps
+Control names prioritize `aria-labelledby` over `aria-label`, include associated
+HTML labels, and use `title` when no stronger name exists. A label covering its
+own control is an allowed click target; interactive descendants such as links
+and unrelated overlays still reject input. The compact text view normalizes whitespace; retained HTML keeps
 the underlying DOM serialization separately.
 
 The native fallback currently supports Windows Google Chrome only. It pins the
@@ -129,7 +130,7 @@ Scroll units
 are wheel notches for native input and pixels for the extension. Input delivery
 does not prove the intended page effect; inspect the returned screenshot.
 Native `type` accepts printable single-line Unicode text. Newlines, tabs and
-other control characters are rejected before any input because Chrome editors
+other control characters, including Unicode line and paragraph separators, are rejected before any input because Chrome editors
 can discard Unicode control packets. Use extension `type` for multiline text,
 or explicit `key` actions for controls; the native tool never converts a text
 newline into an implicit form submission.

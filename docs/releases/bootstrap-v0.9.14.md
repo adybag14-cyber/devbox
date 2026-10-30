@@ -12,7 +12,9 @@ The native supervisor now retains a committed version when an ordinary restart
 fails, and retries it with bounded backoff. Previously, a readiness timeout could
 silently select a historical version even after a completed deployment. Automatic
 rollback remains available for an unfinished promotion, subject to image identity,
-durable-idle and coordinator-stop checks. The Windows/Linux management fixture
+durable-idle and coordinator-stop checks. A persisted handoff that does not match
+the selected previous or candidate image is rejected before starting companions;
+it cannot overwrite a separately selected version. The Windows/Linux management fixture
 injects a temporary selected-image lookup failure, verifies recovery on the same
 version without replaying effects, and then checks explicit rollback.
 

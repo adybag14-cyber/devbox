@@ -8,10 +8,17 @@ export function pageTask(request) {
   const active=()=>{let e=document.activeElement;while(e?.shadowRoot?.activeElement)e=e.shadowRoot.activeElement;return e;};
   const containsComposed=(container,node)=>{for(let steps=0;node&&steps<256;++steps){if(node===container)return true;node=node.parentNode??node.host;}return false;};
   const accessibleLabel=e=>{
-    const explicit=e.getAttribute('aria-label');if(explicit)return explicit.slice(0,240);
     const ids=(e.getAttribute('aria-labelledby')||'').trim().split(/\s+/).slice(0,8),scope=e.getRootNode();
     const labelled=ids.map(id=>scope.getElementById?.(id)?.textContent?.slice(0,240)||'').join(' ').replace(/\s+/g,' ').trim();if(labelled)return labelled.slice(0,240);
+    const explicit=(e.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim();if(explicit)return explicit.slice(0,240);
     return [...(e.labels||[])].slice(0,8).map(label=>label.textContent.slice(0,240)).join(' ').replace(/\s+/g,' ').trim().slice(0,240);
+  };
+  const activatesLabel=(label,hit,control)=>{
+    if(label?.control!==control)return false;
+    for(let node=hit;node&&node!==label;node=node.parentElement){
+      if(node.matches('a[href],button,input,select,textarea,details,embed,iframe,img[usemap],audio[controls],video[controls],[contenteditable="true"],[role="button"],[role="link"]'))return false;
+    }
+    return true;
   };
   function htmlPrefix(){
     const maximum=2*1024*1024,encoder=new TextEncoder();let buffer=new Uint8Array(65536),used=0,truncated=false,nodes=0;
@@ -70,7 +77,7 @@ export function pageTask(request) {
         if(!visible(e))continue;
         const r=rect(e);if(r.y+r.height<0||r.y>innerHeight||r.x+r.width<0||r.x>innerWidth)continue;
         const key=String(++id);root.__devboxNodes.set(key,new WeakRef(e));
-        elements.push({id:key,tag:e.localName,role:e.getAttribute('role'),label:(accessibleLabel(e)||(scrollable?(e.id||e.localName):e.innerText)||e.getAttribute('placeholder')||e.getAttribute('name')||'').slice(0,240),type:e.getAttribute('type'),disabled:e.matches(':disabled'),rect:r,href:e.localName==='a'?String(e.href?.baseVal??e.href??'').slice(0,2048):undefined,value:'value'in e&&!['password','file'].includes(e.type)?String(e.value).slice(0,2048):undefined,checked:'checked'in e?e.checked:undefined,focused:e===active(),scroll:scrollable?{x:e.scrollLeft,y:e.scrollTop,width:e.scrollWidth,height:e.scrollHeight,client_width:e.clientWidth,client_height:e.clientHeight}:undefined});
+        elements.push({id:key,tag:e.localName,role:e.getAttribute('role'),label:(accessibleLabel(e)||(scrollable?(e.id||e.localName):e.innerText)||e.getAttribute('title')||e.getAttribute('placeholder')||e.getAttribute('name')||'').slice(0,240),type:e.getAttribute('type'),disabled:e.matches(':disabled'),rect:r,href:e.localName==='a'?String(e.href?.baseVal??e.href??'').slice(0,2048):undefined,value:'value'in e&&!['password','file'].includes(e.type)?String(e.value).slice(0,2048):undefined,checked:'checked'in e?e.checked:undefined,focused:e===active(),scroll:scrollable?{x:e.scrollLeft,y:e.scrollTop,width:e.scrollWidth,height:e.scrollHeight,client_width:e.clientWidth,client_height:e.clientHeight}:undefined});
       }
     }
     const textWalker=document.createTreeWalker(document.body??document.documentElement,NodeFilter.SHOW_TEXT);let node,text='',textNodes=0;
@@ -79,7 +86,7 @@ export function pageTask(request) {
     return {url:location.href,title:document.title.slice(0,512),text,text_scope:'rendered_document_prefix',text_truncated:!!node,elements,elements_truncated:truncated,viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},scroll:{x:scrollX,y:scrollY},frames,html_base64:html.base64,html:html.metadata};
   }
   if(request.action==='point') {
-    if(request.target_id) {const e=target(),r=rect(e);const x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}const label=hit?.closest('label');if(!hit||!(containsComposed(e,hit)||label?.control===e))throw new Error('TARGET_OBSCURED');return {x,y};}
+    if(request.target_id) {const e=target(),r=rect(e);const x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}const label=hit?.closest('label');if(!hit||!(containsComposed(e,hit)||activatesLabel(label,hit,e)))throw new Error('TARGET_OBSCURED');return {x,y};}
     if(!Number.isFinite(request.x)||!Number.isFinite(request.y)||request.x<0||request.y<0||request.x>=innerWidth||request.y>=innerHeight)throw new Error('POINT_OUTSIDE_VIEWPORT');return {x:request.x,y:request.y};
   }
   if(request.action==='focus') {const e=target();if(e.type==='password')throw new Error('PASSWORD_FIELD_REQUIRES_USER');e.focus();if(active()!==e)throw new Error('FOCUS_FAILED');if(request.replace){if(typeof e.select==='function')e.select();else if(e.isContentEditable){const range=document.createRange();range.selectNodeContents(e);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);}else throw new Error('REPLACE_TARGET_UNSUPPORTED');}return {focused:true};}

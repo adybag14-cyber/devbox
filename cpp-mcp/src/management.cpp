@@ -576,13 +576,14 @@ int supervise(const ManagementOptions& options) {
     if (!json_bool(config, "desired", true))
         return 0;
     const auto prior_status = read_json_optional(dir / "status.json", 65536).value_or(Json::object());
-    Companions companions(root, config, prior_status);
     Json current = config.at("current");
     auto handoff = read_json_optional(dir / "handoff.json", 1024 * 1024);
     if (handoff) {
         verify_stored(root, handoff->at("previous"), json_string(config, "policy"));
         verify_stored(root, handoff->at("candidate"), json_string(config, "policy"));
+        validate_managed_handoff_selection(current, *handoff);
     }
+    Companions companions(root, config, prior_status);
     const auto epoch = uuid();
     const auto owner_instance = process_instance(process_id());
     if (!owner_instance)
@@ -697,16 +698,18 @@ int supervise(const ManagementOptions& options) {
                 // Historical rollback images may even have an older tool contract.
                 // Only an unfinished, identity-checked promotion authorizes an
                 // automatic selection change; otherwise retain current and back off.
-                if (handoff && handoff->at("previous").at("sha256") != current.at("sha256")) {
+                if (handoff && handoff->at("candidate").at("sha256") == current.at("sha256") &&
+                    handoff->at("previous").at("sha256") != current.at("sha256")) {
                     try {
                         verify_stored(root, handoff->at("previous"), json_string(config, "policy"));
                         if (durable_idle(root) && stop_state_coordinator(root / "run" / "state")) {
+                            auto restored_current = handoff->at("previous");
                             auto restored = config;
-                            restored["current"] = handoff->at("previous");
+                            restored["current"] = restored_current;
                             restored.erase("previous");
                             config_write(root, restored);
                             config = std::move(restored);
-                            current = config.at("current");
+                            current = std::move(restored_current);
                             log(root, "unfinished promotion failed; previous immutable candidate restored");
                         } else {
                             log(root, "startup rollback deferred: durable work or coordinator is not idle");
@@ -1035,6 +1038,13 @@ std::uint64_t management_instance(const Json& identity) {
     std::uint64_t result = 0;
     const auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
     return parsed.ec == std::errc{} && parsed.ptr == text.data() + text.size() ? result : 0;
+}
+void validate_managed_handoff_selection(const Json& current, const Json& handoff) {
+    const auto selected = json_string(current, "sha256");
+    if (selected.size() != 64 ||
+        (selected != json_string(handoff.at("previous"), "sha256") &&
+         selected != json_string(handoff.at("candidate"), "sha256")))
+        throw Error("NATIVE_HANDOFF_SELECTION_CHANGED: reconcile the interrupted operation before startup");
 }
 Environment managed_environment(const fs::path& root, const Json& config, std::string generation) {
     auto env = worker_environment();

@@ -3,10 +3,12 @@
 <h1>Advanced local fixture</h1><p>Only local test input. No external network or account actions.</p>
 <div id="rich" contenteditable="true" role="textbox" aria-label="Rich editor">Alpha <b>beta</b> gamma</div>
 <div id="shadow"></div>
+<span id="referenceName" hidden>Referenced control name</span><button aria-labelledby="referenceName" aria-label="Wrong lower-priority name">Visible caption</button><button title="Title-only action"><svg aria-hidden="true" width="18" height="18"><circle cx="9" cy="9" r="6"/></svg></button>
 <div id="shadowClick" tabindex="0" aria-label="Shadow host" style="display:inline-block"></div><output id="shadowState">SHADOW_HOST: 0</output>
 <form id="keyForm"><input id="keyInput" aria-label="Keyboard field"><button>Submit fixture</button><output id="keyState">SUBMITS: 0</output></form>
 <div style="position:relative;height:36px"><input id="coveredRadio" type="radio" aria-label="Label covered radio" style="position:absolute;left:0;top:0;width:32px;height:32px"><label for="coveredRadio" style="position:absolute;left:0;top:0;padding:6px;background:#cdf;z-index:2">Choose this labelled radio</label></div>
 <div style="position:relative;height:36px"><button id="blocked" aria-label="Actually blocked button" style="position:absolute;inset:0;width:200px">Do not click</button><span style="position:absolute;inset:0;background:#ccd;width:200px;z-index:2">Unrelated overlay</span></div>
+<div style="position:relative;height:36px"><input id="linkedRadio" type="radio" aria-label="Radio behind linked label" style="position:absolute;left:0;top:0;width:160px;height:32px"><label for="linkedRadio" style="position:absolute;left:0;top:0;z-index:2"><a href="#unexpected-label-link" style="display:block;width:180px;height:36px;background:#cdf">Link inside label</a></label></div>
 <div id="drag" draggable="true" aria-label="Drag source">Drag source</div>
 <div id="drop" tabindex="0" aria-label="Drop target">Drop target</div>
 <button id="double">Double click test</button><output id="doubleState">DOUBLE: 0</output>

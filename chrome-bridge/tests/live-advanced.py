@@ -11,7 +11,7 @@ def call(action,**args):
     elapsed=(time.perf_counter()-started)*1000
     (out/f'{number:02d}-{action}.json').write_text(json.dumps({'request':request,'response':result,'elapsedMs':elapsed},indent=2),encoding='utf-8')
     calls.append({'action':action,'ok':result.get('ok'),'elapsedMs':elapsed})
-    if args.get('request_id')==run+'-blocked':
+    if args.get('request_id') in [run+'-blocked',run+'-linked-label']:
         assert not result.get('ok') and result['error']['code']=='TARGET_OBSCURED' and not result['input_sent'];return result
     assert result.get('ok'),result
     return result['data']
@@ -21,6 +21,7 @@ try:
     data=call('observe',screenshot=False);original=data['url'];assert original.startswith('http://127.0.0.1:')
     url=original.rsplit('/',1)[0]+'/advanced.html'
     mutate('navigate',data,url=url);data=call('observe',screenshot=False);assert data['title']=='Devbox Bridge Advanced Qualification'
+    element(data,'Referenced control name');element(data,'Title-only action');checks.append('accessible name precedence and title fallback')
     data=mutate('select_text',data,target_id=element(data,'Rich editor')['id'],text='beta')
     data=mutate('type',data,text='BETA Δ');assert 'BETA Δ' in data['text'];checks.append('rich text selection and Unicode replacement')
     data=mutate('type',data,target_id=element(data,'Shadow editor')['id'],text='Shadow 🌍',replace=True)
@@ -33,6 +34,8 @@ try:
     data=mutate('click',data,target_id=element(data,'Label covered radio')['id']);assert element(data,'Label covered radio')['checked'];checks.append('associated label can activate its covered radio')
     call('click',observation_id=data['observation_id'],target_id=element(data,'Actually blocked button')['id'],request_id=run+'-blocked',screenshot=False)
     data=call('observe',screenshot=False);checks.append('unrelated overlay rejects input')
+    call('click',observation_id=data['observation_id'],target_id=element(data,'Radio behind linked label')['id'],request_id=run+'-linked-label',screenshot=False)
+    data=call('observe',screenshot=False);assert not element(data,'Radio behind linked label')['checked'] and '#' not in data['url'];checks.append('interactive label descendant cannot substitute a link for a control')
     data=mutate('double_click',data,target_id=element(data,'Double click test')['id']);assert 'DOUBLE: 1' in data['text'];checks.append('double click once')
     target=element(data,'Drop target')['rect']
     data=mutate('drag',data,target_id=element(data,'Drag source')['id'],to_x=target['x']+target['width']/2,to_y=target['y']+target['height']/2)

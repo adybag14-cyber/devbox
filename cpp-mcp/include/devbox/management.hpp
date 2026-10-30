@@ -23,6 +23,7 @@ using ManagementRunner =
     std::function<ProcessOutput(const fs::path&, const std::vector<std::string>&, const ProcessOptions&)>;
 ManagementOptions parse_management_options(const std::vector<std::string>& args);
 std::uint64_t management_instance(const Json& identity);
+void validate_managed_handoff_selection(const Json& current, const Json& handoff);
 Environment managed_environment(const fs::path& root, const Json& config, std::string generation = {});
 Json qualify_managed_binary(const ManagementOptions& options, const Environment& env,
                             const ManagementRunner& runner = {});

@@ -573,9 +573,10 @@ impl Native {
         // editor. Do not silently drop them or turn text into a submit shortcut.
         // Reject the entire request before any desktop or input operation.
         if r["action"] == "type"
-            && r["text"]
-                .as_str()
-                .is_some_and(|text| text.chars().any(char::is_control))
+            && r["text"].as_str().is_some_and(|text| {
+                text.chars()
+                    .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+            })
         {
             return Err(("TEXT_CONTROL_CHARACTERS_REQUIRE_EXPLICIT_KEYS: use chrome_bridge type for multiline text, or a separate explicit key action".into(), false));
         }
@@ -801,7 +802,15 @@ mod tests {
     use super::*;
     #[test]
     fn control_text_is_rejected_before_desktop_access_or_partial_input() {
-        for text in ["before\nafter", "before\rafter", "a\tb", "a\0b", "a\u{7f}b"] {
+        for text in [
+            "before\nafter",
+            "before\rafter",
+            "a\tb",
+            "a\0b",
+            "a\u{7f}b",
+            "a\u{2028}b",
+            "a\u{2029}b",
+        ] {
             let result = Native::default().perform(&json!({"action":"type","text":text}));
             let (reason, sent) = result.unwrap_err();
             assert!(reason.starts_with("TEXT_CONTROL_CHARACTERS_REQUIRE_EXPLICIT_KEYS"));
