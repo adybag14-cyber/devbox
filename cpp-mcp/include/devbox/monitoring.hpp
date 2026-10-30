@@ -38,7 +38,7 @@ class OperationalMonitor {
     void start();
     void probe_store();
     Json execution_cache() const;
-    std::optional<Json> execution() const;
+    std::optional<Json> execution(bool summary = false) const;
     Json store_health() const;
     bool ready(std::size_t tools) const;
     std::optional<Json> reject_disk_work(ResourceClass resource, bool read_only,

@@ -377,12 +377,31 @@ Json OperationalMonitor::execution_cache() const {
     std::lock_guard lock(mutex_);
     return execution_;
 }
-std::optional<Json> OperationalMonitor::execution() const {
-    const auto cache = execution_cache();
-    const auto age = snapshot_age(cache);
-    if (!age || *age >= 5000 || nullable_field(cache, "snapshot").is_null())
+std::optional<Json> OperationalMonitor::execution(bool summary) const {
+    std::lock_guard lock(mutex_);
+    const auto age = snapshot_age(execution_);
+    const auto snapshot = execution_.find("snapshot");
+    if (!age || *age >= 5000 || snapshot == execution_.end() || snapshot->is_null())
         return {};
-    return std::optional<Json>(std::in_place, cache["snapshot"]);
+    if (!summary)
+        return std::optional<Json>(std::in_place, *snapshot);
+    // Copy only routine queue fields, with freshness and errors from the same
+    // locked cache generation. Do not clone the full lease catalogue first.
+    Json::object_t result;
+    result.reserve(17);
+    for (const auto* name :
+         {"max_concurrent", "occupied", "global_queued", "global_queued_by_class", "reserved_interactive",
+          "heavy_capacity", "io_heavy_capacity", "background_capacity", "watch_capacity", "watch_occupied",
+          "resource_capacity", "resource_capacity_policy"}) {
+        const auto value = snapshot->find(name);
+        result.emplace_back(name, value == snapshot->end() ? Json() : *value);
+    }
+    result.emplace_back("sampledAtUtc", nullable_field(execution_, "sampledAtUtc"));
+    result.emplace_back("ageMs", *age);
+    result.emplace_back("stale", false);
+    result.emplace_back("ok", json_bool(execution_, "ok"));
+    result.emplace_back("error", nullable_field(execution_, "error"));
+    return Json(std::move(result));
 }
 Json OperationalMonitor::store_health() const {
     std::lock_guard lock(mutex_);

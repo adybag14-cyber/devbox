@@ -473,6 +473,10 @@ int main(int argc, char** argv) {
         require(compact["execution"]["max_concurrent"] == status["execution"]["max_concurrent"] &&
                     compact["execution"]["occupied"] == status["execution"]["occupied"] &&
                     compact["execution"].contains("global_queued") && compact["ready"].is_boolean() &&
+                    parse_utc(json_string(compact["execution"], "sampledAtUtc")).has_value() &&
+                    json_uint(compact["execution"], "ageMs") < 5000 &&
+                    compact["execution"]["stale"] == false && compact["execution"]["ok"] == true &&
+                    compact["execution"]["error"].is_null() &&
                     parse_utc(json_string(compact, "observedAtUtc")).has_value() &&
                     compact["performance"].contains("stale") &&
                     compact["executionStore"].contains("sampledAtUtc"),

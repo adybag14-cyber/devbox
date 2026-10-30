@@ -14,6 +14,12 @@ availability. The explicit `ready` flag uses the existing readiness checks.
 own timestamps, ages and stale flags. It does not turn a cached measurement into
 a fresh probe or guarantee that a subsequent action will succeed.
 
+Queue counts and their sample timestamp, age and error state are copied under
+one cache lock. The five-second availability bound is unchanged. The compact
+path selects only the required queue fields before copying; the detailed path
+copies its original complete snapshot once, instead of copying the enclosing
+cache and snapshot multiple times.
+
 The compact action avoids copying and serializing the full tool catalogue and
 does not construct successful background-worker histories, and avoids reading the detailed startup
 and maintenance record files. It uses compact JSON for the model-visible text.

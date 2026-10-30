@@ -525,7 +525,7 @@ Json Engine::status(const Cancel& cancel, bool summary) {
     } catch (const std::exception& e) {
         return result_error("Failed to fetch " + config_->runtime_label() + " status: " + e.what());
     }
-    const auto execution = monitoring_.execution();
+    const auto execution = monitoring_.execution(summary);
     if (!execution)
         return result_error("Failed to fetch " + config_->runtime_label() +
                             " status: cached scheduler snapshot is unavailable or stale.");
@@ -538,11 +538,7 @@ Json Engine::status(const Cancel& cancel, bool summary) {
     if (summary) {
         data["view"] = "summary";
         data["detailTool"] = "devbox_status";
-        data["execution"] =
-            selected_fields(*execution, {"max_concurrent", "occupied", "global_queued",
-                                         "global_queued_by_class", "reserved_interactive", "heavy_capacity",
-                                         "io_heavy_capacity", "background_capacity", "watch_capacity",
-                                         "watch_occupied", "resource_capacity", "resource_capacity_policy"});
+        data["execution"] = *execution;
         data["capabilities"] = selected_fields(
             capabilities_, {"contract_version", "implementation", "schema_sha256", "state_backend",
                             "execution_profiles", "platform_availability", "limits"});
