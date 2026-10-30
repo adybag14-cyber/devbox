@@ -1,0 +1,579 @@
+{
+  "ok": true,
+  "source": "edfad3872ee32d83c62275c6792da12b16f57f9d",
+  "tree": "14630b1425ff11173d3e1ffa689df32e111f70b9",
+  "binarySha256": "fbaf758464b0d03a037706b30c0f646283547df2e48f95a33c083c79eb050771",
+  "trials": [
+    {
+      "index": 1,
+      "compactFirst": false,
+      "elapsedSeconds": 41.33131929999945,
+      "records": [
+        {
+          "benchmark": "server-lifetime",
+          "build": {
+            "gitSha": "edfad3872ee32d83c62275c6792da12b16f57f9d",
+            "gitRef": "perf/compact-status-20261030",
+            "sourceTree": "14630b1425ff11173d3e1ffa689df32e111f70b9",
+            "sourceDirty": false,
+            "sourceFingerprint": "df36bb3a9bd5e9e3a543c95b91bd094fc734282ff50fdeb2116f251a69122453",
+            "buildUnixSeconds": "1793381337",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "fbaf758464b0d03a037706b30c0f646283547df2e48f95a33c083c79eb050771",
+            "executableName": "devbox-server-lifetime-bench.exe",
+            "deploymentGeneration": null
+          },
+          "scope": "Isolated loopback engine and client; no production state"
+        },
+        {
+          "phase": "idle_20_seconds",
+          "seconds": 20.0114985,
+          "allocation_calls": 42648,
+          "allocated_bytes": 12166337,
+          "current_bytes": 1308739,
+          "retained_bytes_delta": -42030
+        },
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.2039528,
+          "allocation_calls": 101036,
+          "allocated_bytes": 9528255,
+          "current_bytes": 1395072,
+          "retained_bytes_delta": 86333
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2177513,
+          "allocation_calls": 255450,
+          "allocated_bytes": 25734383,
+          "current_bytes": 1401352,
+          "retained_bytes_delta": 6632
+        },
+        {
+          "phase": "devbox_status_100_requests",
+          "seconds": 0.4705718,
+          "allocation_calls": 2787477,
+          "allocated_bytes": 328966766,
+          "current_bytes": 1449595,
+          "retained_bytes_delta": 48281
+        },
+        {
+          "tool": "devbox_status",
+          "requests": 100,
+          "response_bytes": 8774332,
+          "text_bytes": 4920416,
+          "compact_first": false
+        },
+        {
+          "phase": "devbox_status_summary_100_requests",
+          "seconds": 0.180571,
+          "allocation_calls": 514336,
+          "allocated_bytes": 63554264,
+          "current_bytes": 1461979,
+          "retained_bytes_delta": 12368
+        },
+        {
+          "tool": "devbox_status_summary",
+          "requests": 100,
+          "response_bytes": 1366128,
+          "text_bytes": 641864,
+          "compact_first": false
+        },
+        {
+          "phase": "idle_after_20_seconds",
+          "seconds": 20.0007527,
+          "allocation_calls": 29998,
+          "allocated_bytes": 7997974,
+          "current_bytes": 1446497,
+          "retained_bytes_delta": -15328
+        },
+        {
+          "resources": {
+            "request_bytes": {
+              "capacity_bytes": 268435456,
+              "used_bytes": 0,
+              "peak_bytes": 0,
+              "rejected": 0
+            },
+            "response_bytes": {
+              "capacity_bytes": 268435456,
+              "used_bytes": 0,
+              "peak_bytes": 1373168,
+              "rejected": 0
+            },
+            "connections": 0,
+            "connection_limit": 512,
+            "reserved_control_request_bytes_per_connection": 4096,
+            "reserved_control_response_bytes_per_connection": 16384,
+            "write_idle_ms": 15000,
+            "response_deadline_ms": 300000,
+            "codec_workers": 2,
+            "codec_queue_limit": 16
+          },
+          "ready": true
+        },
+        {
+          "phase": "stop",
+          "seconds": 0.0163362,
+          "allocation_calls": 51,
+          "allocated_bytes": 1576,
+          "current_bytes": 1431917,
+          "retained_bytes_delta": -15876
+        }
+      ],
+      "cleanup": {
+        "pid": 49788,
+        "instance": "134378552215997076",
+        "processAbsent": true
+      }
+    },
+    {
+      "index": 2,
+      "compactFirst": true,
+      "elapsedSeconds": 41.41388919999736,
+      "records": [
+        {
+          "benchmark": "server-lifetime",
+          "build": {
+            "gitSha": "edfad3872ee32d83c62275c6792da12b16f57f9d",
+            "gitRef": "perf/compact-status-20261030",
+            "sourceTree": "14630b1425ff11173d3e1ffa689df32e111f70b9",
+            "sourceDirty": false,
+            "sourceFingerprint": "df36bb3a9bd5e9e3a543c95b91bd094fc734282ff50fdeb2116f251a69122453",
+            "buildUnixSeconds": "1793381337",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "fbaf758464b0d03a037706b30c0f646283547df2e48f95a33c083c79eb050771",
+            "executableName": "devbox-server-lifetime-bench.exe",
+            "deploymentGeneration": null
+          },
+          "scope": "Isolated loopback engine and client; no production state"
+        },
+        {
+          "phase": "idle_20_seconds",
+          "seconds": 20.0104529,
+          "allocation_calls": 42479,
+          "allocated_bytes": 12153393,
+          "current_bytes": 1308739,
+          "retained_bytes_delta": -42062
+        },
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.1884853,
+          "allocation_calls": 100991,
+          "allocated_bytes": 9542707,
+          "current_bytes": 1391520,
+          "retained_bytes_delta": 82781
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2075241,
+          "allocation_calls": 254919,
+          "allocated_bytes": 25720471,
+          "current_bytes": 1392648,
+          "retained_bytes_delta": 3800
+        },
+        {
+          "phase": "devbox_status_summary_100_requests",
+          "seconds": 0.1970032,
+          "allocation_calls": 514450,
+          "allocated_bytes": 63660915,
+          "current_bytes": 1458915,
+          "retained_bytes_delta": 66673
+        },
+        {
+          "tool": "devbox_status_summary",
+          "requests": 100,
+          "response_bytes": 1365038,
+          "text_bytes": 641319,
+          "compact_first": true
+        },
+        {
+          "phase": "devbox_status_100_requests",
+          "seconds": 0.520787,
+          "allocation_calls": 2787608,
+          "allocated_bytes": 328869423,
+          "current_bytes": 1449475,
+          "retained_bytes_delta": -9424
+        },
+        {
+          "tool": "devbox_status",
+          "requests": 100,
+          "response_bytes": 8773442,
+          "text_bytes": 4919971,
+          "compact_first": true
+        },
+        {
+          "phase": "idle_after_20_seconds",
+          "seconds": 20.0104594,
+          "allocation_calls": 29838,
+          "allocated_bytes": 7950262,
+          "current_bytes": 1446409,
+          "retained_bytes_delta": -2928
+        },
+        {
+          "resources": {
+            "request_bytes": {
+              "capacity_bytes": 268435456,
+              "used_bytes": 0,
+              "peak_bytes": 0,
+              "rejected": 0
+            },
+            "response_bytes": {
+              "capacity_bytes": 268435456,
+              "used_bytes": 0,
+              "peak_bytes": 1373120,
+              "rejected": 0
+            },
+            "connections": 0,
+            "connection_limit": 512,
+            "reserved_control_request_bytes_per_connection": 4096,
+            "reserved_control_response_bytes_per_connection": 16384,
+            "write_idle_ms": 15000,
+            "response_deadline_ms": 300000,
+            "codec_workers": 2,
+            "codec_queue_limit": 16
+          },
+          "ready": true
+        },
+        {
+          "phase": "stop",
+          "seconds": 0.0162031,
+          "allocation_calls": 65,
+          "allocated_bytes": 2316,
+          "current_bytes": 1431829,
+          "retained_bytes_delta": -15876
+        }
+      ],
+      "cleanup": {
+        "pid": 48160,
+        "instance": "134378552629334725",
+        "recordedInstanceExited": true,
+        "pidReused": false
+      }
+    },
+    {
+      "index": 3,
+      "compactFirst": true,
+      "elapsedSeconds": 41.34841140000208,
+      "records": [
+        {
+          "benchmark": "server-lifetime",
+          "build": {
+            "gitSha": "edfad3872ee32d83c62275c6792da12b16f57f9d",
+            "gitRef": "perf/compact-status-20261030",
+            "sourceTree": "14630b1425ff11173d3e1ffa689df32e111f70b9",
+            "sourceDirty": false,
+            "sourceFingerprint": "df36bb3a9bd5e9e3a543c95b91bd094fc734282ff50fdeb2116f251a69122453",
+            "buildUnixSeconds": "1793381337",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "fbaf758464b0d03a037706b30c0f646283547df2e48f95a33c083c79eb050771",
+            "executableName": "devbox-server-lifetime-bench.exe",
+            "deploymentGeneration": null
+          },
+          "scope": "Isolated loopback engine and client; no production state"
+        },
+        {
+          "phase": "idle_20_seconds",
+          "seconds": 20.0053091,
+          "allocation_calls": 43215,
+          "allocated_bytes": 12275157,
+          "current_bytes": 1308739,
+          "retained_bytes_delta": -42286
+        },
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.2115883,
+          "allocation_calls": 100896,
+          "allocated_bytes": 9501887,
+          "current_bytes": 1401136,
+          "retained_bytes_delta": 92397
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2309872,
+          "allocation_calls": 255947,
+          "allocated_bytes": 25820839,
+          "current_bytes": 1388888,
+          "retained_bytes_delta": -12536
+        },
+        {
+          "phase": "devbox_status_summary_100_requests",
+          "seconds": 0.2004399,
+          "allocation_calls": 514372,
+          "allocated_bytes": 63619659,
+          "current_bytes": 1462139,
+          "retained_bytes_delta": 73289
+        },
+        {
+          "tool": "devbox_status_summary",
+          "requests": 100,
+          "response_bytes": 1365624,
+          "text_bytes": 641612,
+          "compact_first": true
+        },
+        {
+          "phase": "devbox_status_100_requests",
+          "seconds": 0.4594689,
+          "allocation_calls": 2787652,
+          "allocated_bytes": 328912443,
+          "current_bytes": 1449755,
+          "retained_bytes_delta": -12368
+        },
+        {
+          "tool": "devbox_status",
+          "requests": 100,
+          "response_bytes": 8774078,
+          "text_bytes": 4920289,
+          "compact_first": true
+        },
+        {
+          "phase": "idle_after_20_seconds",
+          "seconds": 20.0129841,
+          "allocation_calls": 29831,
+          "allocated_bytes": 7948550,
+          "current_bytes": 1446497,
+          "retained_bytes_delta": -3120
+        },
+        {
+          "resources": {
+            "request_bytes": {
+              "capacity_bytes": 268435456,
+              "used_bytes": 0,
+              "peak_bytes": 0,
+              "rejected": 0
+            },
+            "response_bytes": {
+              "capacity_bytes": 268435456,
+              "used_bytes": 0,
+              "peak_bytes": 1373136,
+              "rejected": 0
+            },
+            "connections": 0,
+            "connection_limit": 512,
+            "reserved_control_request_bytes_per_connection": 4096,
+            "reserved_control_response_bytes_per_connection": 16384,
+            "write_idle_ms": 15000,
+            "response_deadline_ms": 300000,
+            "codec_workers": 2,
+            "codec_queue_limit": 16
+          },
+          "ready": true
+        },
+        {
+          "phase": "stop",
+          "seconds": 0.0151209,
+          "allocation_calls": 65,
+          "allocated_bytes": 2316,
+          "current_bytes": 1431917,
+          "retained_bytes_delta": -15876
+        }
+      ],
+      "cleanup": {
+        "pid": 46044,
+        "instance": "134378553043466553",
+        "processAbsent": true
+      }
+    },
+    {
+      "index": 4,
+      "compactFirst": false,
+      "elapsedSeconds": 41.33146519999718,
+      "records": [
+        {
+          "benchmark": "server-lifetime",
+          "build": {
+            "gitSha": "edfad3872ee32d83c62275c6792da12b16f57f9d",
+            "gitRef": "perf/compact-status-20261030",
+            "sourceTree": "14630b1425ff11173d3e1ffa689df32e111f70b9",
+            "sourceDirty": false,
+            "sourceFingerprint": "df36bb3a9bd5e9e3a543c95b91bd094fc734282ff50fdeb2116f251a69122453",
+            "buildUnixSeconds": "1793381337",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "fbaf758464b0d03a037706b30c0f646283547df2e48f95a33c083c79eb050771",
+            "executableName": "devbox-server-lifetime-bench.exe",
+            "deploymentGeneration": null
+          },
+          "scope": "Isolated loopback engine and client; no production state"
+        },
+        {
+          "phase": "idle_20_seconds",
+          "seconds": 20.0043409,
+          "allocation_calls": 42826,
+          "allocated_bytes": 12018955,
+          "current_bytes": 1308739,
+          "retained_bytes_delta": -42286
+        },
+        {
+          "phase": "readyz_200_requests",
+          "seconds": 0.1856593,
+          "allocation_calls": 99836,
+          "allocated_bytes": 9162473,
+          "current_bytes": 1403552,
+          "retained_bytes_delta": 94813
+        },
+        {
+          "phase": "metadata_200_requests",
+          "seconds": 0.2078605,
+          "allocation_calls": 256495,
+          "allocated_bytes": 26126061,
+          "current_bytes": 1385760,
+          "retained_bytes_delta": -18656
+        },
+        {
+          "phase": "devbox_status_100_requests",
+          "seconds": 0.4962555,
+          "allocation_calls": 2787111,
+          "allocated_bytes": 328925726,
+          "current_bytes": 1446475,
+          "retained_bytes_delta": 57409
+        },
+        {
+          "tool": "devbox_status",
+          "requests": 100,
+          "response_bytes": 8776102,
+          "text_bytes": 4921301,
+          "compact_first": false
+        },
+        {
+          "phase": "devbox_status_summary_100_requests",
+          "seconds": 0.1804936,
+          "allocation_calls": 514483,
+          "allocated_bytes": 63593380,
+          "current_bytes": 1462123,
+          "retained_bytes_delta": 15632
+        },
+        {
+          "tool": "devbox_status_summary",
+          "requests": 100,
+          "response_bytes": 1367926,
+          "text_bytes": 642763,
+          "compact_first": false
+        },
+        {
+          "phase": "idle_after_20_seconds",
+          "seconds": 20.0120801,
+          "allocation_calls": 29846,
+          "allocated_bytes": 7953782,
+          "current_bytes": 1446497,
+          "retained_bytes_delta": -15472
+        },
+        {
+          "resources": {
+            "request_bytes": {
+              "capacity_bytes": 268435456,
+              "used_bytes": 0,
+              "peak_bytes": 0,
+              "rejected": 0
+            },
+            "response_bytes": {
+              "capacity_bytes": 268435456,
+              "used_bytes": 0,
+              "peak_bytes": 1373312,
+              "rejected": 0
+            },
+            "connections": 0,
+            "connection_limit": 512,
+            "reserved_control_request_bytes_per_connection": 4096,
+            "reserved_control_response_bytes_per_connection": 16384,
+            "write_idle_ms": 15000,
+            "response_deadline_ms": 300000,
+            "codec_workers": 2,
+            "codec_queue_limit": 16
+          },
+          "ready": true
+        },
+        {
+          "phase": "stop",
+          "seconds": 0.0151871,
+          "allocation_calls": 51,
+          "allocated_bytes": 1576,
+          "current_bytes": 1431917,
+          "retained_bytes_delta": -15876
+        }
+      ],
+      "cleanup": {
+        "pid": 49344,
+        "instance": "134378553456947128",
+        "processAbsent": true
+      }
+    }
+  ],
+  "productionChanged": false,
+  "method": "Four fresh processes, D/C C/D C/D D/C phase order. 100 calls each; C++ allocator includes client/server and background work, excludes direct C-library malloc. Shared workstation. Text bytes are not token counts."
+}

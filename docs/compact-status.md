@@ -43,3 +43,44 @@ directory to reverse the two status phases. Use fresh processes with alternating
 phase order, retain source/binary identity and all readiness/shutdown gates, and
 compare both model-visible text bytes and complete response bytes. No production
 request or cache is changed by the benchmark.
+
+## Measured Windows fixture
+
+Four fresh MSVC Release processes on 30 October 2026 used phase order detailed/
+compact, compact/detailed, compact/detailed, detailed/compact. Each process ran
+100 requests per status action against its own loopback server and private
+durable state, with the same compiled binary. The source was
+`edfad3872ee32d83c62275c6792da12b16f57f9d`; the benchmark executable SHA-256 was
+`fbaf758464b0d03a037706b30c0f646283547df2e48f95a33c083c79eb050771`.
+
+Medians across the four trials, per 100 calls:
+
+| Metric | Detailed status | Compact status | Reduction |
+| --- | ---: | ---: | ---: |
+| Complete response bytes | 8,774,205 | 1,365,876 | 84.4% |
+| Model-visible text bytes | 4,920,352.5 | 641,738 | 87.0% |
+| C++ allocation calls | 2,787,542.5 | 514,411 | 81.5% |
+| C++ requested bytes | 328,919,084.5 | 63,606,519.5 | 80.7% |
+| Loopback elapsed time | 483.4 ms | 188.8 ms | 60.9% |
+
+The two byte measures are distinct: the MCP response includes both text and
+structured content, while text bytes cover the returned text fields only.
+Neither is a tokenizer count. These measurements compare the two actions in
+the candidate, not two production deployments. Allocation counters include
+the benchmark HTTP client and background work and exclude direct C-library
+allocations. Timing comes from a shared workstation; it is not a model or
+internet latency claim, or proof that the entire server is leak-free.
+
+All four trials finished ready with zero live HTTP connections, and the
+coordinator's recorded process instance was verified exited after shutdown.
+The initial harness attempt incorrectly expected `coordinator.json` to be
+deleted; that file is intentionally retained. Its process had exited. That
+attempt is excluded from the four qualified trials. The corrected harness
+checks actual process identity and exit, and does not remove state files to
+make the check pass.
+
+Windows engine/background-state tests and Linux GCC 12.3 engine/background-state/
+core tests passed at the measured source. Full hosted qualification and
+production deployment are separate gates. The individual phase measurements,
+source identity, resource checks and process-exit receipts are retained in
+[the benchmark record](benchmarks/compact-status-20261030.json).
