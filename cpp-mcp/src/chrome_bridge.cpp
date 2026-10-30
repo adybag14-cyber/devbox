@@ -27,9 +27,9 @@ Json chrome_bridge_call(const Config& config, const Json& args, const Cancel& ca
         return unavailable("CHROME_BRIDGE_PATH_REJECTED: use an absolute regular executable");
 #ifdef _WIN32
     // Deny replacement/write while checking and starting the exact operator-pinned image.
-    NativeHandle image(CreateFileW(binary.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+    NativeHandle binary_lock(CreateFileW(binary.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                                    FILE_ATTRIBUTE_NORMAL, nullptr));
-    if (!image)
+    if (!binary_lock)
         return unavailable("CHROME_BRIDGE_IMAGE_LOCK_FAILED");
 #endif
     if (sha256_file(binary) != expected)
