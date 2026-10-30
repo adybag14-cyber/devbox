@@ -97,6 +97,24 @@ int main(int argc, char** argv) {
         config->devbox_program_allowlist = {normalize_program(program)};
         config->host_program_allowlist = config->devbox_program_allowlist;
         ToolContract contract(*config);
+        {
+            const Json snapshot{{"occupied", 7}, {"global_queued", 3}};
+            const std::string sampled_at = "1970-01-01T00:00:00.000Z";
+            Json cache{{"ok", true}, {"sampledAtUtc", sampled_at}, {"snapshot", snapshot}};
+            for (const auto* error : {"first failed probe", "repeated failed probe"}) {
+                record_scheduler_probe_failure(cache, 13, error);
+                require(cache["snapshot"] == snapshot && cache["sampledAtUtc"] == sampled_at &&
+                            cache["ok"] == false && cache["error"] == error &&
+                            parse_utc(json_string(cache, "probeSampledAtUtc")).has_value() &&
+                            snapshot_age(cache).value_or(0) >= 5000,
+                        "Failed scheduler probes cannot relabel old queue data as fresh");
+            }
+            Json missing;
+            record_scheduler_probe_failure(missing, 1, "No successful snapshot");
+            require(missing["snapshot"].is_null() && missing["sampledAtUtc"].is_null() &&
+                        !snapshot_age(missing) && missing["ok"] == false,
+                    "An initial scheduler failure must not fabricate a sample or timestamp");
+        }
         for (const auto& entry : tool_registry()["tools"])
             require(required_tool_scope(json_string(entry, "name")) == json_string(entry, "scope"),
                     "all tool scopes are derived from the canonical registry");
@@ -159,6 +177,16 @@ int main(int argc, char** argv) {
             rejected = true;
         }
         require(rejected, "schema rejects invalid durable identity before mutation");
+        require(required_tool_scope("devbox_status_summary") == "mcp:devbox:read" &&
+                    contract.tool("devbox_status_summary")["annotations"]["readOnlyHint"] == true,
+                "compact status uses the existing observation authorization");
+        rejected = false;
+        try {
+            (void)contract.arguments("devbox_status_summary", Json{{"unknown", true}});
+        } catch (const Error&) {
+            rejected = true;
+        }
+        require(rejected, "compact status rejects unsupported arguments");
         config->max_wait_seconds = 2;
         require(
             ToolContract(*config).tool("devbox_wait")["inputSchema"]["properties"]["seconds"]["maximum"] == 2,
@@ -208,10 +236,11 @@ int main(int argc, char** argv) {
             require(old && *old >= before && *old <= after &&
                         snapshot_age(Json{{"sampledAtUtc", "2099-01-01T00:00:00.000Z"}}) == 0,
                     "Snapshot ages clamp pre-epoch and future wall-clock timestamps safely");
-            for (const auto& invalid : {Json(), Json::array(), Json(1), Json::object(),
-                                       Json{{"sampledAtUtc", nullptr}}, Json{{"sampledAtUtc", 17}},
-                                       Json{{"sampledAtUtc", "invalid"}}})
-                require(!snapshot_age(invalid), "Missing or malformed snapshot timestamps remain unavailable");
+            for (const auto& invalid :
+                 {Json(), Json::array(), Json(1), Json::object(), Json{{"sampledAtUtc", nullptr}},
+                  Json{{"sampledAtUtc", 17}}, Json{{"sampledAtUtc", "invalid"}}})
+                require(!snapshot_age(invalid),
+                        "Missing or malformed snapshot timestamps remain unavailable");
             const Json named{{"sampledAtUtc", utc_now()}};
             const std::string extended_key = "sampledAtUtc-suffix";
             require(snapshot_age(named, std::string_view(extended_key).substr(0, 12)).has_value() &&
@@ -268,6 +297,14 @@ int main(int argc, char** argv) {
             background.stop();
             stop_monitor.disarm();
             usage.stop();
+        }
+        {
+            (void)operator_admission(*config, "drain");
+            AdmissionControl admission(*config);
+            require(admission.permits("devbox_status_summary", Json::object()) &&
+                        !admission.permits("devbox_run_program", Json::object()),
+                    "draining permits compact observation while refusing new execution");
+            (void)operator_admission(*config, "resume");
         }
         auto engine = std::make_shared<Engine>(config);
         HttpServer server(config, engine);
@@ -435,6 +472,47 @@ int main(int argc, char** argv) {
         require(json_uint(status["backgroundTasks"]["job-quota"], "lastSuccessUnixMs") > 0 &&
                     !status["backgroundTasks"].contains("job-quota-initial"),
                 "initial quota enforcement is recorded on the supervised quota task");
+        const auto compact_response = invoke(base, "devbox_status_summary");
+        const auto compact = data(compact_response);
+        require(compact["view"] == "summary" && compact["detailTool"] == "devbox_status" &&
+                    compact["build"] == status["build"] &&
+                    compact["performance"]["process"]["pid"] == process_id() &&
+                    compact["capabilities"]["schema_sha256"] == capabilities["schema_sha256"],
+                "compact MCP status retains actual binary and contract identity");
+        require(compact["executionStore"]["ok"] == status["executionStore"]["ok"] &&
+                    compact["executionStore"]["diskPressure"] == status["executionStore"]["diskPressure"] &&
+                    compact["operationalWarnings"] == status["operationalWarnings"] &&
+                    compact["degradedSubsystems"] == status["degradedSubsystems"] &&
+                    compact["guardian"] == status["guardian"] &&
+                    compact["admission"] == status["admission"] &&
+                    compact["capabilities"]["execution_profiles"] == capabilities["execution_profiles"] &&
+                    compact["capabilities"]["platform_availability"] == capabilities["platform_availability"],
+                "compact status does not hide health, admission, or isolation limitations");
+        require(compact["execution"]["max_concurrent"] == status["execution"]["max_concurrent"] &&
+                    compact["execution"]["occupied"] == status["execution"]["occupied"] &&
+                    compact["execution"].contains("global_queued") && compact["ready"].is_boolean() &&
+                    parse_utc(json_string(compact["execution"], "sampledAtUtc")).has_value() &&
+                    parse_utc(json_string(compact["execution"], "probeSampledAtUtc")).has_value() &&
+                    json_uint(compact["execution"], "ageMs") < 5000 &&
+                    compact["execution"]["stale"] == false && compact["execution"]["ok"] == true &&
+                    compact["execution"]["error"].is_null() &&
+                    parse_utc(json_string(compact, "observedAtUtc")).has_value() &&
+                    compact["performance"].contains("stale") &&
+                    compact["executionStore"].contains("sampledAtUtc"),
+                "compact status carries queue occupancy, readiness and measurement freshness");
+        require(!compact.contains("backgroundTasks") && !compact.contains("jobMaintenance") &&
+                    !compact.contains("jobQuota") && !compact["capabilities"].contains("tools") &&
+                    !compact["capabilities"].contains("tool_manifest") &&
+                    status["capabilities"]["tool_manifest"].size() == cpp_tool_count &&
+                    !status.contains("view"),
+                "compact status is opt-in and the frozen detailed action remains complete");
+        require(compact.dump().size() * 2 < status.dump().size(),
+                "routine compact status is less than half of the detailed structured payload");
+        const auto compact_text = compact_response["content"][0]["text"].get<std::string>();
+        const auto json_start = compact_text.find("\n\n");
+        require(json_start != std::string::npos &&
+                    Json::parse(compact_text.substr(json_start + 2)) == compact,
+                "model-visible compact JSON agrees exactly with structured content");
         const auto before = Clock::now();
         std::vector<std::future<Json>> waits;
         for (int i = 0; i < 20; ++i)

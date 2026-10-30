@@ -1,6 +1,7 @@
 #include "devbox/allocator.hpp"
 #include "devbox/engine.hpp"
 #include "devbox/filesystem_worker.hpp"
+#include <array>
 #include <iostream>
 
 using namespace devbox;
@@ -22,7 +23,7 @@ template <class Fn> void phase(std::string_view name, Fn work) {
               << '\n'
               << std::flush;
 }
-int run(const fs::path& root) {
+int run(const fs::path& root, bool compact_first) {
     if (!root.is_absolute() || !fs::create_directory(root))
         throw Error("Supply a new absolute fixture directory");
     auto config = std::make_shared<Config>();
@@ -88,6 +89,44 @@ int run(const fs::path& root) {
         for (unsigned n = 0; n < 200; ++n)
             get("/");
     });
+    const auto expected_source = build_snapshot().at("gitSha");
+    const std::array<const char*, 2> tools = compact_first
+                                                 ? std::array{"devbox_status_summary", "devbox_status"}
+                                                 : std::array{"devbox_status", "devbox_status_summary"};
+    for (const auto* tool : tools) {
+        std::uint64_t response_bytes = 0, text_bytes = 0;
+        const auto request = Json{{"jsonrpc", "2.0"},
+                                  {"id", 1},
+                                  {"method", "tools/call"},
+                                  {"params", {{"name", tool}, {"arguments", Json::object()}}}}
+                                 .dump();
+        phase(std::string(tool) + "_100_requests", [&] {
+            for (unsigned n = 0; n < 100; ++n) {
+                const auto response =
+                    http_request("POST", base + "/mcp", request,
+                                 Json{{"content-type", "application/json"}, {"accept", "application/json"}},
+                                 Millis(5000), 1024 * 1024, {}, true);
+                if (response.status != 200)
+                    throw Error("Status benchmark HTTP failure");
+                const auto body = Json::parse(response.body);
+                if (!body.contains("result") || json_bool(body.at("result"), "isError") ||
+                    body.at("result").at("structuredContent").at("data").at("build").at("gitSha") !=
+                        expected_source)
+                    throw Error("Status benchmark did not return the tested build");
+                response_bytes += response.body.size();
+                for (const auto& content : body.at("result").at("content"))
+                    if (content.value("type", "") == "text")
+                        text_bytes += content.at("text").get_ref<const std::string&>().size();
+            }
+        });
+        std::cout << Json{{"tool", tool},
+                          {"requests", 100},
+                          {"response_bytes", response_bytes},
+                          {"text_bytes", text_bytes},
+                          {"compact_first", compact_first}}
+                         .dump()
+                  << '\n';
+    }
     phase("idle_after_20_seconds", [] { std::this_thread::sleep_for(Millis(20000)); });
     for (const auto* name : {"job-maintenance.json", "job-quota.json"}) {
         const auto status = read_json(root / "run" / name);
@@ -117,9 +156,9 @@ int main(int argc, char** argv) {
             return stop_state_coordinator(path_from_utf8(argv[2])) ? 0 : 1;
         if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
             return run_filesystem_worker();
-        if (argc != 2)
-            throw Error("Usage: devbox-server-lifetime-bench NEW_FIXTURE_DIRECTORY");
-        return run(path_from_utf8(argv[1]));
+        if (argc != 2 && !(argc == 3 && std::string_view(argv[2]) == "--compact-first"))
+            throw Error("Usage: devbox-server-lifetime-bench NEW_FIXTURE_DIRECTORY [--compact-first]");
+        return run(path_from_utf8(argv[1]), argc == 3);
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

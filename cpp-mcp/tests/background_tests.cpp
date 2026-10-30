@@ -1,5 +1,5 @@
-#include "devbox/background.hpp"
 #include "devbox/allocator.hpp"
+#include "devbox/background.hpp"
 #include "devbox/scoped_thread.hpp"
 #include <array>
 #include <iostream>
@@ -52,12 +52,16 @@ int main() {
         require(!background.healthy("missing", 150000) && background.snapshot().empty(),
                 "A readiness lookup must not create a missing worker");
         background.mark_stopped("z-unstarted");
+        require(background.snapshot(true).contains("z-unstarted"),
+                "Compact diagnostics must retain a stopped worker that never succeeded");
         const auto unstarted = background.snapshot()["z-unstarted"];
         require(
             unstarted.dump() ==
                 R"({"kind":"","running":false,"starts":0,"restarts":0,"lastTickUnixMs":null,"lastAttemptUnixMs":null,"lastSuccessUnixMs":null,"lastFailureUnixMs":null,"consecutiveFailures":0,"lastError":null,"lastTickAgeMs":null,"lastSuccessAgeMs":null,"lastFailureAgeMs":null,"idleForMs":null})",
             "Initial state no longer matches the established JSON contract");
         background.mark_started("a-events");
+        require(!background.snapshot(true).contains("a-events"),
+                "Starting worker keeps the established degraded-subsystem policy");
         require(!background.healthy("a-events", 150000), "Starting does not establish a successful probe");
         auto value = background.snapshot()["a-events"];
         shape(value);
@@ -69,6 +73,10 @@ int main() {
         const std::string error = "An error longer than small-string storage with an escaped \"quote\"";
         background.failure("a-events", error);
         background.failure("a-events", "second failure");
+        const auto compact_failure = background.snapshot(true).at("a-events");
+        require(compact_failure["consecutiveFailures"] == 2 &&
+                    compact_failure["lastError"] == "second failure" && compact_failure["running"] == true,
+                "Compact diagnostics must retain running worker failure details");
         value = background.snapshot()["a-events"];
         require(value["consecutiveFailures"] == 2 && value["lastError"] == "second failure" &&
                     value["lastAttemptUnixMs"] == first_attempt && value["lastSuccessUnixMs"].is_null(),
@@ -82,6 +90,13 @@ int main() {
         background.mark_started("a-events", "periodic");
         background.attempt("a-events");
         background.success("a-events");
+        require(!background.snapshot(true).contains("a-events"),
+                "Recovered workers must leave compact failure diagnostics");
+        background.mark_started("completed", "one-shot");
+        background.success("completed");
+        background.mark_stopped("completed");
+        require(!background.snapshot(true).contains("completed"),
+                "A successfully completed one-shot worker is not a compact failure");
         require(background.healthy("a-events", 150000) && !background.healthy("a-events", 0),
                 "A successful running worker requires a strictly positive freshness allowance");
         const std::string bounded_name = "a-events-suffix";
@@ -111,6 +126,10 @@ int main() {
         detached_snapshot["a-events"]["starts"] = 99;
         require(background.snapshot()["a-events"]["starts"] == 2, "Snapshots must own detached values");
         background.mark_stopped("a-events", error);
+        const auto compact_stopped = background.snapshot(true).at("a-events");
+        shape(compact_stopped);
+        require(compact_stopped["running"] == false && compact_stopped["lastError"] == error,
+                "Compact diagnostics must retain a terminal failure after earlier success");
         require(!background.healthy("a-events", 150000), "A stopped or failed worker is not ready");
         value = background.snapshot()["a-events"];
         require(value["running"] == false && value["lastError"] == error && value["consecutiveFailures"] == 1,
@@ -138,6 +157,14 @@ int main() {
             require(!background.healthy("concurrent", 150000),
                     "Concurrent failures must not fabricate successful readiness");
             const auto concurrent = background.snapshot()["concurrent"];
+            const auto compact_concurrent = background.snapshot(true);
+            if (compact_concurrent.contains("concurrent")) {
+                const auto& failure = compact_concurrent.at("concurrent");
+                require(json_uint(failure, "consecutiveFailures") > 0 &&
+                            json_uint(failure, "consecutiveFailures") <= 8000 &&
+                            failure["lastError"] == error,
+                        "Concurrent compact snapshots must retain consistent failure state");
+            }
             shape(concurrent);
             require(json_uint(concurrent, "consecutiveFailures") <= 8000,
                     "Concurrent snapshot exposed an invalid failure count");

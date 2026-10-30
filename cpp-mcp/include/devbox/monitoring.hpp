@@ -6,6 +6,7 @@ std::optional<std::uint64_t> snapshot_age(const Json& value, std::string_view ke
 Json read_status_snapshot(const fs::path& path, std::uint64_t stale_ms = 150000);
 Json guardian_snapshot(const Config& config);
 Json degraded_background(const Json& snapshot);
+void record_scheduler_probe_failure(Json& cache, std::uint64_t duration_ms, std::string error);
 bool disk_space_sample_valid(const fs::space_info& space, bool query_succeeded);
 std::uint64_t disk_warning_free_bytes(std::uint64_t total);
 std::string disk_pressure(std::uint64_t free, std::uint64_t total, bool valid);
@@ -38,7 +39,7 @@ class OperationalMonitor {
     void start();
     void probe_store();
     Json execution_cache() const;
-    std::optional<Json> execution() const;
+    std::optional<Json> execution(bool summary = false) const;
     Json store_health() const;
     bool ready(std::size_t tools) const;
     std::optional<Json> reject_disk_work(ResourceClass resource, bool read_only,
