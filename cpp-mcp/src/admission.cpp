@@ -58,9 +58,9 @@ bool AdmissionControl::permits(std::string_view tool, const Json& arguments) con
     }
     // A drain keeps observation and cancellation available. It never cancels
     // acknowledged jobs/runs and does not imply that external effects stopped.
-    for (const auto* allowed :
-         {"devbox_status", "devbox_capabilities", "devbox_job_status", "devbox_job_logs", "devbox_job_list",
-          "devbox_job_cancel", "devbox_task_get", "devbox_task_list", "host_status"})
+    for (const auto* allowed : {"devbox_status", "devbox_status_summary", "devbox_capabilities",
+                                "devbox_job_status", "devbox_job_logs", "devbox_job_list",
+                                "devbox_job_cancel", "devbox_task_get", "devbox_task_list", "host_status"})
         if (tool == allowed)
             return true;
     if (tool == "devbox_agent_run") {

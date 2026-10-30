@@ -40,6 +40,6 @@ class BackgroundTasks {
     void success(const std::string& name);
     void failure(const std::string& name, const std::string& error);
     bool healthy(std::string_view name, std::uint64_t max_success_age_ms) const;
-    Json snapshot() const;
+    Json snapshot(bool degraded_only = false) const;
 };
 } // namespace devbox

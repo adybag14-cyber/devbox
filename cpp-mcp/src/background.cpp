@@ -114,12 +114,17 @@ bool BackgroundTasks::healthy(std::string_view name, std::uint64_t max_success_a
     const auto now = unix_millis();
     return now - std::min(now, *state.last_success) < max_success_age_ms;
 }
-Json BackgroundTasks::snapshot() const {
+Json BackgroundTasks::snapshot(bool degraded_only) const {
     std::lock_guard lock(mutex_);
     Json::object_t workers;
-    workers.reserve(states_.size());
+    if (!degraded_only)
+        workers.reserve(states_.size());
     const auto now = unix_millis();
     for (const auto& [name, state] : states_) {
+        // Match degraded_background's established policy before allocating any
+        // per-worker JSON. Successfully completed one-shot workers are healthy.
+        if (degraded_only && state.consecutive_failures == 0 && (state.running || state.last_success))
+            continue;
         Json::object_t fields;
         // These fixed fields and the names in states_ are already unique.
         // Append directly to ordered_json's vector so constructing a snapshot

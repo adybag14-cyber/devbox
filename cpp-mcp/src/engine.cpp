@@ -15,6 +15,15 @@ std::optional<std::string> optional_string(const Json& value, const char* key) {
     return value.contains(key) && value[key].is_string() ? std::optional(value[key].get<std::string>())
                                                          : std::nullopt;
 }
+Json selected_fields(const Json& value, std::initializer_list<std::string_view> names) {
+    Json::object_t selected;
+    selected.reserve(names.size());
+    for (const auto name : names) {
+        const auto found = value.find(name);
+        selected.emplace_back(std::string(name), found == value.end() ? Json() : *found);
+    }
+    return Json(std::move(selected));
+}
 } // namespace
 Engine::Engine(std::shared_ptr<const Config> config)
     : config_(std::move(config)), contract_(*config_), admission_(*config_),
@@ -284,8 +293,9 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
             auto pending = controls_.run([this, name, args] { return detached(name, args); }, cancel);
             co_return co_await std::move(pending);
         }
-        if (name == "devbox_status") {
-            auto pending = controls_.run([this, cancel] { return status(cancel); }, cancel);
+        if (name == "devbox_status" || name == "devbox_status_summary") {
+            const bool summary = name == "devbox_status_summary";
+            auto pending = controls_.run([this, cancel, summary] { return status(cancel, summary); }, cancel);
             co_return co_await std::move(pending);
         }
         if (name == "host_status" || name == "windows_host_status")
@@ -508,7 +518,7 @@ Json Engine::detached(std::string name, const Json& args) {
                               config_->runtime_label() + " job " + json_string(value, "id") + ".",
                           value);
 }
-Json Engine::status(const Cancel& cancel) {
+Json Engine::status(const Cancel& cancel, bool summary) {
     Json info;
     try {
         info = lifecycle_.status(cancel);
@@ -525,24 +535,49 @@ Json Engine::status(const Cancel& cancel) {
     data["devboxWorkspacePath"] = path_text(config_->devbox_workspace_path);
     data["hostExecEnabled"] = config_->host_exec_enabled;
     data["guardian"] = guardian_snapshot(*config_);
-    try {
-        data["startup"] =
-            read_json_optional(config_->project_root / "run" / "startup-state.json").value_or(Json());
-    } catch (...) {
-        data["startup"] = nullptr;
+    if (summary) {
+        data["view"] = "summary";
+        data["detailTool"] = "devbox_status";
+        data["execution"] =
+            selected_fields(*execution, {"max_concurrent", "occupied", "global_queued",
+                                         "global_queued_by_class", "reserved_interactive", "heavy_capacity",
+                                         "io_heavy_capacity", "background_capacity", "watch_capacity",
+                                         "watch_occupied", "resource_capacity", "resource_capacity_policy"});
+        data["capabilities"] = selected_fields(
+            capabilities_, {"contract_version", "implementation", "schema_sha256", "state_backend",
+                            "execution_profiles", "platform_availability", "limits"});
+    } else {
+        try {
+            data["startup"] =
+                read_json_optional(config_->project_root / "run" / "startup-state.json").value_or(Json());
+        } catch (...) {
+            data["startup"] = nullptr;
+        }
+        data["jobMaintenance"] = read_status_snapshot(config_->project_root / "run" / "job-maintenance.json");
+        data["jobQuota"] = read_status_snapshot(config_->project_root / "run" / "job-quota.json");
+        data["execution"] = *execution;
+        data["capabilities"] = capabilities_;
     }
-    data["jobMaintenance"] = read_status_snapshot(config_->project_root / "run" / "job-maintenance.json");
-    data["jobQuota"] = read_status_snapshot(config_->project_root / "run" / "job-quota.json");
-    data["execution"] = *execution;
-    data["capabilities"] = capabilities_;
     data["performance"] = performance_.snapshot();
-    const auto bg = background_.snapshot();
-    data["backgroundTasks"] = bg;
+    const auto bg = background_.snapshot(summary);
+    if (!summary)
+        data["backgroundTasks"] = bg;
     const auto health = monitoring_.store_health();
     data["executionStore"] = health;
     data["operationalWarnings"] =
         json_string(health, "diskPressure") == "warning" ? Json::array({"disk-pressure"}) : Json::array();
     data["degradedSubsystems"] = degraded_background(bg);
+    if (summary) {
+        data["ready"] = ready();
+        data["observedAtUtc"] = utc_now();
+        data["backgroundFailures"] = Json::object();
+        for (const auto& name : data["degradedSubsystems"]) {
+            const auto& key = name.get_ref<const std::string&>();
+            data["backgroundFailures"][key] = selected_fields(
+                bg.at(key), {"running", "consecutiveFailures", "lastError", "lastSuccessUnixMs",
+                             "lastFailureUnixMs", "lastSuccessAgeMs", "lastFailureAgeMs"});
+        }
+    }
     data["usageTelemetry"] = usage_.snapshot();
     data["admission"] = admission_.snapshot();
     const auto active = server_ ? server_->active_requests() : 0;
@@ -556,7 +591,8 @@ Json Engine::status(const Cancel& cancel) {
         data["versions"] = versions ? Json(*versions) : Json();
         data["versionsCached"] = versions.has_value();
     }
-    return result_success("Fetched " + config_->runtime_label() + " status.", data);
+    return result_success("Fetched " + config_->runtime_label() + (summary ? " compact status." : " status."),
+                          std::move(data), summary);
 }
 Json Engine::host_status() const {
     const auto node = find_program(config_->node_exe);

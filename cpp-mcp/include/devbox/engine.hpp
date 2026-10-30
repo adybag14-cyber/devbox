@@ -51,7 +51,7 @@ class Engine final : public McpBackend, public std::enable_shared_from_this<Engi
     Json files(std::string name, const Json& args, const Cancel& cancel);
     Json durable(std::string name, const Json& args, const Cancel& cancel);
     Json detached(std::string name, const Json& args);
-    Json status(const Cancel& cancel);
+    Json status(const Cancel& cancel, bool summary = false);
     Json host_status() const;
     Json lifecycle(std::string name, const Cancel& cancel);
 

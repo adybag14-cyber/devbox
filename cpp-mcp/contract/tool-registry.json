@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "contract_version": 12,
+  "contract_version": 13,
   "tools": [
     {
       "name": "devbox_capabilities",
@@ -8968,6 +8968,78 @@
             "destructiveHint": false,
             "idempotentHint": false,
             "openWorldHint": true
+          }
+        }
+      }
+    },
+    {
+      "scope": "mcp:devbox:read",
+      "alias_of": null,
+      "broker": "files",
+      "platforms": [
+        "windows",
+        "linux",
+        "macos",
+        "android",
+        "termux"
+      ],
+      "runtime_profiles": [
+        "host",
+        "docker"
+      ],
+      "telemetry": {
+        "payloads": false,
+        "safe_fields": []
+      },
+      "name": "devbox_status_summary",
+      "family": "diagnostics",
+      "schemas": {
+        "all": {
+          "name": "devbox_status_summary",
+          "title": "Compact Devbox Status",
+          "description": "Prefer this native C++23 action for routine readiness, current build identity, resource usage and queue checks. Returns compact live status with the same guardian, storage, admission and degraded-subsystem warnings, plus scoped-execution availability. It omits the full tool catalogue, per-worker success histories, maintenance records and individual lease owners; use devbox_status for those diagnostics or devbox_capabilities for tool schemas. Cached measurements retain their freshness fields. Read-only status does not establish that a later action will succeed.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+          },
+          "outputSchema": {
+            "type": "object",
+            "properties": {
+              "ok": {
+                "type": "boolean"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "data": {},
+              "stdout": {
+                "type": "string"
+              },
+              "stderr": {
+                "type": "string"
+              },
+              "exitCode": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "ok",
+              "summary"
+            ],
+            "additionalProperties": false
+          },
+          "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": false
           }
         }
       }
