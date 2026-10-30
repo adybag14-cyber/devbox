@@ -686,25 +686,39 @@ int supervise(const ManagementOptions& options) {
                 state["healthy"] = true;
                 state.erase("error");
             } catch (const std::exception& error) {
+                const auto failed_sha = json_string(current, "sha256");
                 if (child)
                     child->stop();
                 child.reset();
                 state["healthy"] = false;
                 state["phase"] = "backoff";
                 state["error"] = error.what();
-                if (config.contains("previous") &&
-                    config.at("previous").at("sha256") != current.at("sha256")) {
-                    verify_stored(root, config.at("previous"), json_string(config, "policy"));
-                    current = config.at("previous");
-                    config["current"] = current;
-                    config.erase("previous");
-                    config_write(root, config);
-                    log(root, "startup failed; previous immutable candidate restored");
+                // A committed version must survive ordinary restart failures.
+                // Historical rollback images may even have an older tool contract.
+                // Only an unfinished, identity-checked promotion authorizes an
+                // automatic selection change; otherwise retain current and back off.
+                if (handoff && handoff->at("previous").at("sha256") != current.at("sha256")) {
+                    try {
+                        verify_stored(root, handoff->at("previous"), json_string(config, "policy"));
+                        if (durable_idle(root) && stop_state_coordinator(root / "run" / "state")) {
+                            auto restored = config;
+                            restored["current"] = handoff->at("previous");
+                            restored.erase("previous");
+                            config_write(root, restored);
+                            config = std::move(restored);
+                            current = config.at("current");
+                            log(root, "unfinished promotion failed; previous immutable candidate restored");
+                        } else {
+                            log(root, "startup rollback deferred: durable work or coordinator is not idle");
+                        }
+                    } catch (const std::exception& recovery) {
+                        log(root, "startup rollback refused: " + std::string(recovery.what()));
+                    }
                 }
                 ++failures;
                 next_start = Clock::now() + Millis(std::min(60000U, 1000U << std::min(failures, 6U)));
                 state["restarts"] = json_uint(state, "restarts") + 1;
-                log(root, error.what());
+                log(root, "startup failure for " + failed_sha + ": " + error.what());
             }
             publish();
         }

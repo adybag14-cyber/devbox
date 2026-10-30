@@ -8,6 +8,21 @@ operator must configure `DEVBOX_CHROME_BRIDGE_EXE` and the exact
 checks the hash and starts the pinned image, and it sends bounded JSON without a
 shell. The default is disabled.
 
+The native supervisor now retains a committed version when an ordinary restart
+fails, and retries it with bounded backoff. Previously, a readiness timeout could
+silently select a historical version even after a completed deployment. Automatic
+rollback remains available for an unfinished promotion, subject to image identity,
+durable-idle and coordinator-stop checks. The Windows/Linux management fixture
+injects a temporary selected-image lookup failure, verifies recovery on the same
+version without replaying effects, and then checks explicit rollback.
+
+The tool contract advances from 11 to 12; the durable state schema remains 2 and
+the coordinator protocol remains 1. The old manager deliberately refuses a live
+cross-contract promotion. A reviewed transition must drain and stop the old
+manager, authenticate the new manager, use its stopped-instance promotion path,
+and update service entrypoints before restarting. Keep the verified old manager
+and configuration for a stopped-instance rollback. Do not bypass contract checks.
+
 The separate Chrome bridge release asset includes its native executable,
 extension, dependency licence texts and source/file manifest. The release job
 requires its own tests and verifies its GitHub attestation, source and checksums
