@@ -20,6 +20,7 @@ Json build_snapshot() {
         if (std::string_view(build_identity::dirty) == "false")
             dirty = false;
         const auto generation = environment("DEVBOX_DEPLOYMENT_GENERATION");
+        const std::string_view release_tag = build_identity::release_tag;
         return Json{{"gitSha", build_identity::sha},
                     {"gitRef", build_identity::ref},
                     {"sourceTree", build_identity::tree},
@@ -28,6 +29,9 @@ Json build_snapshot() {
                     {"buildUnixSeconds", build_identity::built},
                     {"compiler", build_identity::compiler},
                     {"implementation", "cpp"},
+                    {"nativeVersion", build_identity::version},
+                    {"packageVersion", build_identity::package_version},
+                    {"releaseTag", release_tag.empty() ? Json() : Json(release_tag)},
                     {"contractVersion", cpp_contract_version},
                     {"toolCount", cpp_tool_count},
                     {"stateSchemaVersion", state_store_schema_version},
