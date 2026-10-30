@@ -33,6 +33,18 @@ int main() {
     });
     try {
         {
+            const Json previous{{"sha256", std::string(64, 'a')}};
+            const Json candidate{{"sha256", std::string(64, 'b')}};
+            const Json replacement{{"sha256", std::string(64, 'c')}};
+            const Json handoff{{"previous", previous}, {"candidate", candidate}};
+            validate_managed_handoff_selection(previous, handoff);
+            validate_managed_handoff_selection(candidate, handoff);
+            rejects([&] { validate_managed_handoff_selection(replacement, handoff); },
+                    "HANDOFF_SELECTION_CHANGED");
+            rejects([&] { validate_managed_handoff_selection(Json::object(), handoff); },
+                    "HANDOFF_SELECTION_CHANGED");
+        }
+        {
             const std::string hash(64, 'a'), source(40, 'b'), pipe = "Devbox-Owned-Test";
 #ifdef _WIN32
             const auto file = root / "run" / "native" / "releases" / hash / "devbox-mcp.exe";

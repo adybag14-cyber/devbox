@@ -29,6 +29,20 @@ const invoke = async (command, ...args) => {
   return JSON.parse(result.stdout);
 };
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+const moveStoppedFixtureDirectory=async(from,to)=>{
+  for(const file of [from,to]){const relative=path.relative(fixture,file);assert(relative&&!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative));}
+  const deadline=performance.now()+5000;
+  for(;;){
+    try{await rename(from,to);return;}
+    catch(error){
+      if(process.platform!=='win32'||!['EPERM','EBUSY'].includes(error.code)||performance.now()>=deadline)throw error;
+      // Windows can retain an image/directory handle briefly after process exit.
+      // Never retry a fixture move while its native owner is still running.
+      assert.equal((await invoke('status')).running,false);
+      await delay(100);
+    }
+  }
+};
 const awaitWithin=async(promise,ms,message)=>{
   let timer;
   try {
@@ -183,6 +197,41 @@ try {
   const rolledBack=await invoke('status');assert.equal(rolledBack.healthy,true);
   assert.equal(rolledBack.candidateSha256,initialized.sha256,'failed startup restores prior immutable binary');
   assert.equal(await readFile(marker,'utf8'),'x');
+  if(process.platform==='win32'||process.platform==='linux') {
+    // A private development copy with an inert overlay gives this fixture a
+    // second valid image identity without changing any production artifact.
+    const alternate=path.join(fixture,'stable-selected-runtime'+(process.platform==='win32'?'.exe':''));
+    await writeFile(alternate,Buffer.concat([await readFile(binary),Buffer.from('\nDEVBOX LOCAL MANAGEMENT FIXTURE\n')]),{mode:0o755});
+    const alternateHash=createHash('sha256').update(await readFile(alternate)).digest('hex');
+    await invoke('promote','--binary',alternate,'--allow-local-build');
+    const committed=await invoke('status'),selection=JSON.parse(await readFile(configPath,'utf8'));
+    assert.equal(committed.healthy,true);assert.equal(committed.candidateSha256,alternateHash);
+    assert.equal(selection.previous.sha256,initialized.sha256);
+    await assert.rejects(access(path.join(root,'run/native/handoff.json')),'promotion must already be committed');
+    const observed=await (await fetch(`http://127.0.0.1:${port}/`)).json();
+    assert.equal(observed.build.binarySha256,alternateHash);
+    assert.equal(observed.build.deploymentGeneration,committed.child.generation);
+    const selectedFile=selection.current.file,heldFile=selectedFile+'.fixture-held';
+    assert.equal(path.dirname(selectedFile),path.join(root,'run/native/releases',alternateHash));
+    // Move only this fixture's image within its own directory. The existing
+    // mapped frontend remains alive, but its next pathname lookup must fail.
+    await rename(selectedFile,heldFile);
+    try {
+      process.kill(committed.child.pid,'SIGKILL'); // Exact private fixture child verified above.
+      const failedBy=performance.now()+12000;let failed;
+      do {await delay(100);failed=await invoke('status');}
+      while((!failed.error||failed.restarts<committed.restarts+2)&&performance.now()<failedBy);
+      assert(failed.error,'the injected startup failure must be observed');
+      assert.equal(JSON.parse(await readFile(configPath,'utf8')).current.sha256,alternateHash,
+        'ordinary restart failure must not select a historical version');
+      assert.equal(failed.candidateSha256,alternateHash);
+    } finally {await rename(heldFile,selectedFile);}
+    const healthyBy=performance.now()+25000;let healthy;
+    do {await delay(100);healthy=await invoke('status');}while(!healthy.healthy&&performance.now()<healthyBy);
+    assert.equal(healthy.healthy,true);assert.equal(healthy.candidateSha256,alternateHash);
+    assert.equal(await readFile(marker,'utf8'),'x','restart recovery does not repeat durable effects');
+    await invoke('rollback');assert.equal((await invoke('status')).candidateSha256,initialized.sha256);
+  }
   if(process.platform!=='win32') {
     // Signal only the ChildProcess owned by this fixture. A service-manager
     // termination must allow the next foreground start without manual repair.
@@ -243,7 +292,7 @@ try {
   assert.equal((await invoke('status')).running,false);
   // Model a stopped legacy installation while retaining its real durable job,
   // workspace and incidental files. Preparation must not touch any of them.
-  await rename(path.join(root,'run/native'),path.join(fixture,'retained-old-native'));
+  await moveStoppedFixtureDirectory(path.join(root,'run/native'),path.join(fixture,'retained-old-native'));
   const stateDatabase=path.join(root,'run/state/metadata.sqlite3');
   const stateDigest=()=>readFile(stateDatabase).then(bytes=>createHash('sha256').update(bytes).digest('hex'));
   const beforePreparation=await stateDigest();
@@ -262,7 +311,7 @@ try {
     {env,cwd:fixture,timeoutMs:5000,label:'Prepared configuration cannot start from its staging directory'}),
     /NATIVE_MANAGEMENT_CONFIG_INVALID/);
   assert.equal(await stateDigest(),beforePreparation);
-  await rename(path.join(preparation,'run/native'),path.join(root,'run/native'));
+  await moveStoppedFixtureDirectory(path.join(preparation,'run/native'),path.join(root,'run/native'));
   const activated=await invoke('start');assert.equal(activated.healthy,true);
   assert.equal((await rpc('devbox_job_status',{job_id:job.id})).status,'succeeded');
   assert.equal(await readFile(marker,'utf8'),'x','prepared activation does not replay durable effects');
@@ -281,6 +330,7 @@ try {
     'independent owned companion lifecycle','service definition without activation','missing proof rejection',
     ...(process.platform==='linux'?['transient health recovery clears stale status without replacing the frontend']:[]),
     'failed candidate startup rollback','foreground and detached stop',
+    ...(process.platform==='win32'||process.platform==='linux'?['committed selection survives ordinary restart failure without effect replay']:[]),
     'modified selected runtime rejected without changing restart intent',
     'preparation does not alter existing production paths or database',
     'staged manager cannot run before activation','prepared activation preserves durable effects without replay',

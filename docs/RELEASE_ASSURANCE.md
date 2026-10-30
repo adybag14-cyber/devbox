@@ -2,6 +2,13 @@
 
 The release packaging job depends on the complete native, Android, Termux, Linux distribution, Alpine and security qualification graph. Packaging reuses the tested binaries; it does not rebuild them.
 
+The release workflow separately calls the Windows Chrome bridge qualification
+workflow and requires it before publication. That optional ZIP has its own
+`chrome-bridge-manifest.json`, `chrome-bridge-SHA256SUMS` and
+`chrome-bridge-provenance.sigstore.json`. Publication verifies its signer workflow,
+source commit/ref and hosted-runner provenance. These sidecars do not replace or
+modify the C++ core's independently attested checksums and qualification receipt.
+
 Each target carries a resolved vcpkg inventory, SPDX 2.3 SBOM and third-party notices. Installed versions, port revisions and ABI identities must agree with the resolved vcpkg SPDX metadata. Missing direct dependencies or missing runtime notices stop packaging. The `boost-uninstall` build-support package is explicitly identified as not shipping compiled code or headers; that exemption requires its installed file list to contain only build-support share files.
 
 The package includes `qualification-receipt.json`, binding every tested binary digest to the source commit/tree, target, dependency assurance files and required workflow graph. GitHub Actions signs the exact release assets and receipt using the pinned `actions/attest` action. Its Sigstore verification bundle is retained. Fork PRs can exercise qualification but cannot produce promotion-eligible signed artifacts through this workflow.

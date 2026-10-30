@@ -1,3 +1,4 @@
+#include "devbox/chrome_bridge.hpp"
 #include "devbox/engine.hpp"
 #include "devbox/filesystem_worker.hpp"
 #include <future>
@@ -32,6 +33,18 @@ Json data(const Json& result) {
 }
 } // namespace
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string_view(argv[1]) == "--request") {
+        const auto request = Json::parse(std::cin);
+        if (json_string(request, "action") == "click") {
+            std::cout
+                << Json{{"ok", false}, {"input_sent", false}, {"error", {{"code", "FIXTURE_DENIED"}}}}.dump();
+            return 2;
+        }
+        std::cout << Json{{"ok", true},
+                          {"data", {{"fixture", "chrome-bridge"}, {"action", request.at("action")}}}}
+                         .dump();
+        return 0;
+    }
     if (argc == 2 && std::string_view(argv[1]) == "--filesystem-worker")
         return run_filesystem_worker();
     if (argc == 3 && std::string_view(argv[1]) == "--job-runner")
@@ -95,6 +108,38 @@ int main(int argc, char** argv) {
         require(required_tool_scope("devbox_browser") == "mcp:host:exec" &&
                     contract.tool("devbox_browser")["annotations"]["readOnlyHint"] == false,
                 "browser input retains execution authorization");
+        require(required_tool_scope("devbox_chrome_bridge") == "mcp:host:exec" &&
+                    contract.tool(
+                        "devbox_chrome_bridge")["inputSchema"]["properties"]["max_bytes"]["maximum"] == 64000,
+                "Chrome bridge retains execution scope and its bounded HTML contract");
+        {
+            const auto old_exe = environment("DEVBOX_CHROME_BRIDGE_EXE");
+            const auto old_digest = environment("DEVBOX_CHROME_BRIDGE_SHA256");
+            ScopeExit restore([&] {
+                set_environment("DEVBOX_CHROME_BRIDGE_EXE", old_exe);
+                set_environment("DEVBOX_CHROME_BRIDGE_SHA256", old_digest);
+            });
+            set_environment("DEVBOX_CHROME_BRIDGE_EXE", std::nullopt);
+            require(data(chrome_bridge_call(*config, Json{{"action", "status"}}))["available"] == false,
+                    "unconfigured bridge is explicitly unavailable");
+            require(json_bool(chrome_bridge_call(*config, Json{{"action", "click"}}), "isError"),
+                    "unconfigured input is refused without launching a process");
+#ifdef _WIN32
+            set_environment("DEVBOX_CHROME_BRIDGE_EXE", program);
+            set_environment("DEVBOX_CHROME_BRIDGE_SHA256", std::string(64, '0'));
+            require(data(chrome_bridge_call(*config, Json{{"action", "status"}}))["reason"] ==
+                        "CHROME_BRIDGE_IDENTITY_MISMATCH",
+                    "operator executable identity is checked before launch");
+            set_environment("DEVBOX_CHROME_BRIDGE_SHA256", sha256_file(executable_path()));
+            const auto bridge = data(chrome_bridge_call(*config, Json{{"action", "status"}}));
+            require(bridge["ok"] == true && bridge["data"]["fixture"] == "chrome-bridge",
+                    "pinned bridge uses structured stdin without a shell");
+            const auto refused = chrome_bridge_call(*config, Json{{"action", "click"}});
+            require(json_bool(refused, "isError") &&
+                        refused["structuredContent"]["data"]["input_sent"] == false,
+                    "structured nonzero bridge errors retain input-delivery evidence");
+#endif
+        }
         require(contract.tool("host_computer_windows")["annotations"]["readOnlyHint"] == true &&
                     contract.tool("host_computer_use")["annotations"]["readOnlyHint"] == false &&
                     contract.tool("host_computer_use")["annotations"]["idempotentHint"] == false,
