@@ -35,7 +35,8 @@ if (android) {
   };
   assert.equal(field('sha'), gitSha); assert.equal(field('tree'), sourceTree); assert.equal(field('dirty'), 'false');
   build = { implementation: 'cpp', gitSha, sourceTree, sourceDirty: false, sanitizers: false,
-    sourceFingerprint: field('fingerprint'), compiler: field('compiler'), runtimeVersion: field('version') };
+    sourceFingerprint: field('fingerprint'), compiler: field('compiler'), runtimeVersion: field('version'),
+    nativeVersion: field('version'), packageVersion: field('package_version'), releaseTag: field('release_tag') || null };
   target = `android-${android}`;
 } else {
   const runtime = path.join(packageRoot, bin, 'devbox-mcp' + extension);
@@ -53,6 +54,8 @@ if (android) {
     : process.report.getReport().header.glibcVersionRuntime ? 'linux' : 'linux-musl';
   target = `${os}-${arch}`;
 }
+assert.equal(build.packageVersion, setupVersion, 'Compiled native identity must match installer version');
+assert(build.releaseTag === null || build.releaseTag === `bootstrap-v${setupVersion}`);
 const binaries = [];
 for (const name of ['devbox-mcp', 'devbox-setup', 'devbox-tui']) {
   const file = path.posix.join(bin, name + extension);

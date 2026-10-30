@@ -1,5 +1,6 @@
 #include "devbox/allocator.hpp"
 #include "devbox/config.hpp"
+#include "devbox/contract.hpp"
 #include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/scoped_thread.hpp"
@@ -15,6 +16,18 @@ void require(bool condition, const char* message) {
 }
 int main() {
     try {
+        {
+            const auto build = build_snapshot();
+            require(build["nativeVersion"] == build_version(),
+                    "Build metadata preserves native server version");
+            require(build["packageVersion"].is_string() &&
+                        !build["packageVersion"].get_ref<const std::string&>().empty(),
+                    "Native binaries expose their compiled package version without external files");
+            require(build["releaseTag"].is_null() ||
+                        (build["sourceDirty"] == false &&
+                         build["releaseTag"] == "bootstrap-v" + build["packageVersion"].get<std::string>()),
+                    "Only a clean matching source release is identified by a release tag");
+        }
         {
             Json fixtures = Json::array(
                 {nullptr, true, false, -123, UINT64_MAX, 1.25, -0.0, std::numeric_limits<double>::infinity(),
