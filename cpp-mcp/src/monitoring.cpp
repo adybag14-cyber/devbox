@@ -144,6 +144,35 @@ void record_scheduler_probe_failure(Json& cache, std::uint64_t duration_ms, std:
     cache["durationMs"] = duration_ms;
     cache["error"] = std::move(error);
 }
+Json scheduler_status_summary(const Json& cache) {
+    const auto age = snapshot_age(cache);
+    const auto snapshot = cache.find("snapshot");
+    const bool has_sample = snapshot != cache.end() && snapshot->is_object();
+    const bool available = has_sample && age && *age < 5000;
+    Json::object_t result;
+    result.reserve(20);
+    for (const auto* name :
+         {"max_concurrent", "occupied", "global_queued", "global_queued_by_class", "reserved_interactive",
+          "heavy_capacity", "io_heavy_capacity", "background_capacity", "watch_capacity", "watch_occupied",
+          "resource_capacity", "resource_capacity_policy"}) {
+        if (available) {
+            const auto value = snapshot->find(name);
+            result.emplace_back(name, value == snapshot->end() ? Json() : *value);
+        } else {
+            result.emplace_back(name, nullptr);
+        }
+    }
+    result.emplace_back("sampledAtUtc", nullable_field(cache, "sampledAtUtc"));
+    result.emplace_back("probeSampledAtUtc", nullable_field(cache, "probeSampledAtUtc"));
+    result.emplace_back("ageMs", age ? Json(*age) : Json());
+    result.emplace_back("stale", !available);
+    result.emplace_back("available", available);
+    result.emplace_back("ok", json_bool(cache, "ok"));
+    result.emplace_back("error", nullable_field(cache, "error"));
+    result.emplace_back("unavailableReason",
+                        available ? Json() : Json(!has_sample || !age ? "not_sampled" : "expired"));
+    return Json(std::move(result));
+}
 bool disk_space_sample_valid(const fs::space_info& space, bool query_succeeded) {
     const auto unknown = std::numeric_limits<std::uintmax_t>::max();
     return query_succeeded && space.capacity != unknown && space.available != unknown &&
@@ -386,30 +415,13 @@ Json OperationalMonitor::execution_cache() const {
 }
 std::optional<Json> OperationalMonitor::execution(bool summary) const {
     std::lock_guard lock(mutex_);
+    if (summary)
+        return scheduler_status_summary(execution_);
     const auto age = snapshot_age(execution_);
     const auto snapshot = execution_.find("snapshot");
     if (!age || *age >= 5000 || snapshot == execution_.end() || snapshot->is_null())
         return {};
-    if (!summary)
-        return std::optional<Json>(std::in_place, *snapshot);
-    // Copy only routine queue fields, with freshness and errors from the same
-    // locked cache generation. Do not clone the full lease catalogue first.
-    Json::object_t result;
-    result.reserve(18);
-    for (const auto* name :
-         {"max_concurrent", "occupied", "global_queued", "global_queued_by_class", "reserved_interactive",
-          "heavy_capacity", "io_heavy_capacity", "background_capacity", "watch_capacity", "watch_occupied",
-          "resource_capacity", "resource_capacity_policy"}) {
-        const auto value = snapshot->find(name);
-        result.emplace_back(name, value == snapshot->end() ? Json() : *value);
-    }
-    result.emplace_back("sampledAtUtc", nullable_field(execution_, "sampledAtUtc"));
-    result.emplace_back("probeSampledAtUtc", nullable_field(execution_, "probeSampledAtUtc"));
-    result.emplace_back("ageMs", *age);
-    result.emplace_back("stale", false);
-    result.emplace_back("ok", json_bool(execution_, "ok"));
-    result.emplace_back("error", nullable_field(execution_, "error"));
-    return Json(std::move(result));
+    return std::optional<Json>(std::in_place, *snapshot);
 }
 Json OperationalMonitor::store_health() const {
     std::lock_guard lock(mutex_);

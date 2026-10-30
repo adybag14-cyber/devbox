@@ -564,7 +564,7 @@ Json Engine::status(const Cancel& cancel, bool summary) {
         json_string(health, "diskPressure") == "warning" ? Json::array({"disk-pressure"}) : Json::array();
     data["degradedSubsystems"] = degraded_background(bg);
     if (summary) {
-        data["ready"] = ready();
+        data["ready"] = json_bool(*execution, "available") && ready();
         data["observedAtUtc"] = utc_now();
         data["backgroundFailures"] = Json::object();
         for (const auto& name : data["degradedSubsystems"]) {
