@@ -4,16 +4,21 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
-  group: chrome-bridge-${{ github.ref }}
+  group: chrome-bridge-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
   windows:
     name: Rust Chrome bridge Windows
     runs-on: windows-2025
     timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -50,8 +55,27 @@ jobs:
       - name: Assemble the user-only portable package
         shell: pwsh
         run: ./chrome-bridge/package.ps1 -OutputRoot "${{ runner.temp }}/chrome-bridge"
+      - name: Attest the verified bridge package and manifest
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+        id: attest-bridge
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-path: |
+            ${{ runner.temp }}/chrome-bridge/*.zip
+            ${{ runner.temp }}/chrome-bridge/chrome-bridge-manifest.json
+            ${{ runner.temp }}/chrome-bridge/chrome-bridge-SHA256SUMS
+      - name: Retain bridge verification bundle
+        if: steps.attest-bridge.outcome == 'success'
+        shell: pwsh
+        env:
+          BUNDLE_PATH: ${{ steps.attest-bridge.outputs.bundle-path }}
+        run: Copy-Item -LiteralPath $env:BUNDLE_PATH -Destination "${{ runner.temp }}/chrome-bridge/chrome-bridge-provenance.sigstore.json"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: devbox-chrome-bridge-windows-x86_64
-          path: ${{ runner.temp }}/chrome-bridge/*.zip
+          path: |
+            ${{ runner.temp }}/chrome-bridge/*.zip
+            ${{ runner.temp }}/chrome-bridge/chrome-bridge-manifest.json
+            ${{ runner.temp }}/chrome-bridge/chrome-bridge-SHA256SUMS
+            ${{ runner.temp }}/chrome-bridge/chrome-bridge-provenance.sigstore.json
           if-no-files-found: error

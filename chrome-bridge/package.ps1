@@ -29,9 +29,15 @@ foreach($package in $metadata.packages|Where-Object{$_.source -and $_.id -in $re
 $notices|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $licenses 'dependencies.json')
 $source=(git -C $root rev-parse HEAD|Out-String).Trim()
 if($LASTEXITCODE -ne 0){throw 'Source identity unavailable'}
+$sourceTree=(git -C $root rev-parse 'HEAD^{tree}'|Out-String).Trim()
+if($LASTEXITCODE -ne 0){throw 'Source tree identity unavailable'}
 $dirty=!!(git -C $root status --porcelain)
 $files=@(Get-ChildItem -LiteralPath $destination -Recurse -File|ForEach-Object{[ordered]@{path=[IO.Path]::GetRelativePath($destination,$_.FullName);bytes=$_.Length;sha256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}})
-[ordered]@{version=$manifest.version;source=$source;sourceDirty=$dirty;extensionId=(Get-Content -LiteralPath (Join-Path $root 'extension/id.txt') -Raw).Trim();files=$files;qualification='See exact source CI and separate live Chrome receipts; package assembly alone does not qualify UI behavior.'}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $destination 'manifest-sha256.json')
+[ordered]@{version=$manifest.version;source=$source;sourceTree=$sourceTree;sourceDirty=$dirty;extensionId=(Get-Content -LiteralPath (Join-Path $root 'extension/id.txt') -Raw).Trim();files=$files;qualification='See exact source CI and separate live Chrome receipts; package assembly alone does not qualify UI behavior.'}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $destination 'manifest-sha256.json')
 $archive=$destination+'.zip'
 Compress-Archive -LiteralPath $destination -DestinationPath $archive
-[ordered]@{directory=$destination;archive=$archive;sha256=(Get-FileHash -LiteralPath $archive).Hash.ToLowerInvariant();version=$manifest.version;source=$source;sourceDirty=$dirty}|ConvertTo-Json
+$archiveHash=(Get-FileHash -LiteralPath $archive).Hash.ToLowerInvariant()
+$output=[IO.Path]::GetFullPath($OutputRoot)
+Copy-Item -LiteralPath (Join-Path $destination 'manifest-sha256.json') -Destination (Join-Path $output 'chrome-bridge-manifest.json')
+[IO.File]::WriteAllText((Join-Path $output 'chrome-bridge-SHA256SUMS'),$archiveHash+'  '+[IO.Path]::GetFileName($archive)+"`n",[Text.UTF8Encoding]::new($false))
+[ordered]@{directory=$destination;archive=$archive;sha256=$archiveHash;version=$manifest.version;source=$source;sourceTree=$sourceTree;sourceDirty=$dirty}|ConvertTo-Json
