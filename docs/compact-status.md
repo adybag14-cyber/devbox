@@ -56,38 +56,40 @@ request or cache is changed by the benchmark.
 Four fresh MSVC Release processes on 30 October 2026 used phase order detailed/
 compact, compact/detailed, compact/detailed, detailed/compact. Each process ran
 100 requests per status action against its own loopback server and private
-durable state, with the same compiled binary. The source was
-`edfad3872ee32d83c62275c6792da12b16f57f9d`; the benchmark executable SHA-256 was
-`fbaf758464b0d03a037706b30c0f646283547df2e48f95a33c083c79eb050771`.
+durable state, with the same compiled binary including the probe-freshness fix.
+The source was `3c22d38ce2e24f71f6218cf4f993ddcab799b28e`; the executable SHA-256 was
+`838c62e1f9382893970d5cb80b1abef61984508dde2bfd6b65b89364846cf95d`.
 
 Medians across the four trials, per 100 calls:
 
 | Metric | Detailed status | Compact status | Reduction |
 | --- | ---: | ---: | ---: |
-| Complete response bytes | 8,774,205 | 1,365,876 | 84.4% |
-| Model-visible text bytes | 4,920,352.5 | 641,738 | 87.0% |
-| C++ allocation calls | 2,787,542.5 | 514,411 | 81.5% |
-| C++ requested bytes | 328,919,084.5 | 63,606,519.5 | 80.7% |
-| Loopback elapsed time | 483.4 ms | 188.8 ms | 60.9% |
+| Complete response bytes | 8,774,590.0 | 1,376,085.0 | 84.3% |
+| Model-visible text bytes | 4,920,545.0 | 646,642.5 | 86.9% |
+| C++ allocation calls | 2,787,617.0 | 518,284.5 | 81.4% |
+| C++ requested bytes | 328,936,200.5 | 63,853,567.5 | 80.6% |
+| Loopback elapsed time | 472.2 ms | 188.0 ms | 60.2% |
 
-The two byte measures are distinct: the MCP response includes both text and
-structured content, while text bytes cover the returned text fields only.
-Neither is a tokenizer count. These measurements compare the two actions in
-the candidate, not two production deployments. Allocation counters include
-the benchmark HTTP client and background work and exclude direct C-library
-allocations. Timing comes from a shared workstation; it is not a model or
-internet latency claim, or proof that the entire server is leak-free.
+Complete response bytes include both text and structured content. Text bytes
+cover the returned text fields only; neither is a tokenizer count. These
+measurements compare the two actions in the candidate, not two production
+deployments. Allocation counters include the benchmark HTTP client and
+background work and exclude direct C-library allocations. Timing comes from a
+shared workstation; it is not a model or internet latency claim, or proof that
+the entire server is leak-free.
 
-All four trials finished ready with zero live HTTP connections, and the
+All four trials finished ready with zero live HTTP connections. Each
 coordinator's recorded process instance was verified exited after shutdown.
-The initial harness attempt incorrectly expected `coordinator.json` to be
-deleted; that file is intentionally retained. Its process had exited. That
-attempt is excluded from the four qualified trials. The corrected harness
-checks actual process identity and exit, and does not remove state files to
-make the check pass.
+The initial harness attempt on the earlier candidate incorrectly expected
+`coordinator.json` to be deleted; that file is intentionally retained. Its
+process had exited. That attempt is excluded from both qualified measurement
+sets. The corrected harness checks actual process identity and exit without
+removing state files to make the check pass.
 
-Windows engine/background-state tests and Linux GCC 12.3 engine/background-state/
-core tests passed at the measured source. Full hosted qualification and
-production deployment are separate gates. The individual phase measurements,
-source identity, resource checks and process-exit receipts are retained in
-[the benchmark record](benchmarks/compact-status-20261030.json).
+Windows engine/background-state and Linux GCC 12.3 engine/background-state/core
+tests passed at this source, including repeated and initial scheduler failure
+freshness regressions. Full hosted qualification and production deployment are
+separate gates. The individual phases, source identity, resource checks and
+process-exit receipts are retained in [the current benchmark record](benchmarks/compact-status-freshness-20261030.json).
+The [earlier candidate record](benchmarks/compact-status-20261030.json) remains
+available with its own source identity.
