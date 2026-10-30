@@ -97,6 +97,24 @@ int main(int argc, char** argv) {
         config->devbox_program_allowlist = {normalize_program(program)};
         config->host_program_allowlist = config->devbox_program_allowlist;
         ToolContract contract(*config);
+        {
+            const Json snapshot{{"occupied", 7}, {"global_queued", 3}};
+            const std::string sampled_at = "1970-01-01T00:00:00.000Z";
+            Json cache{{"ok", true}, {"sampledAtUtc", sampled_at}, {"snapshot", snapshot}};
+            for (const auto* error : {"first failed probe", "repeated failed probe"}) {
+                record_scheduler_probe_failure(cache, 13, error);
+                require(cache["snapshot"] == snapshot && cache["sampledAtUtc"] == sampled_at &&
+                            cache["ok"] == false && cache["error"] == error &&
+                            parse_utc(json_string(cache, "probeSampledAtUtc")).has_value() &&
+                            snapshot_age(cache).value_or(0) >= 5000,
+                        "Failed scheduler probes cannot relabel old queue data as fresh");
+            }
+            Json missing;
+            record_scheduler_probe_failure(missing, 1, "No successful snapshot");
+            require(missing["snapshot"].is_null() && missing["sampledAtUtc"].is_null() &&
+                        !snapshot_age(missing) && missing["ok"] == false,
+                    "An initial scheduler failure must not fabricate a sample or timestamp");
+        }
         for (const auto& entry : tool_registry()["tools"])
             require(required_tool_scope(json_string(entry, "name")) == json_string(entry, "scope"),
                     "all tool scopes are derived from the canonical registry");
@@ -474,6 +492,7 @@ int main(int argc, char** argv) {
                     compact["execution"]["occupied"] == status["execution"]["occupied"] &&
                     compact["execution"].contains("global_queued") && compact["ready"].is_boolean() &&
                     parse_utc(json_string(compact["execution"], "sampledAtUtc")).has_value() &&
+                    parse_utc(json_string(compact["execution"], "probeSampledAtUtc")).has_value() &&
                     json_uint(compact["execution"], "ageMs") < 5000 &&
                     compact["execution"]["stale"] == false && compact["execution"]["ok"] == true &&
                     compact["execution"]["error"].is_null() &&

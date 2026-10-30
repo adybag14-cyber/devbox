@@ -20,6 +20,13 @@ path selects only the required queue fields before copying; the detailed path
 copies its original complete snapshot once, instead of copying the enclosing
 cache and snapshot multiple times.
 
+A failed scheduler probe records its own `probeSampledAtUtc`, error and duration
+without changing the retained queue snapshot's `sampledAtUtc`. Repeated failures
+therefore cannot keep old queue counts inside the five-second freshness bound.
+A first failed probe has no queue sample. This also corrects the existing
+readiness/status cache path, which previously timestamped a retained snapshot
+with the time of the failed attempt.
+
 The compact action avoids copying and serializing the full tool catalogue and
 does not construct successful background-worker histories, and avoids reading the detailed startup
 and maintenance record files. It uses compact JSON for the model-visible text.
