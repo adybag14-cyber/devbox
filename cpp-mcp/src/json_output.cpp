@@ -1,5 +1,6 @@
 #include "devbox/common.hpp"
 #include <algorithm>
+#include <charconv>
 #if defined(__SSE2__) || defined(_M_X64) || (defined(_M_IX86_FP) && _M_IX86_FP >= 2)
 #include <emmintrin.h>
 #define DEVBOX_JSON_SSE2 1
@@ -7,6 +8,15 @@
 
 namespace devbox {
 namespace {
+template <class Integer> void append_integer(std::string& output, Integer value) {
+    // Every signed/unsigned 64-bit decimal value, including INT64_MIN, fits.
+    // to_chars is locale-independent and does not create a serializer or heap buffer.
+    char digits[32];
+    const auto converted = std::to_chars(digits, digits + sizeof(digits), value);
+    if (converted.ec != std::errc{})
+        throw Error("JSON integer conversion failed");
+    output.append(digits, converted.ptr);
+}
 bool plain_ascii(std::string_view text) {
 #ifdef DEVBOX_JSON_SSE2
     // SSE2 is a baseline instruction set on these targets. Signed comparison
@@ -17,9 +27,9 @@ bool plain_ascii(std::string_view text) {
     const auto slash = _mm_set1_epi8('\\');
     while (text.size() >= 16) {
         const auto bytes = _mm_loadu_si128(reinterpret_cast<const __m128i*>(text.data()));
-        const auto invalid = _mm_or_si128(_mm_cmplt_epi8(bytes, space),
-                                         _mm_or_si128(_mm_cmpeq_epi8(bytes, quote),
-                                                      _mm_cmpeq_epi8(bytes, slash)));
+        const auto invalid =
+            _mm_or_si128(_mm_cmplt_epi8(bytes, space),
+                         _mm_or_si128(_mm_cmpeq_epi8(bytes, quote), _mm_cmpeq_epi8(bytes, slash)));
         if (_mm_movemask_epi8(invalid))
             return false;
         text.remove_prefix(16);
@@ -77,7 +87,15 @@ void append_value(std::string& output, const Json& value, Json::error_handler_t 
             append_value(output, it.value(), errors);
         }
         output += '}';
-    } else
+    } else if (value.is_null())
+        output += "null";
+    else if (value.is_boolean())
+        output += value.get<bool>() ? "true" : "false";
+    else if (value.is_number_unsigned())
+        append_integer(output, value.get<Json::number_unsigned_t>());
+    else if (value.is_number_integer())
+        append_integer(output, value.get<Json::number_integer_t>());
+    else
         output += value.dump(-1, ' ', false, errors);
 }
 } // namespace
