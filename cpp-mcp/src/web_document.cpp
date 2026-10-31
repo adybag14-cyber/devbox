@@ -274,10 +274,11 @@ void product_variants(lxb_dom_node_t* script, const Json& data, std::string_view
 } // namespace
 
 bool response_requires_challenge(const Transfer& response) {
+    static const RE2 challenge_title("<title[^>]*>\\s*(?:just a moment|attention required|access denied)");
     const auto body = lower(response.body.substr(0, 128 * 1024));
     return (body.find("anomaly-modal") != body.npos && body.find("challenge-form") != body.npos &&
             body.find("anomaly.js") != body.npos) ||
-           RE2::PartialMatch(body, RE2("<title[^>]*>\\s*(?:just a moment|attention required|access denied)"));
+           RE2::PartialMatch(body, challenge_title);
 }
 
 Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
@@ -343,11 +344,14 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         return result;
     }
     std::string encoding;
-    const RE2 charset("(?i)charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)");
+    static const RE2 charset("(?i)charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)");
     RE2::PartialMatch(type, charset, &encoding);
-    if (encoding.empty() && (type.find("html") != type.npos || type.empty()))
-        RE2::PartialMatch(response.body.substr(0, 8192),
-                          RE2("(?i)<meta[^>]{0,1000}charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)"), &encoding);
+    if (encoding.empty() && (type.find("html") != type.npos || type.empty())) {
+        static const RE2 meta_charset("(?i)<meta[^>]{0,1000}charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)");
+        RE2::PartialMatch(
+            re2::StringPiece(response.body.data(), std::min<std::size_t>(response.body.size(), 8192)),
+            meta_charset, &encoding);
+    }
     encoding = lower(encoding);
     if (encoding == "utf8")
         encoding = "utf-8";
@@ -638,12 +642,13 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
     }
     const auto title = lower(json_string(result, "title"));
     const auto beginning = lower(text.substr(0, 3000));
+    // The unchanged raw response already passed response_requires_challenge at
+    // entry. Only the newly extracted title and text can add evidence here.
     const bool challenge = title.find("just a moment") != title.npos ||
                            title.find("access denied") != title.npos ||
                            title.find("attention required") != title.npos ||
                            (text.size() < 3000 && (beginning.find("verify you are human") != beginning.npos ||
-                                                   beginning.find("unusual traffic") != beginning.npos)) ||
-                           response_requires_challenge(response);
+                                                   beginning.find("unusual traffic") != beginning.npos));
     result["text"] = text;
     result["body_sha256"] = sha256(response.body);
     result["content_sha256"] = sha256(text);
