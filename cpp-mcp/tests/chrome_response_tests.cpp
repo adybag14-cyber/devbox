@@ -22,11 +22,13 @@ int main() {
         }
         const Json status{{"ok", true}, {"data", {{"connected", true}, {"version", "fixture"}}}};
         require(chrome_bridge_response(status.dump()) ==
-                    result_success("Native Rust Chrome bridge result.", status, true),
+                    result_success("Native Rust Chrome bridge result.",
+                                   std::optional<Json>(std::in_place, status), true),
                 "Non-image replies preserve their compact result contract");
         const Json denied{{"ok", false}, {"input_sent", false}, {"error", {{"code", "TAB_NOT_GRANTED"}}}};
         require(chrome_bridge_response(denied.dump()) ==
-                    result_error("Chrome bridge reported an explicit failure.", denied),
+                    result_error("Chrome bridge reported an explicit failure.",
+                                 std::optional<Json>(std::in_place, denied)),
                 "Explicit grant failure must retain input-not-sent evidence");
         for (const std::string input :
              {"not-json", "[]", "{}", "{\"ok\":1}",
