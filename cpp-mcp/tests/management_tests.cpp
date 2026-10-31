@@ -46,9 +46,8 @@ int main() {
             fs::remove(target / "unrelated.txt");
             fs::remove(target);
 #ifdef _WIN32
-            NativeHandle blocker(CreateFileW(staged.c_str(), FILE_READ_ATTRIBUTES,
-                                             FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                                             FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+            NativeHandle blocker(CreateFileW(staged.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                             nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
             require(static_cast<bool>(blocker), "owned directory lock acquired");
             std::error_code original_error;
             fs::rename(staged, target, original_error);
@@ -64,7 +63,7 @@ int main() {
             const auto locked = root / "publication-locked", absent = root / "publication-absent";
             ensure_private_state_directory(locked);
             write_file(locked / "preserved.txt", "persistent failure preserves staging");
-            NativeHandle persistent(CreateFileW(locked.c_str(), FILE_READ_ATTRIBUTES,
+            NativeHandle persistent(CreateFileW(locked.c_str(), GENERIC_READ,
                                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                                 FILE_FLAG_BACKUP_SEMANTICS, nullptr));
             require(static_cast<bool>(persistent), "persistent fixture lock acquired");
