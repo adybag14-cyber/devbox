@@ -124,6 +124,11 @@ try {
       assert.equal(stalled.phase,'unhealthy',JSON.stringify(stalled));
       assert.match(stalled.error,/NATIVE_DRAIN_BUSY_OR_UNCONFIRMED/);
       assert.equal(stalled.child.generation,beforeStall.child.generation);
+      assert.equal(stalled.lastHealthFailure.reason,'probe_exception');
+      assert.equal(stalled.lastHealthFailure.phase,'metadata');
+      assert.equal(stalled.lastHealthFailure.child.generation,beforeStall.child.generation);
+      assert(stalled.lastHealthFailure.consecutiveFailures>=1);
+      assert.equal(stalled.restarts,beforeStall.restarts,'an unconfirmed health drain is not a restart');
       const heartbeat=JSON.parse(await readFile(path.join(root,'run/native/heartbeat.json'),'utf8'));
       assert(Date.parse(heartbeat.updatedAt)>Date.now()-15000,'heartbeat continues during a failed health drain');
     } finally {
@@ -137,6 +142,45 @@ try {
     assert(!Object.hasOwn(healthyAgain,'error'),'a recovered probe clears the stale health error');
     assert.deepEqual(healthyAgain.child,beforeStall.child,'health recovery does not replace a preserved frontend');
     assert.deepEqual(healthyAgain.lastRequest,beforeStall.lastRequest,'probe recovery preserves operator history');
+    assert.equal(healthyAgain.lastHealthFailure.child.generation,beforeStall.child.generation,
+      'recovery retains the failed probe evidence');
+
+    // Make only this idle fixture's scheduler path unavailable. Unlike SIGSTOP,
+    // its HTTP loop can still acknowledge drain, so a health repair is permitted.
+    const beforeHealthRepair=await invoke('status');
+    assert.equal(beforeHealthRepair.healthy,true);
+    assert.deepEqual(beforeHealthRepair.child,beforeStall.child);
+    const slots=path.join(root,'run','slots'),heldSlots=path.join(root,'run','slots-held-by-fixture');
+    for(const file of [slots,heldSlots]) {
+      const relative=path.relative(fixture,file);
+      assert(relative&&!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative));
+    }
+    await assert.rejects(access(heldSlots),{code:'ENOENT'});
+    let moved=false,substituted=false,repair;
+    try {
+      await sameChild();process.kill(pid,'SIGSTOP');suspended=true;
+      await rename(slots,heldSlots);moved=true;
+      await writeFile(slots,'owned readiness fixture',{flag:'wx'});substituted=true;
+      await sameChild();process.kill(pid,'SIGCONT');suspended=false;
+      const repairBy=performance.now()+45000;
+      do {await delay(150);repair=await invoke('status');}
+      while(repair.lastHealthRecovery?.previousChild?.generation!==beforeHealthRepair.child.generation&&performance.now()<repairBy);
+      assert.equal(repair.lastHealthRecovery?.previousChild?.generation,beforeHealthRepair.child.generation);
+      assert.equal(repair.lastHealthRecovery.reason,'consecutive_readiness_failures');
+      assert.equal(repair.lastHealthRecovery.probe.phase,'readiness');
+      assert.equal(repair.lastHealthRecovery.probe.httpStatus,503);
+      assert(repair.restarts>=beforeHealthRepair.restarts+1,'confirmed health replacement increments restart accounting');
+    } finally {
+      if(suspended){await sameChild();process.kill(pid,'SIGCONT');suspended=false;}
+      if(substituted){assert.equal(await readFile(slots,'utf8'),'owned readiness fixture');await rm(slots);}
+      if(moved)await rename(heldSlots,slots);
+    }
+    const repairedBy=performance.now()+25000;let repaired;
+    do {await delay(150);repaired=await invoke('status');}
+    while(!repaired.healthy&&performance.now()<repairedBy);
+    assert.equal(repaired.healthy,true,JSON.stringify(repaired));
+    assert.notEqual(repaired.child.generation,beforeHealthRepair.child.generation);
+    assert.equal(repaired.companions[0].process.pid,companionPid,'health recovery preserves the healthy companion');
   }
   const duplicate = await invoke('start'); assert.equal(duplicate.owner.pid,foreground.pid);
   const file = path.join(root,'workspace','roundtrip.txt');

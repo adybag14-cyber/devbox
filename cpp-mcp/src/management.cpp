@@ -157,15 +157,34 @@ bool matches_server(const Json& value, const Json& candidate, std::string_view g
     return json_string(value.at("build"), "deploymentGeneration") == generation &&
            json_string(value.at("build"), "binarySha256") == json_string(candidate, "sha256");
 }
-bool ready(const Environment& env, const Json& candidate, std::string_view generation) {
+bool ready(const Environment& env, const Json& candidate, std::string_view generation,
+           Json* failure = nullptr) {
+    const auto started = Clock::now();
+    const char* phase = "metadata";
+    const auto rejected = [&](const char* reason, int status = 0) {
+        if (failure)
+            *failure =
+                Json{{"reason", reason},
+                     {"phase", phase},
+                     {"httpStatus", status ? Json(status) : Json()},
+                     {"durationMs", std::chrono::duration_cast<Millis>(Clock::now() - started).count()}};
+        return false;
+    };
     try {
         if (!matches_server(metadata(env), candidate, generation))
-            return false;
+            return rejected("identity_mismatch");
+        phase = "readiness";
         const auto response =
             http_request("GET", local_url(env) + "/readyz", {}, Json::object(), Millis(1000), 1024, {}, true);
-        return response.status == 200 && json_bool(Json::parse(response.body), "ok");
+        if (response.status != 200)
+            return rejected("http_status", response.status);
+        if (!json_bool(Json::parse(response.body), "ok"))
+            return rejected("not_ready", response.status);
+        return true;
+    } catch (const Json::exception&) {
+        return rejected("invalid_json");
     } catch (...) {
-        return false;
+        return rejected("probe_exception");
     }
 }
 void verify_stored(const fs::path& root, const Json& candidate, std::string_view policy) {
@@ -837,7 +856,8 @@ int supervise(const ManagementOptions& options) {
         if (child && child->alive() && Clock::now() >= next_health) {
             state["companions"] = companions.tick();
             const auto env = managed_environment(root, config, child->generation);
-            const bool healthy = ready(env, current, child->generation);
+            Json probe_failure;
+            const bool healthy = ready(env, current, child->generation, &probe_failure);
             if (healthy && Clock::now() - child->started >= Millis(30000))
                 failures = 0;
             if (healthy) {
@@ -852,6 +872,14 @@ int supervise(const ManagementOptions& options) {
             }
             state["healthy"] = healthy;
             unhealthy = healthy ? 0 : unhealthy + 1;
+            if (!healthy) {
+                probe_failure["observedAtUtc"] = utc_now();
+                probe_failure["child"] = child->identity();
+                probe_failure["consecutiveFailures"] = unhealthy;
+                state["lastHealthFailure"] = probe_failure;
+                if (unhealthy == 1)
+                    log(root, "owned frontend readiness failed: " + probe_failure.dump());
+            }
             // Public route failures are diagnostic only; they never authorize killing MCP.
             if (config.at("environment").contains("PUBLIC_BASE_URL")) {
                 const auto url = json_string(config.at("environment"), "PUBLIC_BASE_URL");
@@ -870,7 +898,15 @@ int supervise(const ManagementOptions& options) {
                 // state is reported without interrupting work or restarting unrelated services.
                 try {
                     const bool resume = drain(root, config, current, *child, Millis(2000));
+                    const auto previous_child = child->identity();
                     child->stop();
+                    state["restarts"] = json_uint(state, "restarts") + 1;
+                    state["lastHealthRecovery"] = Json{{"stoppedAtUtc", utc_now()},
+                                                       {"previousChild", previous_child},
+                                                       {"reason", "consecutive_readiness_failures"},
+                                                       {"probe", probe_failure}};
+                    log(root, "owned frontend stopped after confirmed health drain: " +
+                                  state["lastHealthRecovery"].dump());
                     child.reset();
                     if (resume)
                         (void)admission(root, config, current, "resume");
@@ -1041,9 +1077,8 @@ std::uint64_t management_instance(const Json& identity) {
 }
 void validate_managed_handoff_selection(const Json& current, const Json& handoff) {
     const auto selected = json_string(current, "sha256");
-    if (selected.size() != 64 ||
-        (selected != json_string(handoff.at("previous"), "sha256") &&
-         selected != json_string(handoff.at("candidate"), "sha256")))
+    if (selected.size() != 64 || (selected != json_string(handoff.at("previous"), "sha256") &&
+                                  selected != json_string(handoff.at("candidate"), "sha256")))
         throw Error("NATIVE_HANDOFF_SELECTION_CHANGED: reconcile the interrupted operation before startup");
 }
 Environment managed_environment(const fs::path& root, const Json& config, std::string generation) {

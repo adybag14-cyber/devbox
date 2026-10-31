@@ -312,8 +312,42 @@ int main(int argc, char** argv) {
                     "Readiness requires a real fresh scheduler/store probe and the complete tool contract");
             background.failure("execution-store-probe", "readiness regression fixture");
             require(!monitor.ready(cpp_tool_count), "A failed background store probe rejects readiness");
+            const auto incident_file = probe_config->project_root / "run" / "mcp-incidents.jsonl";
+            const auto await_readiness_incident = [&](bool expected_ready) {
+                const auto deadline = Clock::now() + Millis(12000);
+                while (Clock::now() < deadline) {
+                    if (fs::exists(incident_file)) {
+                        const auto content = read_file(incident_file);
+                        const auto complete = content.rfind('\n');
+                        const auto lines = complete == std::string::npos
+                                               ? std::vector<std::string>{}
+                                               : split(content.substr(0, complete + 1), '\n', false);
+                        for (const auto& line : lines) {
+                            const auto incident = Json::parse(line);
+                            const auto& trigger = incident.at("trigger");
+                            if (trigger.contains("ready") && trigger.at("ready") == expected_ready &&
+                                json_bool(trigger, "readinessChanged"))
+                                return incident;
+                        }
+                    }
+                    std::this_thread::sleep_for(Millis(25));
+                }
+                throw Error("Readiness transition did not preserve an incident");
+            };
+            const auto degraded = await_readiness_incident(false);
+            require(degraded["backgroundTasks"]["execution-store-probe"]["lastError"] ==
+                            "readiness regression fixture" &&
+                        json_number(degraded["trigger"], "p95Ms") <= 100 &&
+                        json_number(degraded["trigger"], "maxMs") <= 500,
+                    "Fast readiness failure captures the failing worker without an event-loop incident");
             background.success("execution-store-probe");
             require(monitor.ready(cpp_tool_count), "A successful store probe restores readiness");
+            const auto recovered = await_readiness_incident(true);
+            require(recovered["backgroundTasks"]["execution-store-probe"]["consecutiveFailures"] == 0 &&
+                        parse_utc(json_string(recovered, "observedAtUtc")).value() -
+                                parse_utc(json_string(degraded, "observedAtUtc")).value() <
+                            30000,
+                    "Recovery is retained inside the prior incident cooldown");
             background.mark_stopped("execution-store-probe");
             require(!monitor.ready(cpp_tool_count), "A stopped store probe rejects readiness");
             background.stop();
