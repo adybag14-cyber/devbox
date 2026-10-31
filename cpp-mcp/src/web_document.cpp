@@ -1,5 +1,6 @@
 #include "devbox/native.hpp"
 #include "devbox/research.hpp"
+#include "devbox/utf8.hpp"
 #include "devbox/web_retailers.hpp"
 #include "web_content.hpp"
 #include <algorithm>
@@ -54,22 +55,16 @@ void codepoint(std::string& output, unsigned value) {
         output.push_back(static_cast<char>(0x80 | (value & 63)));
     }
 }
-std::string utf8(std::string_view input, std::string_view content_type) {
-    const auto charset = lower(std::string(content_type));
-    if (charset.find("windows-1252") != charset.npos || charset.find("iso-8859-1") != charset.npos) {
-        static constexpr unsigned cp1252[32] = {
-            0x20ac, 0xfffd, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160,
-            0x2039, 0x0152, 0xfffd, 0x017d, 0xfffd, 0xfffd, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022,
-            0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0xfffd, 0x017e, 0x0178};
-        std::string output;
-        output.reserve(input.size() * 2);
-        for (const unsigned char byte : input)
-            codepoint(output, byte >= 0x80 && byte <= 0x9f ? cp1252[byte - 0x80] : byte);
-        return output;
-    }
-    // Do not silently turn an unknown encoding into corrupted evidence.
-    (void)Json(std::string(input)).dump();
-    return std::string(input);
+std::string legacy_utf8(std::string_view input) {
+    static constexpr unsigned cp1252[32] = {0x20ac, 0xfffd, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021,
+                                            0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0xfffd, 0x017d, 0xfffd,
+                                            0xfffd, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014,
+                                            0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0xfffd, 0x017e, 0x0178};
+    std::string output;
+    output.reserve(input.size() * 2);
+    for (const unsigned char byte : input)
+        codepoint(output, byte >= 0x80 && byte <= 0x9f ? cp1252[byte - 0x80] : byte);
+    return output;
 }
 std::string compact(std::string_view text, std::size_t limit = text_limit) {
     std::string result;
@@ -362,9 +357,16 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         result["status"] = "unsupported_encoding";
         return result;
     }
-    std::string body;
+    std::string converted_body;
+    std::string_view body = response.body;
     try {
-        body = utf8(response.body, encoding);
+        if (encoding == "windows-1252" || encoding == "iso-8859-1") {
+            converted_body = legacy_utf8(body);
+            body = converted_body;
+        } else if (!valid_utf8(body)) {
+            result["status"] = "unsupported_encoding";
+            return result;
+        }
     } catch (...) {
         result["status"] = "unsupported_encoding";
         return result;
