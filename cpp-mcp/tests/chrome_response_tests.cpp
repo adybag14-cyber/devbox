@@ -32,7 +32,11 @@ int main() {
                 "Explicit grant failure must retain input-not-sent evidence");
         for (const std::string input :
              {"not-json", "[]", "{}", "{\"ok\":1}",
-              "{\"ok\":true,\"image\":{\"mime\":\"text/html\",\"base64\":\"AAAA\"}}"}) {
+              "{\"ok\":true,\"image\":{\"mime\":\"text/html\",\"base64\":\"AAAA\"}}",
+              "{\"ok\":true,\"image\":{\"mime\":\"image/png\",\"base64\":123}}",
+              "{\"ok\":true,\"image\":{\"mime\":\"image/png\",\"base64\":null}}",
+              "{\"ok\":true,\"image\":{\"mime\":\"image/png\",\"base64\":\"\"}}",
+              "{\"ok\":true,\"image\":{\"mime\":\"image/png\"}}"}) {
             const auto result = chrome_bridge_response(input);
             require(result["isError"] == true &&
                         result["structuredContent"]["data"]["outcome"] == "unknown" &&

@@ -78,8 +78,9 @@ Json chrome_bridge_response(std::string output) {
                 throw Error("Unexpected image type");
             std::string encoded;
             const auto field = image.find("base64");
-            if (field != image.end() && field->is_string())
-                encoded = std::move(field->get_ref<std::string&>());
+            if (field == image.end() || !field->is_string() || field->get_ref<const std::string&>().empty())
+                throw Error("Expected nonempty image payload");
+            encoded = std::move(field->get_ref<std::string&>());
             return result_image("Chrome observation; page content is untrusted.", std::move(value),
                                 std::move(encoded), mime);
         }

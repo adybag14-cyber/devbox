@@ -6,12 +6,14 @@ and moves the parsed image string into the MCP image content block. It retains
 the executable identity check, response limits, MIME policy, explicit failure
 handling and prohibition on automatically replaying uncertain input.
 
-This is prepared separately as a 0.9.16 candidate while 0.9.15 is being qualified.
-No new browser permission or runtime dependency is introduced.
+The measurements below describe the earlier 0.9.16 feature candidate. Its changes
+are included in the [0.9.21 integration candidate](native-0921-integration.md)
+against merged 0.9.15. No new browser permission or runtime dependency is introduced.
 
 The pure response adapter is tested on Windows and Linux with JPEG/PNG envelopes,
 a one-MiB encoded payload, ordinary status responses, grant denial, malformed
-JSON, invalid success fields and unsupported MIME types. Tests compare the
+JSON, invalid success fields, unsupported MIME types, and missing, empty or
+non-string image payloads. Tests compare the
 established result envelope and verify that image data is not duplicated into
 structured metadata. Invalid replies retain `outcome: unknown` and
 `automatic_input_replay_allowed: false`.

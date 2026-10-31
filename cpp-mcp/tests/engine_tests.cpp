@@ -314,7 +314,9 @@ int main(int argc, char** argv) {
             require(!monitor.ready(cpp_tool_count), "A failed background store probe rejects readiness");
             const auto incident_file = probe_config->project_root / "run" / "mcp-incidents.jsonl";
             const auto await_readiness_incident = [&](bool expected_ready) {
-                const auto deadline = Clock::now() + Millis(12000);
+                // More than two ten-second monitor intervals, while the
+                // recovery assertion below still enforces the thirty-second cooldown.
+                const auto deadline = Clock::now() + Millis(25000);
                 while (Clock::now() < deadline) {
                     if (fs::exists(incident_file)) {
                         const auto content = read_file(incident_file);
