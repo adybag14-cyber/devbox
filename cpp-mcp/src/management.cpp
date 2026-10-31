@@ -854,6 +854,16 @@ int supervise(const ManagementOptions& options) {
             publish();
         }
         if (child && child->alive() && Clock::now() >= next_health) {
+            const auto health_log = [&](std::string message) {
+                try {
+                    log(root, message);
+                    state.erase("healthLogError");
+                } catch (...) {
+                    // A locked diagnostic log must not turn a preserved frontend
+                    // into a supervisor failure. Keep the state-file evidence.
+                    state["healthLogError"] = "Could not append the health recovery diagnostic log";
+                }
+            };
             state["companions"] = companions.tick();
             const auto env = managed_environment(root, config, child->generation);
             Json probe_failure;
@@ -878,7 +888,7 @@ int supervise(const ManagementOptions& options) {
                 probe_failure["consecutiveFailures"] = unhealthy;
                 state["lastHealthFailure"] = probe_failure;
                 if (unhealthy == 1)
-                    log(root, "owned frontend readiness failed: " + probe_failure.dump());
+                    health_log("owned frontend readiness failed: " + probe_failure.dump());
             }
             // Public route failures are diagnostic only; they never authorize killing MCP.
             if (config.at("environment").contains("PUBLIC_BASE_URL")) {
@@ -905,8 +915,8 @@ int supervise(const ManagementOptions& options) {
                                                        {"previousChild", previous_child},
                                                        {"reason", "consecutive_readiness_failures"},
                                                        {"probe", probe_failure}};
-                    log(root, "owned frontend stopped after confirmed health drain: " +
-                                  state["lastHealthRecovery"].dump());
+                    health_log("owned frontend stopped after confirmed health drain: " +
+                               state["lastHealthRecovery"].dump());
                     child.reset();
                     if (resume)
                         (void)admission(root, config, current, "resume");
