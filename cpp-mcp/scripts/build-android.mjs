@@ -3,6 +3,7 @@ import { runCheckedProcess } from '../../src/mcp-implementation.js';
 import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {writeAndroidBuildBinding} from './android-artifact-binding.mjs';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const options = Object.fromEntries(process.argv.slice(2).map((arg, i, args) =>
   arg.startsWith('--') ? [arg.slice(2), args[i + 1]] : null).filter(Boolean));
@@ -34,4 +35,5 @@ await run(['-S', repo, '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
   `-DCMAKE_ANDROID_NDK=${ndk}`, `-DANDROID_ABI=${abi}`, '-DANDROID_PLATFORM=android-21',
   '-DANDROID_STL=c++_static']);
 await run(['--build', build, '--parallel', '4']);
+await writeAndroidBuildBinding(build, abi);
 console.log(JSON.stringify({ ok: true, abi, api: 21, ndk, build }));
