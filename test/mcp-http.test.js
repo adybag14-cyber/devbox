@@ -7,7 +7,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { once } from "node:events";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -137,6 +137,7 @@ const startServer = async (t, {
     port,
     stdout,
     stderr,
+    jobsRoot,
   };
 };
 
@@ -760,7 +761,7 @@ test("disconnecting an MCP call cancels its host command before side effects", a
 });
 
 test("async MCP jobs survive the request boundary and support status, logs, and cancellation", async (t) => {
-  const { port, stdout, stderr } = await startServer(t);
+  const { port, stdout, stderr, jobsRoot } = await startServer(t);
   const client = await connectClient(t, port);
   const tools = await client.listTools();
   const names = new Set((tools.tools || []).map((tool) => tool.name));
@@ -797,7 +798,8 @@ test("async MCP jobs survive the request boundary and support status, logs, and 
     if (["succeeded", "failed", "cancelled", "timed_out"].includes(status?.status)) break;
     await wait(100);
   }
-  assert.equal(status?.status, "succeeded", `async job did not succeed: ${JSON.stringify(status)}`);
+  const runnerError = status?.status === "succeeded" ? "" : await readFile(path.join(jobsRoot, jobId, "runner.stderr.log"), "utf8").then(text => text.slice(-5000)).catch(() => "unavailable");
+  assert.equal(status?.status, "succeeded", `async job did not succeed: ${JSON.stringify(status)}\nrunner stderr: ${runnerError}`);
 
   const logs = await client.callTool({
     name: "devbox_job_logs",
