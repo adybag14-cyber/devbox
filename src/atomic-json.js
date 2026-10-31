@@ -22,7 +22,7 @@ const replaceText = async (filePath, payload) => {
         return;
       } catch (error) {
         if (process.platform !== "win32" || !retryableWindowsErrors.has(error?.code) || attempt >= 9) throw error;
-        // Ten attempts, at most 655 ms of backoff. A persistent error still fails.
+        // Ten attempts, at most 555 ms of backoff. A persistent error still fails.
         await sleep(Math.min(100, 5 * 2 ** attempt));
       }
     }

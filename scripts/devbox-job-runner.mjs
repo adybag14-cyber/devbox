@@ -20,14 +20,20 @@ const heartbeatPath = path.join(dir, "heartbeat.json");
 const runnerProcessInstance = randomUUID();
 
 const writeStatus = value => writeJsonAtomic(statusPath, { ...value, runnerProcessInstance });
+const reportStatusFailure = (phase, error) => {
+  console.error(JSON.stringify({error: "JOB_STATUS_PERSIST_FAILED", phase, jobId: request.id,
+    code: String(error?.code ?? "UNKNOWN").slice(0,80),
+    message: String(error?.message ?? error).slice(0,800)}));
+  process.exitCode = 1;
+};
 
 const writeHeartbeat = state => writeJsonAtomic(heartbeatPath, {
-    pid: process.pid,
-    runnerProcessInstance,
-    status: state,
-    childPid,
-    runtimeMode: request.runtimeMode || config.runtimeMode,
-    updatedAtUtc: new Date().toISOString(),
+  pid: process.pid,
+  runnerProcessInstance,
+  status: state,
+  childPid,
+  runtimeMode: request.runtimeMode || config.runtimeMode,
+  updatedAtUtc: new Date().toISOString(),
 });
 
 const readStatus = () => readFile(statusPath, "utf8").then(JSON.parse).catch(() => null);
@@ -71,20 +77,28 @@ const cancellationPoll = setInterval(() => {
 cancellationPoll.unref?.();
 
 const queuedAtUtc = new Date().toISOString();
-await writeStatus({
-  id: request.id,
-  status: "queued",
-  mode: request.mode || "shell",
-  createdAtUtc: request.createdAtUtc,
-  queuedAtUtc,
-  startedAtUtc: null,
-  completedAtUtc: null,
-  runnerPid: process.pid,
-  exitCode: null,
-  readOnly: request.readOnly === true,
-  resourceClass: request.resourceClass || "light",
-  runtimeMode: request.runtimeMode || config.runtimeMode,
-});
+try {
+  await writeStatus({
+    id: request.id,
+    status: "queued",
+    mode: request.mode || "shell",
+    createdAtUtc: request.createdAtUtc,
+    queuedAtUtc,
+    startedAtUtc: null,
+    completedAtUtc: null,
+    runnerPid: process.pid,
+    exitCode: null,
+    readOnly: request.readOnly === true,
+    resourceClass: request.resourceClass || "light",
+    runtimeMode: request.runtimeMode || config.runtimeMode,
+  });
+} catch (error) {
+  clearInterval(cancellationPoll);
+  clearInterval(heartbeatTimer);
+  reportStatusFailure("queued", error);
+  // No execution lease, command or log sink has been started at this point.
+  process.exit(1);
+}
 await throwIfCancellationRequested();
 
 const stdout = createRotatingFileSink(stdoutPath, {
@@ -236,4 +250,10 @@ if (finalStatus) {
 heartbeatState = finalStatus?.status || "finished";
 await writeHeartbeat(heartbeatState).catch(() => {});
 const current = await readStatus();
-if (current?.status !== "cancelled" && finalStatus) await writeStatus(finalStatus);
+if (current?.status !== "cancelled" && finalStatus) {
+  try {
+    await writeStatus(finalStatus);
+  } catch (error) {
+    reportStatusFailure("terminal", error);
+  }
+}

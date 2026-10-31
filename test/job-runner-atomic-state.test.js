@@ -27,7 +27,7 @@ async function stopOwned(child) {
   await stopped;
 }
 
-test("detached job preserves terminal success across a temporary Windows reader lock", {skip: process.platform !== "win32", timeout: 30000}, async () => {
+for (const permanent of [false, true]) test(permanent ? "detached job explicitly reports a permanent terminal write failure" : "detached job preserves terminal success across a temporary Windows reader lock", {skip: process.platform !== "win32", timeout: 30000}, async () => {
   const parent = await realpath(os.tmpdir());
   const root = await mkdtemp(path.join(parent, "devbox-job-atomic-"));
   const job = path.join(root, "job");
@@ -74,12 +74,18 @@ test("detached job preserves terminal success across a temporary Windows reader 
     }, "staged terminal record");
     // Keep the actual Windows sharing violation in place across the first rename.
     await sleep(60);
-    await writeFile(release, "release");
+    if (!permanent) await writeFile(release, "release");
     const [code] = await exited;
-    assert.equal(code, 0, `Runner lost its terminal record: ${runnerError}`);
+    assert.equal(code, permanent ? 1 : 0, `Unexpected runner outcome: ${runnerError}`);
     const final = JSON.parse(await readFile(statusPath, "utf8"));
-    assert.equal(final.status, "succeeded");
-    assert.equal(final.exitCode, 0);
+    assert.equal(final.status, permanent ? "running" : "succeeded");
+    if (permanent) {
+      const diagnostic = JSON.parse(runnerError.trim());
+      assert.equal(diagnostic.error, "JOB_STATUS_PERSIST_FAILED");
+      assert.equal(diagnostic.phase, "terminal");
+      assert(diagnostic.message.length <= 800);
+      assert.equal(final.completedAtUtc, null);
+    } else assert.equal(final.exitCode, 0);
     assert.match(await readFile(path.join(job, "stdout.log"), "utf8"), /ATOMIC_JOB_DONE/);
     assert.deepEqual((await readdir(job)).filter(name => name.startsWith("status.json.") && name.endsWith(".tmp")), []);
   } finally {
@@ -88,6 +94,40 @@ test("detached job preserves terminal success across a temporary Windows reader 
     if (runner?.exitCode === null) await Promise.race([once(runner, "exit"), sleep(2000)]);
     if (lock?.exitCode === null) await Promise.race([once(lock, "exit"), sleep(2000)]);
     await stopOwned(runner); await stopOwned(lock);
+    assert.equal(path.dirname(await realpath(root)), parent);
+    assert.equal(await realpath(root), root);
+    await rm(root, {recursive: true, force: true});
+  }
+});
+
+test("failed queued-state persistence reports failure before running a command", {timeout: 15000}, async () => {
+  const parent = await realpath(os.tmpdir());
+  const root = await mkdtemp(path.join(parent, "devbox-queued-state-"));
+  const job = path.join(root, "job"), marker = path.join(root, "must-not-run");
+  await mkdir(path.join(job, "status.json"), {recursive: true});
+  const requestPath = path.join(job, "request.json");
+  await writeFile(requestPath, JSON.stringify({id: "job-queued-fixture", mode: "program", program: "node",
+    args: ["-e", "require('node:fs').writeFileSync(process.argv[1],'ran')", marker], workingDir: root,
+    timeoutMs: 5000, runtimeMode: "host", resourceClass: "light", createdAtUtc: new Date().toISOString()}));
+  let runner, errorText = "";
+  try {
+    runner = spawn(process.execPath, [path.join(repo, "scripts/devbox-job-runner.mjs"), requestPath], {
+      cwd: repo, windowsHide: true, stdio: ["ignore", "ignore", "pipe"],
+      env: {...process.env, DEVBOX_RUNTIME_MODE: "host", MCP_EXEC_SLOT_ROOT: path.join(root, "slots"),
+        MCP_JOBS_ROOT: path.join(root, "jobs"), HOST_WORKSPACE_PATH: root, HOST_DEFAULT_WORKDIR: root,
+        DEVBOX_WORKSPACE_PATH: root, DEVBOX_PROGRAM_ALLOWLIST: "node", HOST_PROGRAM_ALLOWLIST: "node"},
+    });
+    runner.stderr.on("data", bytes => {errorText = (errorText + bytes).slice(-5000);});
+    const [code] = await once(runner, "exit");
+    assert.equal(code, 1);
+    const diagnostic = JSON.parse(errorText.trim());
+    assert.equal(diagnostic.error, "JOB_STATUS_PERSIST_FAILED");
+    assert.equal(diagnostic.phase, "queued");
+    assert(diagnostic.message.length <= 800);
+    assert.equal(await exists(marker), false);
+    assert.equal(await exists(path.join(job, "stdout.log")), false);
+  } finally {
+    await stopOwned(runner);
     assert.equal(path.dirname(await realpath(root)), parent);
     assert.equal(await realpath(root), root);
     await rm(root, {recursive: true, force: true});
