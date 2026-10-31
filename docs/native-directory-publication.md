@@ -20,6 +20,8 @@ while the native publication operation is waiting and verifies complete
 publication. A persistent lock reaches its bounded failure with staging
 preserved. Empty and populated destination directories are both rejected with
 their contents unchanged. Linux publication checks also pass.
+The Windows fixture also publishes a directory beyond the ordinary MAX_PATH
+limit; the native move retains extended-length path support.
 
 This preserves the verified staging/configuration boundary of `manage init`
 and `manage prepare`. It adds no administrator requirement or runtime

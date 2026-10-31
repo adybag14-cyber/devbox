@@ -964,6 +964,14 @@ void publish_managed_directory(const fs::path& staging, const fs::path& destinat
         throw Error("NATIVE_DIRECTORY_PUBLICATION_BOUNDARY");
 #ifdef _WIN32
     const auto deadline = Clock::now() + std::clamp(retry_budget, Millis(0), Millis(5000));
+    const auto move_path = [](const fs::path& path) {
+        auto value = path.lexically_normal().make_preferred().native();
+        if (value.size() < MAX_PATH || value.starts_with(L"\\\\?\\"))
+            return value;
+        return value.starts_with(L"\\\\") ? std::wstring(L"\\\\?\\UNC\\") + value.substr(2)
+                                          : std::wstring(L"\\\\?\\") + value;
+    };
+    const auto source_path = move_path(staging), target_path = move_path(destination);
 #else
     (void)retry_budget;
 #endif
@@ -977,7 +985,7 @@ void publish_managed_directory(const fs::path& staging, const fs::path& destinat
 #ifdef _WIN32
         // No COPY_ALLOWED, REPLACE_EXISTING or reboot fallback. A successful
         // operation is the same-volume publication of the prepared directory.
-        if (MoveFileExW(staging.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH))
+        if (MoveFileExW(source_path.c_str(), target_path.c_str(), MOVEFILE_WRITE_THROUGH))
             return;
         const auto error = GetLastError();
         const auto now = Clock::now();

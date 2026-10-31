@@ -72,6 +72,19 @@ int main() {
             require(!fs::exists(absent) &&
                         read_file(locked / "preserved.txt") == "persistent failure preserves staging",
                     "bounded failure never publishes a partial copy or removes staged contents");
+            auto deep = root / "long-publication";
+            while (deep.native().size() < 300)
+                deep /= std::string(48, 'n');
+            const auto extended = [](const fs::path& path) {
+                return fs::path(std::wstring(L"\\\\?\\") + path.native());
+            };
+            const auto long_stage = deep / "stage", long_target = deep / "target";
+            fs::create_directories(extended(long_stage));
+            write_file(extended(long_stage / "proof.txt"), "long path publication");
+            publish_managed_directory(long_stage, long_target);
+            require(!fs::exists(extended(long_stage)) &&
+                        read_file(extended(long_target / "proof.txt")) == "long path publication",
+                    "publication preserves extended-length Windows path support");
 #else
             publish_managed_directory(staged, target);
 #endif
