@@ -27,8 +27,8 @@ Json chrome_bridge_call(const Config& config, const Json& args, const Cancel& ca
         return unavailable("CHROME_BRIDGE_PATH_REJECTED: use an absolute regular executable");
 #ifdef _WIN32
     // Deny replacement/write while checking and starting the exact operator-pinned image.
-    NativeHandle binary_lock(CreateFileW(binary.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                   FILE_ATTRIBUTE_NORMAL, nullptr));
+    NativeHandle binary_lock(CreateFileW(binary.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!binary_lock)
         return unavailable("CHROME_BRIDGE_IMAGE_LOCK_FAILED");
 #endif
@@ -58,6 +58,9 @@ Json chrome_bridge_call(const Config& config, const Json& args, const Cancel& ca
             return result_error("CHROME_BRIDGE_OUTCOME_UNKNOWN: inspect the page before retrying",
                                 Json{{"outcome", "unknown"}, {"automatic_input_replay_allowed", false}});
     }
+    return chrome_bridge_response(std::move(output));
+}
+Json chrome_bridge_response(std::string output) {
     try {
         auto value = Json::parse(output);
         if (!value.is_object() || !value.contains("ok") || !value["ok"].is_boolean())
