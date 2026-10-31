@@ -1,4 +1,5 @@
 add_library(devbox_setup src/setup.cpp)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" DEVBOX_SETUP_VERSION LIMIT_COUNT 1)
 if(NOT DEVBOX_SETUP_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
   message(FATAL_ERROR "The C++ installer VERSION must be a semantic version")

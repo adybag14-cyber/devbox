@@ -33,7 +33,10 @@ Medians of five trials, each serializing 200 responses:
 
 Numeric-status serialization used 99.3–99.6% fewer C++ allocations and took
 73.5–78.2% less elapsed time in these fixtures. Browser-control serialization
-also improved. The large ASCII case had a small Linux timing increase despite
+also improved. All baseline microbenchmarks ran before their candidate runs on
+a shared workstation, so order effects may influence those timing reductions;
+the allocation and byte-parity results do not depend on elapsed-time ordering.
+The large ASCII case had a small Linux timing increase despite
 fewer allocations. All microbenchmarks had zero retained C++ allocation growth
 across their measured loops; that is not a whole-server leak-freedom result.
 

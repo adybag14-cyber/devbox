@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
-import {mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync} from 'node:fs';
+import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync} from 'node:fs';
+import {setTimeout as sleep} from 'node:timers/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -42,6 +43,51 @@ test('compiled package identity follows exact clean tags and invalidates cached 
     git('add','.');git('commit','--quiet','-m','next version');generate();
     assert.equal(fields().dirty,'false');assert.equal(fields().release_tag,'','An older release tag must not label a newer clean commit');
     writeFileSync(version,'0.9.16"; invalid\n');generate(false);
+  } finally {
+    assert.equal(path.dirname(realpathSync(scratch)),parent);
+    assert.equal(realpathSync(scratch),scratch);
+    rmSync(scratch,{recursive:true,force:true});
+  }
+});
+
+test('version-only edits regenerate installer and TUI compile definitions',async()=>{
+  const parent=realpathSync(os.tmpdir());
+  const scratch=mkdtempSync(path.join(parent,'devbox-version-config-'));
+  const source=path.join(scratch,'source'),build=path.join(scratch,'build');
+  const repo=fileURLToPath(new URL('../../',import.meta.url));
+  const run=args=>{
+    const result=spawnSync('cmake',args,{cwd:scratch,encoding:'utf8',timeout:60000,windowsHide:true});
+    assert.equal(result.status,0,result.stderr||result.stdout||String(result.error));
+  };
+  try {
+    for(const component of ['cpp-bootstrap','setup-tui']){
+      mkdirSync(path.join(source,component,'src'),{recursive:true});
+      copyFileSync(path.join(repo,component,'CMakeLists.txt'),path.join(source,component,'CMakeLists.txt'));
+    }
+    for(const file of ['setup.cpp','main.cpp','bundle.cpp','bundle_pack_main.cpp','offline_main.cpp'])
+      writeFileSync(path.join(source,'cpp-bootstrap/src',file),'// Unbuilt source placeholder for the real CMake target definitions.\n');
+    writeFileSync(path.join(source,'setup-tui/src/main.cpp'),'// Unbuilt source placeholder.\n');
+    const version=path.join(source,'cpp-bootstrap/VERSION');
+    writeFileSync(version,'0.9.15\n');
+    writeFileSync(path.join(source,'CMakeLists.txt'),[
+      'cmake_minimum_required(VERSION 3.24)',
+      'project(version_fixture LANGUAGES CXX)',
+      'add_library(devbox_core INTERFACE)',
+      'set(DEVBOX_BUILD_TESTS OFF)',
+      'add_subdirectory(cpp-bootstrap)',
+      'add_subdirectory(setup-tui)',
+      'file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/versions-$<CONFIG>.txt" CONTENT "$<TARGET_PROPERTY:devbox_setup,COMPILE_DEFINITIONS>\\n$<TARGET_PROPERTY:devbox-tui,COMPILE_DEFINITIONS>")',
+      'add_custom_target(check_versions)',
+    ].join('\n'));
+    run(['-S',source,'-B',build,'-DCMAKE_BUILD_TYPE=Release']);
+    const definitions=()=>readFileSync(path.join(build,'versions-Release.txt'),'utf8');
+    assert.match(definitions(),/DEVBOX_SETUP_VERSION="0\.9\.15"/);
+    assert.match(definitions(),/DEVBOX_TUI_VERSION="0\.9\.15"/);
+    await sleep(1100); // Make the edit newer even with coarse timestamp precision.
+    writeFileSync(version,'0.9.16\n');
+    run(['--build',build,'--config','Release','--target','check_versions']);
+    assert.match(definitions(),/DEVBOX_SETUP_VERSION="0\.9\.16"/);
+    assert.match(definitions(),/DEVBOX_TUI_VERSION="0\.9\.16"/);
   } finally {
     assert.equal(path.dirname(realpathSync(scratch)),parent);
     assert.equal(realpathSync(scratch),scratch);
