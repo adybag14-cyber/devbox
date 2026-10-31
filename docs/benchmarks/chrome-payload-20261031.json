@@ -1,0 +1,892 @@
+{
+  "baselineSource": "1ab8027e7805a264314e4be74478a00e89fcf297",
+  "candidateSource": "d117aa21268d18e577ee1d55f01ad4343fafc0ab",
+  "productionChanged": false,
+  "platforms": {
+    "windows": {
+      "runs": {
+        "baseline": {
+          "build": {
+            "gitSha": "1ab8027e7805a264314e4be74478a00e89fcf297",
+            "gitRef": "perf/chrome-response-ownership-20261031",
+            "sourceTree": "32781e3d1dc706073cd5434df5c1bf601b8b9041",
+            "sourceDirty": false,
+            "sourceFingerprint": "34e0d0e319defeee713caf32fc7f704d583985052fc8f9cf7dacd7a095c82886",
+            "buildUnixSeconds": "1793472909",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.16",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "b8e60e21bd301538e5c068bfe0df6b11b2e32addefd406fe1204fd6168964599",
+            "executableName": "devbox-chrome-response-bench.exe",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "payload_bytes": 32768,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 3.8949999999999996,
+              "allocation_calls": 3700,
+              "allocated_bytes": 7317480,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 3.9137999999999997,
+              "allocation_calls": 3700,
+              "allocated_bytes": 7317480,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 3.6484999999999994,
+              "allocation_calls": 3700,
+              "allocated_bytes": 7317480,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 4.3517,
+              "allocation_calls": 3700,
+              "allocated_bytes": 7317480,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 3.7661,
+              "allocation_calls": 3700,
+              "allocated_bytes": 7317480,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 57.3056,
+              "allocation_calls": 3980,
+              "allocated_bytes": 120422140,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 53.7658,
+              "allocation_calls": 3980,
+              "allocated_bytes": 120422140,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 50.884899999999995,
+              "allocation_calls": 3980,
+              "allocated_bytes": 120422140,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 50.379,
+              "allocation_calls": 3980,
+              "allocated_bytes": 120422140,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 54.343700000000005,
+              "allocation_calls": 3980,
+              "allocated_bytes": 120422140,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 363.0799,
+              "allocation_calls": 4180,
+              "allocated_bytes": 926152360,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 365.44550000000004,
+              "allocation_calls": 4180,
+              "allocated_bytes": 926152360,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 345.5127,
+              "allocation_calls": 4180,
+              "allocated_bytes": 926152360,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 347.21269999999987,
+              "allocation_calls": 4180,
+              "allocated_bytes": 926152360,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 344.77410000000003,
+              "allocation_calls": 4180,
+              "allocated_bytes": 926152360,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            }
+          ]
+        },
+        "candidate": {
+          "build": {
+            "gitSha": "d117aa21268d18e577ee1d55f01ad4343fafc0ab",
+            "gitRef": "perf/chrome-response-ownership-20261031",
+            "sourceTree": "89e224831a59a3a3c45229f481b45e68e2ba77fb",
+            "sourceDirty": false,
+            "sourceFingerprint": "b4c705749d6b59c744a903c1929f34f208756f55fd4c2c784fe8c52d0679ebf6",
+            "buildUnixSeconds": "1793473209",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.16",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "be0cf7f4bfb70f7cbc997e8746063d9044234870abc62ed04f74f8d36c48d6a7",
+            "executableName": "devbox-chrome-response-bench.exe",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "payload_bytes": 32768,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 3.4880999999999998,
+              "allocation_calls": 3680,
+              "allocated_bytes": 6661020,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 3.4298,
+              "allocation_calls": 3680,
+              "allocated_bytes": 6661020,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 3.2941999999999996,
+              "allocation_calls": 3680,
+              "allocated_bytes": 6661020,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 3.7418999999999993,
+              "allocation_calls": 3680,
+              "allocated_bytes": 6661020,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 3.2921999999999993,
+              "allocation_calls": 3680,
+              "allocated_bytes": 6661020,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 50.38099999999999,
+              "allocation_calls": 3960,
+              "allocated_bytes": 109935280,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 49.8792,
+              "allocation_calls": 3960,
+              "allocated_bytes": 109935280,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 50.12049999999999,
+              "allocation_calls": 3960,
+              "allocated_bytes": 109935280,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 51.2837,
+              "allocation_calls": 3960,
+              "allocated_bytes": 109935280,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 52.289100000000005,
+              "allocation_calls": 3960,
+              "allocated_bytes": 109935280,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 370.83539999999994,
+              "allocation_calls": 4160,
+              "allocated_bytes": 842265180,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 364.09909999999996,
+              "allocation_calls": 4160,
+              "allocated_bytes": 842265180,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 360.77829999999994,
+              "allocation_calls": 4160,
+              "allocated_bytes": 842265180,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 365.8971,
+              "allocation_calls": 4160,
+              "allocated_bytes": 842265180,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 357.13380000000006,
+              "allocation_calls": 4160,
+              "allocated_bytes": 842265180,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            }
+          ]
+        }
+      },
+      "summary": [
+        {
+          "payloadBytes": 32768,
+          "mediansPer20Responses": {
+            "milliseconds": {
+              "baseline": 3.8949999999999996,
+              "candidate": 3.4298,
+              "reductionPercent": 11.943517329910126
+            },
+            "allocated_bytes": {
+              "baseline": 7317480,
+              "candidate": 6661020,
+              "reductionPercent": 8.971121205660971
+            },
+            "allocation_calls": {
+              "baseline": 3700,
+              "candidate": 3680,
+              "reductionPercent": 0.540540540540535
+            }
+          }
+        },
+        {
+          "payloadBytes": 524288,
+          "mediansPer20Responses": {
+            "milliseconds": {
+              "baseline": 53.7658,
+              "candidate": 50.38099999999999,
+              "reductionPercent": 6.295451755576975
+            },
+            "allocated_bytes": {
+              "baseline": 120422140,
+              "candidate": 109935280,
+              "reductionPercent": 8.708415246565126
+            },
+            "allocation_calls": {
+              "baseline": 3980,
+              "candidate": 3960,
+              "reductionPercent": 0.5025125628140725
+            }
+          }
+        },
+        {
+          "payloadBytes": 4194304,
+          "mediansPer20Responses": {
+            "milliseconds": {
+              "baseline": 347.21269999999987,
+              "candidate": 364.09909999999996,
+              "reductionPercent": -4.863416574336155
+            },
+            "allocated_bytes": {
+              "baseline": 926152360,
+              "candidate": 842265180,
+              "reductionPercent": 9.057600414687705
+            },
+            "allocation_calls": {
+              "baseline": 4180,
+              "candidate": 4160,
+              "reductionPercent": 0.4784688995215336
+            }
+          }
+        }
+      ]
+    },
+    "linux": {
+      "runs": {
+        "baseline": {
+          "build": {
+            "gitSha": "1ab8027e7805a264314e4be74478a00e89fcf297",
+            "gitRef": "HEAD",
+            "sourceTree": "32781e3d1dc706073cd5434df5c1bf601b8b9041",
+            "sourceDirty": false,
+            "sourceFingerprint": "3efd08bff729b683910330b3a6d21050dd6eab1d8c9d5001fb50b34c0b1c5708",
+            "buildUnixSeconds": "1793472908",
+            "compiler": "GNU 12.3.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.16",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "76f029b1211aab3d3821fdec06aada96a9e487cf4575184789406e6311aa6c5a",
+            "executableName": "devbox-chrome-response-bench",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "payload_bytes": 32768,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 3.943994,
+              "allocation_calls": 3180,
+              "allocated_bytes": 7178880,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 4.0861410000000005,
+              "allocation_calls": 3180,
+              "allocated_bytes": 7178880,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 3.9849130000000006,
+              "allocation_calls": 3180,
+              "allocated_bytes": 7178880,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 3.9116089999999994,
+              "allocation_calls": 3180,
+              "allocated_bytes": 7178880,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 3.956093,
+              "allocation_calls": 3180,
+              "allocated_bytes": 7178880,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 77.100092,
+              "allocation_calls": 3340,
+              "allocated_bytes": 112855760,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 77.312485,
+              "allocation_calls": 3340,
+              "allocated_bytes": 112855760,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 73.117313,
+              "allocation_calls": 3340,
+              "allocated_bytes": 112855760,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 73.397471,
+              "allocation_calls": 3340,
+              "allocated_bytes": 112855760,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 72.835547,
+              "allocation_calls": 3340,
+              "allocated_bytes": 112855760,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 841.2760719999999,
+              "allocation_calls": 3460,
+              "allocated_bytes": 901909260,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 824.9059839999999,
+              "allocation_calls": 3460,
+              "allocated_bytes": 901909260,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 833.830992,
+              "allocation_calls": 3460,
+              "allocated_bytes": 901909260,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 837.6185,
+              "allocation_calls": 3460,
+              "allocated_bytes": 901909260,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 823.2071949999998,
+              "allocation_calls": 3460,
+              "allocated_bytes": 901909260,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            }
+          ]
+        },
+        "candidate": {
+          "build": {
+            "gitSha": "d117aa21268d18e577ee1d55f01ad4343fafc0ab",
+            "gitRef": "HEAD",
+            "sourceTree": "89e224831a59a3a3c45229f481b45e68e2ba77fb",
+            "sourceDirty": false,
+            "sourceFingerprint": "7c2c7f513edc6de3ac1b834dcac8b7117644712c06b98ee8501ae0003f49432d",
+            "buildUnixSeconds": "1793473209",
+            "compiler": "GNU 12.3.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.16",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "e1ce02fc5feba395e9a00a2058aa9e940686495c87abe7e607ac367e2f6eba73",
+            "executableName": "devbox-chrome-response-bench",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "payload_bytes": 32768,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 5.322092999999999,
+              "allocation_calls": 3160,
+              "allocated_bytes": 6523500,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 4.9134199999999995,
+              "allocation_calls": 3160,
+              "allocated_bytes": 6523500,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 4.764037,
+              "allocation_calls": 3160,
+              "allocated_bytes": 6523500,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 4.281971,
+              "allocation_calls": 3160,
+              "allocated_bytes": 6523500,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 32768,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 4.21293,
+              "allocation_calls": 3160,
+              "allocated_bytes": 6523500,
+              "output_bytes": 655360,
+              "payload_sha256": "5ff074ddad88b7fcb4339cb7a3e68341061792869e43673b2de8525a75476bd8"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 77.99046200000001,
+              "allocation_calls": 3320,
+              "allocated_bytes": 102369980,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 76.903781,
+              "allocation_calls": 3320,
+              "allocated_bytes": 102369980,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 81.92990699999999,
+              "allocation_calls": 3320,
+              "allocated_bytes": 102369980,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 77.06929100000002,
+              "allocation_calls": 3320,
+              "allocated_bytes": 102369980,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 524288,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 76.06851,
+              "allocation_calls": 3320,
+              "allocated_bytes": 102369980,
+              "output_bytes": 10485760,
+              "payload_sha256": "5f7a26e1d78cd171b1aab0208da133e996c75285b94aa8ef06c6578ea0b26903"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 0,
+              "iterations": 20,
+              "milliseconds": 657.544342,
+              "allocation_calls": 3440,
+              "allocated_bytes": 818023160,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 1,
+              "iterations": 20,
+              "milliseconds": 666.647998,
+              "allocation_calls": 3440,
+              "allocated_bytes": 818023160,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 2,
+              "iterations": 20,
+              "milliseconds": 655.444233,
+              "allocation_calls": 3440,
+              "allocated_bytes": 818023160,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 3,
+              "iterations": 20,
+              "milliseconds": 656.254742,
+              "allocation_calls": 3440,
+              "allocated_bytes": 818023160,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            },
+            {
+              "payload_bytes": 4194304,
+              "trial": 4,
+              "iterations": 20,
+              "milliseconds": 678.1875739999999,
+              "allocation_calls": 3440,
+              "allocated_bytes": 818023160,
+              "output_bytes": 83886080,
+              "payload_sha256": "a58789e910e5f939afc433a00fef5930702927dc192cb237fd9e7449bd6ffe1d"
+            }
+          ]
+        }
+      },
+      "summary": [
+        {
+          "payloadBytes": 32768,
+          "mediansPer20Responses": {
+            "milliseconds": {
+              "baseline": 3.956093,
+              "candidate": 4.764037,
+              "reductionPercent": -20.422775703200102
+            },
+            "allocated_bytes": {
+              "baseline": 7178880,
+              "candidate": 6523500,
+              "reductionPercent": 9.12927921904253
+            },
+            "allocation_calls": {
+              "baseline": 3180,
+              "candidate": 3160,
+              "reductionPercent": 0.6289308176100628
+            }
+          }
+        },
+        {
+          "payloadBytes": 524288,
+          "mediansPer20Responses": {
+            "milliseconds": {
+              "baseline": 73.397471,
+              "candidate": 77.06929100000002,
+              "reductionPercent": -5.00265193060947
+            },
+            "allocated_bytes": {
+              "baseline": 112855760,
+              "candidate": 102369980,
+              "reductionPercent": 9.291311316320938
+            },
+            "allocation_calls": {
+              "baseline": 3340,
+              "candidate": 3320,
+              "reductionPercent": 0.5988023952095856
+            }
+          }
+        },
+        {
+          "payloadBytes": 4194304,
+          "mediansPer20Responses": {
+            "milliseconds": {
+              "baseline": 833.830992,
+              "candidate": 657.544342,
+              "reductionPercent": 21.141772336521647
+            },
+            "allocated_bytes": {
+              "baseline": 901909260,
+              "candidate": 818023160,
+              "reductionPercent": 9.30094674934372
+            },
+            "allocation_calls": {
+              "baseline": 3460,
+              "candidate": 3440,
+              "reductionPercent": 0.5780346820809301
+            }
+          }
+        }
+      ]
+    }
+  },
+  "method": "Five trials at each payload size; 20 adapters per trial, synthetic base64 payload, prepared owned input outside measured region. Parser and MCP envelope included; subprocess capture, actual screenshot, network and model time excluded. Native C++ new counters exclude direct C malloc. Shared workstation timing; no universal speed or peak-RAM claim."
+}
