@@ -50,7 +50,10 @@ test('compiled package identity follows exact clean tags and invalidates cached 
   }
 });
 
-test('version-only edits regenerate installer and TUI compile definitions',async()=>{
+const versionGenerators=[undefined];
+if(process.platform!=='win32' && process.env.CMAKE_GENERATOR!=='Ninja' &&
+   spawnSync('ninja',['--version'],{stdio:'ignore',windowsHide:true}).status===0)versionGenerators.push('Ninja');
+for(const selectedGenerator of versionGenerators)test(`version-only edits regenerate installer and TUI compile definitions (${selectedGenerator??'default'})`,async()=>{
   const parent=realpathSync(os.tmpdir());
   const scratch=mkdtempSync(path.join(parent,'devbox-version-config-'));
   const source=path.join(scratch,'source'),build=path.join(scratch,'build');
@@ -79,7 +82,7 @@ test('version-only edits regenerate installer and TUI compile definitions',async
       'file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/versions-$<CONFIG>.txt" CONTENT "$<TARGET_PROPERTY:devbox_setup,COMPILE_DEFINITIONS>\\n$<TARGET_PROPERTY:devbox-tui,COMPILE_DEFINITIONS>")',
       'add_custom_target(check_versions)',
     ].join('\n'));
-    run(['-S',source,'-B',build,'-DCMAKE_BUILD_TYPE=Release']);
+    run(['-S',source,'-B',build,'-DCMAKE_BUILD_TYPE=Release',...(selectedGenerator?['-G',selectedGenerator]:[])]);
     const definitions=()=>readFileSync(path.join(build,'versions-Release.txt'),'utf8');
     assert.match(definitions(),/DEVBOX_SETUP_VERSION="0\.9\.15"/);
     assert.match(definitions(),/DEVBOX_TUI_VERSION="0\.9\.15"/);
