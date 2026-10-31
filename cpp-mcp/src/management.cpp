@@ -911,6 +911,42 @@ Json send_control(const ManagementOptions& options, std::string action, const Js
     throw Error("NATIVE_CONTROL_TIMEOUT: inspect status before retrying");
 }
 } // namespace
+void publish_managed_directory(const fs::path& staging, const fs::path& destination, Millis retry_budget) {
+    if (!staging.is_absolute() || !destination.is_absolute() || staging == destination ||
+        staging.parent_path() != destination.parent_path() || fs::is_symlink(staging) ||
+        !fs::is_directory(staging))
+        throw Error("NATIVE_DIRECTORY_PUBLICATION_BOUNDARY");
+#ifdef _WIN32
+    const auto deadline = Clock::now() + std::clamp(retry_budget, Millis(0), Millis(5000));
+#else
+    (void)retry_budget;
+#endif
+    for (;;) {
+        std::error_code status_error;
+        const auto target = fs::symlink_status(destination, status_error);
+        if (status_error && status_error != std::errc::no_such_file_or_directory)
+            throw fs::filesystem_error("Native destination inspection", destination, status_error);
+        if (!status_error && target.type() != fs::file_type::not_found)
+            throw Error("NATIVE_DIRECTORY_DESTINATION_EXISTS");
+#ifdef _WIN32
+        // No COPY_ALLOWED, REPLACE_EXISTING or reboot fallback. A successful
+        // operation is the same-volume publication of the prepared directory.
+        if (MoveFileExW(staging.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH))
+            return;
+        const auto error = GetLastError();
+        const auto now = Clock::now();
+        if ((error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION &&
+             error != ERROR_LOCK_VIOLATION) ||
+            now >= deadline)
+            throw fs::filesystem_error("Native directory publication", staging, destination,
+                                       std::error_code(static_cast<int>(error), std::system_category()));
+        std::this_thread::sleep_for(std::min(Millis(25), std::chrono::ceil<Millis>(deadline - now)));
+#else
+        fs::rename(staging, destination);
+        return;
+#endif
+    }
+}
 
 void validate_managed_computer_selection(const fs::path& root, const Json& config, const Json& build,
                                          std::string_view hash, std::string_view source,
@@ -1041,9 +1077,8 @@ std::uint64_t management_instance(const Json& identity) {
 }
 void validate_managed_handoff_selection(const Json& current, const Json& handoff) {
     const auto selected = json_string(current, "sha256");
-    if (selected.size() != 64 ||
-        (selected != json_string(handoff.at("previous"), "sha256") &&
-         selected != json_string(handoff.at("candidate"), "sha256")))
+    if (selected.size() != 64 || (selected != json_string(handoff.at("previous"), "sha256") &&
+                                  selected != json_string(handoff.at("candidate"), "sha256")))
         throw Error("NATIVE_HANDOFF_SELECTION_CHANGED: reconcile the interrupted operation before startup");
 }
 Environment managed_environment(const fs::path& root, const Json& config, std::string generation) {
@@ -1285,7 +1320,7 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
             if (!fs::is_directory(destination) || !fs::is_empty(destination) || !fs::remove(destination))
                 throw Error("Native destination changed during initialization");
         }
-        fs::rename(staging, destination);
+        publish_managed_directory(staging, destination);
         Json result{{"initialized", !preparing},
                     {"root", path_text(root)},
                     {"policy", config.at("policy")},
