@@ -125,7 +125,7 @@ Json bounded_json(std::string_view input) {
         return true;
     });
 }
-bool jsonld(const Json& value, Json& result) {
+bool jsonld(const Json& value, Json& result, std::size_t& encoded_bytes) {
     struct Entry {
         const Json* value;
         unsigned depth;
@@ -178,9 +178,13 @@ bool jsonld(const Json& value, Json& result) {
             if (!entry.url.empty())
                 item["context_url"] = clipped(entry.url, 2048);
             if (useful && item.contains("@type") && item.size() > 2) {
-                if (result.dump().size() + item.dump().size() <= 32768)
+                // Account for the array delimiters once and each accepted item
+                // once. Re-encoding the accumulated prefix made this quadratic.
+                const auto added_bytes = item.dump().size() + (result.empty() ? 0U : 1U);
+                if (added_bytes <= 32768 - encoded_bytes) {
                     result.push_back(std::move(item));
-                else
+                    encoded_bytes += added_bytes;
+                } else
                     truncated = true;
             }
             for (const auto* key : {"@graph", "offers", "mainEntity", "itemListElement", "item", "author",
@@ -374,6 +378,7 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
     std::string text;
     Json schemas = Json::array(), variants = Json::array();
     std::size_t structured_bytes = 0;
+    std::size_t metadata_bytes = 2; // The initial empty JSON array, including both delimiters.
     const bool html = type.find("html") != type.npos || (type.empty() && body.find('<') != body.npos);
     if (html) {
         auto* document = lxb_html_document_create();
@@ -466,7 +471,8 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
                         try {
                             const auto raw = node_text(node, 65536, true);
                             const auto data = bounded_json(raw);
-                            const auto truncated = jsonld(data, result["structured_metadata"]);
+                            const auto truncated =
+                                jsonld(data, result["structured_metadata"], metadata_bytes);
                             result["structured_metadata_truncated"] =
                                 json_bool(result, "structured_metadata_truncated") || truncated;
                             if (structured_bytes + raw.size() <= 512 * 1024 && schemas.size() < 32) {
@@ -597,7 +603,8 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         if (type.find("json") != type.npos) {
             try {
                 const auto data = bounded_json(body);
-                result["structured_metadata_truncated"] = jsonld(data, result["structured_metadata"]);
+                result["structured_metadata_truncated"] =
+                    jsonld(data, result["structured_metadata"], metadata_bytes);
                 schemas.push_back(data);
                 const auto encoded = data.dump(1, ' ', false, Json::error_handler_t::replace);
                 result["content_truncated"] =
