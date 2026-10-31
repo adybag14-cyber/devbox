@@ -68,6 +68,8 @@ try {
     assert.equal(manifest.gitSha, expectedSha); assert.equal(manifest.sourceTree, expectedTree);
     assert.equal(manifest.dependencyBaseline, baseline);
     assert.equal(manifest.build.gitSha, expectedSha); assert.equal(manifest.build.sourceTree, expectedTree);
+    assert.equal(manifest.build.packageVersion, version, 'Native package identity must match the source package version');
+    if (process.env.GITHUB_REF_TYPE === 'tag') assert.equal(manifest.build.releaseTag, `bootstrap-v${version}`);
     assert.equal(manifest.build.sourceDirty, false); assert.equal(manifest.build.sanitizers, false);
     assert.deepEqual(manifest.binaries.map(binary => binary.name).sort(), ['devbox-mcp', 'devbox-setup', 'devbox-tui']);
     const bundle = path.join(scratch, target); await mkdir(bundle);

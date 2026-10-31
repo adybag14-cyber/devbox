@@ -1,5 +1,6 @@
 #include "devbox/allocator.hpp"
 #include "devbox/config.hpp"
+#include "devbox/contract.hpp"
 #include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/scoped_thread.hpp"
@@ -16,16 +17,35 @@ void require(bool condition, const char* message) {
 int main() {
     try {
         {
+            const auto build = build_snapshot();
+            require(build["nativeVersion"] == build_version(),
+                    "Build metadata preserves native server version");
+            require(build["packageVersion"].is_string() &&
+                        !build["packageVersion"].get_ref<const std::string&>().empty(),
+                    "Native binaries expose their compiled package version without external files");
+            require(build["releaseTag"].is_null() ||
+                        (build["sourceDirty"] == false &&
+                         build["releaseTag"] == "bootstrap-v" + build["packageVersion"].get<std::string>()),
+                    "Only a clean matching source release is identified by a release tag");
+        }
+        {
             Json fixtures = Json::array(
-                {nullptr, true, false, -123, UINT64_MAX, 1.25, -0.0, std::numeric_limits<double>::infinity(),
-                 std::numeric_limits<double>::quiet_NaN(), "", "quoted\"\\\n\t", "é😀",
-                 std::string(700000, 'x'), Json::array(), Json::object(), Json::binary({0, 1, 255})});
+                {nullptr, true, false, -123, UINT64_MAX, std::numeric_limits<std::int64_t>::min(),
+                 std::numeric_limits<std::int64_t>::max(), 1.25, -0.0,
+                 std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN(), "",
+                 "quoted\"\\\n\t", "é😀", std::string(700000, 'x'), Json::array(), Json::object(),
+                 Json::binary({0, 1, 255})});
             std::mt19937 random(23);
             for (std::size_t i = 0; i < 256; ++i) {
                 std::string bytes;
                 for (std::size_t j = 0; j < i; ++j)
                     bytes += static_cast<char>(random() & 255);
                 fixtures.push_back(Json{{bytes, Json::array({bytes, i, Json{{"nested", bytes}}})}});
+            }
+            for (unsigned i = 0; i < 256; ++i) {
+                const auto wide = (static_cast<std::uint64_t>(random()) << 32) | random();
+                fixtures.push_back(wide);
+                fixtures.push_back(-static_cast<std::int64_t>(wide >> 1));
             }
             for (std::size_t position : {0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 127, 128})
                 for (unsigned byte = 0; byte < 256; ++byte) {

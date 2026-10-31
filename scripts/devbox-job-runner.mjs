@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
 import { config } from "../src/config.js";
+import { writeJsonAtomic } from "../src/atomic-json.js";
 import { acquireExecutionSlot } from "../src/execution-slots.js";
 import { createRotatingFileSink } from "../src/job-logs.js";
 import { execInDevbox, execReadOnlyInDevbox, runProgramInDevbox } from "../src/runtime.js";
@@ -18,35 +19,22 @@ const cancelPath = path.join(dir, "cancel.requested");
 const heartbeatPath = path.join(dir, "heartbeat.json");
 const runnerProcessInstance = randomUUID();
 
-const writeStatus = async (value) => {
-  const temp = `${statusPath}.${process.pid}.tmp`;
-  await writeFile(temp, `${JSON.stringify({ ...value, runnerProcessInstance }, null, 2)}\n`, "utf8");
-  await rename(temp, statusPath);
+const writeStatus = value => writeJsonAtomic(statusPath, { ...value, runnerProcessInstance });
+const reportStatusFailure = (phase, error) => {
+  console.error(JSON.stringify({error: "JOB_STATUS_PERSIST_FAILED", phase, jobId: request.id,
+    code: String(error?.code ?? "UNKNOWN").slice(0,80),
+    message: String(error?.message ?? error).slice(0,800)}));
+  process.exitCode = 1;
 };
 
-const writeHeartbeat = async (state) => {
-  const temp = `${heartbeatPath}.${process.pid}.${randomUUID()}.tmp`;
-  const payload = `${JSON.stringify({
-    pid: process.pid,
-    runnerProcessInstance,
-    status: state,
-    childPid,
-    runtimeMode: request.runtimeMode || config.runtimeMode,
-    updatedAtUtc: new Date().toISOString(),
-  })}
-`;
-  await writeFile(temp, payload, "utf8");
-  try {
-    await rename(temp, heartbeatPath);
-  } catch (error) {
-    if (!["EEXIST", "EPERM"].includes(error?.code)) throw error;
-    try {
-      await writeFile(heartbeatPath, payload, "utf8");
-    } finally {
-      await rm(temp, { force: true }).catch(() => {});
-    }
-  }
-};
+const writeHeartbeat = state => writeJsonAtomic(heartbeatPath, {
+  pid: process.pid,
+  runnerProcessInstance,
+  status: state,
+  childPid,
+  runtimeMode: request.runtimeMode || config.runtimeMode,
+  updatedAtUtc: new Date().toISOString(),
+});
 
 const readStatus = () => readFile(statusPath, "utf8").then(JSON.parse).catch(() => null);
 const request = JSON.parse(await readFile(requestPath, "utf8"));
@@ -89,20 +77,28 @@ const cancellationPoll = setInterval(() => {
 cancellationPoll.unref?.();
 
 const queuedAtUtc = new Date().toISOString();
-await writeStatus({
-  id: request.id,
-  status: "queued",
-  mode: request.mode || "shell",
-  createdAtUtc: request.createdAtUtc,
-  queuedAtUtc,
-  startedAtUtc: null,
-  completedAtUtc: null,
-  runnerPid: process.pid,
-  exitCode: null,
-  readOnly: request.readOnly === true,
-  resourceClass: request.resourceClass || "light",
-  runtimeMode: request.runtimeMode || config.runtimeMode,
-});
+try {
+  await writeStatus({
+    id: request.id,
+    status: "queued",
+    mode: request.mode || "shell",
+    createdAtUtc: request.createdAtUtc,
+    queuedAtUtc,
+    startedAtUtc: null,
+    completedAtUtc: null,
+    runnerPid: process.pid,
+    exitCode: null,
+    readOnly: request.readOnly === true,
+    resourceClass: request.resourceClass || "light",
+    runtimeMode: request.runtimeMode || config.runtimeMode,
+  });
+} catch (error) {
+  clearInterval(cancellationPoll);
+  clearInterval(heartbeatTimer);
+  reportStatusFailure("queued", error);
+  // No execution lease, command or log sink has been started at this point.
+  process.exit(1);
+}
 await throwIfCancellationRequested();
 
 const stdout = createRotatingFileSink(stdoutPath, {
@@ -254,4 +250,10 @@ if (finalStatus) {
 heartbeatState = finalStatus?.status || "finished";
 await writeHeartbeat(heartbeatState).catch(() => {});
 const current = await readStatus();
-if (current?.status !== "cancelled" && finalStatus) await writeStatus(finalStatus);
+if (current?.status !== "cancelled" && finalStatus) {
+  try {
+    await writeStatus(finalStatus);
+  } catch (error) {
+    reportStatusFailure("terminal", error);
+  }
+}

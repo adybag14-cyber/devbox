@@ -1,10 +1,11 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { open, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { open, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { config } from "./config.js";
+import { writeJsonAtomic } from "./atomic-json.js";
 import { abortableSleep } from "./wait-utils.js";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -32,15 +33,10 @@ const jobPaths = (jobId) => {
     status: path.join(dir, "status.json"),
     stdout: path.join(dir, "stdout.log"),
     stderr: path.join(dir, "stderr.log"),
+    runnerStderr: path.join(dir, "runner.stderr.log"),
     cancel: path.join(dir, "cancel.requested"),
     heartbeat: path.join(dir, "heartbeat.json"),
   };
-};
-
-const writeJsonAtomic = async (filePath, value) => {
-  const temp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  await writeFile(temp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rename(temp, filePath);
 };
 
 const readJson = async (filePath) => JSON.parse(await readFile(filePath, "utf8"));
@@ -267,14 +263,22 @@ const startJobRequest = async (request) => {
     }),
   ]);
 
-  const child = spawn(process.execPath, [runnerPath, paths.request], {
-    cwd: projectRoot,
-    env: process.env,
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-  });
-  child.on("error", () => {});
+  // A detached runner must not depend on a parent pipe. Preserve fatal worker
+  // errors in its private job directory instead of silently losing the cause.
+  const runnerStderr = await open(paths.runnerStderr, "a", 0o600);
+  let child;
+  try {
+    child = spawn(process.execPath, [runnerPath, paths.request], {
+      cwd: projectRoot,
+      env: process.env,
+      detached: true,
+      stdio: ["ignore", "ignore", runnerStderr.fd],
+      windowsHide: true,
+    });
+    child.on("error", () => {});
+  } finally {
+    await runnerStderr.close();
+  }
   child.unref();
   const runnerPid = child.pid ?? null;
   return { id, status: "queued", runnerPid, jobDir: paths.dir, mode: normalized.mode, resourceClass: normalized.resourceClass };
