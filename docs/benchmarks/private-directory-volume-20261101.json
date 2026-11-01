@@ -1,0 +1,1493 @@
+{
+  "baselineSource": "0309aab3ba414bab15fe853cf9d04a2245ef1a19",
+  "candidateSource": "e15c6857f3ba5c5fa1a572febe0184a3747b4e56",
+  "productionChanged": false,
+  "runs": [
+    {
+      "side": "baseline",
+      "build": {
+        "gitSha": "0309aab3ba414bab15fe853cf9d04a2245ef1a19",
+        "gitRef": "HEAD",
+        "sourceTree": "217d96eec572025fb0141d2716fab1f6bd24130b",
+        "sourceDirty": false,
+        "sourceFingerprint": "6cf679e8248e992d167651e3ce7453f5408e3924699545a9d0c8b033bc484e6f",
+        "buildUnixSeconds": "1793562425",
+        "compiler": "MSVC 19.51.36260.0",
+        "implementation": "cpp",
+        "nativeVersion": "0.3.0",
+        "packageVersion": "0.9.29",
+        "releaseTag": null,
+        "contractVersion": 13,
+        "toolCount": 58,
+        "stateSchemaVersion": 2,
+        "stateCoordinatorProtocol": 1,
+        "nativeManagementVersion": 1,
+        "bundledRipgrep": {
+          "name": "ripgrep",
+          "version": "",
+          "source": "",
+          "sha256": "",
+          "bytes": 0,
+          "file": "devbox-rg.exe",
+          "pcre2": false,
+          "optional": true,
+          "compiledIdentity": false,
+          "releaseQualified": false
+        },
+        "sanitizers": false,
+        "binarySha256": "958bd47db25538c65c6285cb84e2b7a6b29d26008e7fb27ab010ca17c5e25ff5",
+        "executableName": "devbox-idle-components-bench.exe",
+        "deploymentGeneration": null
+      },
+      "measurements": [
+        {
+          "component": "utc_format",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.2742,
+          "allocated_bytes": 288000,
+          "allocation_calls": 10000,
+          "retained_bytes_delta": 0,
+          "observed": 24072
+        },
+        {
+          "component": "utc_parse",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0214,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "snapshot_age",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0524,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "build_snapshot",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.6379,
+          "allocated_bytes": 3488000,
+          "allocation_calls": 36000,
+          "retained_bytes_delta": 0,
+          "observed": 21063
+        },
+        {
+          "component": "small_json_read",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 7.9344,
+          "allocated_bytes": 114200,
+          "allocation_calls": 4400,
+          "retained_bytes_delta": 0,
+          "observed": 406
+        },
+        {
+          "component": "private_directory_check",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 159.6727,
+          "allocated_bytes": 289400,
+          "allocation_calls": 2800,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "admission_refresh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 194.0086,
+          "allocated_bytes": 578400,
+          "allocation_calls": 8700,
+          "retained_bytes_delta": 0,
+          "observed": 206
+        },
+        {
+          "component": "background_snapshot",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 1.5901,
+          "allocated_bytes": 2950400,
+          "allocation_calls": 26200,
+          "retained_bytes_delta": 0,
+          "observed": 2842
+        },
+        {
+          "component": "scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 18.9755,
+          "allocated_bytes": 2078800,
+          "allocation_calls": 36300,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        },
+        {
+          "component": "performance_persist_empty_samples",
+          "iterations": 20,
+          "warmup": 3,
+          "wall_ms": 57.4535,
+          "allocated_bytes": 1205340,
+          "allocation_calls": 12920,
+          "retained_bytes_delta": 0,
+          "observed": 92
+        },
+        {
+          "component": "find_program_pwsh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 33.1668,
+          "allocated_bytes": 7212400,
+          "allocation_calls": 19600,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "runtime_version_refresh",
+          "iterations": 3,
+          "warmup": 3,
+          "wall_ms": 1154.9099,
+          "allocated_bytes": 15641631,
+          "allocation_calls": 55599,
+          "retained_bytes_delta": 0,
+          "observed": 48
+        },
+        {
+          "component": "indexed_scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 68.2734,
+          "allocated_bytes": 31565900,
+          "allocation_calls": 84900,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        }
+      ],
+      "owner": {
+        "label": "20261101-volume-0-baseline",
+        "owner_pid": 48784,
+        "started_at_utc": "2026-11-01T20:00:57.671394+00:00",
+        "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+        "command": [
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-baseline\\devbox-idle-components-bench.exe",
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-comparison-0"
+        ],
+        "timeout_seconds": 180.0,
+        "hard_deadline_utc": "2026-11-01T22:30:00Z",
+        "pid": 44372,
+        "child_creation_filetime": 134380368576727136,
+        "child_created_at_utc": "2026-11-01T20:00:57.672714+00:00",
+        "exit_code": 0,
+        "ok": true,
+        "finished_at_utc": "2026-11-01T20:01:00.666698+00:00",
+        "job_accounting": {
+          "cpu_total_ms": 5093.75,
+          "cpu_user_ms": 1656.25,
+          "cpu_kernel_ms": 3437.5,
+          "total_processes": 128,
+          "active_processes": 1,
+          "page_faults": 497500,
+          "breakaway_allowed": true
+        },
+        "job_memory": {
+          "peak_process_committed_bytes": 63905792,
+          "peak_job_committed_bytes": 86843392
+        }
+      }
+    },
+    {
+      "side": "candidate",
+      "build": {
+        "gitSha": "e15c6857f3ba5c5fa1a572febe0184a3747b4e56",
+        "gitRef": "HEAD",
+        "sourceTree": "32a19e569783ddaba7739327cfda419c58dbb533",
+        "sourceDirty": false,
+        "sourceFingerprint": "d98c58ded0449503ba3cbfd4e29ce197990516e009af46691e24a36390677c4d",
+        "buildUnixSeconds": "1793562762",
+        "compiler": "MSVC 19.51.36260.0",
+        "implementation": "cpp",
+        "nativeVersion": "0.3.0",
+        "packageVersion": "0.9.29",
+        "releaseTag": null,
+        "contractVersion": 13,
+        "toolCount": 58,
+        "stateSchemaVersion": 2,
+        "stateCoordinatorProtocol": 1,
+        "nativeManagementVersion": 1,
+        "bundledRipgrep": {
+          "name": "ripgrep",
+          "version": "",
+          "source": "",
+          "sha256": "",
+          "bytes": 0,
+          "file": "devbox-rg.exe",
+          "pcre2": false,
+          "optional": true,
+          "compiledIdentity": false,
+          "releaseQualified": false
+        },
+        "sanitizers": false,
+        "binarySha256": "a98c73bd7c9109937905d3fe1179a728a3fa58fdccc8b897901c08f7985538cf",
+        "executableName": "devbox-idle-components-bench.exe",
+        "deploymentGeneration": null
+      },
+      "measurements": [
+        {
+          "component": "utc_format",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.229,
+          "allocated_bytes": 288000,
+          "allocation_calls": 10000,
+          "retained_bytes_delta": 0,
+          "observed": 24072
+        },
+        {
+          "component": "utc_parse",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0217,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "snapshot_age",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0519,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "build_snapshot",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.6293,
+          "allocated_bytes": 3488000,
+          "allocation_calls": 36000,
+          "retained_bytes_delta": 0,
+          "observed": 21063
+        },
+        {
+          "component": "small_json_read",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 8.1319,
+          "allocated_bytes": 114200,
+          "allocation_calls": 4400,
+          "retained_bytes_delta": 0,
+          "observed": 406
+        },
+        {
+          "component": "private_directory_check",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 35.0284,
+          "allocated_bytes": 273400,
+          "allocation_calls": 2700,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "admission_refresh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 50.2121,
+          "allocated_bytes": 562400,
+          "allocation_calls": 8600,
+          "retained_bytes_delta": 0,
+          "observed": 206
+        },
+        {
+          "component": "background_snapshot",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 1.568,
+          "allocated_bytes": 2950400,
+          "allocation_calls": 26200,
+          "retained_bytes_delta": 0,
+          "observed": 2842
+        },
+        {
+          "component": "scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 20.989,
+          "allocated_bytes": 2078800,
+          "allocation_calls": 36300,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        },
+        {
+          "component": "performance_persist_empty_samples",
+          "iterations": 20,
+          "warmup": 3,
+          "wall_ms": 58.0499,
+          "allocated_bytes": 1205340,
+          "allocation_calls": 12920,
+          "retained_bytes_delta": 0,
+          "observed": 92
+        },
+        {
+          "component": "find_program_pwsh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 34.2539,
+          "allocated_bytes": 7212400,
+          "allocation_calls": 19600,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "runtime_version_refresh",
+          "iterations": 3,
+          "warmup": 3,
+          "wall_ms": 1147.1265,
+          "allocated_bytes": 15740169,
+          "allocation_calls": 55605,
+          "retained_bytes_delta": 0,
+          "observed": 48
+        },
+        {
+          "component": "indexed_scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 74.5028,
+          "allocated_bytes": 31565900,
+          "allocation_calls": 84900,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        }
+      ],
+      "owner": {
+        "label": "20261101-volume-1-candidate",
+        "owner_pid": 6380,
+        "started_at_utc": "2026-11-01T20:01:00.742495+00:00",
+        "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+        "command": [
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-candidate\\devbox-idle-components-bench.exe",
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-comparison-1"
+        ],
+        "timeout_seconds": 180.0,
+        "hard_deadline_utc": "2026-11-01T22:30:00Z",
+        "pid": 13232,
+        "child_creation_filetime": 134380368607440778,
+        "child_created_at_utc": "2026-11-01T20:01:00.744078+00:00",
+        "exit_code": 0,
+        "ok": true,
+        "finished_at_utc": "2026-11-01T20:01:03.543544+00:00",
+        "job_accounting": {
+          "cpu_total_ms": 4875.0,
+          "cpu_user_ms": 1531.25,
+          "cpu_kernel_ms": 3343.75,
+          "total_processes": 128,
+          "active_processes": 1,
+          "page_faults": 497819,
+          "breakaway_allowed": true
+        },
+        "job_memory": {
+          "peak_process_committed_bytes": 64077824,
+          "peak_job_committed_bytes": 82808832
+        }
+      }
+    },
+    {
+      "side": "candidate",
+      "build": {
+        "gitSha": "e15c6857f3ba5c5fa1a572febe0184a3747b4e56",
+        "gitRef": "HEAD",
+        "sourceTree": "32a19e569783ddaba7739327cfda419c58dbb533",
+        "sourceDirty": false,
+        "sourceFingerprint": "d98c58ded0449503ba3cbfd4e29ce197990516e009af46691e24a36390677c4d",
+        "buildUnixSeconds": "1793562762",
+        "compiler": "MSVC 19.51.36260.0",
+        "implementation": "cpp",
+        "nativeVersion": "0.3.0",
+        "packageVersion": "0.9.29",
+        "releaseTag": null,
+        "contractVersion": 13,
+        "toolCount": 58,
+        "stateSchemaVersion": 2,
+        "stateCoordinatorProtocol": 1,
+        "nativeManagementVersion": 1,
+        "bundledRipgrep": {
+          "name": "ripgrep",
+          "version": "",
+          "source": "",
+          "sha256": "",
+          "bytes": 0,
+          "file": "devbox-rg.exe",
+          "pcre2": false,
+          "optional": true,
+          "compiledIdentity": false,
+          "releaseQualified": false
+        },
+        "sanitizers": false,
+        "binarySha256": "a98c73bd7c9109937905d3fe1179a728a3fa58fdccc8b897901c08f7985538cf",
+        "executableName": "devbox-idle-components-bench.exe",
+        "deploymentGeneration": null
+      },
+      "measurements": [
+        {
+          "component": "utc_format",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.2625,
+          "allocated_bytes": 288000,
+          "allocation_calls": 10000,
+          "retained_bytes_delta": 0,
+          "observed": 24072
+        },
+        {
+          "component": "utc_parse",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0215,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "snapshot_age",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0527,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "build_snapshot",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.6383,
+          "allocated_bytes": 3488000,
+          "allocation_calls": 36000,
+          "retained_bytes_delta": 0,
+          "observed": 21063
+        },
+        {
+          "component": "small_json_read",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 10.9779,
+          "allocated_bytes": 114200,
+          "allocation_calls": 4400,
+          "retained_bytes_delta": 0,
+          "observed": 406
+        },
+        {
+          "component": "private_directory_check",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 35.5422,
+          "allocated_bytes": 273400,
+          "allocation_calls": 2700,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "admission_refresh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 52.3834,
+          "allocated_bytes": 562400,
+          "allocation_calls": 8600,
+          "retained_bytes_delta": 0,
+          "observed": 206
+        },
+        {
+          "component": "background_snapshot",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 1.6616,
+          "allocated_bytes": 2950400,
+          "allocation_calls": 26200,
+          "retained_bytes_delta": 0,
+          "observed": 2842
+        },
+        {
+          "component": "scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 20.7106,
+          "allocated_bytes": 2078800,
+          "allocation_calls": 36300,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        },
+        {
+          "component": "performance_persist_empty_samples",
+          "iterations": 20,
+          "warmup": 3,
+          "wall_ms": 57.7531,
+          "allocated_bytes": 1205340,
+          "allocation_calls": 12920,
+          "retained_bytes_delta": 0,
+          "observed": 92
+        },
+        {
+          "component": "find_program_pwsh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 35.8378,
+          "allocated_bytes": 7212400,
+          "allocation_calls": 19600,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "runtime_version_refresh",
+          "iterations": 3,
+          "warmup": 3,
+          "wall_ms": 1083.6286,
+          "allocated_bytes": 15378863,
+          "allocation_calls": 55583,
+          "retained_bytes_delta": 0,
+          "observed": 48
+        },
+        {
+          "component": "indexed_scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 66.5367,
+          "allocated_bytes": 31565900,
+          "allocation_calls": 84900,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        }
+      ],
+      "owner": {
+        "label": "20261101-volume-2-candidate",
+        "owner_pid": 56560,
+        "started_at_utc": "2026-11-01T20:01:03.614324+00:00",
+        "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+        "command": [
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-candidate\\devbox-idle-components-bench.exe",
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-comparison-2"
+        ],
+        "timeout_seconds": 180.0,
+        "hard_deadline_utc": "2026-11-01T22:30:00Z",
+        "pid": 19216,
+        "child_creation_filetime": 134380368636152983,
+        "child_created_at_utc": "2026-11-01T20:01:03.615299+00:00",
+        "exit_code": 0,
+        "ok": true,
+        "finished_at_utc": "2026-11-01T20:01:06.238918+00:00",
+        "job_accounting": {
+          "cpu_total_ms": 4328.125,
+          "cpu_user_ms": 1281.25,
+          "cpu_kernel_ms": 3046.875,
+          "total_processes": 128,
+          "active_processes": 1,
+          "page_faults": 497828,
+          "breakaway_allowed": true
+        },
+        "job_memory": {
+          "peak_process_committed_bytes": 63942656,
+          "peak_job_committed_bytes": 82886656
+        }
+      }
+    },
+    {
+      "side": "baseline",
+      "build": {
+        "gitSha": "0309aab3ba414bab15fe853cf9d04a2245ef1a19",
+        "gitRef": "HEAD",
+        "sourceTree": "217d96eec572025fb0141d2716fab1f6bd24130b",
+        "sourceDirty": false,
+        "sourceFingerprint": "6cf679e8248e992d167651e3ce7453f5408e3924699545a9d0c8b033bc484e6f",
+        "buildUnixSeconds": "1793562425",
+        "compiler": "MSVC 19.51.36260.0",
+        "implementation": "cpp",
+        "nativeVersion": "0.3.0",
+        "packageVersion": "0.9.29",
+        "releaseTag": null,
+        "contractVersion": 13,
+        "toolCount": 58,
+        "stateSchemaVersion": 2,
+        "stateCoordinatorProtocol": 1,
+        "nativeManagementVersion": 1,
+        "bundledRipgrep": {
+          "name": "ripgrep",
+          "version": "",
+          "source": "",
+          "sha256": "",
+          "bytes": 0,
+          "file": "devbox-rg.exe",
+          "pcre2": false,
+          "optional": true,
+          "compiledIdentity": false,
+          "releaseQualified": false
+        },
+        "sanitizers": false,
+        "binarySha256": "958bd47db25538c65c6285cb84e2b7a6b29d26008e7fb27ab010ca17c5e25ff5",
+        "executableName": "devbox-idle-components-bench.exe",
+        "deploymentGeneration": null
+      },
+      "measurements": [
+        {
+          "component": "utc_format",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.2216,
+          "allocated_bytes": 288000,
+          "allocation_calls": 10000,
+          "retained_bytes_delta": 0,
+          "observed": 24072
+        },
+        {
+          "component": "utc_parse",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0208,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "snapshot_age",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0504,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "build_snapshot",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.6174,
+          "allocated_bytes": 3488000,
+          "allocation_calls": 36000,
+          "retained_bytes_delta": 0,
+          "observed": 21063
+        },
+        {
+          "component": "small_json_read",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 7.9063,
+          "allocated_bytes": 114200,
+          "allocation_calls": 4400,
+          "retained_bytes_delta": 0,
+          "observed": 406
+        },
+        {
+          "component": "private_directory_check",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 160.9529,
+          "allocated_bytes": 289400,
+          "allocation_calls": 2800,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "admission_refresh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 194.4979,
+          "allocated_bytes": 578400,
+          "allocation_calls": 8700,
+          "retained_bytes_delta": 0,
+          "observed": 206
+        },
+        {
+          "component": "background_snapshot",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 1.6056,
+          "allocated_bytes": 2950400,
+          "allocation_calls": 26200,
+          "retained_bytes_delta": 0,
+          "observed": 2842
+        },
+        {
+          "component": "scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 18.758,
+          "allocated_bytes": 2078800,
+          "allocation_calls": 36300,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        },
+        {
+          "component": "performance_persist_empty_samples",
+          "iterations": 20,
+          "warmup": 3,
+          "wall_ms": 57.3266,
+          "allocated_bytes": 1205340,
+          "allocation_calls": 12920,
+          "retained_bytes_delta": 0,
+          "observed": 92
+        },
+        {
+          "component": "find_program_pwsh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 35.8559,
+          "allocated_bytes": 7212400,
+          "allocation_calls": 19600,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "runtime_version_refresh",
+          "iterations": 3,
+          "warmup": 3,
+          "wall_ms": 1042.4728,
+          "allocated_bytes": 15444555,
+          "allocation_calls": 55587,
+          "retained_bytes_delta": 0,
+          "observed": 48
+        },
+        {
+          "component": "indexed_scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 67.6041,
+          "allocated_bytes": 31565900,
+          "allocation_calls": 84900,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        }
+      ],
+      "owner": {
+        "label": "20261101-volume-3-baseline",
+        "owner_pid": 51412,
+        "started_at_utc": "2026-11-01T20:01:06.310614+00:00",
+        "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+        "command": [
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-baseline\\devbox-idle-components-bench.exe",
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-comparison-3"
+        ],
+        "timeout_seconds": 180.0,
+        "hard_deadline_utc": "2026-11-01T22:30:00Z",
+        "pid": 54656,
+        "child_creation_filetime": 134380368663115705,
+        "child_created_at_utc": "2026-11-01T20:01:06.311571+00:00",
+        "exit_code": 0,
+        "ok": true,
+        "finished_at_utc": "2026-11-01T20:01:09.200436+00:00",
+        "job_accounting": {
+          "cpu_total_ms": 4734.375,
+          "cpu_user_ms": 1515.625,
+          "cpu_kernel_ms": 3218.75,
+          "total_processes": 128,
+          "active_processes": 1,
+          "page_faults": 497437,
+          "breakaway_allowed": true
+        },
+        "job_memory": {
+          "peak_process_committed_bytes": 64020480,
+          "peak_job_committed_bytes": 82423808
+        }
+      }
+    },
+    {
+      "side": "baseline",
+      "build": {
+        "gitSha": "0309aab3ba414bab15fe853cf9d04a2245ef1a19",
+        "gitRef": "HEAD",
+        "sourceTree": "217d96eec572025fb0141d2716fab1f6bd24130b",
+        "sourceDirty": false,
+        "sourceFingerprint": "6cf679e8248e992d167651e3ce7453f5408e3924699545a9d0c8b033bc484e6f",
+        "buildUnixSeconds": "1793562425",
+        "compiler": "MSVC 19.51.36260.0",
+        "implementation": "cpp",
+        "nativeVersion": "0.3.0",
+        "packageVersion": "0.9.29",
+        "releaseTag": null,
+        "contractVersion": 13,
+        "toolCount": 58,
+        "stateSchemaVersion": 2,
+        "stateCoordinatorProtocol": 1,
+        "nativeManagementVersion": 1,
+        "bundledRipgrep": {
+          "name": "ripgrep",
+          "version": "",
+          "source": "",
+          "sha256": "",
+          "bytes": 0,
+          "file": "devbox-rg.exe",
+          "pcre2": false,
+          "optional": true,
+          "compiledIdentity": false,
+          "releaseQualified": false
+        },
+        "sanitizers": false,
+        "binarySha256": "958bd47db25538c65c6285cb84e2b7a6b29d26008e7fb27ab010ca17c5e25ff5",
+        "executableName": "devbox-idle-components-bench.exe",
+        "deploymentGeneration": null
+      },
+      "measurements": [
+        {
+          "component": "utc_format",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.2172,
+          "allocated_bytes": 288000,
+          "allocation_calls": 10000,
+          "retained_bytes_delta": 0,
+          "observed": 24072
+        },
+        {
+          "component": "utc_parse",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0237,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "snapshot_age",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0519,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "build_snapshot",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.6201,
+          "allocated_bytes": 3488000,
+          "allocation_calls": 36000,
+          "retained_bytes_delta": 0,
+          "observed": 21063
+        },
+        {
+          "component": "small_json_read",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 7.9614,
+          "allocated_bytes": 114200,
+          "allocation_calls": 4400,
+          "retained_bytes_delta": 0,
+          "observed": 406
+        },
+        {
+          "component": "private_directory_check",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 161.4724,
+          "allocated_bytes": 289400,
+          "allocation_calls": 2800,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "admission_refresh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 198.2573,
+          "allocated_bytes": 578400,
+          "allocation_calls": 8700,
+          "retained_bytes_delta": 0,
+          "observed": 206
+        },
+        {
+          "component": "background_snapshot",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 1.6724,
+          "allocated_bytes": 2950400,
+          "allocation_calls": 26200,
+          "retained_bytes_delta": 0,
+          "observed": 2842
+        },
+        {
+          "component": "scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 19.4865,
+          "allocated_bytes": 2078800,
+          "allocation_calls": 36300,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        },
+        {
+          "component": "performance_persist_empty_samples",
+          "iterations": 20,
+          "warmup": 3,
+          "wall_ms": 57.0162,
+          "allocated_bytes": 1205340,
+          "allocation_calls": 12920,
+          "retained_bytes_delta": 0,
+          "observed": 92
+        },
+        {
+          "component": "find_program_pwsh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 32.9421,
+          "allocated_bytes": 7212400,
+          "allocation_calls": 19600,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "runtime_version_refresh",
+          "iterations": 3,
+          "warmup": 3,
+          "wall_ms": 1115.1367,
+          "allocated_bytes": 15444555,
+          "allocation_calls": 55587,
+          "retained_bytes_delta": 0,
+          "observed": 48
+        },
+        {
+          "component": "indexed_scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 75.0202,
+          "allocated_bytes": 31565900,
+          "allocation_calls": 84900,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        }
+      ],
+      "owner": {
+        "label": "20261101-volume-4-baseline",
+        "owner_pid": 35952,
+        "started_at_utc": "2026-11-01T20:01:09.273114+00:00",
+        "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+        "command": [
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-baseline\\devbox-idle-components-bench.exe",
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-comparison-4"
+        ],
+        "timeout_seconds": 180.0,
+        "hard_deadline_utc": "2026-11-01T22:30:00Z",
+        "pid": 54288,
+        "child_creation_filetime": 134380368692741491,
+        "child_created_at_utc": "2026-11-01T20:01:09.274149+00:00",
+        "exit_code": 0,
+        "ok": true,
+        "finished_at_utc": "2026-11-01T20:01:12.206422+00:00",
+        "job_accounting": {
+          "cpu_total_ms": 4906.25,
+          "cpu_user_ms": 1500.0,
+          "cpu_kernel_ms": 3406.25,
+          "total_processes": 128,
+          "active_processes": 1,
+          "page_faults": 497307,
+          "breakaway_allowed": true
+        },
+        "job_memory": {
+          "peak_process_committed_bytes": 64704512,
+          "peak_job_committed_bytes": 82866176
+        }
+      }
+    },
+    {
+      "side": "candidate",
+      "build": {
+        "gitSha": "e15c6857f3ba5c5fa1a572febe0184a3747b4e56",
+        "gitRef": "HEAD",
+        "sourceTree": "32a19e569783ddaba7739327cfda419c58dbb533",
+        "sourceDirty": false,
+        "sourceFingerprint": "d98c58ded0449503ba3cbfd4e29ce197990516e009af46691e24a36390677c4d",
+        "buildUnixSeconds": "1793562762",
+        "compiler": "MSVC 19.51.36260.0",
+        "implementation": "cpp",
+        "nativeVersion": "0.3.0",
+        "packageVersion": "0.9.29",
+        "releaseTag": null,
+        "contractVersion": 13,
+        "toolCount": 58,
+        "stateSchemaVersion": 2,
+        "stateCoordinatorProtocol": 1,
+        "nativeManagementVersion": 1,
+        "bundledRipgrep": {
+          "name": "ripgrep",
+          "version": "",
+          "source": "",
+          "sha256": "",
+          "bytes": 0,
+          "file": "devbox-rg.exe",
+          "pcre2": false,
+          "optional": true,
+          "compiledIdentity": false,
+          "releaseQualified": false
+        },
+        "sanitizers": false,
+        "binarySha256": "a98c73bd7c9109937905d3fe1179a728a3fa58fdccc8b897901c08f7985538cf",
+        "executableName": "devbox-idle-components-bench.exe",
+        "deploymentGeneration": null
+      },
+      "measurements": [
+        {
+          "component": "utc_format",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.2253,
+          "allocated_bytes": 288000,
+          "allocation_calls": 10000,
+          "retained_bytes_delta": 0,
+          "observed": 24072
+        },
+        {
+          "component": "utc_parse",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.0214,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "snapshot_age",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 0.052,
+          "allocated_bytes": 0,
+          "allocation_calls": 0,
+          "retained_bytes_delta": 0,
+          "observed": 1003
+        },
+        {
+          "component": "build_snapshot",
+          "iterations": 1000,
+          "warmup": 3,
+          "wall_ms": 1.7007,
+          "allocated_bytes": 3488000,
+          "allocation_calls": 36000,
+          "retained_bytes_delta": 0,
+          "observed": 21063
+        },
+        {
+          "component": "small_json_read",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 7.9508,
+          "allocated_bytes": 114200,
+          "allocation_calls": 4400,
+          "retained_bytes_delta": 0,
+          "observed": 406
+        },
+        {
+          "component": "private_directory_check",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 34.8214,
+          "allocated_bytes": 273400,
+          "allocation_calls": 2700,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "admission_refresh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 51.5347,
+          "allocated_bytes": 562400,
+          "allocation_calls": 8600,
+          "retained_bytes_delta": 0,
+          "observed": 206
+        },
+        {
+          "component": "background_snapshot",
+          "iterations": 200,
+          "warmup": 3,
+          "wall_ms": 1.6508,
+          "allocated_bytes": 2950400,
+          "allocation_calls": 26200,
+          "retained_bytes_delta": 0,
+          "observed": 2842
+        },
+        {
+          "component": "scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 21.2859,
+          "allocated_bytes": 2078800,
+          "allocation_calls": 36300,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        },
+        {
+          "component": "performance_persist_empty_samples",
+          "iterations": 20,
+          "warmup": 3,
+          "wall_ms": 58.2159,
+          "allocated_bytes": 1205340,
+          "allocation_calls": 12920,
+          "retained_bytes_delta": 0,
+          "observed": 92
+        },
+        {
+          "component": "find_program_pwsh",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 34.8207,
+          "allocated_bytes": 7212400,
+          "allocation_calls": 19600,
+          "retained_bytes_delta": 0,
+          "observed": 103
+        },
+        {
+          "component": "runtime_version_refresh",
+          "iterations": 3,
+          "warmup": 3,
+          "wall_ms": 1072.5022,
+          "allocated_bytes": 15641631,
+          "allocation_calls": 55599,
+          "retained_bytes_delta": 0,
+          "observed": 48
+        },
+        {
+          "component": "indexed_scheduler_snapshot",
+          "iterations": 100,
+          "warmup": 3,
+          "wall_ms": 68.4564,
+          "allocated_bytes": 31565900,
+          "allocation_calls": 84900,
+          "retained_bytes_delta": 0,
+          "observed": 2060
+        }
+      ],
+      "owner": {
+        "label": "20261101-volume-5-candidate",
+        "owner_pid": 12524,
+        "started_at_utc": "2026-11-01T20:01:12.287927+00:00",
+        "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+        "command": [
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-candidate\\devbox-idle-components-bench.exe",
+          "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-comparison-5"
+        ],
+        "timeout_seconds": 180.0,
+        "hard_deadline_utc": "2026-11-01T22:30:00Z",
+        "pid": 55200,
+        "child_creation_filetime": 134380368722889919,
+        "child_created_at_utc": "2026-11-01T20:01:12.288992+00:00",
+        "exit_code": 0,
+        "ok": true,
+        "finished_at_utc": "2026-11-01T20:01:14.890145+00:00",
+        "job_accounting": {
+          "cpu_total_ms": 4703.125,
+          "cpu_user_ms": 1468.75,
+          "cpu_kernel_ms": 3234.375,
+          "total_processes": 128,
+          "active_processes": 1,
+          "page_faults": 497615,
+          "breakaway_allowed": true
+        },
+        "job_memory": {
+          "peak_process_committed_bytes": 64016384,
+          "peak_job_committed_bytes": 82583552
+        }
+      }
+    }
+  ],
+  "summary": [
+    {
+      "component": "admission_refresh",
+      "iterations": 100,
+      "medians": {
+        "wall_ms": {
+          "baseline": 194.4979,
+          "candidate": 51.5347,
+          "reductionPercent": 73.50372420473434
+        },
+        "allocation_calls": {
+          "baseline": 8700,
+          "candidate": 8600,
+          "reductionPercent": 1.1494252873563204
+        },
+        "allocated_bytes": {
+          "baseline": 578400,
+          "candidate": 562400,
+          "reductionPercent": 2.766251728907332
+        }
+      }
+    },
+    {
+      "component": "background_snapshot",
+      "iterations": 200,
+      "medians": {
+        "wall_ms": {
+          "baseline": 1.6056,
+          "candidate": 1.6508,
+          "reductionPercent": -2.8151469855505873
+        },
+        "allocation_calls": {
+          "baseline": 26200,
+          "candidate": 26200,
+          "reductionPercent": 0.0
+        },
+        "allocated_bytes": {
+          "baseline": 2950400,
+          "candidate": 2950400,
+          "reductionPercent": 0.0
+        }
+      }
+    },
+    {
+      "component": "build_snapshot",
+      "iterations": 1000,
+      "medians": {
+        "wall_ms": {
+          "baseline": 1.6201,
+          "candidate": 1.6383,
+          "reductionPercent": -1.123387445219426
+        },
+        "allocation_calls": {
+          "baseline": 36000,
+          "candidate": 36000,
+          "reductionPercent": 0.0
+        },
+        "allocated_bytes": {
+          "baseline": 3488000,
+          "candidate": 3488000,
+          "reductionPercent": 0.0
+        }
+      }
+    },
+    {
+      "component": "find_program_pwsh",
+      "iterations": 100,
+      "medians": {
+        "wall_ms": {
+          "baseline": 33.1668,
+          "candidate": 34.8207,
+          "reductionPercent": -4.986613119143235
+        },
+        "allocation_calls": {
+          "baseline": 19600,
+          "candidate": 19600,
+          "reductionPercent": 0.0
+        },
+        "allocated_bytes": {
+          "baseline": 7212400,
+          "candidate": 7212400,
+          "reductionPercent": 0.0
+        }
+      }
+    },
+    {
+      "component": "indexed_scheduler_snapshot",
+      "iterations": 100,
+      "medians": {
+        "wall_ms": {
+          "baseline": 68.2734,
+          "candidate": 68.4564,
+          "reductionPercent": -0.2680399687140289
+        },
+        "allocation_calls": {
+          "baseline": 84900,
+          "candidate": 84900,
+          "reductionPercent": 0.0
+        },
+        "allocated_bytes": {
+          "baseline": 31565900,
+          "candidate": 31565900,
+          "reductionPercent": 0.0
+        }
+      }
+    },
+    {
+      "component": "performance_persist_empty_samples",
+      "iterations": 20,
+      "medians": {
+        "wall_ms": {
+          "baseline": 57.3266,
+          "candidate": 58.0499,
+          "reductionPercent": -1.261717945944807
+        },
+        "allocation_calls": {
+          "baseline": 12920,
+          "candidate": 12920,
+          "reductionPercent": 0.0
+        },
+        "allocated_bytes": {
+          "baseline": 1205340,
+          "candidate": 1205340,
+          "reductionPercent": 0.0
+        }
+      }
+    },
+    {
+      "component": "private_directory_check",
+      "iterations": 100,
+      "medians": {
+        "wall_ms": {
+          "baseline": 160.9529,
+          "candidate": 35.0284,
+          "reductionPercent": 78.23686308230545
+        },
+        "allocation_calls": {
+          "baseline": 2800,
+          "candidate": 2700,
+          "reductionPercent": 3.57142857142857
+        },
+        "allocated_bytes": {
+          "baseline": 289400,
+          "candidate": 273400,
+          "reductionPercent": 5.528680027643396
+        }
+      }
+    },
+    {
+      "component": "runtime_version_refresh",
+      "iterations": 3,
+      "medians": {
+        "wall_ms": {
+          "baseline": 1115.1367,
+          "candidate": 1083.6286,
+          "reductionPercent": 2.825492157149878
+        },
+        "allocation_calls": {
+          "baseline": 55587,
+          "candidate": 55599,
+          "reductionPercent": -0.02158778131577943
+        },
+        "allocated_bytes": {
+          "baseline": 15444555,
+          "candidate": 15641631,
+          "reductionPercent": -1.2760225205582065
+        }
+      }
+    },
+    {
+      "component": "scheduler_snapshot",
+      "iterations": 100,
+      "medians": {
+        "wall_ms": {
+          "baseline": 18.9755,
+          "candidate": 20.989,
+          "reductionPercent": -10.611051092197844
+        },
+        "allocation_calls": {
+          "baseline": 36300,
+          "candidate": 36300,
+          "reductionPercent": 0.0
+        },
+        "allocated_bytes": {
+          "baseline": 2078800,
+          "candidate": 2078800,
+          "reductionPercent": 0.0
+        }
+      }
+    },
+    {
+      "component": "small_json_read",
+      "iterations": 200,
+      "medians": {
+        "wall_ms": {
+          "baseline": 7.9344,
+          "candidate": 8.1319,
+          "reductionPercent": -2.4891611211937947
+        },
+        "allocation_calls": {
+          "baseline": 4400,
+          "candidate": 4400,
+          "reductionPercent": 0.0
+        },
+        "allocated_bytes": {
+          "baseline": 114200,
+          "candidate": 114200,
+          "reductionPercent": 0.0
+        }
+      }
+    },
+    {
+      "component": "snapshot_age",
+      "iterations": 1000,
+      "medians": {
+        "wall_ms": {
+          "baseline": 0.0519,
+          "candidate": 0.052,
+          "reductionPercent": -0.19267822736031004
+        },
+        "allocation_calls": {
+          "baseline": 0,
+          "candidate": 0,
+          "reductionPercent": null
+        },
+        "allocated_bytes": {
+          "baseline": 0,
+          "candidate": 0,
+          "reductionPercent": null
+        }
+      }
+    },
+    {
+      "component": "utc_format",
+      "iterations": 1000,
+      "medians": {
+        "wall_ms": {
+          "baseline": 1.2216,
+          "candidate": 1.229,
+          "reductionPercent": -0.6057629338572346
+        },
+        "allocation_calls": {
+          "baseline": 10000,
+          "candidate": 10000,
+          "reductionPercent": 0.0
+        },
+        "allocated_bytes": {
+          "baseline": 288000,
+          "candidate": 288000,
+          "reductionPercent": 0.0
+        }
+      }
+    },
+    {
+      "component": "utc_parse",
+      "iterations": 1000,
+      "medians": {
+        "wall_ms": {
+          "baseline": 0.0214,
+          "candidate": 0.0215,
+          "reductionPercent": -0.4672897196261738
+        },
+        "allocation_calls": {
+          "baseline": 0,
+          "candidate": 0,
+          "reductionPercent": null
+        },
+        "allocated_bytes": {
+          "baseline": 0,
+          "candidate": 0,
+          "reductionPercent": null
+        }
+      }
+    }
+  ],
+  "method": "Existing native idle-components benchmark, three fresh Windows processes per source, ABBAAB order after builds/tests. New same-length private fixture paths; three warmup operations per component. Includes real private-directory checks, admission refresh, filesystem, state coordinator and FULL-durability persistence. Every run verified owned coordinator shutdown and zero retained C++ allocation growth per measured component. Shared workstation; C++ requested bytes exclude C allocations and are not peak RAM. No production CPU or latency reduction is claimed.",
+  "artifacts": {
+    "baseline": {
+      "file": "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-baseline\\devbox-idle-components-bench.exe",
+      "sha256": "958bd47db25538c65c6285cb84e2b7a6b29d26008e7fb27ab010ca17c5e25ff5"
+    },
+    "candidate": {
+      "file": "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\volume-candidate\\devbox-idle-components-bench.exe",
+      "sha256": "a98c73bd7c9109937905d3fe1179a728a3fa58fdccc8b897901c08f7985538cf"
+    }
+  }
+}
