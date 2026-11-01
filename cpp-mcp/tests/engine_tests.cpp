@@ -315,7 +315,8 @@ int main(int argc, char** argv) {
             bool baseline_observed = false;
             while (Clock::now() < baseline_deadline) {
                 const auto workers = background.snapshot();
-                if (json_uint(workers.at("incident-monitor"), "lastSuccessUnixMs") >= baseline_after &&
+                const auto observer = workers.find("incident-monitor");
+                if (observer != workers.end() && json_uint(*observer, "lastSuccessUnixMs") > baseline_after &&
                     monitor.ready(cpp_tool_count)) {
                     baseline_observed = true;
                     break;
