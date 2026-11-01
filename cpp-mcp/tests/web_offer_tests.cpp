@@ -49,6 +49,31 @@ int main(int argc, char** argv) {
             return 0;
         }
         {
+            const auto visible = web::offer_view(
+                extract("<p>Example phone From £499, previously £699, or £13.86/month. Save £200.</p>"));
+            require(visible["price_evidence"] == "unparsed_currency_text" && visible["offers"].empty() &&
+                        visible["total_offers"] == 0 && !visible.contains("next_offer_offset"),
+                    "visible currency text is distinguished without inventing a variant offer");
+            require(json_string(visible, "offer_note").find("monthly payments") != std::string::npos,
+                    "unparsed amounts retain the payment and savings ambiguity");
+            require(web::offer_view(extract("<p>Price: GBP 499 for this example.</p>"))["price_evidence"] ==
+                        "unparsed_currency_text",
+                    "Unicode spacing around currency amounts is preserved");
+            require(web::offer_view(extract("<p>Example phone has 128 GB storage.</p>"))["price_evidence"] ==
+                        "none",
+                    "ordinary numeric specifications do not fabricate currency evidence");
+            require(web::offer_view(extract(
+                        "<script>const amount='£499';</script><p hidden>£399</p>"))["price_evidence"] ==
+                        "none",
+                    "hidden and executable source text is not price evidence");
+            auto blocked = extract("<p>Example amount £499.</p>");
+            blocked["status"] = "challenge_required";
+            require(web::offer_view(blocked)["price_evidence"] == "none",
+                    "blocked documents do not gain usable price evidence");
+            require(web::offer_view(extract(ld(product())))["price_evidence"] == "source_reported",
+                    "parsed offers retain their existing evidence classification");
+        }
+        {
             const auto primary =
                 Json{{"desktop_buybox_group_1", Json::array({Json{{"priceAmount", 529.0},
                                                                   {"buyingOptionType", "NEW"},

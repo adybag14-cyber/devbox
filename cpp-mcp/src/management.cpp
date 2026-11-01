@@ -144,9 +144,11 @@ std::string local_url(const Environment& env) {
         host = "[" + host + "]";
     return "http://" + host + ":" + env.at("PORT");
 }
-Json metadata(const Environment& env) {
+Json metadata(const Environment& env, int* status = nullptr) {
     const auto response =
         http_request("GET", local_url(env) + "/", {}, Json::object(), Millis(1000), 256 * 1024, {}, true);
+    if (status)
+        *status = response.status;
     if (response.status != 200)
         throw Error("NATIVE_LOCAL_METADATA_UNAVAILABLE");
     return Json::parse(response.body);
@@ -157,15 +159,38 @@ bool matches_server(const Json& value, const Json& candidate, std::string_view g
     return json_string(value.at("build"), "deploymentGeneration") == generation &&
            json_string(value.at("build"), "binarySha256") == json_string(candidate, "sha256");
 }
-bool ready(const Environment& env, const Json& candidate, std::string_view generation) {
+bool ready(const Environment& env, const Json& candidate, std::string_view generation,
+           Json* failure = nullptr) {
+    const auto started = Clock::now();
+    const char* phase = "metadata";
+    int received_status = 0;
+    const auto rejected = [&](const char* reason, int status = 0) {
+        if (failure)
+            *failure =
+                Json{{"reason", reason},
+                     {"phase", phase},
+                     {"httpStatus", status ? Json(status) : Json()},
+                     {"durationMs", std::chrono::duration_cast<Millis>(Clock::now() - started).count()}};
+        return false;
+    };
     try {
-        if (!matches_server(metadata(env), candidate, generation))
-            return false;
+        if (!matches_server(metadata(env, &received_status), candidate, generation))
+            return rejected("identity_mismatch", received_status);
+        phase = "readiness";
+        received_status = 0;
         const auto response =
             http_request("GET", local_url(env) + "/readyz", {}, Json::object(), Millis(1000), 1024, {}, true);
-        return response.status == 200 && json_bool(Json::parse(response.body), "ok");
+        received_status = response.status;
+        if (response.status != 200)
+            return rejected("http_status", response.status);
+        if (!json_bool(Json::parse(response.body), "ok"))
+            return rejected("not_ready", response.status);
+        return true;
+    } catch (const Json::exception&) {
+        return rejected("invalid_json", received_status);
     } catch (...) {
-        return false;
+        return rejected(received_status && received_status != 200 ? "http_status" : "probe_exception",
+                        received_status);
     }
 }
 void verify_stored(const fs::path& root, const Json& candidate, std::string_view policy) {
@@ -835,9 +860,20 @@ int supervise(const ManagementOptions& options) {
             publish();
         }
         if (child && child->alive() && Clock::now() >= next_health) {
+            const auto health_log = [&](std::string message) {
+                try {
+                    log(root, message);
+                    state.erase("healthLogError");
+                } catch (...) {
+                    // A locked diagnostic log must not turn a preserved frontend
+                    // into a supervisor failure. Keep the state-file evidence.
+                    state["healthLogError"] = "Could not append the health recovery diagnostic log";
+                }
+            };
             state["companions"] = companions.tick();
             const auto env = managed_environment(root, config, child->generation);
-            const bool healthy = ready(env, current, child->generation);
+            Json probe_failure;
+            const bool healthy = ready(env, current, child->generation, &probe_failure);
             if (healthy && Clock::now() - child->started >= Millis(30000))
                 failures = 0;
             if (healthy) {
@@ -852,6 +888,14 @@ int supervise(const ManagementOptions& options) {
             }
             state["healthy"] = healthy;
             unhealthy = healthy ? 0 : unhealthy + 1;
+            if (!healthy) {
+                probe_failure["observedAtUtc"] = utc_now();
+                probe_failure["child"] = child->identity();
+                probe_failure["consecutiveFailures"] = unhealthy;
+                state["lastHealthFailure"] = probe_failure;
+                if (unhealthy == 1)
+                    health_log("owned frontend readiness failed: " + probe_failure.dump());
+            }
             // Public route failures are diagnostic only; they never authorize killing MCP.
             if (config.at("environment").contains("PUBLIC_BASE_URL")) {
                 const auto url = json_string(config.at("environment"), "PUBLIC_BASE_URL");
@@ -870,7 +914,15 @@ int supervise(const ManagementOptions& options) {
                 // state is reported without interrupting work or restarting unrelated services.
                 try {
                     const bool resume = drain(root, config, current, *child, Millis(2000));
+                    const auto previous_child = child->identity();
                     child->stop();
+                    state["restarts"] = json_uint(state, "restarts") + 1;
+                    state["lastHealthRecovery"] = Json{{"stoppedAtUtc", utc_now()},
+                                                       {"previousChild", previous_child},
+                                                       {"reason", "consecutive_readiness_failures"},
+                                                       {"probe", probe_failure}};
+                    health_log("owned frontend stopped after confirmed health drain: " +
+                               state["lastHealthRecovery"].dump());
                     child.reset();
                     if (resume)
                         (void)admission(root, config, current, "resume");
@@ -911,6 +963,54 @@ Json send_control(const ManagementOptions& options, std::string action, const Js
     throw Error("NATIVE_CONTROL_TIMEOUT: inspect status before retrying");
 }
 } // namespace
+bool probe_managed_readiness(const Environment& env, const Json& candidate, std::string_view generation,
+                             Json* failure) {
+    return ready(env, candidate, generation, failure);
+}
+void publish_managed_directory(const fs::path& staging, const fs::path& destination, Millis retry_budget) {
+    if (!staging.is_absolute() || !destination.is_absolute() || staging == destination ||
+        staging.parent_path() != destination.parent_path() || fs::is_symlink(staging) ||
+        !fs::is_directory(staging))
+        throw Error("NATIVE_DIRECTORY_PUBLICATION_BOUNDARY");
+#ifdef _WIN32
+    const auto deadline = Clock::now() + std::clamp(retry_budget, Millis(0), Millis(5000));
+    const auto move_path = [](const fs::path& path) {
+        auto value = path.lexically_normal().make_preferred().native();
+        if (value.size() < MAX_PATH || value.starts_with(L"\\\\?\\"))
+            return value;
+        return value.starts_with(L"\\\\") ? std::wstring(L"\\\\?\\UNC\\") + value.substr(2)
+                                          : std::wstring(L"\\\\?\\") + value;
+    };
+    const auto source_path = move_path(staging), target_path = move_path(destination);
+#else
+    (void)retry_budget;
+#endif
+    for (;;) {
+        std::error_code status_error;
+        const auto target = fs::symlink_status(destination, status_error);
+        if (status_error && status_error != std::errc::no_such_file_or_directory)
+            throw fs::filesystem_error("Native destination inspection", destination, status_error);
+        if (!status_error && target.type() != fs::file_type::not_found)
+            throw Error("NATIVE_DIRECTORY_DESTINATION_EXISTS");
+#ifdef _WIN32
+        // No COPY_ALLOWED, REPLACE_EXISTING or reboot fallback. A successful
+        // operation is the same-volume publication of the prepared directory.
+        if (MoveFileExW(source_path.c_str(), target_path.c_str(), MOVEFILE_WRITE_THROUGH))
+            return;
+        const auto error = GetLastError();
+        const auto now = Clock::now();
+        if ((error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION &&
+             error != ERROR_LOCK_VIOLATION) ||
+            now >= deadline)
+            throw fs::filesystem_error("Native directory publication", staging, destination,
+                                       std::error_code(static_cast<int>(error), std::system_category()));
+        std::this_thread::sleep_for(std::min(Millis(25), std::chrono::ceil<Millis>(deadline - now)));
+#else
+        fs::rename(staging, destination);
+        return;
+#endif
+    }
+}
 
 void validate_managed_computer_selection(const fs::path& root, const Json& config, const Json& build,
                                          std::string_view hash, std::string_view source,
@@ -1041,9 +1141,8 @@ std::uint64_t management_instance(const Json& identity) {
 }
 void validate_managed_handoff_selection(const Json& current, const Json& handoff) {
     const auto selected = json_string(current, "sha256");
-    if (selected.size() != 64 ||
-        (selected != json_string(handoff.at("previous"), "sha256") &&
-         selected != json_string(handoff.at("candidate"), "sha256")))
+    if (selected.size() != 64 || (selected != json_string(handoff.at("previous"), "sha256") &&
+                                  selected != json_string(handoff.at("candidate"), "sha256")))
         throw Error("NATIVE_HANDOFF_SELECTION_CHANGED: reconcile the interrupted operation before startup");
 }
 Environment managed_environment(const fs::path& root, const Json& config, std::string generation) {
@@ -1285,7 +1384,7 @@ int management_main(const std::vector<std::string>& args, const BundledQualifica
             if (!fs::is_directory(destination) || !fs::is_empty(destination) || !fs::remove(destination))
                 throw Error("Native destination changed during initialization");
         }
-        fs::rename(staging, destination);
+        publish_managed_directory(staging, destination);
         Json result{{"initialized", !preparing},
                     {"root", path_text(root)},
                     {"policy", config.at("policy")},

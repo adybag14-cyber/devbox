@@ -33,6 +33,67 @@ int main() {
     });
     try {
         {
+            const auto staged = root / "publication-stage", target = root / "publication-target";
+            ensure_private_state_directory(staged);
+            write_file(staged / "proof.txt", "verified fixture contents");
+            ensure_private_state_directory(target);
+            rejects([&] { publish_managed_directory(staged, target); }, "DESTINATION_EXISTS");
+            write_file(target / "unrelated.txt", "preserve destination");
+            rejects([&] { publish_managed_directory(staged, target); }, "DESTINATION_EXISTS");
+            require(read_file(target / "unrelated.txt") == "preserve destination" &&
+                        read_file(staged / "proof.txt") == "verified fixture contents",
+                    "publication refusal preserves both existing directories");
+            fs::remove(target / "unrelated.txt");
+            fs::remove(target);
+#ifdef _WIN32
+            NativeHandle blocker(CreateFileW(staged.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                             nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+            require(static_cast<bool>(blocker), "owned directory lock acquired");
+            std::error_code original_error;
+            fs::rename(staged, target, original_error);
+            require(original_error && fs::is_directory(staged) && !fs::exists(target),
+                    "the original one-shot rename fails while delete sharing is denied");
+            {
+                std::jthread release([handle = std::move(blocker)]() mutable {
+                    std::this_thread::sleep_for(Millis(150));
+                    handle.reset();
+                });
+                publish_managed_directory(staged, target, Millis(2000));
+            }
+            const auto locked = root / "publication-locked", absent = root / "publication-absent";
+            ensure_private_state_directory(locked);
+            write_file(locked / "preserved.txt", "persistent failure preserves staging");
+            NativeHandle persistent(CreateFileW(locked.c_str(), GENERIC_READ,
+                                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                                FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+            require(static_cast<bool>(persistent), "persistent fixture lock acquired");
+            rejects([&] { publish_managed_directory(locked, absent, Millis(80)); },
+                    "Native directory publication");
+            require(!fs::exists(absent) &&
+                        read_file(locked / "preserved.txt") == "persistent failure preserves staging",
+                    "bounded failure never publishes a partial copy or removes staged contents");
+            auto deep = root / "long-publication";
+            while (deep.native().size() < 300)
+                deep /= std::string(48, 'n');
+            const auto extended = [](const fs::path& path) {
+                return fs::path(std::wstring(L"\\\\?\\") + path.native());
+            };
+            const auto long_stage = deep / "stage", long_target = deep / "target";
+            fs::create_directories(extended(long_stage));
+            write_file(extended(long_stage / "proof.txt"), "long path publication");
+            publish_managed_directory(long_stage, long_target);
+            require(!fs::exists(extended(long_stage)) &&
+                        read_file(extended(long_target / "proof.txt")) == "long path publication",
+                    "publication preserves extended-length Windows path support");
+#else
+            publish_managed_directory(staged, target);
+#endif
+            require(!fs::exists(staged) && read_file(target / "proof.txt") == "verified fixture contents",
+                    "successful directory publication preserves verified contents");
+            rejects([&] { publish_managed_directory(target, root.parent_path() / "outside-target"); },
+                    "PUBLICATION_BOUNDARY");
+        }
+        {
             const Json previous{{"sha256", std::string(64, 'a')}};
             const Json candidate{{"sha256", std::string(64, 'b')}};
             const Json replacement{{"sha256", std::string(64, 'c')}};

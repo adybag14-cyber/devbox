@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
 import {collectDependencies} from './dependency-assurance.mjs';
 import {inspectRuntimeFile} from './runtime-imports.mjs';
+import {readAndroidBuildBinding, assertAndroidArtifactBinding} from './android-artifact-binding.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const options = Object.fromEntries(process.argv.slice(2).map((arg, i, args) =>
@@ -25,18 +26,12 @@ assert.equal(await run('git', ['status', '--porcelain', '--untracked-files=all']
 const setupVersion = (await readFile(path.join(repo, 'cpp-bootstrap/VERSION'), 'utf8')).trim();
 const portStatus = JSON.parse(await readFile(path.join(repo, 'cpp-mcp/port-status.json'), 'utf8'));
 const releaseReady = portStatus.complete === true && portStatus.production_cutover_allowed === true;
-let build, target;
+let build, target, androidBuildBinding;
 if (android) {
-  const header = await readFile(path.join(repo, '.cpp-build/android', android, 'cpp-mcp/generated/build_identity.hpp'), 'utf8');
-  const field = name => {
-    const match = header.match(new RegExp(`const char\\* ${name} = ("[^"\\n]*");`));
-    assert(match, `Missing generated Android identity field ${name}`);
-    return JSON.parse(match[1]);
-  };
-  assert.equal(field('sha'), gitSha); assert.equal(field('tree'), sourceTree); assert.equal(field('dirty'), 'false');
-  build = { implementation: 'cpp', gitSha, sourceTree, sourceDirty: false, sanitizers: false,
-    sourceFingerprint: field('fingerprint'), compiler: field('compiler'), runtimeVersion: field('version'),
-    nativeVersion: field('version'), packageVersion: field('package_version'), releaseTag: field('release_tag') || null };
+  const buildDirectory = path.resolve(options.build || path.join(repo, '.cpp-build/android', android));
+  androidBuildBinding = await readAndroidBuildBinding(buildDirectory,
+    {abi: android, gitSha, sourceTree, packageVersion: setupVersion});
+  build = androidBuildBinding.build;
   target = `android-${android}`;
 } else {
   const runtime = path.join(packageRoot, bin, 'devbox-mcp' + extension);
@@ -62,6 +57,7 @@ for (const name of ['devbox-mcp', 'devbox-setup', 'devbox-tui']) {
   const bytes = await readFile(path.join(packageRoot, file));
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   assert(bytes.length > 10000, `Invalid native binary ${file}`);
+  if (android) assertAndroidArtifactBinding(androidBuildBinding, name, bytes);
   if (name === 'devbox-mcp' && !android) assert.equal(build.binarySha256, sha256);
   const runtime=await inspectRuntimeFile(path.join(packageRoot,file),{instrumented:build.sanitizers});
   binaries.push({ name, file, bytes: bytes.length, sha256, runtime });
@@ -97,6 +93,6 @@ const assurance = await collectDependencies({
 });
 const manifest = { schema: 1, assurance, implementation: 'cpp', target, gitSha, sourceTree, setupVersion, releaseReady, build,
   dependencyBaseline: JSON.parse(await readFile(path.join(repo, 'vcpkg.json'), 'utf8'))['builtin-baseline'],
-  ...(android ? { ndk: '29.0.14206865', minimumAndroidApi: 21 } : {}), binaries,optionalTools };
+  ...(android ? { ndk: '29.0.14206865', minimumAndroidApi: 21, androidBuildBinding } : {}), binaries,optionalTools };
 await writeFile(path.join(packageRoot, 'build-manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(JSON.stringify(manifest));

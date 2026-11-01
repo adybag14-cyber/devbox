@@ -1236,6 +1236,38 @@ void search_service_tests(HttpFixture& server, const fs::path& root) {
     cancelled->cancel();
     rejects([&] { (void)service.search(Json{{"queries", {"cancelled"}}}, cancelled); }, "cancelled");
 }
+void content_attribute_tests() {
+    web::Transfer response;
+    response.url = response.final_url = "https://example.org/report";
+    response.status = 200;
+    response.headers = Json{{"content-type", "text/html; charset=utf-8"}};
+    const std::string evidence = "Primary measurement evidence. " + std::string(450, 'p');
+    for (const auto* attributes : {"class='layout entry-content' id='stable'",
+                                   "class='layout' id='entry-content'", "class='' id='entry-content'"}) {
+        response.body = "<title>Measured report</title><main><p>OUTSIDE_REGION</p><div " +
+                        std::string(attributes) + "><p>" + evidence +
+                        "</p><div class='layout' id='related-items'>NOISE_ID</div>"
+                        "<div class='related-items' id='layout'>NOISE_CLASS</div>"
+                        "<p class='unrelatedness' id='preadvertisement'>KEEP_TOKEN</p></div></main>";
+        const auto document = web::extract_document(response);
+        const auto text = json_string(document, "text");
+        require(document["extraction"]["method"] == "declared_article_body" &&
+                    text.find("Primary measurement evidence") != text.npos &&
+                    text.find("KEEP_TOKEN") != text.npos && text.find("OUTSIDE_REGION") == text.npos &&
+                    text.find("NOISE_") == text.npos,
+                "Class and id token boundaries select the body and exclude only whole noise tokens");
+    }
+    for (const auto* href : {"/report#reading", "report", "https://example.org/report"}) {
+        response.body = "<title>Measurement collection</title><main><article><a rel='bookmark' href='" +
+                        std::string(href) + "'>Primary source</a><p>" + evidence +
+                        "</p></article><article><p>SECONDARY_REPORT " + std::string(800, 's') +
+                        "</p></article></main>";
+        const auto document = web::extract_document(response);
+        require(document["document_type"] == "article" &&
+                    json_string(document, "text").find("SECONDARY_REPORT") == std::string::npos,
+                "Relative, fragment and absolute permalinks retain primary article identity");
+    }
+}
 int main(int argc, char** argv) {
     const auto root = fs::temp_directory_path() / ("devbox-web-tests-" + uuid());
     try {
@@ -1264,6 +1296,7 @@ int main(int argc, char** argv) {
         extraction_tests();
         extraction_budget_tests();
         issue88_extraction_tests();
+        content_attribute_tests();
         search_parser_tests();
         policy_tests();
         {

@@ -1,5 +1,6 @@
 #include "devbox/fast_deflate.hpp"
 #include "devbox/research.hpp"
+#include "devbox/utf8.hpp"
 #include "devbox/web_retailers.hpp"
 #include <cstddef>
 #include <cstdint>
@@ -10,6 +11,14 @@ extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size
     if (size > 65536)
         return 0;
     const std::string bytes(reinterpret_cast<const char*>(data), size);
+    bool reference_utf8 = true;
+    try {
+        (void)devbox::Json(bytes).dump();
+    } catch (const devbox::Json::type_error&) {
+        reference_utf8 = false;
+    }
+    if (devbox::valid_utf8(bytes) != reference_utf8)
+        std::abort();
     // Differential compression checks use an independent decoder on every
     // mutated payload, covering native bit output alongside the text parsers.
     std::vector<char> encoded(size + size / 8 + 66);

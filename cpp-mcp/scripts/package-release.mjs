@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
 import {vulnerabilityReport} from './vulnerability-report.mjs';
 import {runtimeImports,assertCoreImports} from './runtime-imports.mjs';
+import {assertAndroidArtifactBinding} from './android-artifact-binding.mjs';
 
 assert.equal(process.platform, 'linux', 'Assemble release artifacts on the isolated Linux packaging runner');
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -71,6 +72,11 @@ try {
     assert.equal(manifest.build.packageVersion, version, 'Native package identity must match the source package version');
     if (process.env.GITHUB_REF_TYPE === 'tag') assert.equal(manifest.build.releaseTag, `bootstrap-v${version}`);
     assert.equal(manifest.build.sourceDirty, false); assert.equal(manifest.build.sanitizers, false);
+    if (target.startsWith('android-')) {
+      assert.equal(manifest.androidBuildBinding?.target, target);
+      assert.match(manifest.androidBuildBinding.headerSha256, /^[a-f0-9]{64}$/u);
+      assert.deepEqual(manifest.androidBuildBinding.build, manifest.build);
+    }
     assert.deepEqual(manifest.binaries.map(binary => binary.name).sort(), ['devbox-mcp', 'devbox-setup', 'devbox-tui']);
     const bundle = path.join(scratch, target); await mkdir(bundle);
     const extension = target.startsWith('windows-') ? '.exe' : '';
@@ -79,6 +85,7 @@ try {
       assert.equal(binary.file, expectedFile);
       const bytes = await readFile(path.join(source, expectedFile));
       assert.equal(bytes.length, binary.bytes); assert.equal(digest(bytes), binary.sha256);
+      if (target.startsWith('android-')) assertAndroidArtifactBinding(manifest.androidBuildBinding, binary.name, bytes);
       assertArchitecture(bytes, target);
       const imports=runtimeImports(bytes);assertCoreImports(imports);assert.deepEqual(binary.runtime,imports);
       const standalone = path.join(output, `${binary.name}-${target}${extension}`);

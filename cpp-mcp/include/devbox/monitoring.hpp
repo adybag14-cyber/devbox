@@ -27,6 +27,7 @@ class OperationalMonitor {
              Json{{"ok", false}, {"sampledAtUtc", nullptr}, {"error", "Execution store probe has not run."}};
     std::deque<std::pair<Clock::time_point, std::uint64_t>> disk_samples_;
     Clock::time_point last_incident_{};
+    bool last_incident_ready_ = true;
     JsonLogSink incidents_;
     void scheduler_iteration();
     void job_iteration(bool quota, const Cancel& cancel);

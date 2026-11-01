@@ -412,11 +412,27 @@ Json offer_view(const Json& document, std::size_t offset, std::size_t limit) {
         result["next_offer_offset"] = offset + result["offers"].size();
     if (!offers.empty())
         result["price_evidence"] = "source_reported";
+    else {
+        const auto visible = document.find("text");
+        if (visible != document.end() && visible->is_string()) {
+            static const RE2 currency_amount(
+                "(?:[£€$¥₹₩₽]|\\b(?:GBP|USD|EUR|JPY|CAD|AUD|CHF|CNY|INR|KRW)(?:\\s|\\p{Zs})+)"
+                "(?:\\s|\\p{Zs})*[0-9]");
+            if (RE2::PartialMatch(visible->get_ref<const std::string&>(), currency_amount))
+                result["price_evidence"] = "unparsed_currency_text";
+        }
+    }
     result["offer_note"] =
         "Prices and stock are retailer-reported at checked_at, not a checkout guarantee. "
         "Keep currency, exact variant, payment/eligibility options and qualifiers together. "
         "Aggregate ranges are not exact offers. Missing condition, delivery, tax or UK "
         "eligibility stays unknown. Do not infer availability from boilerplate text.";
+    if (result["price_evidence"] == "unparsed_currency_text")
+        result["offer_note"] =
+            "Currency amounts are visible in extracted text, but no product-specific offer was parsed. "
+            "They may be starting prices, monthly payments, savings or other amounts. Inspect the source "
+            "and exact variant before selecting a price. " +
+            result["offer_note"].get<std::string>();
     return result;
 }
 } // namespace devbox::web

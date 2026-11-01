@@ -385,17 +385,24 @@ void OperationalMonitor::job_iteration(bool quota, const Cancel& cancel) {
 void OperationalMonitor::incident_iteration() {
     const auto performance = performance_.snapshot();
     const auto event = performance.value("eventLoop", Json::object());
-    if (json_number(event, "p95Ms") <= 100 && json_number(event, "maxMs") <= 500 &&
-        json_number(event, "timerDriftMaxMs") <= 250)
+    const bool readiness = ready(cpp_tool_count);
+    const bool changed = readiness != last_incident_ready_;
+    const bool delayed = json_number(event, "p95Ms") > 100 || json_number(event, "maxMs") > 500 ||
+                         json_number(event, "timerDriftMaxMs") > 250;
+    if (readiness && !changed && !delayed)
         return;
-    if (Clock::now() - last_incident_ < Millis(30000))
+    // Record degradation/recovery even inside a prior performance incident's
+    // cooldown. Repeated unchanged failures retain the existing rate limit.
+    if (!changed && Clock::now() - last_incident_ < Millis(30000))
         return;
     const auto cache = execution_cache();
     incidents_.append(Json{{"observedAtUtc", utc_now()},
                            {"trigger",
                             {{"p95Ms", json_number(event, "p95Ms")},
                              {"maxMs", json_number(event, "maxMs")},
-                             {"timerDriftMaxMs", json_number(event, "timerDriftMaxMs")}}},
+                             {"timerDriftMaxMs", json_number(event, "timerDriftMaxMs")},
+                             {"ready", readiness},
+                             {"readinessChanged", changed}}},
                            {"build", build_snapshot()},
                            {"performance", performance},
                            {"execution", nullable_field(cache, "snapshot")},
@@ -408,6 +415,7 @@ void OperationalMonitor::incident_iteration() {
                            {"backgroundTasks", background_.snapshot()},
                            {"executionStore", store_health()}});
     last_incident_ = Clock::now();
+    last_incident_ready_ = readiness;
 }
 Json OperationalMonitor::execution_cache() const {
     std::lock_guard lock(mutex_);

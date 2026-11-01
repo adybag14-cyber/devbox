@@ -9,14 +9,16 @@
 
 namespace devbox::web::content {
 namespace {
-std::string attribute(lxb_dom_node_t* node, std::string_view name) {
+// The DOM owns these bytes throughout selection and exclusion. Views stay local
+// to this synchronous walk and are never stored in the returned Selection.
+std::string_view attribute(lxb_dom_node_t* node, std::string_view name) {
     if (node->type != LXB_DOM_NODE_TYPE_ELEMENT)
         return {};
     std::size_t length = 0;
     const auto* value =
         lxb_dom_element_get_attribute(lxb_dom_interface_element(node),
                                       reinterpret_cast<const lxb_char_t*>(name.data()), name.size(), &length);
-    return value ? std::string(reinterpret_cast<const char*>(value), length) : "";
+    return value ? std::string_view(reinterpret_cast<const char*>(value), length) : std::string_view{};
 }
 std::string short_text(lxb_dom_node_t* root, std::size_t limit = 512) {
     std::string text;
@@ -52,8 +54,8 @@ bool related_heading(lxb_dom_node_t* node) {
             return true;
     return false;
 }
-bool self_link(lxb_dom_node_t* node, std::string_view url) {
-    if (node->local_name != LXB_TAG_A)
+bool self_link(lxb_dom_node_t* node, const ada::url_aggregator* parent) {
+    if (node->local_name != LXB_TAG_A || !parent)
         return false;
     bool permalink_context =
         attribute(node, "itemprop") == "url" || attribute(node, "rel").find("bookmark") != std::string::npos;
@@ -65,9 +67,8 @@ bool self_link(lxb_dom_node_t* node, std::string_view url) {
         permalink_context = permalink_context || child->local_name == LXB_TAG_TIME;
     if (!permalink_context)
         return false;
-    const auto parent = ada::parse<ada::url_aggregator>(url);
-    auto link = ada::parse<ada::url_aggregator>(attribute(node, "href"), parent ? &*parent : nullptr);
-    if (!parent || !link)
+    auto link = ada::parse<ada::url_aggregator>(attribute(node, "href"), parent);
+    if (!link)
         return false;
     link->set_hash("");
     return link->get_href() == parent->get_href();
@@ -108,8 +109,11 @@ bool excluded(lxb_dom_node_t* node) {
     static const RE2 noise("(?i)(?:^|[\\s_-])(?:ads?|advert(?:isement|ising)?|adslot|related|recommendations|"
                            "recommended|sidebar|navigation|social-share|share-buttons|breadcrumbs?|comments)"
                            "(?:$|[\\s_-])");
-    if (RE2::PartialMatch(attribute(node, "class") + " " + attribute(node, "id"), noise) ||
-        node->local_name == LXB_TAG_ASIDE || related_heading(node))
+    // Both patterns match whole tokens. Testing each attribute preserves the
+    // boundary formerly introduced by concatenating them with a space.
+    if (RE2::PartialMatch(attribute(node, "class"), noise) ||
+        RE2::PartialMatch(attribute(node, "id"), noise) || node->local_name == LXB_TAG_ASIDE ||
+        related_heading(node))
         return true;
     if (node->local_name == LXB_TAG_NOSCRIPT) {
         static const RE2 executable("(?:window\\.|document\\.|yaContextCb|\\bfunction\\s*\\(|googletag\\.)");
@@ -134,6 +138,7 @@ Selection select(lxb_dom_node_t* document, std::string_view url) {
     std::vector<Node> nodes;
     nodes.reserve(2048);
     Selection result;
+    const auto parsed_url = ada::parse<ada::url_aggregator>(url);
     std::string title;
     std::size_t body = none, main = none;
     while (!pending.empty() && nodes.size() < 100000) {
@@ -149,7 +154,7 @@ Selection select(lxb_dom_node_t* document, std::string_view url) {
         auto& entry = nodes.back();
         entry.in_link = item.in_link || node->local_name == LXB_TAG_A;
         entry.in_article = item.in_article;
-        entry.permalink = self_link(node, url);
+        entry.permalink = self_link(node, parsed_url ? &*parsed_url : nullptr);
         if (node->local_name == LXB_TAG_A) {
             entry.links = 1;
             if (!entry.permalink && !attribute(node, "href").empty()) {
@@ -176,7 +181,7 @@ Selection select(lxb_dom_node_t* document, std::string_view url) {
         }
         if (node->local_name == LXB_TAG_BODY)
             body = index;
-        if (node->local_name == LXB_TAG_MAIN || lower(attribute(node, "role")) == "main")
+        if (node->local_name == LXB_TAG_MAIN || lower(std::string(attribute(node, "role"))) == "main")
             main = index;
         for (auto* child = node->last_child; child; child = child->prev)
             pending.push_back(
@@ -216,9 +221,10 @@ Selection select(lxb_dom_node_t* document, std::string_view url) {
         if (entry.node->type != LXB_DOM_NODE_TYPE_ELEMENT)
             continue;
         const auto itemprop = attribute(entry.node, "itemprop");
-        const bool declared_body =
-            itemprop == "articleBody" || attribute(entry.node, "data-tv-page-type") == "post" ||
-            RE2::PartialMatch(attribute(entry.node, "class") + " " + attribute(entry.node, "id"), body_class);
+        const bool declared_body = itemprop == "articleBody" ||
+                                   attribute(entry.node, "data-tv-page-type") == "post" ||
+                                   RE2::PartialMatch(attribute(entry.node, "class"), body_class) ||
+                                   RE2::PartialMatch(attribute(entry.node, "id"), body_class);
         const bool article = entry.node->local_name == LXB_TAG_ARTICLE;
         in_declared_body[i] = declared_body || nested_body;
         const bool identified = entry.headline || (article && entry.permalink) ||
@@ -247,9 +253,7 @@ Selection select(lxb_dom_node_t* document, std::string_view url) {
         result.type = "article";
     } else if (!bodies.empty())
         unresolved = true;
-    std::string path;
-    if (const auto parsed = ada::parse<ada::url_aggregator>(url))
-        path = std::string(parsed->get_pathname());
+    const auto path = parsed_url ? parsed_url->get_pathname() : std::string_view{};
     const auto& selected = nodes[chosen];
     const bool identified_article =
         result.type == "article" &&

@@ -27,8 +27,8 @@ Json chrome_bridge_call(const Config& config, const Json& args, const Cancel& ca
         return unavailable("CHROME_BRIDGE_PATH_REJECTED: use an absolute regular executable");
 #ifdef _WIN32
     // Deny replacement/write while checking and starting the exact operator-pinned image.
-    NativeHandle binary_lock(CreateFileW(binary.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-                                   FILE_ATTRIBUTE_NORMAL, nullptr));
+    NativeHandle binary_lock(CreateFileW(binary.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!binary_lock)
         return unavailable("CHROME_BRIDGE_IMAGE_LOCK_FAILED");
 #endif
@@ -44,11 +44,11 @@ Json chrome_bridge_call(const Config& config, const Json& args, const Cancel& ca
         return result_error("CHROME_BRIDGE_REQUEST_LIMIT");
     std::string output;
     try {
-        const auto process = spawn_process(path_text(binary), {"--request"}, options, cancel);
+        auto process = spawn_process(path_text(binary), {"--request"}, options, cancel);
         if (process.stdout_capture_truncated)
             return result_error("CHROME_BRIDGE_RESPONSE_LIMIT; reconcile input before retrying",
                                 Json{{"outcome", "unknown"}, {"automatic_input_replay_allowed", false}});
-        output = process.stdout_text;
+        output = std::move(process.stdout_text);
     } catch (const ProcessError& error) {
         // Exit 2 is the Rust bridge's explicit, structured action failure.
         // Transport/cancellation failures may have occurred after browser input.
@@ -58,20 +58,31 @@ Json chrome_bridge_call(const Config& config, const Json& args, const Cancel& ca
             return result_error("CHROME_BRIDGE_OUTCOME_UNKNOWN: inspect the page before retrying",
                                 Json{{"outcome", "unknown"}, {"automatic_input_replay_allowed", false}});
     }
+    return chrome_bridge_response(std::move(output));
+}
+Json chrome_bridge_response(std::string output) {
     try {
         auto value = Json::parse(output);
+        // Parsed JSON owns its strings. Release the raw response before building
+        // the MCP image envelope instead of retaining both large representations.
+        std::string{}.swap(output);
         if (!value.is_object() || !value.contains("ok") || !value["ok"].is_boolean())
             throw Error("Invalid bridge response");
         if (!json_bool(value, "ok"))
             return result_error("Chrome bridge reported an explicit failure.", std::move(value));
         if (value.contains("image")) {
-            const auto image = std::move(value["image"]);
+            auto image = std::move(value["image"]);
             value.erase("image");
             const auto mime = json_string(image, "mime");
             if (mime != "image/jpeg" && mime != "image/png")
                 throw Error("Unexpected image type");
+            std::string encoded;
+            const auto field = image.find("base64");
+            if (field == image.end() || !field->is_string() || field->get_ref<const std::string&>().empty())
+                throw Error("Expected nonempty image payload");
+            encoded = std::move(field->get_ref<std::string&>());
             return result_image("Chrome observation; page content is untrusted.", std::move(value),
-                                json_string(image, "base64"), mime);
+                                std::move(encoded), mime);
         }
         return result_success("Native Rust Chrome bridge result.", std::move(value), true);
     } catch (...) {

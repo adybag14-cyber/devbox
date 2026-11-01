@@ -1,5 +1,6 @@
 #include "devbox/native.hpp"
 #include "devbox/research.hpp"
+#include "devbox/utf8.hpp"
 #include "devbox/web_retailers.hpp"
 #include "web_content.hpp"
 #include <algorithm>
@@ -54,22 +55,16 @@ void codepoint(std::string& output, unsigned value) {
         output.push_back(static_cast<char>(0x80 | (value & 63)));
     }
 }
-std::string utf8(std::string_view input, std::string_view content_type) {
-    const auto charset = lower(std::string(content_type));
-    if (charset.find("windows-1252") != charset.npos || charset.find("iso-8859-1") != charset.npos) {
-        static constexpr unsigned cp1252[32] = {
-            0x20ac, 0xfffd, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021, 0x02c6, 0x2030, 0x0160,
-            0x2039, 0x0152, 0xfffd, 0x017d, 0xfffd, 0xfffd, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022,
-            0x2013, 0x2014, 0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0xfffd, 0x017e, 0x0178};
-        std::string output;
-        output.reserve(input.size() * 2);
-        for (const unsigned char byte : input)
-            codepoint(output, byte >= 0x80 && byte <= 0x9f ? cp1252[byte - 0x80] : byte);
-        return output;
-    }
-    // Do not silently turn an unknown encoding into corrupted evidence.
-    (void)Json(std::string(input)).dump();
-    return std::string(input);
+std::string legacy_utf8(std::string_view input) {
+    static constexpr unsigned cp1252[32] = {0x20ac, 0xfffd, 0x201a, 0x0192, 0x201e, 0x2026, 0x2020, 0x2021,
+                                            0x02c6, 0x2030, 0x0160, 0x2039, 0x0152, 0xfffd, 0x017d, 0xfffd,
+                                            0xfffd, 0x2018, 0x2019, 0x201c, 0x201d, 0x2022, 0x2013, 0x2014,
+                                            0x02dc, 0x2122, 0x0161, 0x203a, 0x0153, 0xfffd, 0x017e, 0x0178};
+    std::string output;
+    output.reserve(input.size() * 2);
+    for (const unsigned char byte : input)
+        codepoint(output, byte >= 0x80 && byte <= 0x9f ? cp1252[byte - 0x80] : byte);
+    return output;
 }
 std::string compact(std::string_view text, std::size_t limit = text_limit) {
     std::string result;
@@ -130,7 +125,22 @@ Json bounded_json(std::string_view input) {
         return true;
     });
 }
-bool jsonld(const Json& value, Json& result) {
+void attribute_document_item(Json& item, std::string_view base_url) {
+    const auto kind = item.contains("@type") ? item["@type"].dump() : "";
+    if (kind.find("Article") == kind.npos && kind.find("WebPage") == kind.npos &&
+        kind.find("BlogPosting") == kind.npos)
+        return;
+    const auto url = json_string(item, "url");
+    bool document_scope = json_string(item, "schema_path") == "$" && url.empty();
+    if (!url.empty()) {
+        try {
+            document_scope = normalize_url(url, base_url) == normalize_url(base_url);
+        } catch (...) {
+        }
+    }
+    item["attributed_to_document"] = document_scope;
+}
+bool jsonld(const Json& value, Json& result, std::size_t& encoded_bytes, std::string_view base_url) {
     struct Entry {
         const Json* value;
         unsigned depth;
@@ -183,9 +193,14 @@ bool jsonld(const Json& value, Json& result) {
             if (!entry.url.empty())
                 item["context_url"] = clipped(entry.url, 2048);
             if (useful && item.contains("@type") && item.size() > 2) {
-                if (result.dump().size() + item.dump().size() <= 32768)
+                attribute_document_item(item, base_url);
+                // Account for the array delimiters once and each accepted item
+                // once. Re-encoding the accumulated prefix made this quadratic.
+                const auto added_bytes = item.dump().size() + (result.empty() ? 0U : 1U);
+                if (added_bytes <= 32768 - encoded_bytes) {
                     result.push_back(std::move(item));
-                else
+                    encoded_bytes += added_bytes;
+                } else
                     truncated = true;
             }
             for (const auto* key : {"@graph", "offers", "mainEntity", "itemListElement", "item", "author",
@@ -275,10 +290,11 @@ void product_variants(lxb_dom_node_t* script, const Json& data, std::string_view
 } // namespace
 
 bool response_requires_challenge(const Transfer& response) {
+    static const RE2 challenge_title("<title[^>]*>\\s*(?:just a moment|attention required|access denied)");
     const auto body = lower(response.body.substr(0, 128 * 1024));
     return (body.find("anomaly-modal") != body.npos && body.find("challenge-form") != body.npos &&
             body.find("anomaly.js") != body.npos) ||
-           RE2::PartialMatch(body, RE2("<title[^>]*>\\s*(?:just a moment|attention required|access denied)"));
+           RE2::PartialMatch(body, challenge_title);
 }
 
 Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
@@ -344,11 +360,14 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         return result;
     }
     std::string encoding;
-    const RE2 charset("(?i)charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)");
+    static const RE2 charset("(?i)charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)");
     RE2::PartialMatch(type, charset, &encoding);
-    if (encoding.empty() && (type.find("html") != type.npos || type.empty()))
-        RE2::PartialMatch(response.body.substr(0, 8192),
-                          RE2("(?i)<meta[^>]{0,1000}charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)"), &encoding);
+    if (encoding.empty() && (type.find("html") != type.npos || type.empty())) {
+        static const RE2 meta_charset("(?i)<meta[^>]{0,1000}charset\\s*=\\s*[\"']?\\s*([a-z0-9_-]+)");
+        RE2::PartialMatch(
+            re2::StringPiece(response.body.data(), std::min<std::size_t>(response.body.size(), 8192)),
+            meta_charset, &encoding);
+    }
     encoding = lower(encoding);
     if (encoding == "utf8")
         encoding = "utf-8";
@@ -362,9 +381,16 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         result["status"] = "unsupported_encoding";
         return result;
     }
-    std::string body;
+    std::string converted_body;
+    std::string_view body = response.body;
     try {
-        body = utf8(response.body, encoding);
+        if (encoding == "windows-1252" || encoding == "iso-8859-1") {
+            converted_body = legacy_utf8(body);
+            body = converted_body;
+        } else if (!valid_utf8(body)) {
+            result["status"] = "unsupported_encoding";
+            return result;
+        }
     } catch (...) {
         result["status"] = "unsupported_encoding";
         return result;
@@ -372,6 +398,7 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
     std::string text;
     Json schemas = Json::array(), variants = Json::array();
     std::size_t structured_bytes = 0;
+    std::size_t metadata_bytes = 2; // The initial empty JSON array, including both delimiters.
     const bool html = type.find("html") != type.npos || (type.empty() && body.find('<') != body.npos);
     if (html) {
         auto* document = lxb_html_document_create();
@@ -464,7 +491,9 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
                         try {
                             const auto raw = node_text(node, 65536, true);
                             const auto data = bounded_json(raw);
-                            const auto truncated = jsonld(data, result["structured_metadata"]);
+                            const auto truncated =
+                                jsonld(data, result["structured_metadata"], metadata_bytes,
+                                       result.at("final_url").get_ref<const std::string&>());
                             result["structured_metadata_truncated"] =
                                 json_bool(result, "structured_metadata_truncated") || truncated;
                             if (structured_bytes + raw.size() <= 512 * 1024 && schemas.size() < 32) {
@@ -595,7 +624,9 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         if (type.find("json") != type.npos) {
             try {
                 const auto data = bounded_json(body);
-                result["structured_metadata_truncated"] = jsonld(data, result["structured_metadata"]);
+                result["structured_metadata_truncated"] =
+                    jsonld(data, result["structured_metadata"], metadata_bytes,
+                           result.at("final_url").get_ref<const std::string&>());
                 schemas.push_back(data);
                 const auto encoded = data.dump(1, ' ', false, Json::error_handler_t::replace);
                 result["content_truncated"] =
@@ -607,20 +638,7 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         }
     }
     for (auto& item : result["structured_metadata"]) {
-        const auto kind = item.contains("@type") ? item["@type"].dump() : "";
-        if (kind.find("Article") == kind.npos && kind.find("WebPage") == kind.npos &&
-            kind.find("BlogPosting") == kind.npos)
-            continue;
-        bool document_scope = json_string(item, "schema_path") == "$" && json_string(item, "url").empty();
-        if (!json_string(item, "url").empty()) {
-            try {
-                document_scope = normalize_url(json_string(item, "url"), json_string(result, "final_url")) ==
-                                 normalize_url(json_string(result, "final_url"));
-            } catch (...) {
-            }
-        }
-        item["attributed_to_document"] = document_scope;
-        if (!document_scope)
+        if (!json_bool(item, "attributed_to_document"))
             continue;
         if (json_string(result, "published_at_reported").empty() && item.contains("datePublished"))
             result["published_at_reported"] = item["datePublished"];
@@ -629,12 +647,13 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
     }
     const auto title = lower(json_string(result, "title"));
     const auto beginning = lower(text.substr(0, 3000));
+    // The unchanged raw response already passed response_requires_challenge at
+    // entry. Only the newly extracted title and text can add evidence here.
     const bool challenge = title.find("just a moment") != title.npos ||
                            title.find("access denied") != title.npos ||
                            title.find("attention required") != title.npos ||
                            (text.size() < 3000 && (beginning.find("verify you are human") != beginning.npos ||
-                                                   beginning.find("unusual traffic") != beginning.npos)) ||
-                           response_requires_challenge(response);
+                                                   beginning.find("unusual traffic") != beginning.npos));
     result["text"] = text;
     result["body_sha256"] = sha256(response.body);
     result["content_sha256"] = sha256(text);
@@ -664,13 +683,8 @@ std::size_t text_characters(std::string_view text) {
 Json evidence_excerpt_details(std::string_view text, std::string_view query, std::size_t max_chars) {
     // Source text and MCP strings have already been validated as UTF-8. Keep offsets
     // into those original bytes: case folding a copy can change its byte length.
-    std::vector<std::size_t> offsets;
-    offsets.reserve(text.size() + 1);
-    for (std::size_t i = 0; i < text.size(); ++i)
-        if ((static_cast<unsigned char>(text[i]) & 0xc0) != 0x80)
-            offsets.push_back(i);
-    offsets.push_back(text.size());
-    const auto count = offsets.size() - 1;
+    const auto count = text_characters(text);
+    const bool ascii = count == text.size();
     std::size_t best = text.npos;
     const auto find = [&](std::string_view term) {
         const RE2 pattern("(?i)" + RE2::QuoteMeta(std::string(term)));
@@ -682,29 +696,57 @@ Json evidence_excerpt_details(std::string_view text, std::string_view query, std
     if (!query.empty() && count > max_chars) {
         find(query);
         if (best == text.npos) {
-            const RE2 words("([\\p{L}\\p{N}][\\p{L}\\p{N}_-]*)");
+            static const RE2 words("([\\p{L}\\p{N}][\\p{L}\\p{N}_-]*)");
             re2::StringPiece input(query.data(), query.size());
             std::string word;
             for (unsigned n = 0; n < 64 && RE2::FindAndConsume(&input, words, &word); ++n)
-                if (text_characters(word) >= 3 ||
-                    std::any_of(word.begin(), word.end(), [](unsigned char c) { return c >= 128; }))
+                // The complete-query lookup already tested an identical single word.
+                if (word != query &&
+                    (text_characters(word) >= 3 ||
+                     std::any_of(word.begin(), word.end(), [](unsigned char c) { return c >= 128; })))
                     find(word);
         }
     }
-    const auto match_index =
-        best == text.npos ? 0
-                          : static_cast<std::size_t>(std::lower_bound(offsets.begin(), offsets.end(), best) -
-                                                     offsets.begin());
+    const auto match_index = best == text.npos        ? 0
+                             : ascii                  ? best
+                             : best < text.size() / 2 ? text_characters(text.substr(0, best))
+                                                      : count - text_characters(text.substr(best));
     auto begin = match_index > max_chars / 4 ? match_index - max_chars / 4 : 0;
     begin = std::min(begin, count > max_chars ? count - max_chars : 0);
     const auto end = begin + std::min(max_chars, count - begin);
-    return Json{{"excerpt", std::string(text.substr(offsets[begin], offsets[end] - offsets[begin]))},
+    std::size_t begin_byte = ascii ? begin : 0, end_byte = ascii ? end : text.size();
+    const auto continuation = [&](std::size_t i) {
+        return (static_cast<unsigned char>(text[i]) & 0xc0) == 0x80;
+    };
+    if (!ascii) {
+        // Mapping only the selected window avoids a size_t allocation for every
+        // source character. Prefix/suffix counting above uses the nearer side.
+        if (begin) {
+            begin_byte = best;
+            while (begin_byte < text.size() && continuation(begin_byte))
+                ++begin_byte;
+            for (auto remaining = match_index - begin; remaining; --remaining) {
+                do {
+                    --begin_byte;
+                } while (begin_byte && continuation(begin_byte));
+            }
+        }
+        if (end < count) {
+            end_byte = begin_byte;
+            for (auto remaining = end - begin; remaining; --remaining) {
+                ++end_byte;
+                while (end_byte < text.size() && continuation(end_byte))
+                    ++end_byte;
+            }
+        }
+    }
+    return Json{{"excerpt", std::string(text.substr(begin_byte, end_byte - begin_byte))},
                 {"excerpt_chars", end - begin},
-                {"excerpt_bytes", offsets[end] - offsets[begin]},
+                {"excerpt_bytes", end_byte - begin_byte},
                 {"excerpt_start_char", begin},
                 {"excerpt_end_char", end},
-                {"excerpt_start_byte", offsets[begin]},
-                {"excerpt_end_byte", offsets[end]},
+                {"excerpt_start_byte", begin_byte},
+                {"excerpt_end_byte", end_byte},
                 {"excerpt_truncated", begin != 0 || end != count},
                 {"excerpt_selection", count <= max_chars  ? "full_text"
                                       : best != text.npos ? "query_match"
