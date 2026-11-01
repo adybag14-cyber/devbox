@@ -23,6 +23,9 @@ using ManagementRunner =
     std::function<ProcessOutput(const fs::path&, const std::vector<std::string>&, const ProcessOptions&)>;
 ManagementOptions parse_management_options(const std::vector<std::string>& args);
 std::uint64_t management_instance(const Json& identity);
+// The same identity-bound HTTP probe used by native supervision; no response body is retained.
+bool probe_managed_readiness(const Environment& env, const Json& candidate, std::string_view generation,
+                             Json* failure = nullptr);
 // Publish one verified sibling staging directory; an existing destination is never replaced.
 void publish_managed_directory(const fs::path& staging, const fs::path& destination,
                                Millis retry_budget = Millis(5000));
