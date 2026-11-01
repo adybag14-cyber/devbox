@@ -678,13 +678,8 @@ std::size_t text_characters(std::string_view text) {
 Json evidence_excerpt_details(std::string_view text, std::string_view query, std::size_t max_chars) {
     // Source text and MCP strings have already been validated as UTF-8. Keep offsets
     // into those original bytes: case folding a copy can change its byte length.
-    std::vector<std::size_t> offsets;
-    offsets.reserve(text.size() + 1);
-    for (std::size_t i = 0; i < text.size(); ++i)
-        if ((static_cast<unsigned char>(text[i]) & 0xc0) != 0x80)
-            offsets.push_back(i);
-    offsets.push_back(text.size());
-    const auto count = offsets.size() - 1;
+    const auto count = text_characters(text);
+    const bool ascii = count == text.size();
     std::size_t best = text.npos;
     const auto find = [&](std::string_view term) {
         const RE2 pattern("(?i)" + RE2::QuoteMeta(std::string(term)));
@@ -705,20 +700,46 @@ Json evidence_excerpt_details(std::string_view text, std::string_view query, std
                     find(word);
         }
     }
-    const auto match_index =
-        best == text.npos ? 0
-                          : static_cast<std::size_t>(std::lower_bound(offsets.begin(), offsets.end(), best) -
-                                                     offsets.begin());
+    const auto match_index = best == text.npos        ? 0
+                             : ascii                  ? best
+                             : best < text.size() / 2 ? text_characters(text.substr(0, best))
+                                                      : count - text_characters(text.substr(best));
     auto begin = match_index > max_chars / 4 ? match_index - max_chars / 4 : 0;
     begin = std::min(begin, count > max_chars ? count - max_chars : 0);
     const auto end = begin + std::min(max_chars, count - begin);
-    return Json{{"excerpt", std::string(text.substr(offsets[begin], offsets[end] - offsets[begin]))},
+    std::size_t begin_byte = ascii ? begin : 0, end_byte = ascii ? end : text.size();
+    const auto continuation = [&](std::size_t i) {
+        return (static_cast<unsigned char>(text[i]) & 0xc0) == 0x80;
+    };
+    if (!ascii) {
+        // Mapping only the selected window avoids a size_t allocation for every
+        // source character. Prefix/suffix counting above uses the nearer side.
+        if (begin) {
+            begin_byte = best;
+            while (begin_byte < text.size() && continuation(begin_byte))
+                ++begin_byte;
+            for (auto remaining = match_index - begin; remaining; --remaining) {
+                do {
+                    --begin_byte;
+                } while (begin_byte && continuation(begin_byte));
+            }
+        }
+        if (end < count) {
+            end_byte = begin_byte;
+            for (auto remaining = end - begin; remaining; --remaining) {
+                ++end_byte;
+                while (end_byte < text.size() && continuation(end_byte))
+                    ++end_byte;
+            }
+        }
+    }
+    return Json{{"excerpt", std::string(text.substr(begin_byte, end_byte - begin_byte))},
                 {"excerpt_chars", end - begin},
-                {"excerpt_bytes", offsets[end] - offsets[begin]},
+                {"excerpt_bytes", end_byte - begin_byte},
                 {"excerpt_start_char", begin},
                 {"excerpt_end_char", end},
-                {"excerpt_start_byte", offsets[begin]},
-                {"excerpt_end_byte", offsets[end]},
+                {"excerpt_start_byte", begin_byte},
+                {"excerpt_end_byte", end_byte},
                 {"excerpt_truncated", begin != 0 || end != count},
                 {"excerpt_selection", count <= max_chars  ? "full_text"
                                       : best != text.npos ? "query_match"
