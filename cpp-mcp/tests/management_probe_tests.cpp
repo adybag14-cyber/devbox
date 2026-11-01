@@ -1,4 +1,5 @@
 #include "devbox/management.hpp"
+#include "devbox/scoped_thread.hpp"
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
 #include <iostream>
@@ -17,10 +18,10 @@ struct Fixture {
     std::vector<std::pair<int, std::string>> replies;
     std::size_t served = 0;
     std::exception_ptr failure;
-    std::jthread worker;
+    ScopedThread worker;
     explicit Fixture(std::vector<std::pair<int, std::string>> values) : replies(std::move(values)) {
         acceptor.non_blocking(true);
-        worker = std::jthread([this](std::stop_token stop) {
+        worker = ScopedThread([this](ThreadStopToken stop) {
             try {
                 while (!stop.stop_requested() && served < replies.size()) {
                     boost::system::error_code ec;
