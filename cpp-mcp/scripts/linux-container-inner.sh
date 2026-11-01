@@ -27,6 +27,10 @@ unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
 export HOST_SHELL=/bin/bash
 git clone --quiet /input/source.bundle "$fixture_root/source"
 cd "$fixture_root/source"
+test "$(git rev-parse HEAD)" = "$DEVBOX_EXPECTED_SOURCE"
+if [ -n "${DEVBOX_EXPECTED_RELEASE_TAG:-}" ]; then
+  test "$(git rev-parse --verify "refs/tags/$DEVBOX_EXPECTED_RELEASE_TAG^{commit}")" = "$DEVBOX_EXPECTED_SOURCE"
+fi
 npm ci --ignore-scripts --no-audit --no-fund
 if [ "$DEVBOX_DISTRO_FAMILY" = apk ]; then
   baseline=$(node -p 'JSON.parse(require("fs").readFileSync("vcpkg.json"))["builtin-baseline"]')
@@ -66,6 +70,12 @@ node --input-type=module -e '
   assert.equal(info.implementation,"cpp");
   assert.equal(info.gitSha,process.env.DEVBOX_EXPECTED_SOURCE);
   assert.equal(info.sourceDirty,false);
+  // Alpine compiles this transferred source. Other distributions reuse a
+  // native artifact, which may predate tag creation during a branch rerun.
+  // A tagged release always requires the exact tag on every packaged binary.
+  if(process.env.DEVBOX_DISTRO_FAMILY==="apk"||process.env.DEVBOX_REQUIRED_RELEASE_TAG)
+    assert.equal(info.releaseTag,process.env.DEVBOX_EXPECTED_RELEASE_TAG||null,
+      "The isolated artifact must retain its certified release-tag identity");
   console.log(JSON.stringify(info));
 '
 node cpp-bootstrap/scripts/fresh-install.mjs

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCheckedProcess } from '../../src/mcp-implementation.js';
+import {createCertificationBundle} from './source-bundle.mjs';
 
 assert.equal(process.platform, 'linux', 'Run distro certification on an isolated Linux host');
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -31,15 +32,17 @@ try {
     const file = `bin/${name}`; await copyFile(path.join(artifact, name), path.join(input, file)); files.push(file);
   }
   await copyFile(path.join(repo, 'cpp-mcp/scripts/linux-container-inner.sh'), path.join(input, 'run.sh'));
-  await run('git', ['bundle', 'create', path.join(input, 'source.bundle'), 'HEAD']);
-  const source = (await run('git', ['rev-parse', 'HEAD'])).stdout.trim(); assert.match(source, /^[a-f0-9]{40}$/);
+  const requiredTag = process.env.GITHUB_REF_TYPE === 'tag' ? process.env.GITHUB_REF_NAME : '';
+  const {source, releaseTag} = await createCertificationBundle(repo, path.join(input, 'source.bundle'), requiredTag);
   await writeFile(path.join(input, 'SHA256SUMS'), (await Promise.all(files.map(async file =>
     `${createHash('sha256').update(await readFile(path.join(input, file))).digest('hex')}  ${file}\n`))).join(''));
   await run('docker', ['pull', image], { timeoutMs: 10 * 60 * 1000, stdio: 'inherit' });
   const imageInfo = JSON.parse((await run('docker', ['image', 'inspect', image])).stdout)[0];
   console.log(JSON.stringify({ distribution, image, digest: imageInfo.RepoDigests, imageId: imageInfo.Id, source }));
   const args = ['run', '--rm', '--name', identity, '--label', `${label}=${identity}`,
-    '-e', `DEVBOX_EXPECTED_SOURCE=${source}`, '-e', `DEVBOX_DISTRO_FAMILY=${family}`, '-v', `${input}:/input:ro`];
+    '-e', `DEVBOX_EXPECTED_SOURCE=${source}`, '-e', `DEVBOX_EXPECTED_RELEASE_TAG=${releaseTag ?? ''}`,
+    '-e', `DEVBOX_REQUIRED_RELEASE_TAG=${requiredTag}`,
+    '-e', `DEVBOX_DISTRO_FAMILY=${family}`, '-v', `${input}:/input:ro`];
   if (distribution === 'alpine') {
     const cache = path.join(repo, '.cpp-build/alpine-cache'); await mkdir(cache, { recursive: true });
     args.push('-v', `${cache}:/cache`, '-v', `${output}:/output`);

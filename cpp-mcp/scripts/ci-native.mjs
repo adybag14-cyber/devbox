@@ -34,7 +34,8 @@ if (sanitizer) args.push('-DDEVBOX_SANITIZERS=ON', '-DCMAKE_CXX_FLAGS_RELWITHDEB
 const desktopBundle=process.platform!=='linux'||!!process.report.getReport().header.glibcVersionRuntime;
 if (!sanitizer&&desktopBundle) args.push(`-DDEVBOX_BUNDLED_RG_MANIFEST=${path.join(repo,'.cpp-build/bundled-ripgrep/manifest.json')}`);
 await run(process.execPath, ['cpp-mcp/scripts/sync-registry.mjs']);
-await run(process.execPath, ['--test', 'cpp-mcp/scripts/build-identity.test.mjs', 'cpp-mcp/scripts/android-artifact-binding.test.mjs']);
+await run(process.execPath, ['--test', 'cpp-mcp/scripts/build-identity.test.mjs',
+  'cpp-mcp/scripts/android-artifact-binding.test.mjs', 'cpp-mcp/scripts/source-bundle.test.mjs']);
 await run('cmake', args);
 await run('cmake', ['--build', build, '--config', configuration, '--parallel', '4']);
 try {
