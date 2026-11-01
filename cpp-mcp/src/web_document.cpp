@@ -691,12 +691,14 @@ Json evidence_excerpt_details(std::string_view text, std::string_view query, std
     if (!query.empty() && count > max_chars) {
         find(query);
         if (best == text.npos) {
-            const RE2 words("([\\p{L}\\p{N}][\\p{L}\\p{N}_-]*)");
+            static const RE2 words("([\\p{L}\\p{N}][\\p{L}\\p{N}_-]*)");
             re2::StringPiece input(query.data(), query.size());
             std::string word;
             for (unsigned n = 0; n < 64 && RE2::FindAndConsume(&input, words, &word); ++n)
-                if (text_characters(word) >= 3 ||
-                    std::any_of(word.begin(), word.end(), [](unsigned char c) { return c >= 128; }))
+                // The complete-query lookup already tested an identical single word.
+                if (word != query &&
+                    (text_characters(word) >= 3 ||
+                     std::any_of(word.begin(), word.end(), [](unsigned char c) { return c >= 128; })))
                     find(word);
         }
     }
