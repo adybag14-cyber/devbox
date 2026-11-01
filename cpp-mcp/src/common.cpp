@@ -678,14 +678,14 @@ void ensure_directory(const fs::path& path) {
     if (!fs::is_directory(path, ec))
         fs::create_directories(path);
 }
-void write_json_atomic(const fs::path& path, const Json& value) {
+void write_bytes_atomic(const fs::path& path, std::string_view bytes) {
     if (!path.parent_path().empty())
         ensure_directory(path.parent_path());
     // Keep the temporary basename independent of long operation/ticket IDs. Appending another
     // UUID to the destination name can exceed Windows' legacy path bound even when the final path fits.
     const auto temporary = path.parent_path() / path_from_utf8(".devbox-" + uuid() + ".tmp");
     try {
-        write_file(temporary, value.dump(2));
+        write_file(temporary, bytes);
 #ifdef _WIN32
         const auto flush_handle = CreateFileW(temporary.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -719,6 +719,9 @@ void write_json_atomic(const fs::path& path, const Json& value) {
         fs::remove(temporary, ec);
         throw;
     }
+}
+void write_json_atomic(const fs::path& path, const Json& value) {
+    write_bytes_atomic(path, value.dump(2));
 }
 std::string json_string(const Json& object, std::string_view key, std::string fallback) {
     const auto it = object.find(key);

@@ -109,6 +109,7 @@ Json read_json(const fs::path& path, std::size_t limit = 16 * 1024 * 1024);
 std::optional<Json> read_json_optional(const fs::path& path, std::size_t limit = 16 * 1024 * 1024);
 void write_file(const fs::path& path, std::string_view bytes, bool append = false);
 void ensure_directory(const fs::path& path);
+void write_bytes_atomic(const fs::path& path, std::string_view bytes);
 void write_json_atomic(const fs::path& path, const Json& value);
 void replace_state_file(const fs::path& source, const fs::path& target);
 std::string json_string(const Json& object, std::string_view key, std::string fallback = {});
