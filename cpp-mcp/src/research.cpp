@@ -334,7 +334,9 @@ struct ResearchService::State {
         return normalize_url(url);
     }
     void store_cache(std::string_view url, const Json& value) {
-        const auto bytes = value.dump(-1, ' ', false, Json::error_handler_t::replace);
+        // Admit and publish the same encoding. Re-serializing with indentation
+        // after checking compact bytes could exceed the entry or cache quota.
+        const auto bytes = json_dump(value);
         if (bytes.size() > 512 * 1024)
             return;
         FileLock lock(cache / ".quota.lock", Millis(2000));
@@ -364,7 +366,7 @@ struct ResearchService::State {
         }
         if (total + bytes.size() > cache_quota)
             throw Error("WEB_CACHE_QUOTA: cache remains full; source was not cached");
-        write_json_atomic(target, value);
+        write_bytes_atomic(target, bytes);
     }
     std::optional<Json> cached(std::string_view url) const {
         try {

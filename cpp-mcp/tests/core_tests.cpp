@@ -157,6 +157,8 @@ int main() {
             write_json_atomic(root / "state.json", Json{{"state", "old"}});
             write_json_atomic(root / "state.json", Json{{"state", "new"}});
             require(read_json(root / "state.json")["state"] == "new", "atomic JSON replacement");
+            require(read_file(root / "state.json") == Json{{"state", "new"}}.dump(2),
+                    "Existing JSON state keeps its formatted representation");
 #ifdef _WIN32
             require(root.native().size() < 220, "bounded long-path regression fixture root");
             const auto long_json = root / std::string(230 - root.native().size() - 1, 'q');
@@ -183,8 +185,13 @@ int main() {
             while (!reader_started)
                 std::this_thread::yield();
             try {
-                for (int i = 1; i <= 100; ++i)
-                    write_json_atomic(journal, Json{{"revision", i}, {"padding", padding}});
+                for (int i = 1; i <= 100; ++i) {
+                    const Json value{{"revision", i}, {"padding", padding}};
+                    if (i % 2)
+                        write_bytes_atomic(journal, json_dump(value));
+                    else
+                        write_json_atomic(journal, value);
+                }
             } catch (...) {
                 writer_error = std::current_exception();
             }
