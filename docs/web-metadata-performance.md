@@ -11,8 +11,8 @@ candidate item once, and includes the separator when the array is nonempty.
 The counter spans all JSON-LD scripts in the same document. Rejected items do
 not consume the remaining budget, so later smaller records may still fit.
 The 64-record cap, traversal bounds, source paths, per-field clipping and offer
-extraction are retained. Document-attribution annotations are still added in
-the existing later pass; this change concerns the source metadata budget.
+extraction are retained. Article/WebPage/BlogPosting attribution is computed
+before accepting the item, so those final fields are included in the byte budget.
 
 ## Validation
 

@@ -125,7 +125,22 @@ Json bounded_json(std::string_view input) {
         return true;
     });
 }
-bool jsonld(const Json& value, Json& result, std::size_t& encoded_bytes) {
+void attribute_document_item(Json& item, std::string_view base_url) {
+    const auto kind = item.contains("@type") ? item["@type"].dump() : "";
+    if (kind.find("Article") == kind.npos && kind.find("WebPage") == kind.npos &&
+        kind.find("BlogPosting") == kind.npos)
+        return;
+    const auto url = json_string(item, "url");
+    bool document_scope = json_string(item, "schema_path") == "$" && url.empty();
+    if (!url.empty()) {
+        try {
+            document_scope = normalize_url(url, base_url) == normalize_url(base_url);
+        } catch (...) {
+        }
+    }
+    item["attributed_to_document"] = document_scope;
+}
+bool jsonld(const Json& value, Json& result, std::size_t& encoded_bytes, std::string_view base_url) {
     struct Entry {
         const Json* value;
         unsigned depth;
@@ -178,6 +193,7 @@ bool jsonld(const Json& value, Json& result, std::size_t& encoded_bytes) {
             if (!entry.url.empty())
                 item["context_url"] = clipped(entry.url, 2048);
             if (useful && item.contains("@type") && item.size() > 2) {
+                attribute_document_item(item, base_url);
                 // Account for the array delimiters once and each accepted item
                 // once. Re-encoding the accumulated prefix made this quadratic.
                 const auto added_bytes = item.dump().size() + (result.empty() ? 0U : 1U);
@@ -476,7 +492,8 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
                             const auto raw = node_text(node, 65536, true);
                             const auto data = bounded_json(raw);
                             const auto truncated =
-                                jsonld(data, result["structured_metadata"], metadata_bytes);
+                                jsonld(data, result["structured_metadata"], metadata_bytes,
+                                       result.at("final_url").get_ref<const std::string&>());
                             result["structured_metadata_truncated"] =
                                 json_bool(result, "structured_metadata_truncated") || truncated;
                             if (structured_bytes + raw.size() <= 512 * 1024 && schemas.size() < 32) {
@@ -608,7 +625,8 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
             try {
                 const auto data = bounded_json(body);
                 result["structured_metadata_truncated"] =
-                    jsonld(data, result["structured_metadata"], metadata_bytes);
+                    jsonld(data, result["structured_metadata"], metadata_bytes,
+                           result.at("final_url").get_ref<const std::string&>());
                 schemas.push_back(data);
                 const auto encoded = data.dump(1, ' ', false, Json::error_handler_t::replace);
                 result["content_truncated"] =
@@ -620,20 +638,7 @@ Json extract_document(const Transfer& response, ExtractionPurpose purpose) {
         }
     }
     for (auto& item : result["structured_metadata"]) {
-        const auto kind = item.contains("@type") ? item["@type"].dump() : "";
-        if (kind.find("Article") == kind.npos && kind.find("WebPage") == kind.npos &&
-            kind.find("BlogPosting") == kind.npos)
-            continue;
-        bool document_scope = json_string(item, "schema_path") == "$" && json_string(item, "url").empty();
-        if (!json_string(item, "url").empty()) {
-            try {
-                document_scope = normalize_url(json_string(item, "url"), json_string(result, "final_url")) ==
-                                 normalize_url(json_string(result, "final_url"));
-            } catch (...) {
-            }
-        }
-        item["attributed_to_document"] = document_scope;
-        if (!document_scope)
+        if (!json_bool(item, "attributed_to_document"))
             continue;
         if (json_string(result, "published_at_reported").empty() && item.contains("datePublished"))
             result["published_at_reported"] = item["datePublished"];

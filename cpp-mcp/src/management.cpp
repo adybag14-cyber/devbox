@@ -144,9 +144,11 @@ std::string local_url(const Environment& env) {
         host = "[" + host + "]";
     return "http://" + host + ":" + env.at("PORT");
 }
-Json metadata(const Environment& env) {
+Json metadata(const Environment& env, int* status = nullptr) {
     const auto response =
         http_request("GET", local_url(env) + "/", {}, Json::object(), Millis(1000), 256 * 1024, {}, true);
+    if (status)
+        *status = response.status;
     if (response.status != 200)
         throw Error("NATIVE_LOCAL_METADATA_UNAVAILABLE");
     return Json::parse(response.body);
@@ -161,6 +163,7 @@ bool ready(const Environment& env, const Json& candidate, std::string_view gener
            Json* failure = nullptr) {
     const auto started = Clock::now();
     const char* phase = "metadata";
+    int received_status = 0;
     const auto rejected = [&](const char* reason, int status = 0) {
         if (failure)
             *failure =
@@ -171,20 +174,23 @@ bool ready(const Environment& env, const Json& candidate, std::string_view gener
         return false;
     };
     try {
-        if (!matches_server(metadata(env), candidate, generation))
-            return rejected("identity_mismatch");
+        if (!matches_server(metadata(env, &received_status), candidate, generation))
+            return rejected("identity_mismatch", received_status);
         phase = "readiness";
+        received_status = 0;
         const auto response =
             http_request("GET", local_url(env) + "/readyz", {}, Json::object(), Millis(1000), 1024, {}, true);
+        received_status = response.status;
         if (response.status != 200)
             return rejected("http_status", response.status);
         if (!json_bool(Json::parse(response.body), "ok"))
             return rejected("not_ready", response.status);
         return true;
     } catch (const Json::exception&) {
-        return rejected("invalid_json");
+        return rejected("invalid_json", received_status);
     } catch (...) {
-        return rejected("probe_exception");
+        return rejected(received_status && received_status != 200 ? "http_status" : "probe_exception",
+                        received_status);
     }
 }
 void verify_stored(const fs::path& root, const Json& candidate, std::string_view policy) {
@@ -957,6 +963,10 @@ Json send_control(const ManagementOptions& options, std::string action, const Js
     throw Error("NATIVE_CONTROL_TIMEOUT: inspect status before retrying");
 }
 } // namespace
+bool probe_managed_readiness(const Environment& env, const Json& candidate, std::string_view generation,
+                             Json* failure) {
+    return ready(env, candidate, generation, failure);
+}
 void publish_managed_directory(const fs::path& staging, const fs::path& destination, Millis retry_budget) {
     if (!staging.is_absolute() || !destination.is_absolute() || staging == destination ||
         staging.parent_path() != destination.parent_path() || fs::is_symlink(staging) ||
