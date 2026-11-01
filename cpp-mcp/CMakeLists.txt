@@ -135,6 +135,7 @@ add_library(devbox_core
   src/web_policy.cpp
   src/web_providers.cpp
   src/research.cpp
+  src/research_signature.cpp
   src/host_inspect.cpp
   src/usage.cpp
   src/allocator.cpp
@@ -238,6 +239,8 @@ if(DEVBOX_BUILD_BENCHMARKS)
   target_link_libraries(devbox-chrome-response-bench PRIVATE devbox_core)
   add_executable(devbox-web-encoding-bench benchmarks/web_encoding.cpp)
   target_link_libraries(devbox-web-encoding-bench PRIVATE devbox_core)
+  add_executable(devbox-research-signature-bench benchmarks/research_signature.cpp)
+  target_link_libraries(devbox-research-signature-bench PRIVATE devbox_core)
   add_executable(devbox-excerpt-bench benchmarks/excerpt.cpp)
   target_link_libraries(devbox-excerpt-bench PRIVATE devbox_core)
   add_executable(devbox-web-metadata-bench benchmarks/web_metadata.cpp)
