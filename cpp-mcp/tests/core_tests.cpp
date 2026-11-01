@@ -95,6 +95,9 @@ int main() {
         require(js_slice("a😀b", 1, 2) == "�", "lone surrogate replacement");
         require(sanitize_utf8(std::string("a\xf0\x9f", 3)) == "a�", "partial UTF8 sequence");
         require(utc_from_millis(0) == "1970-01-01T00:00:00.000Z", "UTC formatting");
+        require(utc_from_millis(-1) == "1969-12-31T23:59:59.999Z" &&
+                    utc_from_millis(4107542400000LL) == "2100-03-01T00:00:00.000Z",
+                "UTC formatting is portable across negative epochs and 32-bit time_t boundaries");
         require(parse_utc("1970-01-01T01:00:00.125+01:00") == 125, "UTC offset parse");
         for (const auto malformed : {"2026-10-22T12-53-00Z", "2026-10-22T12:53-00Z", "2026-10-22T12:53:00.Z",
                                      "2026-10-22T12:53:00.+01:00"})
