@@ -3,6 +3,7 @@
 #include "devbox/result.hpp"
 #include "devbox/storage.hpp"
 #include "devbox/web_retailers.hpp"
+#include "research_signature.hpp"
 #include "web_content.hpp"
 #include <algorithm>
 #include <iomanip>
@@ -165,65 +166,9 @@ bool source_candidate(std::string_view url) {
 bool index_link(std::string_view url) {
     return content::index_path(Url::parse(url).path);
 }
-struct TextSignature {
-    std::vector<std::uint64_t> shingles;
-    std::vector<std::string> significant_tokens;
-    std::size_t words = 0;
-    bool sampled = false;
-};
-TextSignature content_signature(std::string_view text) {
-    TextSignature result;
-    std::vector<std::string> words;
-    const RE2 token("([\\p{L}\\p{N}][\\p{L}\\p{N}_-]*)");
-    static const RE2 significant("(?i)(?:.*\\p{N}.*|no|not|never|without|нет|не|ни|никогда|без)");
-    re2::StringPiece remaining(text.data(), text.size());
-    std::string word;
-    while (RE2::FindAndConsume(&remaining, token, &word)) {
-        word = lower(word);
-        if (RE2::FullMatch(word, significant))
-            result.significant_tokens.push_back(word);
-        words.push_back(std::move(word));
-    }
-    result.words = words.size();
-    // This is a bounded text-similarity sketch, never a cryptographic identity or
-    // an assertion of factual agreement. Every excluded document is retained.
-    for (std::size_t i = 0; i + 5 <= words.size(); ++i) {
-        std::uint64_t hash = 14695981039346656037ULL;
-        for (std::size_t j = i; j < i + 5; ++j) {
-            for (const unsigned char c : words[j])
-                hash = (hash ^ c) * 1099511628211ULL;
-            hash = (hash ^ 0xffU) * 1099511628211ULL;
-        }
-        result.shingles.push_back(hash);
-    }
-    std::sort(result.shingles.begin(), result.shingles.end());
-    result.shingles.erase(std::unique(result.shingles.begin(), result.shingles.end()), result.shingles.end());
-    if (result.shingles.size() > 2048) {
-        result.shingles.resize(2048);
-        result.sampled = true;
-    }
-    return result;
-}
-double similarity(const TextSignature& left, const TextSignature& right) {
-    if (left.words < 50 || right.words < 50 || left.significant_tokens != right.significant_tokens ||
-        static_cast<double>(std::min(left.words, right.words)) /
-                static_cast<double>(std::max(left.words, right.words)) <
-            0.95)
-        return 0;
-    std::size_t common = 0, a = 0, b = 0;
-    while (a < left.shingles.size() && b < right.shingles.size()) {
-        if (left.shingles[a] == right.shingles[b]) {
-            ++common;
-            ++a;
-            ++b;
-        } else if (left.shingles[a] < right.shingles[b])
-            ++a;
-        else
-            ++b;
-    }
-    const auto total = left.shingles.size() + right.shingles.size() - common;
-    return total ? static_cast<double>(common) / static_cast<double>(total) : 0;
-}
+using detail::content_signature;
+using detail::similarity;
+using detail::TextSignature;
 } // namespace
 
 Json exact_term_matches(const Json& document, const std::vector<std::string>& exact_terms) {
@@ -389,7 +334,9 @@ struct ResearchService::State {
         return normalize_url(url);
     }
     void store_cache(std::string_view url, const Json& value) {
-        const auto bytes = value.dump(-1, ' ', false, Json::error_handler_t::replace);
+        // Admit and publish the same encoding. Re-serializing with indentation
+        // after checking compact bytes could exceed the entry or cache quota.
+        const auto bytes = json_dump(value);
         if (bytes.size() > 512 * 1024)
             return;
         FileLock lock(cache / ".quota.lock", Millis(2000));
@@ -405,7 +352,8 @@ struct ResearchService::State {
                 total += entry.file_size();
             files.emplace_back(entry.last_write_time(), entry.path());
         }
-        std::sort(files.begin(), files.end());
+        if (total + bytes.size() > cache_quota)
+            std::sort(files.begin(), files.end());
         for (const auto& [time, path] : files) {
             (void)time;
             if (total + bytes.size() <= cache_quota)
@@ -419,7 +367,7 @@ struct ResearchService::State {
         }
         if (total + bytes.size() > cache_quota)
             throw Error("WEB_CACHE_QUOTA: cache remains full; source was not cached");
-        write_json_atomic(target, value);
+        write_bytes_atomic(target, bytes);
     }
     std::optional<Json> cached(std::string_view url) const {
         try {

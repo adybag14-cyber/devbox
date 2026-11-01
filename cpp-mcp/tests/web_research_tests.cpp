@@ -1236,6 +1236,49 @@ void search_service_tests(HttpFixture& server, const fs::path& root) {
     cancelled->cancel();
     rejects([&] { (void)service.search(Json{{"queries", {"cancelled"}}}, cancelled); }, "cancelled");
 }
+void cache_byte_tests(HttpFixture& server, const fs::path& root) {
+    auto config = std::make_shared<Config>();
+    config->project_root = root;
+    config->jobs_root = root / "jobs";
+    config->runtime_mode = RuntimeMode::host;
+    web::ResearchService service(config, server.limits());
+    const auto url = server.url("/doc/cache-byte-quota");
+    const Json args{{"urls", {url}}, {"max_age_seconds", 0}};
+    require(service.fetch(args)["documents"][0]["cache_status"] == "network",
+            "Quota fixture starts with a fresh source");
+    const auto cache = root / "run" / "web-research-cache";
+    const auto target = cache / (sha256(url) + ".json");
+    const auto document = read_json(target);
+    const auto compact_size = document.dump().size();
+    const auto formatted_extra = document.dump(2).size() - compact_size;
+    require(formatted_extra > 256, "Fixture exposes material JSON formatting overhead");
+    constexpr std::uintmax_t quota = 64 * 1024 * 1024;
+    const auto filler = cache / (std::string(64, 'f') + ".json");
+    write_file(filler, "");
+    // A private disposable size-only fixture puts the cache near its limit;
+    // the production scanner counts all matching regular cache files.
+    fs::resize_file(filler, quota - compact_size - formatted_extra / 2);
+    const auto refreshed = service.fetch(args);
+    require(refreshed["documents"][0]["cache_status"] == "revalidated",
+            "Quota fixture performs real HTTP conditional revalidation");
+    std::uintmax_t total = 0;
+    for (const auto& entry : fs::directory_iterator(cache))
+        if (entry.is_regular_file() && entry.path().extension() == ".json")
+            total += entry.file_size();
+    require(total <= quota, "Actual cached bytes must stay within the 64 MiB quota");
+    require(fs::exists(filler), "A fitting compact document must not evict the unrelated entry");
+    const auto encoded = read_file(target, 512 * 1024);
+    require(encoded == Json::parse(encoded).dump(),
+            "Quota admission and storage use identical compact bytes");
+    auto cached_args = args;
+    cached_args["max_age_seconds"] = 3600;
+    require(service.fetch(cached_args)["documents"][0]["cache_status"] == "fresh_cache",
+            "The stored representation remains readable for fresh cache reuse");
+    fs::last_write_time(filler, fs::file_time_type::clock::now() - std::chrono::hours(1));
+    const auto next = service.fetch(Json{{"urls", {server.url("/doc/cache-byte-next")}}});
+    require(next["documents"][0]["cache_status"] == "network" && !fs::exists(filler) && fs::exists(target),
+            "Real quota pressure still evicts the oldest entry and preserves the refreshed source");
+}
 void content_attribute_tests() {
     web::Transfer response;
     response.url = response.final_url = "https://example.org/report";
@@ -1271,6 +1314,18 @@ void content_attribute_tests() {
 int main(int argc, char** argv) {
     const auto root = fs::temp_directory_path() / ("devbox-web-tests-" + uuid());
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--cache-byte-fixture") {
+            ensure_directory(root);
+            {
+                HttpFixture server;
+                cache_byte_tests(server, root);
+            }
+            if (root.parent_path() == fs::temp_directory_path() &&
+                root.filename().string().starts_with("devbox-web-tests-"))
+                fs::remove_all(root);
+            std::cout << "Web cache byte admission, revalidation and reuse passed\n";
+            return 0;
+        }
         if (argc == 5 && std::string_view(argv[1]) == "--extract-fixture") {
             web::Transfer source;
             source.url = source.final_url = web::normalize_url(argv[2]);
