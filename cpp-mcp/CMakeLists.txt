@@ -135,6 +135,7 @@ add_library(devbox_core
   src/web_policy.cpp
   src/web_providers.cpp
   src/research.cpp
+  src/research_signature.cpp
   src/host_inspect.cpp
   src/usage.cpp
   src/allocator.cpp
@@ -238,6 +239,8 @@ if(DEVBOX_BUILD_BENCHMARKS)
   target_link_libraries(devbox-chrome-response-bench PRIVATE devbox_core)
   add_executable(devbox-web-encoding-bench benchmarks/web_encoding.cpp)
   target_link_libraries(devbox-web-encoding-bench PRIVATE devbox_core)
+  add_executable(devbox-research-signature-bench benchmarks/research_signature.cpp)
+  target_link_libraries(devbox-research-signature-bench PRIVATE devbox_core)
   add_executable(devbox-excerpt-bench benchmarks/excerpt.cpp)
   target_link_libraries(devbox-excerpt-bench PRIVATE devbox_core)
   add_executable(devbox-web-metadata-bench benchmarks/web_metadata.cpp)
@@ -491,6 +494,13 @@ if(DEVBOX_BUILD_TESTS)
     set_tests_properties(computer-native computer-broker-native PROPERTIES TIMEOUT 90 RUN_SERIAL TRUE)
   endif()
   add_executable(devbox-async-tests tests/async_tests.cpp)
+  add_executable(devbox-research-signature-tests tests/research_signature_tests.cpp)
+  target_link_libraries(devbox-research-signature-tests PRIVATE devbox_core)
+  if(MSVC)
+    target_compile_options(devbox-research-signature-tests PRIVATE /utf-8)
+  endif()
+  add_test(NAME research-signatures COMMAND devbox-research-signature-tests)
+  set_tests_properties(research-signatures PROPERTIES TIMEOUT 30)
   target_link_libraries(devbox-async-tests PRIVATE devbox_core)
   add_test(NAME async COMMAND devbox-async-tests)
   set_tests_properties(async PROPERTIES TIMEOUT 30)
