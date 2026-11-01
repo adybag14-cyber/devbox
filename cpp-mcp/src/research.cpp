@@ -352,7 +352,8 @@ struct ResearchService::State {
                 total += entry.file_size();
             files.emplace_back(entry.last_write_time(), entry.path());
         }
-        std::sort(files.begin(), files.end());
+        if (total + bytes.size() > cache_quota)
+            std::sort(files.begin(), files.end());
         for (const auto& [time, path] : files) {
             (void)time;
             if (total + bytes.size() <= cache_quota)

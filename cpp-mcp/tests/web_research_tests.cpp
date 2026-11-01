@@ -1274,6 +1274,10 @@ void cache_byte_tests(HttpFixture& server, const fs::path& root) {
     cached_args["max_age_seconds"] = 3600;
     require(service.fetch(cached_args)["documents"][0]["cache_status"] == "fresh_cache",
             "The stored representation remains readable for fresh cache reuse");
+    fs::last_write_time(filler, fs::file_time_type::clock::now() - std::chrono::hours(1));
+    const auto next = service.fetch(Json{{"urls", {server.url("/doc/cache-byte-next")}}});
+    require(next["documents"][0]["cache_status"] == "network" && !fs::exists(filler) && fs::exists(target),
+            "Real quota pressure still evicts the oldest entry and preserves the refreshed source");
 }
 void content_attribute_tests() {
     web::Transfer response;
