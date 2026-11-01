@@ -65,6 +65,11 @@ unsigned relevance(const Json& document, const QueryTerms& query) {
     }
     return static_cast<unsigned>(positions.size());
 }
+std::string_view source_text(const Json& document) {
+    const auto text = document.find("text");
+    return text == document.end() || text->is_null() ? std::string_view{}
+                                                     : text->get_ref<const std::string&>();
+}
 Json brief(const Json& document, std::string_view query, std::size_t excerpt_chars) {
     Json result = Json::object();
     for (const auto* key : {"status",
@@ -122,7 +127,7 @@ Json brief(const Json& document, std::string_view query, std::size_t excerpt_cha
     if (json_string(document, "url") != result["url"].get<std::string>())
         result["requested_url"] = document["url"];
     result["title"] = evidence_excerpt(json_string(document, "title"), "", 500);
-    const auto text = json_string(document, "text");
+    const auto text = source_text(document);
     result.update(evidence_excerpt_details(text, query, excerpt_chars));
     result["text_chars"] = text_characters(text);
     result["text_bytes"] = text.size();
@@ -173,7 +178,7 @@ using detail::TextSignature;
 
 Json exact_term_matches(const Json& document, const std::vector<std::string>& exact_terms) {
     std::string scope =
-        json_string(document, "title") + " " + evidence_excerpt(json_string(document, "text"), "", 1800);
+        json_string(document, "title") + " " + evidence_excerpt(source_text(document), "", 1800);
     if (document.contains("headings"))
         for (const auto& heading : document["headings"])
             if (heading.is_string())
@@ -671,11 +676,13 @@ Json ResearchService::fetch(const Json& args, const Cancel& cancel) {
     }
     const auto usable = std::count_if(docs.begin(), docs.end(),
                                       [](const auto& doc) { return json_string(doc, "status") == "ok"; });
+    const auto returned = records.size();
+    const bool truncated = !remaining.empty();
     Json result{{"view", view},
-                {"documents", records},
-                {"returned_documents", records.size()},
-                {"remaining_url_indexes", remaining},
-                {"output_truncated", !remaining.empty()},
+                {"documents", std::move(records)},
+                {"returned_documents", returned},
+                {"remaining_url_indexes", std::move(remaining)},
+                {"output_truncated", truncated},
                 {"requested_urls", urls.size()},
                 {"unique_urls", unique.size()},
                 {"usable_documents", usable},
@@ -974,7 +981,7 @@ Json ResearchService::run(const Json& supplied, const fs::path& directory, Milli
                 }
                 TextSignature signature;
                 if (reason == "ok") {
-                    signature = content_signature(json_string(doc, "text"));
+                    signature = content_signature(source_text(doc));
                     for (const auto& [previous, representative] : signatures) {
                         const auto likeness = similarity(signature, previous);
                         if (likeness >= 0.97) {
@@ -1194,9 +1201,12 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
         if (!RE2::FullMatch(source, "s[1-9][0-9]{0,2}"))
             throw Error("Invalid source ID");
         bool retained = false;
-        for (const auto* field : {"sources", "excluded"})
-            for (const auto& item : ledger->value(field, Json::array()))
-                retained = retained || json_string(item, "source_id") == source;
+        for (const auto* field : {"sources", "excluded"}) {
+            const auto found = ledger->find(field);
+            if (found != ledger->end())
+                for (const auto& item : *found)
+                    retained = retained || json_string(item, "source_id") == source;
+        }
         if (!retained)
             throw Error("Source ID is not present in this retained ledger snapshot");
         auto doc = read_json(root / "documents" / (source + ".json"), 1024 * 1024);
@@ -1220,17 +1230,22 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
                 detail["offer_output_truncated"] = true;
             } else if (characters && !json_string(detail, "excerpt").empty()) {
                 characters /= 2;
-                detail.update(evidence_excerpt_details(json_string(doc, "text"), query, characters));
+                detail.update(evidence_excerpt_details(source_text(doc), query, characters));
                 detail["excerpt_budget_limited"] = true;
             } else
                 throw Error("Evidence budget is too small for this source; increase max_chars");
             detail["details_omitted"] = true;
         }
-        return Json{{"job", job}, {"document", detail}, {"max_chars_unit", "serialized_utf8_bytes"}};
+        return Json{{"job", std::move(job)},
+                    {"document", std::move(detail)},
+                    {"max_chars_unit", "serialized_utf8_bytes"}};
     }
-    auto summary = *ledger;
-    summary.erase("sources");
-    summary.erase("candidates");
+    Json summary = Json::object();
+    // Retain the ledger's metadata order without cloning arrays that this
+    // response immediately discards. Page entries are copied only as selected.
+    for (const auto& [key, value] : ledger->items())
+        if (key != "sources" && key != "candidates" && key != "excluded")
+            summary[key] = value;
     if (json_uint(*ledger, "version", 1) < 2) {
         summary["legacy_ledger"] = true;
         summary["coverage_warning"] =
@@ -1257,10 +1272,10 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
             examples.push_back(std::move(example));
         }
     }
-    summary.erase("excluded");
-    summary["exclusion_counts"] = failures;
-    summary["exclusion_examples"] = examples;
-    summary["exclusion_examples_truncated"] = ledger->at("excluded").size() > examples.size();
+    const bool examples_truncated = ledger->at("excluded").size() > examples.size();
+    summary["exclusion_counts"] = std::move(failures);
+    summary["exclusion_examples"] = std::move(examples);
+    summary["exclusion_examples_truncated"] = examples_truncated;
     const auto offset = json_uint(args, "offset", 0), limit = json_uint(args, "limit", 100);
     if (!limit || limit > 100)
         throw Error("Evidence page limit must be 1-100");
@@ -1330,7 +1345,7 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
         while (section == "sources" && page.empty() && used + bytes > budget && characters &&
                !json_string(item, "excerpt").empty()) {
             characters /= 2;
-            item.update(evidence_excerpt_details(json_string(load(), "text"), query, characters));
+            item.update(evidence_excerpt_details(source_text(load()), query, characters));
             item["excerpt_budget_limited"] = true;
             bytes = item.dump().size() + 1;
         }
@@ -1344,7 +1359,7 @@ Json research_evidence(const JobStore& jobs, const Json& args) {
         used += bytes;
     }
     summary["job"] = job;
-    summary[output_field] = page;
+    summary[output_field] = std::move(page);
     summary["offset"] = offset;
     summary["next_offset"] = next < records.size() ? Json(next) : Json(nullptr);
     summary["section_fully_returned"] = offset == 0 && next == records.size();
