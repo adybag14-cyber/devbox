@@ -1,34 +1,38 @@
 #include "research_signature.hpp"
 #include "devbox/common.hpp"
 #include <algorithm>
+#include <array>
 #include <re2/re2.h>
 
 namespace devbox::web::detail {
 TextSignature content_signature(std::string_view text) {
     TextSignature result;
-    std::vector<std::string> words;
-    const RE2 token("([\\p{L}\\p{N}][\\p{L}\\p{N}_-]*)");
+    std::array<std::string, 5> window;
+    std::size_t next = 0;
+    static const RE2 token("([\\p{L}\\p{N}][\\p{L}\\p{N}_-]*)");
     static const RE2 significant("(?i)(?:.*\\p{N}.*|no|not|never|without|нет|не|ни|никогда|без)");
     re2::StringPiece remaining(text.data(), text.size());
-    std::string word;
-    while (RE2::FindAndConsume(&remaining, token, &word)) {
-        word = lower(word);
+    while (RE2::FindAndConsume(&remaining, token, &window[next])) {
+        auto& word = window[next];
+        word = lower(std::move(word));
         if (RE2::FullMatch(word, significant))
             result.significant_tokens.push_back(word);
-        words.push_back(std::move(word));
+        ++result.words;
+        next = (next + 1) % window.size();
+        if (result.words >= window.size()) {
+            // Only the latest five words contribute to this shingle. Keep the
+            // original byte order and separators without retaining prior words.
+            std::uint64_t hash = 14695981039346656037ULL;
+            for (std::size_t j = 0; j < window.size(); ++j) {
+                for (const unsigned char c : window[(next + j) % window.size()])
+                    hash = (hash ^ c) * 1099511628211ULL;
+                hash = (hash ^ 0xffU) * 1099511628211ULL;
+            }
+            result.shingles.push_back(hash);
+        }
     }
-    result.words = words.size();
     // This is a bounded text-similarity sketch, never a cryptographic identity or
     // an assertion of factual agreement. Every excluded document is retained.
-    for (std::size_t i = 0; i + 5 <= words.size(); ++i) {
-        std::uint64_t hash = 14695981039346656037ULL;
-        for (std::size_t j = i; j < i + 5; ++j) {
-            for (const unsigned char c : words[j])
-                hash = (hash ^ c) * 1099511628211ULL;
-            hash = (hash ^ 0xffU) * 1099511628211ULL;
-        }
-        result.shingles.push_back(hash);
-    }
     std::sort(result.shingles.begin(), result.shingles.end());
     result.shingles.erase(std::unique(result.shingles.begin(), result.shingles.end()), result.shingles.end());
     if (result.shingles.size() > 2048) {
