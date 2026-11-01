@@ -1,11 +1,20 @@
 import test from 'node:test';import assert from 'node:assert/strict';
-import {authorize,validate,publicUrl,boundedInteger} from '../extension/policy.mjs';
+import {authorize,validate,publicUrl,boundedInteger,grantActive} from '../extension/policy.mjs';
 const tab={url:'https://example.com/page'},grant={origin:'https://example.com',expires:100000,allow_new_tabs:false},observation={id:'fresh',at:1000,url:tab.url};
-test('grants are exact-origin, finite and not implied by a tab ID',()=>{
+test('grants are exact-origin, timed by default and not implied by a tab ID',()=>{
   assert.throws(()=>authorize(null,tab,{action:'observe'},null,2000),/TAB_NOT_GRANTED/);
   assert.throws(()=>authorize({...grant,expires:1000},tab,{action:'observe'},null,2000),/TAB_NOT_GRANTED/);
   assert.throws(()=>authorize(grant,{url:'https://example.com.evil.test/'},{action:'observe'},null,2000),/ORIGIN_CHANGED/);
   assert.doesNotThrow(()=>authorize(grant,tab,{action:'observe'},null,2000));
+});
+
+test('unlimited duration requires the explicit until-revoked marker and never widens origin',()=>{
+ const forever={origin:grant.origin,duration:'until_revoked',expires:null,allow_new_tabs:false};
+ assert(grantActive(forever,1000+10*3600000));
+ assert.doesNotThrow(()=>authorize(forever,tab,{action:'observe'},null,1000+10*3600000));
+ assert.throws(()=>authorize(forever,{url:'https://other.test/'},{action:'observe'},null,1000),/ORIGIN_CHANGED/);
+ for(const invalid of [{}, {expires:null}, {duration:'until_revoked'}, {duration:'until_revoked',expires:123}, {duration:'other',expires:100000}])assert.equal(grantActive(invalid,1000),false);
+ assert.throws(()=>validate({action:'grant',duration:'until_revoked'}));
 });
 test('every input requires its exact recent observation and unchanged URL',()=>{
   const r={action:'click',observation_id:'fresh'};
