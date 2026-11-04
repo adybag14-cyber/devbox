@@ -11,10 +11,20 @@ extension APIs there. Browser work uses Chrome's documented debugger API.
 The extension has `activeTab`, `debugger`, and `nativeMessaging` permissions and
 no blanket host permissions, content scripts, cookie APIs, or externally
 connectable page-message interface. Chrome's debugger permission is powerful:
-the implementation additionally requires an explicit, one-hour grant for each
-tab, rejects access after cross-origin navigation, and revokes grants on that navigation or debugger
-detach. New same-origin tabs require a separate popup checkbox. A popup button
-revokes all grants. Untrusted page content cannot grant access.
+the implementation additionally requires an explicit grant for each tab. The popup
+defaults to one hour, with an optional **Until revoked — no time limit** choice for
+long goals. That choice has no clock expiry; closing the tab, cross-origin navigation,
+debugger detach, restarting the extension/browser, or service-worker shutdown still
+ends access. Grants are held in the current background worker's memory. An active
+native-messaging connection keeps that worker alive during normal use, but a host
+disconnect or unexpected worker termination can end the grant; it is not restored
+silently. See [Chrome's service-worker lifecycle](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle).
+The popup captures and displays its tab once. Grant and per-tab revoke actions
+remain bound to that tab if another tab becomes active, and granting rejects a
+changed origin. New same-origin tabs require a separate
+popup checkbox. Buttons revoke either the current tab or all tabs. Untrusted page
+content cannot grant access. Neither duration changes the 30-second observation
+freshness requirement, bounded action deadlines, origin checks or replay protection.
 
 The native host communicates through a local Windows named pipe with an explicit
 current-user/SYSTEM ACL and remote clients rejected. It validates bounded JSON
@@ -85,6 +95,27 @@ and operator configuration of `DEVBOX_CHROME_BRIDGE_EXE` plus the exact
 bounded JSON through stdin without starting a shell. It is disabled by default.
 
 ## Functionality and limits
+
+Observations identify visible native and ARIA modal dialogs, including open shadow
+roots. The active dialog's controls take priority over background controls, and its
+text comes first within the existing response budget. `active_dialog`, `dialogs`,
+`elements_scope` and `text_scope` make that focus explicit. A scrolling modal
+container remains available as an input target. Discovery is bounded to 20,000
+elements and 32 roots. The reported dialog list holds at most eight entries;
+three additional selection references keep a later active modal discoverable
+without an overflow list. Hit-tested covering modals take priority over native
+fallbacks. ARIA dialogs require a hit-test result before narrowing the control
+scope; clipped or non-intercepting declarations cannot hide the page controls.
+Truncation is reported, and `active_dialog` can describe a modal
+outside the reported list. Page-provided dialog roles never grant permission or
+approve an action.
+
+Text extraction reads the selected root's light DOM. A dialog located inside an
+open shadow root is supported, but text inside its descendant shadow roots can
+be omitted even when their controls are listed. The returned `text_note` states
+this limit; use the screenshot for the composed display. Hit-tested and native
+modal blockers remain represented regardless of opacity. The text truncation
+flag distinguishes an exactly filled buffer from unread eligible text.
 
 The extension supports granted-tab discovery, same-origin tab creation,
 navigation/back/forward/reload, focus/close, bounded DOM text and element

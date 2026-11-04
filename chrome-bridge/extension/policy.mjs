@@ -21,8 +21,13 @@ export function validate(request) {
   if(request.action==='key'&&typeof request.key!=='string')throw new Error('KEY_REQUIRED');
   if(!READ_ACTIONS.has(request.action) && (!/^[a-zA-Z0-9_-]{1,64}$/.test(request.request_id??''))) throw new Error('REQUEST_ID_REQUIRED');
 }
+export function grantActive(grant,now=Date.now()) {
+  if(!grant)return false;
+  if(grant.duration==='until_revoked')return grant.expires===null;
+  return (grant.duration===undefined||grant.duration==='one_hour')&&Number.isSafeInteger(grant.expires)&&now<grant.expires;
+}
 export function authorize(grant,tab,request,observation,now=Date.now()) {
-  if(!grant || now>=grant.expires) throw new Error('TAB_NOT_GRANTED: grant this tab in the extension popup');
+  if(!grantActive(grant,now)) throw new Error('TAB_NOT_GRANTED: grant this tab in the extension popup');
   if(publicUrl(tab.url).origin!==grant.origin) throw new Error('ORIGIN_CHANGED: grant the new origin explicitly');
   if(request.url && publicUrl(request.url).origin!==grant.origin) throw new Error('ORIGIN_NOT_GRANTED');
   if(request.action==='open'&&!grant.allow_new_tabs)throw new Error('NEW_TAB_PERMISSION_REQUIRED');

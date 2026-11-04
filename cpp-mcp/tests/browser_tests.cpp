@@ -386,6 +386,40 @@ void protocol_tests() {
                                  {"navigation_stable", true}},
                                 200) == "content_available",
             "mentioning an error inside an ordinary article does not make it a soft-404");
+    Json modal_status{{"title", "Product page"},
+                      {"text", "Choose a size"},
+                      {"ready_state", "complete"},
+                      {"navigation_stable", true},
+                      {"active_dialog", {{"modal", true}}}};
+    require(browser_page_status(modal_status, 200) == "content_available",
+            "a short active dialog is usable rendered content");
+    modal_status["text"] = "";
+    modal_status["controls"] = Json::array();
+    require(browser_page_status(modal_status, 200) == "insufficient_content",
+            "an empty loading dialog does not prematurely finish observation");
+    modal_status["text"] = " \t\r\n";
+    require(browser_page_status(modal_status, 200) == "insufficient_content",
+            "a whitespace-only dialog has no readable content");
+    modal_status["controls"] = Json::array({{{"tag", "button"}, {"name", "Close"}}});
+    require(browser_page_status(modal_status, 200) == "content_available",
+            "an icon control makes a short dialog actionable without body text");
+    modal_status["text"] = std::string(100, 'a');
+    modal_status["dialog_readable"] = false;
+    require(browser_page_status(modal_status, 200) == "insufficient_content",
+            "background text and unpainted controls do not make an unreadable dialog ready");
+    modal_status["dialog_readable"] = true;
+    require(browser_page_status(modal_status, 200) == "content_available",
+            "observed readable dialog content permits continuation");
+    modal_status.erase("dialog_readable");
+    modal_status["text"] = "Choose a size";
+    modal_status["controls"] = Json::array();
+    modal_status["active_dialog"] = nullptr;
+    require(browser_page_status(modal_status, 200) == "insufficient_content",
+            "a short ordinary document retains the insufficient-content signal");
+    modal_status["active_dialog"] = {{"modal", true}};
+    modal_status["text"] = "Verify you are human";
+    require(browser_page_status(modal_status, 200) == "challenge_required",
+            "a dialog never suppresses the challenge classification");
     ProtocolFixture fixture([](auto& socket) {
         auto first = receive(socket);
         send(socket, {{"method", "Page.test"}, {"params", Json::object()}});
@@ -630,6 +664,30 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                                   "</p><p>The requested product observation must retain its original "
                                   "image and HTML choices.</p><img src='/fixture-picture?capture=1'>";
             }
+            if (request.target() == "/modal" || request.target() == "/aria-modal" ||
+                request.target() == "/shadow-modal" || request.target() == "/modal-scroll-root" ||
+                request.target() == "/modal-overflow" || request.target() == "/covered-focus" ||
+                request.target() == "/transparent-modal" ||
+                request.target() == "/transparent-modal-ancestor" || request.target() == "/modal-challenge" ||
+                request.target() == "/clipped-modal" || request.target() == "/modal-hidden-control")
+                response.body() =
+                    R"HTML(<!doctype html><title>Bounded modal observation fixture</title><body><section id="history"></section><script>
+const history=document.querySelector('#history');const text=document.createElement('p');text.textContent='Earlier product catalogue '.repeat(1000);history.append(text);
+if(location.pathname==='/modal-challenge'){const marker=document.createElement('p');marker.textContent='Verify you are human';history.prepend(marker);}
+for(let i=0;i<220;i++){const b=document.createElement('button');b.textContent='Background '+i;b.style.cssText='position:fixed;left:0;top:0';history.append(b);}
+const rootScroll=location.pathname==='/modal-scroll-root',native=location.pathname==='/modal'||location.pathname==='/modal-overflow'||rootScroll,dialog=document.createElement(native?'dialog':'div');
+dialog.id='details';dialog.setAttribute('aria-labelledby','dialog-title');dialog.style.cssText='position:fixed;left:300px;top:100px;width:500px;height:350px;margin:0;background:white;z-index:1000';
+if(!native){dialog.setAttribute('role','alertdialog');dialog.setAttribute('aria-modal','true');}
+dialog.innerHTML='<h2 id="dialog-title">Product details</h2><p>Review the selected phone variant before continuing.</p><button aria-label="Close details">Close details</button><div id="modal-panel" style="height:150px;overflow:auto"><div style="height:1200px">Scrollable product specifications</div></div>';
+if(location.pathname==='/modal-overflow')for(let i=0;i<8;i++){const d=document.createElement('div');d.setAttribute('role','dialog');d.setAttribute('aria-label','Panel '+i);d.style.cssText='position:fixed;left:0;top:0;width:10px;height:10px';history.append(d);}
+let lower;if(location.pathname==='/covered-focus'){lower=document.createElement('div');lower.setAttribute('role','dialog');lower.setAttribute('aria-modal','true');lower.setAttribute('aria-label','Covered lower modal');lower.style.cssText=dialog.style.cssText;lower.style.zIndex='999';lower.innerHTML='<button>Wrong lower action</button>';document.body.append(lower);}
+if(location.pathname==='/shadow-modal'||location.pathname==='/transparent-modal-ancestor'){const host=document.createElement('div');if(location.pathname==='/transparent-modal-ancestor')host.style.cssText='opacity:0;pointer-events:none';document.body.append(host);host.attachShadow({mode:'open'}).append(dialog);}else document.body.append(dialog);
+if(location.pathname==='/transparent-modal'){dialog.style.opacity='0';dialog.style.pointerEvents='none';}
+if(location.pathname==='/clipped-modal')dialog.style.clipPath='inset(100%)';
+if(location.pathname==='/modal-hidden-control')dialog.innerHTML='<button aria-label="Close details" style="opacity:0"> </button>';
+if(rootScroll){dialog.style.overflow='auto';dialog.querySelector('#modal-panel').style.cssText='height:auto;overflow:visible';dialog.querySelector('button').style.cssText='position:sticky;top:0';}
+dialog.querySelector('button').onclick=()=>{dialog.remove();lower?.remove();};if(native)dialog.showModal();dialog.querySelector('button').focus();if(lower)lower.querySelector('button').focus();
+</script>)HTML";
             if (request.target() == "/control-change")
                 response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
 <style>button,a{display:block;width:200px;height:40px;margin:15px}</style>
@@ -1213,6 +1271,118 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                 "cancelled protocol I/O retires the disconnected owned context");
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
+void modal_browser_tests(bool headed, bool compatibility, std::string_view only = {}) {
+    PageFixture page;
+    auto config = std::make_shared<Config>();
+    config->runtime_mode = RuntimeMode::host;
+    config->host_exec_enabled = true;
+    config->platform = Platform::detect();
+    BrowserOptions options;
+    options.headed = headed;
+    options.compatibility = compatibility;
+    options.software_rendering = headed;
+    options.fixture_port = page.port();
+    options.launch_diagnostics = browser_diagnostics;
+    BrowserService browser(config, options);
+    bool exercised = false;
+    for (const auto* route :
+         {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root", "/modal-overflow", "/covered-focus",
+          "/transparent-modal", "/transparent-modal-ancestor", "/modal-challenge", "/clipped-modal",
+          "/modal-hidden-control"}) {
+        if (!only.empty() && only != route)
+            continue;
+        exercised = true;
+        auto value = initial_observation(
+            browser, {{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + route}},
+            "modal-owner");
+        const auto id = json_string(value.data, "session_id");
+        if (std::string_view(route) == "/modal-challenge") {
+            require(json_string(value.data, "page_status") == "challenge_required" &&
+                        json_bool(value.data, "possible_challenge"),
+                    "a modal never hides document-level challenge evidence");
+            browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
+            require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
+                    "challenge fixture closes its owned profile");
+            continue;
+        }
+        if (std::string_view(route) == "/modal-hidden-control") {
+            require(value.data.at("active_dialog").is_object() && !json_bool(value.data, "dialog_readable") &&
+                        json_string(value.data, "page_status") == "insufficient_content",
+                    "transparent control metadata and background text do not establish dialog readiness");
+            browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
+            require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
+                    "hidden-control profile cleanup");
+            continue;
+        }
+        if (std::string_view(route).starts_with("/transparent-modal") ||
+            std::string_view(route) == "/clipped-modal") {
+            require(value.data.at("active_dialog").is_null() &&
+                        json_string(value.data, "controls_scope") == "viewport" &&
+                        json_string(value.data.at("controls").front(), "name").starts_with("Background "),
+                    "transparent non-intercepting dialog preserves ordinary page observations");
+            browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
+            require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
+                    "transparent fixture closes its owned browser profile");
+            continue;
+        }
+        auto close_control = [](const Json& data) {
+            for (const auto& control : data.at("controls"))
+                if (json_string(control, "name") == "Close details")
+                    return control;
+            throw Error("Visible modal close button was omitted after background controls");
+        };
+        (void)close_control(value.data);
+        if (std::string_view(route) == "/modal-overflow")
+            require(value.data.at("dialogs").size() == 8 && json_bool(value.data, "dialogs_truncated"),
+                    "reported-dialog cap stays bounded while the later active modal is selected");
+        require(json_string(value.data.at("active_dialog"), "name") == "Product details",
+                "native browser identifies the active modal by its labelled heading");
+        require(json_string(value.data, "modal_text").starts_with("Product details") &&
+                    json_string(value.data, "viewport_text").starts_with("Product details"),
+                "modal text is explicit while document evidence remains available");
+        require(json_string(value.data, "text_scope") == "rendered_document_prefix" &&
+                    json_string(value.data, "controls_scope") == "active_dialog" &&
+                    json_string(value.data, "modal_text").find("Earlier product catalogue") ==
+                        std::string::npos &&
+                    json_string(value.data, "text").find("Earlier product catalogue") != std::string::npos,
+                "document and modal text scopes remain distinct");
+        require(value.data.at("controls").size() <= 80 && !value.image_base64.empty(),
+                "bounded modal controls and real screenshot are returned together");
+        for (const auto& control : value.data.at("controls"))
+            require(!json_string(control, "name").starts_with("Background "),
+                    "background controls do not consume modal response capacity");
+        require(!value.data.at("scroll_regions").empty(), "modal scroll region is exposed");
+        const auto region = value.data.at("scroll_regions").front();
+        auto scrolled = browser.perform({{"action", "scroll"},
+                                         {"session_id", id},
+                                         {"observation_id", value.data.at("observation_id")},
+                                         {"x", json_number(region, "x") + json_number(region, "width") / 2},
+                                         {"y", json_number(region, "y") + json_number(region, "height") / 2},
+                                         {"delta_y", 500},
+                                         {"screenshot", false}},
+                                        "modal-owner");
+        auto observed = browser.perform({{"action", "observe"}, {"session_id", id}, {"screenshot", false}},
+                                        "modal-owner");
+        require(json_number(observed.data.at("scroll_regions").front(), "scroll_top") > 300,
+                "a separate observation verifies scrolling within the modal");
+        const auto button = close_control(observed.data);
+        auto closed = browser.perform({{"action", "click"},
+                                       {"session_id", id},
+                                       {"observation_id", observed.data.at("observation_id")},
+                                       {"x", json_number(button, "x") + json_number(button, "width") / 2},
+                                       {"y", json_number(button, "y") + json_number(button, "height") / 2},
+                                       {"screenshot", false}},
+                                      "modal-owner");
+        require(closed.data.at("active_dialog").is_null() &&
+                    json_string(closed.data.at("controls").front(), "name").starts_with("Background "),
+                "closing the modal restores normal page observations");
+        browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
+        require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
+                "modal fixture closes only its owned browser profile");
+    }
+    require(exercised, "unknown modal fixture selection");
+    std::cout << "native and ARIA modal observation, nested scrolling and close passed\n";
+}
 void continuation_budget_tests(bool compatibility) {
     PageFixture page;
     auto config = std::make_shared<Config>();
@@ -1632,6 +1802,11 @@ void session_allowance_tests() {
 }
 int main(int argc, char** argv) {
     try {
+        if (argc >= 2 && std::string_view(argv[1]) == "--chromium-dialogs") {
+            require(argc <= 3, "unknown modal fixture arguments");
+            modal_browser_tests(false, false, argc == 3 ? argv[2] : "");
+            return 0;
+        }
         fixture_transport_tests();
         if (argc == 2 && std::string_view(argv[1]) == "--fixture-transport")
             return 0;
@@ -1644,6 +1819,7 @@ int main(int argc, char** argv) {
                     "unknown browser fixture option");
             const bool headed = mode == "--chromium-headed", compatibility = argc == 3;
             browser_tests(headed, compatibility);
+            modal_browser_tests(headed, compatibility);
             shared_browser_tests(headed, compatibility);
             if (!headed)
                 continuation_budget_tests(compatibility);
