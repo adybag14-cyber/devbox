@@ -22,20 +22,46 @@ function fixture(){
     }}};
   const bridge=new ChromeBridge(api);bridge.install();port.onMessage.emit({control:'ready',protocol:2,version:'test'});
   const call=args=>bridge.handle({...args,_bridge_deadline_unix_ms:Date.now()+10000});
-  return {api,state,bridge,call,port};
+  const popup=message=>bridge.popup({tab_id:41,tab_origin:'https://example.test',...message});
+  return {api,state,bridge,call,port,popup};
 }
-async function allowed(f){await f.bridge.popup({action:'grant',allow_new_tabs:true});const result=await f.call({action:'observe',tab_id:41,screenshot:false});assert(result.ok);return result.data.observation_id;}
+async function allowed(f){await f.popup({action:'grant',allow_new_tabs:true});const result=await f.call({action:'observe',tab_id:41,screenshot:false});assert(result.ok);return result.data.observation_id;}
+test('revocation stays bound to the popup tab when another tab becomes active',async()=>{
+ const f=fixture();await f.popup({action:'grant'});
+ f.state.tabs.set(42,{id:42,url:'https://example.test/other',active:true,windowId:1});
+ f.bridge.state.grant(42,{...f.bridge.state.grants.get(41),nonce:'second-tab'});
+ f.api.tabs.query=async()=>[f.state.tabs.get(42)];
+ await f.popup({action:'revoke_current',tab_id:41});
+ assert(!f.bridge.state.grants.has(41),'the tab displayed in the popup must be revoked');
+ assert(f.bridge.state.grants.has(42),'another active tab must retain its existing grant');
+});
+test('granting stays bound to the popup tab and its captured origin',async()=>{
+ const f=fixture();f.state.tabs.set(42,{id:42,url:'https://example.test/other',active:true,windowId:1});
+ f.api.tabs.query=async()=>[f.state.tabs.get(42)];
+ await f.popup({action:'grant',tab_id:41,tab_origin:'https://example.test'});
+ assert(f.bridge.state.grants.has(41));assert(!f.bridge.state.grants.has(42));
+ await f.popup({action:'revoke_current',tab_id:41});
+ f.state.tabs.get(41).url='https://other.test/';
+ await assert.rejects(f.popup({action:'grant',tab_id:41,tab_origin:'https://example.test'}),/TAB_CONTEXT_CHANGED/);
+ assert.equal(f.bridge.state.grants.size,0);
+});
+test('popup mutations require a captured tab identity and grants require its origin',async()=>{
+ const f=fixture();
+ for(const tab_id of [undefined,-1,41.5,'41'])for(const action of ['grant','revoke_current'])await assert.rejects(f.bridge.popup({action,tab_id}),/POPUP_TAB_CONTEXT_REQUIRED/);
+ await assert.rejects(f.bridge.popup({action:'grant',tab_id:41}),/TAB_CONTEXT_CHANGED/);
+ assert.equal(f.bridge.state.grants.size,0);
+});
 test('page messages cannot grant access; only the exact packaged popup sender can',async()=>{
  const f=fixture(),listener=f.api.runtime.onMessage.listeners[0];let replies=0;
  assert.equal(listener({action:'grant',duration:'until_revoked'},{id:'fixture',url:'https://example.test/'},()=>replies++),undefined);
  assert.equal(f.bridge.state.grants.size,0);assert.equal(replies,0);
- await new Promise(resolve=>listener({action:'grant'},{id:'fixture',url:'chrome-extension://fixture/popup.html'},value=>{assert(!value.error);resolve();}));
+ await new Promise(resolve=>listener({action:'grant',tab_id:41,tab_origin:'https://example.test'},{id:'fixture',url:'chrome-extension://fixture/popup.html'},value=>{assert(!value.error);resolve();}));
  assert.equal(f.bridge.state.grants.size,1);
 });
 
 test('an explicitly unlimited tab remains usable after ten hours but observations still expire',async t=>{
  let now=1700000000000;t.mock.method(Date,'now',()=>now);const f=fixture();
- const granted=await f.bridge.popup({action:'grant',duration:'until_revoked'});
+ const granted=await f.popup({action:'grant',duration:'until_revoked'});
  assert.equal(granted.grants[0].expires,null);assert.equal(granted.grants[0].duration,'until_revoked');
  now+=10*3600000;
  const listed=await f.call({action:'tabs'});assert(listed.ok);assert.equal(listed.data.tabs.length,1);
@@ -47,26 +73,26 @@ test('an explicitly unlimited tab remains usable after ten hours but observation
  const fresh=await f.call({action:'observe',tab_id:41,screenshot:false});assert(fresh.ok);
  const clicked=await f.call({action:'click',tab_id:41,observation_id:fresh.data.observation_id,request_id:'fresh-after-ten-hours',x:10,y:20,screenshot:false});
  assert(clicked.ok);assert.equal(f.state.clicks,1);
- await f.bridge.popup({action:'revoke_current'});
+ await f.popup({action:'revoke_current'});
  assert.equal((await f.call({action:'observe',tab_id:41,screenshot:false})).error.code,'TAB_NOT_GRANTED');
 });
 
 test('one-hour grants retain their expiry and unknown duration cannot create a grant',async t=>{
  let now=1700000000000;t.mock.method(Date,'now',()=>now);const f=fixture();
- await assert.rejects(f.bridge.popup({action:'grant',duration:'forever'}),/INVALID_GRANT_DURATION/);
+ await assert.rejects(f.popup({action:'grant',duration:'forever'}),/INVALID_GRANT_DURATION/);
  assert.equal(f.bridge.state.grants.size,0);
- await f.bridge.popup({action:'grant'});assert.equal(f.bridge.state.grants.get(41).expires,now+3600000);
+ await f.popup({action:'grant'});assert.equal(f.bridge.state.grants.get(41).expires,now+3600000);
  now+=3600000;assert.equal((await f.call({action:'tabs'})).data.tabs.length,0);
 });
 
 test('unlimited grants end on site changes and closing a tab; revoking one tab preserves another',async()=>{
- const f=fixture();await f.bridge.popup({action:'grant',duration:'until_revoked',allow_new_tabs:true});
+ const f=fixture();await f.popup({action:'grant',duration:'until_revoked',allow_new_tabs:true});
  const observed=await f.call({action:'observe',tab_id:41,screenshot:false});
  const created=await f.call({action:'open',tab_id:41,observation_id:observed.data.observation_id,request_id:'same-origin-child',url:'https://example.test/next'});assert(created.ok);
  assert.equal(f.bridge.state.grants.get(42).expires,null);
- await f.bridge.popup({action:'revoke_current'});assert(!f.bridge.state.grants.has(41));assert(f.bridge.state.grants.has(42));
+ await f.popup({action:'revoke_current'});assert(!f.bridge.state.grants.has(41));assert(f.bridge.state.grants.has(42));
  f.api.tabs.onUpdated.emit(42,{url:'https://other.test/'});assert(!f.bridge.state.grants.has(42));
- await f.bridge.popup({action:'grant',duration:'until_revoked'});f.api.tabs.onRemoved.emit(41);assert.equal(f.bridge.state.grants.size,0);
+ await f.popup({action:'grant',duration:'until_revoked'});f.api.tabs.onRemoved.emit(41);assert.equal(f.bridge.state.grants.size,0);
 });
 test('identical input retries recover receipts and conflicting IDs never execute',async()=>{
  const f=fixture(),observation_id=await allowed(f);
@@ -78,7 +104,7 @@ test('identical input retries recover receipts and conflicting IDs never execute
 });
 test('revocation prevents cached page data from being disclosed again',async()=>{
  const f=fixture(),observation_id=await allowed(f),request={action:'click',tab_id:41,observation_id,request_id:'one',x:10,y:20,screenshot:false};
- assert((await f.call(request)).ok);await f.bridge.popup({action:'revoke_all'});
+ assert((await f.call(request)).ok);await f.popup({action:'revoke_all'});
  const result=await f.call(request);assert(result.replayed);assert(result.data.details_expired);assert(!JSON.stringify(result).includes('counter'));assert.equal(f.state.clicks,1);
 });
 test('a failed observation invalidates old node references before any later input',async()=>{
@@ -119,7 +145,7 @@ test('revocation while a screenshot is pending does not disclose the late image'
  const f=fixture();await allowed(f);let entered;
  const started=new Promise(resolve=>entered=resolve),original=f.api.debugger.sendCommand;
  f.api.debugger.sendCommand=async(source,method,params)=>{if(method==='Page.captureScreenshot'){entered();return new Promise(()=>{});}return original(source,method,params);};
- const pending=f.call({action:'observe',tab_id:41});await started;await f.bridge.popup({action:'revoke_all'});
+ const pending=f.call({action:'observe',tab_id:41});await started;await f.popup({action:'revoke_all'});
  const result=await pending;assert(!result.ok);assert(!result.image);assert(!result.data);assert.equal(f.bridge.state.observations.size,0);
 });
 

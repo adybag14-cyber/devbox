@@ -61,14 +61,17 @@ export class ChromeBridge {
   async revokeOriginFailure(context,error){if(context?.grantNonce&&/^(ORIGIN_CHANGED|URL_SCHEME_DENIED)/.test(String(error.message))&&this.state.grants.get(context.tabId)?.nonce===context.grantNonce)await this.revoke(context.tabId);}
   async popup(message){
     if(message.action==='connect')this.connect();
+    if(['grant','revoke_current'].includes(message.action)&&(!Number.isSafeInteger(message.tab_id)||message.tab_id<0))throw new Error('POPUP_TAB_CONTEXT_REQUIRED');
     if(message.action==='grant'){
       const duration=message.duration===undefined?'one_hour':message.duration;
       if(!['one_hour','until_revoked'].includes(duration))throw new Error('INVALID_GRANT_DURATION');
-      const [tab]=await this.chrome.tabs.query({active:true,currentWindow:true});
+      const tab=await this.chrome.tabs.get(message.tab_id);
       if(!tab)throw new Error('NO_ACTIVE_TAB');
-      this.state.grant(tab.id,{origin:publicUrl(tab.url).origin,duration,expires:duration==='until_revoked'?null:Date.now()+3600000,nonce:random(),allow_new_tabs:message.allow_new_tabs===true});this.connect();
+      const origin=publicUrl(tab.url).origin;
+      if(origin!==message.tab_origin)throw new Error('TAB_CONTEXT_CHANGED: reopen the popup for this tab');
+      this.state.grant(tab.id,{origin,duration,expires:duration==='until_revoked'?null:Date.now()+3600000,nonce:random(),allow_new_tabs:message.allow_new_tabs===true});this.connect();
     }
-    if(message.action==='revoke_current'){const [tab]=await this.chrome.tabs.query({active:true,currentWindow:true});if(tab)await this.revoke(tab.id);}
+    if(message.action==='revoke_current')await this.revoke(message.tab_id);
     if(message.action==='revoke_all')for(const id of [...this.state.grants.keys()])await this.revoke(id);
     for(const [id,grant]of this.state.grants)if(!grantActive(grant))await this.revoke(id);
     return {connected:!!this.port&&this.nativeReady,native_version:this.nativeVersion,error:this.connectionError,grants:[...this.state.grants].map(([tab_id,grant])=>({tab_id,origin:grant.origin,duration:grant.duration??'one_hour',expires:grant.expires===null?null:new Date(grant.expires).toISOString(),allow_new_tabs:grant.allow_new_tabs})),limits:LIMITS};

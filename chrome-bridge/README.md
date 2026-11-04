@@ -14,8 +14,14 @@ connectable page-message interface. Chrome's debugger permission is powerful:
 the implementation additionally requires an explicit grant for each tab. The popup
 defaults to one hour, with an optional **Until revoked — no time limit** choice for
 long goals. That choice has no clock expiry; closing the tab, cross-origin navigation,
-debugger detach, or restarting the extension/browser still ends access. Grants are
-held only in the running browser session. New same-origin tabs require a separate
+debugger detach, restarting the extension/browser, or service-worker shutdown still
+ends access. Grants are held in the current background worker's memory. An active
+native-messaging connection keeps that worker alive during normal use, but a host
+disconnect or unexpected worker termination can end the grant; it is not restored
+silently. See [Chrome's service-worker lifecycle](https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle).
+The popup captures and displays its tab once. Grant and per-tab revoke actions
+remain bound to that tab if another tab becomes active, and granting rejects a
+changed origin. New same-origin tabs require a separate
 popup checkbox. Buttons revoke either the current tab or all tabs. Untrusted page
 content cannot grant access. Neither duration changes the 30-second observation
 freshness requirement, bounded action deadlines, origin checks or replay protection.
