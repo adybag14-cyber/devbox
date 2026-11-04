@@ -69,7 +69,6 @@ export function pageTask(request) {
     // These page declarations are observation hints, never permission decisions.
     const dialogNodes=[],discoveryRoots=[document];let discoveryVisited=0,dialogsTruncated=false,hitModal,focusedModal,lastModal;
     const focused=active();
-    const paintedFallback=e=>{let n=e;for(let depth=0;n&&depth<256;++depth){if(Number(getComputedStyle(n).opacity)===0)return false;n=n.parentElement??n.getRootNode().host;}return !n;};
     const describeDialog=e=>{const nativeModal=e.matches(':modal');return {node:e,info:{label:accessibleLabel(e),role:e.getAttribute('role')||'dialog',modal:nativeModal||e.getAttribute('aria-modal')==='true',native_modal:nativeModal,focused:containsComposed(e,focused),rect:rect(e)}};};
     const hitDialog=e=>{const r=rect(e),x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));let hit=document.elementFromPoint(x,y);for(let depth=0;hit?.shadowRoot&&depth<32;++depth){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return containsComposed(e,hit);};
     discover:for(let index=0;index<discoveryRoots.length;++index){
@@ -82,7 +81,7 @@ export function pageTask(request) {
         if(dialogNodes.length<8)dialogNodes.push(describeDialog(e));else dialogsTruncated=true;
         if(e.matches(':modal')||e.getAttribute('aria-modal')==='true'){
           const hit=hitDialog(e);if(hit)hitModal=e;
-          if(hit||e.matches(':modal')||paintedFallback(e)){lastModal=e;if(containsComposed(e,focused))focusedModal=e;}
+          if(e.matches(':modal')){lastModal=e;if(containsComposed(e,focused))focusedModal=e;}
         }
       }
     }
@@ -111,9 +110,11 @@ export function pageTask(request) {
     const readText=(scope,skip)=>{
       const walker=document.createTreeWalker(scope,NodeFilter.SHOW_TEXT);let node;
       while((node=walker.nextNode())){
-        if(text.length>=12000||++textNodes>20000){textTruncated=true;break;}
+        if(++textNodes>20000){textTruncated=true;break;}
         const e=node.parentElement;if(!e||(skip&&containsComposed(skip,e))||['script','style','template','noscript'].includes(e.localName)||!visible(e))continue;
-        const normalized=node.data.replace(/\s+/g,' ').trim();if(!normalized)continue;const separator=text?'\n':'',available=Math.max(0,12000-text.length-separator.length);
+        const normalized=node.data.replace(/\s+/g,' ').trim();if(!normalized)continue;
+        if(text.length>=12000){textTruncated=true;break;}
+        const separator=text?'\n':'',available=Math.max(0,12000-text.length-separator.length);
         text+=separator+normalized.slice(0,available);if(normalized.length>available)textTruncated=true;
       }
     };

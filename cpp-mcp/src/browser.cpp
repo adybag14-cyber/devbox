@@ -140,8 +140,12 @@ std::string browser_page_status(const Json& observation, int http_status) {
         return "navigation_unstable";
     if (json_string(observation, "ready_state") == "loading")
         return "loading";
+    const auto dialog = observation.find("active_dialog");
+    const auto readable = observation.find("dialog_readable");
+    if (dialog != observation.end() && dialog->is_object() && readable != observation.end() &&
+        readable->is_boolean())
+        return readable->get<bool>() ? "content_available" : "insufficient_content";
     if (text.size() < 80) {
-        const auto dialog = observation.find("active_dialog");
         const auto controls = observation.find("controls");
         const bool dialog_has_content =
             dialog != observation.end() && dialog->is_object() &&
@@ -176,18 +180,19 @@ constexpr auto observe_script = R"JS((() => {
    if(!e.matches('dialog[open],[role="dialog"],[role="alertdialog"]')||!visible(e))continue;
    const r=e.getBoundingClientRect();if(r.bottom<=0||r.right<=0||r.top>=innerHeight||r.left>=innerWidth)continue;
    if(dialogNodes.length<8)dialogNodes.push(describeDialog(e));else dialogs_truncated=true;
-   if(e.matches(':modal')||e.getAttribute('aria-modal')==='true'){const hit=hitDialog(e);if(hit)hitModal=e;if(hit||e.matches(':modal')||paintedFallback(e)){lastModal=e;if(contains(e,focused))focusedModal=e;}}
+   if(e.matches(':modal')||e.getAttribute('aria-modal')==='true'){const hit=hitDialog(e);if(hit)hitModal=e;if(e.matches(':modal')){lastModal=e;if(contains(e,focused))focusedModal=e;}}
   }
  }
  const selectedNode=hitModal??focusedModal??lastModal;
  const selected=dialogNodes.find(d=>d.node===selectedNode)??(selectedNode?describeDialog(selectedNode):undefined),modal=selected?.node,scope=modal??document;
  const all=scope.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="checkbox"],[role="tab"],[contenteditable="true"]');
- const controls=[];let examined=0,hidden=0;
+ const controls=[];let examined=0,hidden=0,readableControls=0;
  for(const e of all){if(++examined>4000)break;if(!visible(e)){hidden++;continue;}
   const r=e.getBoundingClientRect();if(r.bottom<0||r.right<0||r.top>innerHeight||r.left>innerWidth)continue;
   if(controls.length>=80)break;
   const type=(e.type||'').toLowerCase(); const privateValue=type==='password'||type==='file'||e.autocomplete==='one-time-code';
   const activationLink=e.tagName==='A'?null:e.closest('a[href]');
+  if(paintedFallback(e)&&hitDialog(e))++readableControls;
   controls.push({tag:e.tagName.toLowerCase(),role:e.getAttribute('role')||'',type,
    name:clean(e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.innerText||e.getAttribute('placeholder')||e.getAttribute('title')),
    href:e.tagName==='A'?clip(e.href,1000):undefined,disabled:!!e.disabled,checked:typeof e.checked==='boolean'?e.checked:undefined,
@@ -208,14 +213,17 @@ constexpr auto observe_script = R"JS((() => {
   if(!e||['SCRIPT','STYLE','NOSCRIPT'].includes(e.tagName)||!n.textContent.trim())continue;
   const range=document.createRange();range.selectNodeContents(n);const r=range.getBoundingClientRect();
   if(r.width<=0||r.height<=0||r.bottom<0||r.top>innerHeight||r.right<0||r.left>innerWidth)continue;
-  const s=getComputedStyle(e);if(s.visibility==='hidden'||s.display==='none')continue;
+  const s=getComputedStyle(e);if(s.visibility==='hidden'||s.display==='none'||!paintedFallback(e))continue;
   const t=n.textContent.replace(/\s+/g,' ').trim().slice(0,4000-viewport_chars);viewport_parts.push(t);viewport_chars+=t.length;
  }
- const text=(modal??document.body)?.innerText||'';
+ const text=document.body?.innerText||'',modalText=modal?.innerText||'';
  return {url:location.href,title:clip(document.title,300),ready_state:document.readyState,
   active_dialog:selected?.info??null,dialogs:dialogNodes.map(d=>d.info),dialogs_truncated,
-  text_scope:modal?'active_dialog':'rendered_document_prefix',controls_scope:modal?'active_dialog':'viewport',
+  text_scope:'rendered_document_prefix',controls_scope:modal?'active_dialog':'viewport',
+  modal_text:modal?clip(modalText,8000):null,modal_text_scope:modal?'active_dialog_light_dom':null,modal_text_truncated:modalText.length>8000,
+  dialog_readable:modal?(viewport_parts.length>0||readableControls>0):null,
   text_note:'Text may omit content inside descendant shadow roots; use the screenshot for the composed display.',
+  controls_note:'Native control descriptors retain light-DOM state; dialog_readable reflects viewport evidence. Descendant shadow controls may be omitted; use the screenshot for those controls.',
   text:clip(text,8000),text_truncated:text.length>8000,viewport_text:viewport_parts.join('\n'),viewport_text_truncated:visited>6000||viewport_chars>=4000,
   controls,controls_truncated:examined>4000||controls.length===80,scroll_regions,
   viewport:{width:innerWidth,height:innerHeight,scroll_x:scrollX,scroll_y:scrollY,document_width:document.documentElement.scrollWidth,document_height:document.documentElement.scrollHeight},
