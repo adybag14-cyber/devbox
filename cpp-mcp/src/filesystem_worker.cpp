@@ -242,9 +242,11 @@ int run_filesystem_worker(const FilesystemDispatch& dispatch) {
                 throw Error("FILESYSTEM_WORKER_INPUT_SHAPE");
             return true;
         });
-        const auto value = (dispatch ? dispatch : filesystem_operation)(json_string(request, "operation"),
-                                                                        request.at("arguments"));
-        const auto output = bounded_json_dump(Json{{"ok", true}, {"value", value}}, 64 * 1024 * 1024);
+        auto value = (dispatch ? dispatch : filesystem_operation)(json_string(request, "operation"),
+                                                                  request.at("arguments"));
+        Json response{{"ok", true}};
+        response["value"] = std::move(value);
+        const auto output = bounded_json_dump(response, 64 * 1024 * 1024);
         std::cout.write(output.data(), static_cast<std::streamsize>(output.size()));
         return 0;
     } catch (const std::exception& error) {
@@ -285,14 +287,14 @@ Json isolated_filesystem(std::string_view operation, const Json& args, Millis ti
     try {
         (void)spawn_process(path_text(binary), {"--filesystem-worker"}, options, cancel);
         std::size_t nodes = 0;
-        const auto response = Json::parse(output, [&](int depth, Json::parse_event_t, Json&) {
+        auto response = Json::parse(output, [&](int depth, Json::parse_event_t, Json&) {
             if (depth > 256 || ++nodes > 131072)
                 throw Error("FILESYSTEM_WORKER_OUTPUT_SHAPE");
             return true;
         });
         if (!json_bool(response, "ok"))
             throw Error(json_string(response, "error", "Filesystem worker failed"));
-        return response.at("value");
+        return std::move(response.at("value"));
     } catch (const ProcessError& error) {
         if (output_overflow)
             throw Error("FILESYSTEM_WORKER_OUTPUT_BUDGET");
