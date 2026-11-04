@@ -607,8 +607,7 @@ Pipe empty_input() {
     return {NativeHandle(), std::move(child)};
 }
 bool read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
-                    const ProcessOptions& options) {
-    std::vector<char> buffer(16384);
+                    const ProcessOptions& options, std::span<char> buffer) {
     bool progressed = false;
     // Bound each pass so continuously chatty children cannot starve cancellation or stderr.
     for (int pass = 0; pipe && pass < 16; ++pass) {
@@ -834,11 +833,14 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     RawProcessResult result;
     result.pid = information.dwProcessId;
     std::optional<Clock::time_point> exited, forced;
+    // The two output streams are drained serially. Reuse one bounded buffer
+    // instead of allocating and clearing it on every pipe readiness pass.
+    std::array<char, 16384> output_buffer;
     while (true) {
         const auto stdout_progress =
-            read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options);
+            read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options, output_buffer);
         const auto stderr_progress =
-            read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options);
+            read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options, output_buffer);
         // Advance immediately while the pipe accepts input. The bounded pass
         // preserves stdout/stderr and cancellation service between write bursts.
         for (int pass = 0; stdin_pipe.parent && pass < 16; ++pass) {
@@ -891,8 +893,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
             // The child can close its final pipe handles between the earlier
             // reads and this exit observation. Recheck now instead of adding
             // a timer tick to an already completed process.
-            read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options);
-            read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options);
+            read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options, output_buffer);
+            read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options, output_buffer);
         }
         if (!exited && !forced &&
             ((cancel && cancel->cancelled()) || (options.timeout && now - started >= *options.timeout))) {
