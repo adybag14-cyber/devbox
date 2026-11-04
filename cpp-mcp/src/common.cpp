@@ -359,23 +359,31 @@ std::string utc_from_micros(std::int64_t us) {
     return value + 'Z';
 }
 std::string utc_from_millis(std::int64_t ms) {
-    auto seconds = ms / 1000;
-    auto remainder = ms % 1000;
-    if (remainder < 0) {
-        --seconds;
-        remainder += 1000;
-    }
-    const auto t = static_cast<std::time_t>(seconds);
-    std::tm value{};
-#ifdef _WIN32
-    gmtime_s(&value, &t);
-#else
-    gmtime_r(&t, &value);
-#endif
-    std::ostringstream out;
-    out << std::put_time(&value, "%Y-%m-%dT%H:%M:%S") << '.' << std::setw(3) << std::setfill('0') << remainder
-        << 'Z';
-    return out.str();
+    using namespace std::chrono;
+    constexpr auto first = duration_cast<Millis>(sys_days{year{0} / January / 1}.time_since_epoch()).count();
+    constexpr auto beyond =
+        duration_cast<Millis>(sys_days{year{10000} / January / 1}.time_since_epoch()).count();
+    if (ms < first || ms >= beyond)
+        throw Error("UTC_TIMESTAMP_OUT_OF_RANGE");
+    const sys_time<Millis> instant{Millis(ms)};
+    const auto date_point = floor<days>(instant);
+    const year_month_day date{date_point};
+    const auto remainder = static_cast<unsigned>(duration_cast<Millis>(instant - date_point).count());
+    std::string result = "0000-00-00T00:00:00.000Z";
+    const auto decimal = [&](std::size_t at, unsigned width, unsigned number) {
+        while (width) {
+            result[at + --width] = static_cast<char>('0' + number % 10);
+            number /= 10;
+        }
+    };
+    decimal(0, 4, static_cast<unsigned>(static_cast<int>(date.year())));
+    decimal(5, 2, static_cast<unsigned>(date.month()));
+    decimal(8, 2, static_cast<unsigned>(date.day()));
+    decimal(11, 2, remainder / 3600000);
+    decimal(14, 2, remainder / 60000 % 60);
+    decimal(17, 2, remainder / 1000 % 60);
+    decimal(20, 3, remainder % 1000);
+    return result;
 }
 std::string utc_now() {
     return utc_from_millis(static_cast<std::int64_t>(unix_millis()));
@@ -678,14 +686,14 @@ void ensure_directory(const fs::path& path) {
     if (!fs::is_directory(path, ec))
         fs::create_directories(path);
 }
-void write_json_atomic(const fs::path& path, const Json& value) {
+void write_bytes_atomic(const fs::path& path, std::string_view bytes) {
     if (!path.parent_path().empty())
         ensure_directory(path.parent_path());
     // Keep the temporary basename independent of long operation/ticket IDs. Appending another
     // UUID to the destination name can exceed Windows' legacy path bound even when the final path fits.
     const auto temporary = path.parent_path() / path_from_utf8(".devbox-" + uuid() + ".tmp");
     try {
-        write_file(temporary, value.dump(2));
+        write_file(temporary, bytes);
 #ifdef _WIN32
         const auto flush_handle = CreateFileW(temporary.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
                                               OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -719,6 +727,9 @@ void write_json_atomic(const fs::path& path, const Json& value) {
         fs::remove(temporary, ec);
         throw;
     }
+}
+void write_json_atomic(const fs::path& path, const Json& value) {
+    write_bytes_atomic(path, value.dump(2));
 }
 std::string json_string(const Json& object, std::string_view key, std::string fallback) {
     const auto it = object.find(key);

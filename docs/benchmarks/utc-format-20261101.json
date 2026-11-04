@@ -1,0 +1,1858 @@
+{
+  "baselineSource": "ecca4de7e54059c85e52ab06ccde92a99021b52d",
+  "candidateSource": "f542818fc27436707c5467982e8a65e3ce45efda",
+  "productionChanged": false,
+  "platforms": {
+    "windows": {
+      "runs": [
+        {
+          "side": "baseline",
+          "build": {
+            "gitSha": "ecca4de7e54059c85e52ab06ccde92a99021b52d",
+            "gitRef": "HEAD",
+            "sourceTree": "49250238dd25bfec132eeecbcb1e828eb8fa2246",
+            "sourceDirty": false,
+            "sourceFingerprint": "78df18805a5522fc17c076d90b5b51ee908a40dde5106026025a208a676c8113",
+            "buildUnixSeconds": "1793564434",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.30",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "225ae2d379dc7648efa2656777c590fa4335ee4abe8b32638880deffdbd640b2",
+            "executableName": "devbox-utc-bench.exe",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "base_milliseconds": 0,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 12.2956,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 12.2084,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 12.5795,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 12.7955,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 12.4188,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 12.4556,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 12.5327,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 12.6025,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 12.447,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 12.4135,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 12.4542,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 12.348,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 12.3843,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 12.4074,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 12.4624,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            }
+          ],
+          "owner": {
+            "label": "20261101-utc-windows-0-baseline",
+            "owner_pid": 51084,
+            "started_at_utc": "2026-11-01T20:28:15.148090+00:00",
+            "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+            "command": [
+              "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\utc-baseline\\devbox-utc-bench.exe"
+            ],
+            "timeout_seconds": 120.0,
+            "hard_deadline_utc": "2026-11-01T22:30:00Z",
+            "pid": 43332,
+            "child_creation_filetime": 134380384951501985,
+            "child_created_at_utc": "2026-11-01T20:28:15.150198+00:00",
+            "exit_code": 0,
+            "ok": true,
+            "finished_at_utc": "2026-11-01T20:28:15.410558+00:00",
+            "job_accounting": {
+              "cpu_total_ms": 250.0,
+              "cpu_user_ms": 171.875,
+              "cpu_kernel_ms": 78.125,
+              "total_processes": 2,
+              "active_processes": 1,
+              "page_faults": 5609,
+              "breakaway_allowed": false
+            },
+            "job_memory": {
+              "peak_process_committed_bytes": 4096000,
+              "peak_job_committed_bytes": 5406720
+            }
+          }
+        },
+        {
+          "side": "candidate",
+          "build": {
+            "gitSha": "f542818fc27436707c5467982e8a65e3ce45efda",
+            "gitRef": "HEAD",
+            "sourceTree": "a4e0c801a935b40be68c2ae5773696857e7008d6",
+            "sourceDirty": false,
+            "sourceFingerprint": "30f03319134c73c28e0128fb412aa46eeaf9a4013e4786a05828915dd6e427f0",
+            "buildUnixSeconds": "1793564559",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.30",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "75e97f166ca544d72233678628a051d413532cd9baad203f4811fb58cb60f8f1",
+            "executableName": "devbox-utc-bench.exe",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "base_milliseconds": 0,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.4425,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.4215,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.4137,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.4195,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.4151,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.4274,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.4502,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.4107,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.4239,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.4095,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.4139,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.4165,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.4095,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.4147,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.412,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            }
+          ],
+          "owner": {
+            "label": "20261101-utc-windows-1-candidate",
+            "owner_pid": 9244,
+            "started_at_utc": "2026-11-01T20:28:15.483451+00:00",
+            "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+            "command": [
+              "C:\\Users\\adyba\\devbox-web-encoding-baseline-20261031\\.cpp-build\\windows\\cpp-mcp\\Release\\devbox-utc-bench.exe"
+            ],
+            "timeout_seconds": 120.0,
+            "hard_deadline_utc": "2026-11-01T22:30:00Z",
+            "pid": 52208,
+            "child_creation_filetime": 134380384954847448,
+            "child_created_at_utc": "2026-11-01T20:28:15.484745+00:00",
+            "exit_code": 0,
+            "ok": true,
+            "finished_at_utc": "2026-11-01T20:28:15.524392+00:00",
+            "job_accounting": {
+              "cpu_total_ms": 46.875,
+              "cpu_user_ms": 15.625,
+              "cpu_kernel_ms": 31.25,
+              "total_processes": 2,
+              "active_processes": 1,
+              "page_faults": 6089,
+              "breakaway_allowed": false
+            },
+            "job_memory": {
+              "peak_process_committed_bytes": 3649536,
+              "peak_job_committed_bytes": 4976640
+            }
+          }
+        },
+        {
+          "side": "candidate",
+          "build": {
+            "gitSha": "f542818fc27436707c5467982e8a65e3ce45efda",
+            "gitRef": "HEAD",
+            "sourceTree": "a4e0c801a935b40be68c2ae5773696857e7008d6",
+            "sourceDirty": false,
+            "sourceFingerprint": "30f03319134c73c28e0128fb412aa46eeaf9a4013e4786a05828915dd6e427f0",
+            "buildUnixSeconds": "1793564559",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.30",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "75e97f166ca544d72233678628a051d413532cd9baad203f4811fb58cb60f8f1",
+            "executableName": "devbox-utc-bench.exe",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "base_milliseconds": 0,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.4341,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.4139,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.4129,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.4128,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.4176,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.434,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.413,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.4143,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.4139,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.4141,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.4145,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.4171,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.4121,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.4144,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.4122,
+              "allocation_calls": 10000,
+              "allocated_bytes": 320000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            }
+          ],
+          "owner": {
+            "label": "20261101-utc-windows-2-candidate",
+            "owner_pid": 52328,
+            "started_at_utc": "2026-11-01T20:28:15.595731+00:00",
+            "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+            "command": [
+              "C:\\Users\\adyba\\devbox-web-encoding-baseline-20261031\\.cpp-build\\windows\\cpp-mcp\\Release\\devbox-utc-bench.exe"
+            ],
+            "timeout_seconds": 120.0,
+            "hard_deadline_utc": "2026-11-01T22:30:00Z",
+            "pid": 11296,
+            "child_creation_filetime": 134380384955967498,
+            "child_created_at_utc": "2026-11-01T20:28:15.596750+00:00",
+            "exit_code": 0,
+            "ok": true,
+            "finished_at_utc": "2026-11-01T20:28:15.630577+00:00",
+            "job_accounting": {
+              "cpu_total_ms": 46.875,
+              "cpu_user_ms": 31.25,
+              "cpu_kernel_ms": 15.625,
+              "total_processes": 2,
+              "active_processes": 1,
+              "page_faults": 5874,
+              "breakaway_allowed": false
+            },
+            "job_memory": {
+              "peak_process_committed_bytes": 3604480,
+              "peak_job_committed_bytes": 4898816
+            }
+          }
+        },
+        {
+          "side": "baseline",
+          "build": {
+            "gitSha": "ecca4de7e54059c85e52ab06ccde92a99021b52d",
+            "gitRef": "HEAD",
+            "sourceTree": "49250238dd25bfec132eeecbcb1e828eb8fa2246",
+            "sourceDirty": false,
+            "sourceFingerprint": "78df18805a5522fc17c076d90b5b51ee908a40dde5106026025a208a676c8113",
+            "buildUnixSeconds": "1793564434",
+            "compiler": "MSVC 19.51.36260.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.30",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg.exe",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "225ae2d379dc7648efa2656777c590fa4335ee4abe8b32638880deffdbd640b2",
+            "executableName": "devbox-utc-bench.exe",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "base_milliseconds": 0,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 12.7349,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 12.6521,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 12.5997,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 13.1123,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 12.8802,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 12.7658,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 12.5919,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 12.5135,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 12.3966,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 12.5459,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 12.5144,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 12.6204,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 12.5352,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 12.5319,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 12.5421,
+              "allocation_calls": 100000,
+              "allocated_bytes": 2880000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            }
+          ],
+          "owner": {
+            "label": "20261101-utc-windows-3-baseline",
+            "owner_pid": 41992,
+            "started_at_utc": "2026-11-01T20:28:15.703555+00:00",
+            "cwd": "C:\\Users\\adyba\\devbox-native-audit-20261025",
+            "command": [
+              "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\utc-baseline\\devbox-utc-bench.exe"
+            ],
+            "timeout_seconds": 120.0,
+            "hard_deadline_utc": "2026-11-01T22:30:00Z",
+            "pid": 59376,
+            "child_creation_filetime": 134380384957045520,
+            "child_created_at_utc": "2026-11-01T20:28:15.704552+00:00",
+            "exit_code": 0,
+            "ok": true,
+            "finished_at_utc": "2026-11-01T20:28:15.958821+00:00",
+            "job_accounting": {
+              "cpu_total_ms": 250.0,
+              "cpu_user_ms": 218.75,
+              "cpu_kernel_ms": 31.25,
+              "total_processes": 2,
+              "active_processes": 1,
+              "page_faults": 5878,
+              "breakaway_allowed": false
+            },
+            "job_memory": {
+              "peak_process_committed_bytes": 3653632,
+              "peak_job_committed_bytes": 4939776
+            }
+          }
+        }
+      ],
+      "summary": [
+        {
+          "baseMilliseconds": 0,
+          "mediansPer10000Formats": {
+            "milliseconds": {
+              "baseline": 12.625900000000001,
+              "candidate": 0.41635,
+              "reductionPercent": 96.70241329330979
+            },
+            "allocation_calls": {
+              "baseline": 100000.0,
+              "candidate": 10000.0,
+              "reductionPercent": 90.0
+            },
+            "allocated_bytes": {
+              "baseline": 2880000.0,
+              "candidate": 320000.0,
+              "reductionPercent": 88.88888888888889
+            }
+          },
+          "outputSha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+        },
+        {
+          "baseMilliseconds": 951782399000,
+          "mediansPer10000Formats": {
+            "milliseconds": {
+              "baseline": 12.5231,
+              "candidate": 0.4142,
+              "reductionPercent": 96.6925122373853
+            },
+            "allocation_calls": {
+              "baseline": 100000.0,
+              "candidate": 10000.0,
+              "reductionPercent": 90.0
+            },
+            "allocated_bytes": {
+              "baseline": 2880000.0,
+              "candidate": 320000.0,
+              "reductionPercent": 88.88888888888889
+            }
+          },
+          "outputSha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+        },
+        {
+          "baseMilliseconds": 1793563200000,
+          "mediansPer10000Formats": {
+            "milliseconds": {
+              "baseline": 12.4884,
+              "candidate": 0.41415,
+              "reductionPercent": 96.68372249447488
+            },
+            "allocation_calls": {
+              "baseline": 100000.0,
+              "candidate": 10000.0,
+              "reductionPercent": 90.0
+            },
+            "allocated_bytes": {
+              "baseline": 2880000.0,
+              "candidate": 320000.0,
+              "reductionPercent": 88.88888888888889
+            }
+          },
+          "outputSha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+        }
+      ]
+    },
+    "linux": {
+      "runs": [
+        {
+          "side": "baseline",
+          "build": {
+            "gitSha": "ecca4de7e54059c85e52ab06ccde92a99021b52d",
+            "gitRef": "HEAD",
+            "sourceTree": "49250238dd25bfec132eeecbcb1e828eb8fa2246",
+            "sourceDirty": false,
+            "sourceFingerprint": "2365059c4b3ad77420d3df10f3f8c605ec23e88b576a30bf24c8a60d7b4f2667",
+            "buildUnixSeconds": "1793564433",
+            "compiler": "GNU 12.3.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.30",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "e92b058762b4a5e52b551e81867e59e0c89f8d1af56ad762d57844f42a041cfb",
+            "executableName": "utc-baseline-bench",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "base_milliseconds": 0,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 2.803915,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 2.783636,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 2.841536,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 2.819476,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 2.790276,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 2.857436,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 2.829397,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 2.854156,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 2.864296,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 2.809906,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 2.835077,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 2.836986,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 2.879906,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 2.834296,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 2.794347,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            }
+          ],
+          "owner": {
+            "label": "20261101-utc-linux-0-baseline",
+            "owner_pid": 4748,
+            "started_at_utc": "2026-11-01T20:28:16.064475+00:00",
+            "command": [
+              "/home/tdamre/devbox-web-encoding-20261031/utc-baseline-bench"
+            ],
+            "cwd": "/home/tdamre/devbox-web-encoding-20261031/source",
+            "pid": 4749,
+            "process_group": 4749,
+            "start_ticks": "2897081",
+            "exit_code": 0,
+            "ok": true,
+            "finished_at_utc": "2026-11-01T20:28:16.185452+00:00"
+          }
+        },
+        {
+          "side": "candidate",
+          "build": {
+            "gitSha": "f542818fc27436707c5467982e8a65e3ce45efda",
+            "gitRef": "HEAD",
+            "sourceTree": "a4e0c801a935b40be68c2ae5773696857e7008d6",
+            "sourceDirty": false,
+            "sourceFingerprint": "cbddc13ca2c5912d84ca43161263fc188bd4d2cf69a9c273a9f0f1ec6815ce84",
+            "buildUnixSeconds": "1793564558",
+            "compiler": "GNU 12.3.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.30",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "f16d2489bd2b46c623ae9923b967562e1282a64d9d07d2d7accc1e54dd78ac73",
+            "executableName": "devbox-utc-bench",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "base_milliseconds": 0,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.236329,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.253148,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.239729,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.232609,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.237179,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.237818,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.241089,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.350069,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.241319,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.231598,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.240869,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.233419,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.239318,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.241419,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.241439,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            }
+          ],
+          "owner": {
+            "label": "20261101-utc-linux-1-candidate",
+            "owner_pid": 4752,
+            "started_at_utc": "2026-11-01T20:28:16.296371+00:00",
+            "command": [
+              "/home/tdamre/devbox-web-encoding-20261031/build/cpp-mcp/devbox-utc-bench"
+            ],
+            "cwd": "/home/tdamre/devbox-web-encoding-20261031/source",
+            "pid": 4753,
+            "process_group": 4753,
+            "start_ticks": "2897104",
+            "exit_code": 0,
+            "ok": true,
+            "finished_at_utc": "2026-11-01T20:28:16.318758+00:00"
+          }
+        },
+        {
+          "side": "candidate",
+          "build": {
+            "gitSha": "f542818fc27436707c5467982e8a65e3ce45efda",
+            "gitRef": "HEAD",
+            "sourceTree": "a4e0c801a935b40be68c2ae5773696857e7008d6",
+            "sourceDirty": false,
+            "sourceFingerprint": "cbddc13ca2c5912d84ca43161263fc188bd4d2cf69a9c273a9f0f1ec6815ce84",
+            "buildUnixSeconds": "1793564558",
+            "compiler": "GNU 12.3.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.30",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "f16d2489bd2b46c623ae9923b967562e1282a64d9d07d2d7accc1e54dd78ac73",
+            "executableName": "devbox-utc-bench",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "base_milliseconds": 0,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.241979,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.237599,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.236679,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.235448,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.253389,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.237688,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.236209,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.301349,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.235249,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.239849,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 0.234929,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 0.238148,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 0.245679,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 0.242779,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 0.238729,
+              "allocation_calls": 10000,
+              "allocated_bytes": 250000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            }
+          ],
+          "owner": {
+            "label": "20261101-utc-linux-2-candidate",
+            "owner_pid": 4756,
+            "started_at_utc": "2026-11-01T20:28:16.429142+00:00",
+            "command": [
+              "/home/tdamre/devbox-web-encoding-20261031/build/cpp-mcp/devbox-utc-bench"
+            ],
+            "cwd": "/home/tdamre/devbox-web-encoding-20261031/source",
+            "pid": 4757,
+            "process_group": 4757,
+            "start_ticks": "2897117",
+            "exit_code": 0,
+            "ok": true,
+            "finished_at_utc": "2026-11-01T20:28:16.450199+00:00"
+          }
+        },
+        {
+          "side": "baseline",
+          "build": {
+            "gitSha": "ecca4de7e54059c85e52ab06ccde92a99021b52d",
+            "gitRef": "HEAD",
+            "sourceTree": "49250238dd25bfec132eeecbcb1e828eb8fa2246",
+            "sourceDirty": false,
+            "sourceFingerprint": "2365059c4b3ad77420d3df10f3f8c605ec23e88b576a30bf24c8a60d7b4f2667",
+            "buildUnixSeconds": "1793564433",
+            "compiler": "GNU 12.3.0",
+            "implementation": "cpp",
+            "nativeVersion": "0.3.0",
+            "packageVersion": "0.9.30",
+            "releaseTag": null,
+            "contractVersion": 13,
+            "toolCount": 58,
+            "stateSchemaVersion": 2,
+            "stateCoordinatorProtocol": 1,
+            "nativeManagementVersion": 1,
+            "bundledRipgrep": {
+              "name": "ripgrep",
+              "version": "",
+              "source": "",
+              "sha256": "",
+              "bytes": 0,
+              "file": "devbox-rg",
+              "pcre2": false,
+              "optional": true,
+              "compiledIdentity": false,
+              "releaseQualified": false
+            },
+            "sanitizers": false,
+            "binarySha256": "e92b058762b4a5e52b551e81867e59e0c89f8d1af56ad762d57844f42a041cfb",
+            "executableName": "utc-baseline-bench",
+            "deploymentGeneration": null
+          },
+          "trials": [
+            {
+              "base_milliseconds": 0,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 2.814345,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 3.088805,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 2.856876,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 2.861855,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 0,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 2.833036,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 3.020905,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 2.874645,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 2.884825,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 2.895346,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 951782399000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 2.871586,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 0,
+              "iterations": 10000,
+              "milliseconds": 2.874326,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 1,
+              "iterations": 10000,
+              "milliseconds": 2.851975,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 2,
+              "iterations": 10000,
+              "milliseconds": 2.858206,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 3,
+              "iterations": 10000,
+              "milliseconds": 2.908155,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            },
+            {
+              "base_milliseconds": 1793563200000,
+              "trial": 4,
+              "iterations": 10000,
+              "milliseconds": 2.988585,
+              "allocation_calls": 20000,
+              "allocated_bytes": 5440000,
+              "retained_bytes_delta": 0,
+              "output_sha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+            }
+          ],
+          "owner": {
+            "label": "20261101-utc-linux-3-baseline",
+            "owner_pid": 4760,
+            "started_at_utc": "2026-11-01T20:28:16.561741+00:00",
+            "command": [
+              "/home/tdamre/devbox-web-encoding-20261031/utc-baseline-bench"
+            ],
+            "cwd": "/home/tdamre/devbox-web-encoding-20261031/source",
+            "pid": 4761,
+            "process_group": 4761,
+            "start_ticks": "2897130",
+            "exit_code": 0,
+            "ok": true,
+            "finished_at_utc": "2026-11-01T20:28:16.632054+00:00"
+          }
+        }
+      ],
+      "summary": [
+        {
+          "baseMilliseconds": 0,
+          "mediansPer10000Formats": {
+            "milliseconds": {
+              "baseline": 2.826256,
+              "candidate": 0.23738900000000002,
+              "reductionPercent": 91.60058395276295
+            },
+            "allocation_calls": {
+              "baseline": 20000.0,
+              "candidate": 10000.0,
+              "reductionPercent": 50.0
+            },
+            "allocated_bytes": {
+              "baseline": 5440000.0,
+              "candidate": 250000.0,
+              "reductionPercent": 95.40441176470588
+            }
+          },
+          "outputSha256": "eb8e29d3d053e82b9528f46a73999dca3c64b809521a6b11f53b5f30f8200e60"
+        },
+        {
+          "baseMilliseconds": 951782399000,
+          "mediansPer10000Formats": {
+            "milliseconds": {
+              "baseline": 2.867941,
+              "candidate": 0.2388335,
+              "reductionPercent": 91.67230079000927
+            },
+            "allocation_calls": {
+              "baseline": 20000.0,
+              "candidate": 10000.0,
+              "reductionPercent": 50.0
+            },
+            "allocated_bytes": {
+              "baseline": 5440000.0,
+              "candidate": 250000.0,
+              "reductionPercent": 95.40441176470588
+            }
+          },
+          "outputSha256": "b6950338b538bca8911a7a051fb28c5b7dd2405d7aeed2bc73e1a4b9cb49f682"
+        },
+        {
+          "baseMilliseconds": 1793563200000,
+          "mediansPer10000Formats": {
+            "milliseconds": {
+              "baseline": 2.8550905,
+              "candidate": 0.24009350000000002,
+              "reductionPercent": 91.59068688015319
+            },
+            "allocation_calls": {
+              "baseline": 20000.0,
+              "candidate": 10000.0,
+              "reductionPercent": 50.0
+            },
+            "allocated_bytes": {
+              "baseline": 5440000.0,
+              "candidate": 250000.0,
+              "reductionPercent": 95.40441176470588
+            }
+          },
+          "outputSha256": "fafb835e1ad3d2ebc1f8077b10cfdfd17fb515c3bcac621fbfffece0f192bf47"
+        }
+      ]
+    }
+  },
+  "method": "ABBA process order per platform; five trials of 10000 UTC formats and exact byte comparisons per case per process. Three post-epoch date ranges have identical response hashes across implementations. Inputs/expected strings and hashing excluded from timing. Warm shared workstation; C++ allocation counters exclude C allocations and are not peak RAM. Boundary correctness failures are separately reproduced against the baseline.",
+  "windowsArtifacts": {
+    "baseline": {
+      "file": "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\utc-baseline\\devbox-utc-bench.exe",
+      "sha256": "225ae2d379dc7648efa2656777c590fa4335ee4abe8b32638880deffdbd640b2"
+    },
+    "candidate": {
+      "file": "C:\\Users\\adyba\\devbox-native-audit-20261025\\20261101\\utc-candidate\\devbox-utc-bench.exe",
+      "sha256": "75e97f166ca544d72233678628a051d413532cd9baad203f4811fb58cb60f8f1"
+    }
+  },
+  "linuxArtifacts": {
+    "baseline": {
+      "file": "/home/tdamre/devbox-web-encoding-20261031/utc-baseline-bench",
+      "sha256": "e92b058762b4a5e52b551e81867e59e0c89f8d1af56ad762d57844f42a041cfb"
+    },
+    "candidate": {
+      "file": "/home/tdamre/devbox-web-encoding-20261031/utc-candidate-bench",
+      "sha256": "f16d2489bd2b46c623ae9923b967562e1282a64d9d07d2d7accc1e54dd78ac73"
+    }
+  }
+}

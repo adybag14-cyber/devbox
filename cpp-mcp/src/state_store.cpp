@@ -34,6 +34,7 @@ void private_local_directory(const fs::path& directory, bool create, bool exclus
     const auto text = path.native();
     if (text.starts_with(L"\\\\") && !(text.starts_with(L"\\\\?\\") && text.size() > 6 && text[5] == L':'))
         throw Error("STATE_NETWORK_OR_DEVICE_PATH_DENIED");
+    std::wstring checked_root;
     for (auto parent = path.parent_path(); !parent.empty();) {
         const auto native_parent = parent.native();
         // std::filesystem can treat the extended DOS prefix as a root name and return
@@ -46,12 +47,18 @@ void private_local_directory(const fs::path& directory, bool create, bool exclus
         if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT))
             throw Error("STATE_REPARSE_PARENT_DENIED");
         const auto next = parent.parent_path();
-        if (next == parent || extended_drive_root)
+        if (next == parent || extended_drive_root) {
+            checked_root = checked_parent;
             break;
+        }
         parent = next;
     }
     std::array<wchar_t, MAX_PATH> volume{};
-    if (!GetVolumePathNameW(path.parent_path().c_str(), volume.data(), static_cast<DWORD>(volume.size())) ||
+    // Every intervening parent was checked for reparse points above. Resolve
+    // the validated root instead of making Windows traverse the same deep path
+    // again. Keep the live volume/drive query and all fresh ACL checks below.
+    if (checked_root.empty() ||
+        !GetVolumePathNameW(checked_root.c_str(), volume.data(), static_cast<DWORD>(volume.size())) ||
         GetDriveTypeW(volume.data()) != DRIVE_FIXED)
         throw Error("STATE_LOCAL_FIXED_DISK_REQUIRED");
     const bool present = fs::exists(path);
