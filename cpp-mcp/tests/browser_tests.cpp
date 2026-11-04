@@ -644,16 +644,19 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                                   "</p><p>The requested product observation must retain its original "
                                   "image and HTML choices.</p><img src='/fixture-picture?capture=1'>";
             }
-            if (request.target() == "/modal" || request.target() == "/aria-modal")
+            if (request.target() == "/modal" || request.target() == "/aria-modal" ||
+                request.target() == "/shadow-modal" || request.target() == "/modal-scroll-root")
                 response.body() =
                     R"HTML(<!doctype html><title>Bounded modal observation fixture</title><body><section id="history"></section><script>
 const history=document.querySelector('#history');const text=document.createElement('p');text.textContent='Earlier product catalogue '.repeat(1000);history.append(text);
 for(let i=0;i<220;i++){const b=document.createElement('button');b.textContent='Background '+i;b.style.cssText='position:fixed;left:0;top:0';history.append(b);}
-const native=location.pathname==='/modal',dialog=document.createElement(native?'dialog':'div');
+const rootScroll=location.pathname==='/modal-scroll-root',native=location.pathname==='/modal'||rootScroll,dialog=document.createElement(native?'dialog':'div');
 dialog.id='details';dialog.setAttribute('aria-labelledby','dialog-title');dialog.style.cssText='position:fixed;left:300px;top:100px;width:500px;height:350px;margin:0;background:white;z-index:1000';
 if(!native){dialog.setAttribute('role','alertdialog');dialog.setAttribute('aria-modal','true');}
 dialog.innerHTML='<h2 id="dialog-title">Product details</h2><p>Review the selected phone variant before continuing.</p><button aria-label="Close details">Close details</button><div id="modal-panel" style="height:150px;overflow:auto"><div style="height:1200px">Scrollable product specifications</div></div>';
-document.body.append(dialog);dialog.querySelector('button').onclick=()=>dialog.remove();if(native)dialog.showModal();dialog.querySelector('button').focus();
+if(location.pathname==='/shadow-modal'){const host=document.createElement('div');document.body.append(host);host.attachShadow({mode:'open'}).append(dialog);}else document.body.append(dialog);
+if(rootScroll){dialog.style.overflow='auto';dialog.querySelector('#modal-panel').style.cssText='height:auto;overflow:visible';dialog.querySelector('button').style.cssText='position:sticky;top:0';}
+dialog.querySelector('button').onclick=()=>dialog.remove();if(native)dialog.showModal();dialog.querySelector('button').focus();
 </script>)HTML";
             if (request.target() == "/control-change")
                 response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
@@ -1251,7 +1254,7 @@ void modal_browser_tests(bool headed, bool compatibility) {
     options.fixture_port = page.port();
     options.launch_diagnostics = browser_diagnostics;
     BrowserService browser(config, options);
-    for (const auto* route : {"/modal", "/aria-modal"}) {
+    for (const auto* route : {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root"}) {
         auto value = initial_observation(
             browser, {{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + route}},
             "modal-owner");

@@ -185,7 +185,8 @@ constexpr auto observe_script = R"JS((() => {
    width:Math.round(Math.min(innerWidth,r.right)-Math.max(0,r.left)),height:Math.round(Math.min(innerHeight,r.bottom)-Math.max(0,r.top))});
  }
  const scroll_regions=[];let scanned=0;
- for(const e of scope.querySelectorAll(modal?'*':'body *')){if(++scanned>4000||scroll_regions.length>=12)break;
+ const scroll_candidates=scope.querySelectorAll(modal?'*':'body *');
+ for(let index=modal?-1:0;index<scroll_candidates.length;++index){const e=index<0?modal:scroll_candidates[index];if(++scanned>4000||scroll_regions.length>=12)break;
   if(e.scrollHeight<=e.clientHeight+2||e.clientHeight<40||!visible(e))continue;
   const r=e.getBoundingClientRect(),s=getComputedStyle(e);if(!['auto','scroll'].includes(s.overflowY)||r.bottom<=0||r.top>=innerHeight)continue;
   scroll_regions.push({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height),scroll_top:e.scrollTop,scroll_height:e.scrollHeight});
