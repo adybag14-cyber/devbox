@@ -23,6 +23,17 @@ are page evidence; they never authorize input or approve an operation. Short
 dialogs count as usable content while challenge, access-denial, navigation and
 loading classifications retain their precedence.
 
+The short-dialog exception requires nonblank text or at least one control.
+An empty or whitespace-only loading dialog remains insufficient content. A
+transparent ARIA dialog that does not intercept input is excluded from fallback
+selection, with ancestor opacity checked over at most 256 composed ancestors.
+Hit-tested blockers and native `:modal` elements remain selectable.
+
+Text covers the selected root's light DOM. Descendant shadow-root text can be
+omitted; the returned `text_note` exposes that limit and points to the screenshot
+for the composed display. Locating a modal itself inside an open shadow root is
+supported, as exercised by the native and extension fixtures.
+
 The real Chromium regression includes a dialog appended after 220 background
 controls and a long catalogue. It exercises native and ARIA dialogs, an alert
 dialog inside an open shadow root, and a dialog whose entire contents scroll.

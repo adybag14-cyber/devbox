@@ -658,7 +658,8 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
             }
             if (request.target() == "/modal" || request.target() == "/aria-modal" ||
                 request.target() == "/shadow-modal" || request.target() == "/modal-scroll-root" ||
-                request.target() == "/modal-overflow" || request.target() == "/covered-focus")
+                request.target() == "/modal-overflow" || request.target() == "/covered-focus" ||
+                request.target() == "/transparent-modal" || request.target() == "/transparent-modal-ancestor")
                 response.body() =
                     R"HTML(<!doctype html><title>Bounded modal observation fixture</title><body><section id="history"></section><script>
 const history=document.querySelector('#history');const text=document.createElement('p');text.textContent='Earlier product catalogue '.repeat(1000);history.append(text);
@@ -669,7 +670,8 @@ if(!native){dialog.setAttribute('role','alertdialog');dialog.setAttribute('aria-
 dialog.innerHTML='<h2 id="dialog-title">Product details</h2><p>Review the selected phone variant before continuing.</p><button aria-label="Close details">Close details</button><div id="modal-panel" style="height:150px;overflow:auto"><div style="height:1200px">Scrollable product specifications</div></div>';
 if(location.pathname==='/modal-overflow')for(let i=0;i<8;i++){const d=document.createElement('div');d.setAttribute('role','dialog');d.setAttribute('aria-label','Panel '+i);d.style.cssText='position:fixed;left:0;top:0;width:10px;height:10px';history.append(d);}
 let lower;if(location.pathname==='/covered-focus'){lower=document.createElement('div');lower.setAttribute('role','dialog');lower.setAttribute('aria-modal','true');lower.setAttribute('aria-label','Covered lower modal');lower.style.cssText=dialog.style.cssText;lower.style.zIndex='999';lower.innerHTML='<button>Wrong lower action</button>';document.body.append(lower);}
-if(location.pathname==='/shadow-modal'){const host=document.createElement('div');document.body.append(host);host.attachShadow({mode:'open'}).append(dialog);}else document.body.append(dialog);
+if(location.pathname==='/shadow-modal'||location.pathname==='/transparent-modal-ancestor'){const host=document.createElement('div');if(location.pathname==='/transparent-modal-ancestor')host.style.cssText='opacity:0;pointer-events:none';document.body.append(host);host.attachShadow({mode:'open'}).append(dialog);}else document.body.append(dialog);
+if(location.pathname==='/transparent-modal'){dialog.style.opacity='0';dialog.style.pointerEvents='none';}
 if(rootScroll){dialog.style.overflow='auto';dialog.querySelector('#modal-panel').style.cssText='height:auto;overflow:visible';dialog.querySelector('button').style.cssText='position:sticky;top:0';}
 dialog.querySelector('button').onclick=()=>{dialog.remove();lower?.remove();};if(native)dialog.showModal();dialog.querySelector('button').focus();if(lower)lower.querySelector('button').focus();
 </script>)HTML";
@@ -1270,8 +1272,9 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
     options.launch_diagnostics = browser_diagnostics;
     BrowserService browser(config, options);
     bool exercised = false;
-    for (const auto* route : {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root",
-                              "/modal-overflow", "/covered-focus"}) {
+    for (const auto* route :
+         {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root", "/modal-overflow", "/covered-focus",
+          "/transparent-modal", "/transparent-modal-ancestor"}) {
         if (!only.empty() && only != route)
             continue;
         exercised = true;
@@ -1279,6 +1282,16 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
             browser, {{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + route}},
             "modal-owner");
         const auto id = json_string(value.data, "session_id");
+        if (std::string_view(route).starts_with("/transparent-modal")) {
+            require(value.data.at("active_dialog").is_null() &&
+                        json_string(value.data, "controls_scope") == "viewport" &&
+                        json_string(value.data.at("controls").front(), "name").starts_with("Background "),
+                    "transparent non-intercepting dialog preserves ordinary page observations");
+            browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
+            require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
+                    "transparent fixture closes its owned browser profile");
+            continue;
+        }
         auto close_control = [](const Json& data) {
             for (const auto& control : data.at("controls"))
                 if (json_string(control, "name") == "Close details")

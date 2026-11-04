@@ -108,6 +108,14 @@ behind them. Truncation is reported, and `active_dialog` can describe a modal
 outside the reported list. Page-provided dialog roles never grant permission or
 approve an action.
 
+Text extraction reads the selected root's light DOM. A dialog located inside an
+open shadow root is supported, but text inside its descendant shadow roots can
+be omitted even when their controls are listed. The returned `text_note` states
+this limit; use the screenshot for the composed display. Transparent ARIA dialogs
+that do not intercept input are excluded from fallback selection, including
+zero opacity inherited through ancestors. Hit-tested and native modal blockers
+remain represented regardless of opacity.
+
 The extension supports granted-tab discovery, same-origin tab creation,
 navigation/back/forward/reload, focus/close, bounded DOM text and element
 references, screenshots, retained HTML byte ranges, click/double-click/move/

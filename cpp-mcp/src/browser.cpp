@@ -140,9 +140,16 @@ std::string browser_page_status(const Json& observation, int http_status) {
         return "navigation_unstable";
     if (json_string(observation, "ready_state") == "loading")
         return "loading";
-    const auto dialog = observation.find("active_dialog");
-    if (text.size() < 80 && (dialog == observation.end() || !dialog->is_object()))
-        return "insufficient_content";
+    if (text.size() < 80) {
+        const auto dialog = observation.find("active_dialog");
+        const auto controls = observation.find("controls");
+        const bool dialog_has_content =
+            dialog != observation.end() && dialog->is_object() &&
+            (text.find_first_not_of(" \t\r\n\f\v") != text.npos ||
+             (controls != observation.end() && controls->is_array() && !controls->empty()));
+        if (!dialog_has_content)
+            return "insufficient_content";
+    }
     return "content_available";
 }
 namespace {
@@ -154,6 +161,7 @@ constexpr auto observe_script = R"JS((() => {
  const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
  const contains=(parent,node)=>{for(let steps=0;node&&steps<256;++steps){if(node===parent)return true;node=node.parentNode??node.host;}return false;};
  let focused=document.activeElement;while(focused?.shadowRoot?.activeElement)focused=focused.shadowRoot.activeElement;
+ const paintedFallback=e=>{let n=e;for(let depth=0;n&&depth<256;++depth){if(Number(getComputedStyle(n).opacity)===0)return false;n=n.parentElement??n.getRootNode().host;}return !n;};
  const dialogNodes=[],roots=[document];let dialogVisited=0,dialogs_truncated=false,hitModal,focusedModal,lastModal;
  const describeDialog=e=>{const native=e.matches(':modal'),scope=e.getRootNode(),ids=(e.getAttribute('aria-labelledby')||'').trim().split(/\s+/).slice(0,8),r=e.getBoundingClientRect();
   const labelled=ids.map(id=>clip(scope.getElementById?.(id)?.textContent,240)).join(' ').trim();
@@ -168,7 +176,7 @@ constexpr auto observe_script = R"JS((() => {
    if(!e.matches('dialog[open],[role="dialog"],[role="alertdialog"]')||!visible(e))continue;
    const r=e.getBoundingClientRect();if(r.bottom<=0||r.right<=0||r.top>=innerHeight||r.left>=innerWidth)continue;
    if(dialogNodes.length<8)dialogNodes.push(describeDialog(e));else dialogs_truncated=true;
-   if(e.matches(':modal')||e.getAttribute('aria-modal')==='true'){lastModal=e;if(contains(e,focused))focusedModal=e;if(hitDialog(e))hitModal=e;}
+   if(e.matches(':modal')||e.getAttribute('aria-modal')==='true'){const hit=hitDialog(e);if(hit)hitModal=e;if(hit||e.matches(':modal')||paintedFallback(e)){lastModal=e;if(contains(e,focused))focusedModal=e;}}
   }
  }
  const selectedNode=hitModal??focusedModal??lastModal;
@@ -207,6 +215,7 @@ constexpr auto observe_script = R"JS((() => {
  return {url:location.href,title:clip(document.title,300),ready_state:document.readyState,
   active_dialog:selected?.info??null,dialogs:dialogNodes.map(d=>d.info),dialogs_truncated,
   text_scope:modal?'active_dialog':'rendered_document_prefix',controls_scope:modal?'active_dialog':'viewport',
+  text_note:'Text may omit content inside descendant shadow roots; use the screenshot for the composed display.',
   text:clip(text,8000),text_truncated:text.length>8000,viewport_text:viewport_parts.join('\n'),viewport_text_truncated:visited>6000||viewport_chars>=4000,
   controls,controls_truncated:examined>4000||controls.length===80,scroll_regions,
   viewport:{width:innerWidth,height:innerHeight,scroll_x:scrollX,scroll_y:scrollY,document_width:document.documentElement.scrollWidth,document_height:document.documentElement.scrollHeight},

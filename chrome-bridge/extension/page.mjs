@@ -69,6 +69,7 @@ export function pageTask(request) {
     // These page declarations are observation hints, never permission decisions.
     const dialogNodes=[],discoveryRoots=[document];let discoveryVisited=0,dialogsTruncated=false,hitModal,focusedModal,lastModal;
     const focused=active();
+    const paintedFallback=e=>{let n=e;for(let depth=0;n&&depth<256;++depth){if(Number(getComputedStyle(n).opacity)===0)return false;n=n.parentElement??n.getRootNode().host;}return !n;};
     const describeDialog=e=>{const nativeModal=e.matches(':modal');return {node:e,info:{label:accessibleLabel(e),role:e.getAttribute('role')||'dialog',modal:nativeModal||e.getAttribute('aria-modal')==='true',native_modal:nativeModal,focused:containsComposed(e,focused),rect:rect(e)}};};
     const hitDialog=e=>{const r=rect(e),x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));let hit=document.elementFromPoint(x,y);for(let depth=0;hit?.shadowRoot&&depth<32;++depth){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return containsComposed(e,hit);};
     discover:for(let index=0;index<discoveryRoots.length;++index){
@@ -80,7 +81,8 @@ export function pageTask(request) {
         const r=rect(e);if(r.x+r.width<=0||r.y+r.height<=0||r.x>=innerWidth||r.y>=innerHeight)continue;
         if(dialogNodes.length<8)dialogNodes.push(describeDialog(e));else dialogsTruncated=true;
         if(e.matches(':modal')||e.getAttribute('aria-modal')==='true'){
-          lastModal=e;if(containsComposed(e,focused))focusedModal=e;if(hitDialog(e))hitModal=e;
+          const hit=hitDialog(e);if(hit)hitModal=e;
+          if(hit||e.matches(':modal')||paintedFallback(e)){lastModal=e;if(containsComposed(e,focused))focusedModal=e;}
         }
       }
     }
@@ -118,7 +120,7 @@ export function pageTask(request) {
     if(modal)readText(modal);
     readText(document.body??document.documentElement,modal);
     const html=htmlPrefix();
-    return {url:location.href,title:document.title.slice(0,512),active_dialog:selected?.info??null,dialogs:dialogNodes.map(d=>d.info),dialogs_truncated:dialogsTruncated,text,text_scope:modal?'active_dialog_then_rendered_document_prefix':'rendered_document_prefix',text_truncated:textTruncated,elements,elements_scope:modal?'active_dialog':'viewport',elements_truncated:truncated,viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},scroll:{x:scrollX,y:scrollY},frames,html_base64:html.base64,html:html.metadata};
+    return {url:location.href,title:document.title.slice(0,512),active_dialog:selected?.info??null,dialogs:dialogNodes.map(d=>d.info),dialogs_truncated:dialogsTruncated,text,text_scope:modal?'active_dialog_then_rendered_document_prefix':'rendered_document_prefix',text_note:'Text may omit content inside descendant shadow roots; use the screenshot for the composed display.',text_truncated:textTruncated,elements,elements_scope:modal?'active_dialog':'viewport',elements_truncated:truncated,viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},scroll:{x:scrollX,y:scrollY},frames,html_base64:html.base64,html:html.metadata};
   }
   if(request.action==='point') {
     if(request.target_id) {const e=target(),r=rect(e);const x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}const label=hit?.closest('label');if(!hit||!(containsComposed(e,hit)||activatesLabel(label,hit,e)))throw new Error('TARGET_OBSCURED');return {x,y};}
