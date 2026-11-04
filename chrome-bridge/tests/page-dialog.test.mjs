@@ -9,7 +9,7 @@ import {pageTask} from '../extension/page.mjs';
 
 // A separate, short-lived profile exercises real layout and native dialog focus.
 // No extension is installed, no signed-in profile is opened and no port listens.
-test('real Chrome observations prioritize visible modal dialogs on crowded pages', {timeout:45000}, () => {
+test('real Chrome observations prioritize visible modal dialogs on crowded pages', {timeout:45000}, async t => {
   const chrome=[process.env.DEVBOX_TEST_CHROME,
     process.env.ProgramFiles&&join(process.env.ProgramFiles,'Google/Chrome/Application/chrome.exe'),
     '/usr/bin/google-chrome','/usr/bin/chromium'].find(p=>p&&existsSync(p));
@@ -36,6 +36,10 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     const outer=document.createElement('dialog');outer.setAttribute('aria-label','Outer dialog');outer.innerHTML='<button>Outer action</button>';document.body.append(outer);outer.showModal();
     const inner=document.createElement('dialog');inner.setAttribute('aria-label','Inner dialog');inner.innerHTML='<button>Inner action</button>';document.body.append(inner);inner.showModal();snapshots.push(inspect());inner.close();outer.close();inner.remove();outer.remove();
     const nonmodal=document.createElement('div');nonmodal.setAttribute('role','dialog');nonmodal.setAttribute('aria-label','Nonmodal panel');nonmodal.style.cssText='position:fixed;top:10px;left:10px';nonmodal.innerHTML='<button>Panel action</button>';document.body.append(nonmodal);snapshots.push(inspect());nonmodal.remove();
+    const reported=[];for(let i=0;i<8;i++){const d=document.createElement('div');d.setAttribute('role','dialog');d.setAttribute('aria-label','Panel '+i);d.style.cssText='position:fixed;left:0;top:0;width:10px;height:10px';document.body.append(d);reported.push(d);}
+    const overflow=document.createElement('dialog');overflow.setAttribute('aria-label','Overflow modal');overflow.innerHTML='<button>Close overflow</button>';document.body.append(overflow);overflow.showModal();snapshots.push(inspect());overflow.close();overflow.remove();for(const d of reported)d.remove();
+    const lower=document.createElement('div');lower.setAttribute('role','dialog');lower.setAttribute('aria-modal','true');lower.setAttribute('aria-label','Covered lower modal');lower.style.cssText='position:fixed;inset:150px;background:white;z-index:1000';lower.innerHTML='<button>Lower action</button>';document.body.append(lower);
+    const upper=lower.cloneNode(true);upper.setAttribute('aria-label','Covering modal');upper.style.zIndex='1001';upper.querySelector('button').textContent='Upper action';document.body.append(upper);lower.querySelector('button').focus();snapshots.push(inspect());upper.remove();lower.remove();
     background.replaceChildren();const many=document.createDocumentFragment();for(let i=0;i<20010;i++)many.append(document.createElement('div'));background.append(many);snapshots.push(inspect());
     return snapshots;
   `;
@@ -48,7 +52,7 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     const encoded=result.stdout.match(/<pre id="result">([A-Za-z0-9+/=]+)<\/pre>/)?.[1];
     assert(encoded,'Browser did not return the fixture result');
     const output=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));assert.equal(output.error,undefined);
-    const [native,scrollRoot,plain,shadow,nested,nonmodal,bounded]=output.snapshots;
+    const [native,scrollRoot,plain,shadow,nested,nonmodal,overflow,covered,bounded]=output.snapshots;
     assert(native.elements.some(e=>e.label==='Close details'),'the existing observation must include the visible modal close button, even after 220 background controls');
     assert.equal(native.active_dialog?.label,'Details','a modal appended after 220 controls must be discovered');
     assert.match(native.text,/^Details\nOnly this status call needs approval/);
@@ -68,6 +72,14 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     assert(!nested.elements.some(e=>e.label==='Outer action'));
     assert.equal(nonmodal.active_dialog,null);assert(nonmodal.dialogs.some(d=>d.label==='Nonmodal panel'&&!d.modal));
     assert(nonmodal.elements.some(e=>e.label.startsWith('Background ')));
+    await t.test('a modal beyond the reported-dialog cap stays selectable',()=>{
+      assert.equal(overflow.dialogs.length,8);assert.equal(overflow.dialogs_truncated,true);
+      assert.equal(overflow.active_dialog?.label,'Overflow modal');assert(overflow.elements.some(e=>e.label==='Close overflow'));
+    });
+    await t.test('a covering modal takes priority over focus behind it',()=>{
+      assert.equal(covered.active_dialog?.label,'Covering modal');
+      assert(covered.elements.some(e=>e.label==='Upper action'));assert(!covered.elements.some(e=>e.label==='Lower action'));
+    });
     assert.equal(bounded.dialogs_truncated,true,'discovery must report its element bound');
     for(const r of output.snapshots){assert(r.elements.length<=180);assert(r.text.length<=12000);}
   } finally {

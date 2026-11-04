@@ -645,18 +645,21 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                                   "image and HTML choices.</p><img src='/fixture-picture?capture=1'>";
             }
             if (request.target() == "/modal" || request.target() == "/aria-modal" ||
-                request.target() == "/shadow-modal" || request.target() == "/modal-scroll-root")
+                request.target() == "/shadow-modal" || request.target() == "/modal-scroll-root" ||
+                request.target() == "/modal-overflow" || request.target() == "/covered-focus")
                 response.body() =
                     R"HTML(<!doctype html><title>Bounded modal observation fixture</title><body><section id="history"></section><script>
 const history=document.querySelector('#history');const text=document.createElement('p');text.textContent='Earlier product catalogue '.repeat(1000);history.append(text);
 for(let i=0;i<220;i++){const b=document.createElement('button');b.textContent='Background '+i;b.style.cssText='position:fixed;left:0;top:0';history.append(b);}
-const rootScroll=location.pathname==='/modal-scroll-root',native=location.pathname==='/modal'||rootScroll,dialog=document.createElement(native?'dialog':'div');
+const rootScroll=location.pathname==='/modal-scroll-root',native=location.pathname==='/modal'||location.pathname==='/modal-overflow'||rootScroll,dialog=document.createElement(native?'dialog':'div');
 dialog.id='details';dialog.setAttribute('aria-labelledby','dialog-title');dialog.style.cssText='position:fixed;left:300px;top:100px;width:500px;height:350px;margin:0;background:white;z-index:1000';
 if(!native){dialog.setAttribute('role','alertdialog');dialog.setAttribute('aria-modal','true');}
 dialog.innerHTML='<h2 id="dialog-title">Product details</h2><p>Review the selected phone variant before continuing.</p><button aria-label="Close details">Close details</button><div id="modal-panel" style="height:150px;overflow:auto"><div style="height:1200px">Scrollable product specifications</div></div>';
+if(location.pathname==='/modal-overflow')for(let i=0;i<8;i++){const d=document.createElement('div');d.setAttribute('role','dialog');d.setAttribute('aria-label','Panel '+i);d.style.cssText='position:fixed;left:0;top:0;width:10px;height:10px';history.append(d);}
+let lower;if(location.pathname==='/covered-focus'){lower=document.createElement('div');lower.setAttribute('role','dialog');lower.setAttribute('aria-modal','true');lower.setAttribute('aria-label','Covered lower modal');lower.style.cssText=dialog.style.cssText;lower.style.zIndex='999';lower.innerHTML='<button>Wrong lower action</button>';document.body.append(lower);}
 if(location.pathname==='/shadow-modal'){const host=document.createElement('div');document.body.append(host);host.attachShadow({mode:'open'}).append(dialog);}else document.body.append(dialog);
 if(rootScroll){dialog.style.overflow='auto';dialog.querySelector('#modal-panel').style.cssText='height:auto;overflow:visible';dialog.querySelector('button').style.cssText='position:sticky;top:0';}
-dialog.querySelector('button').onclick=()=>dialog.remove();if(native)dialog.showModal();dialog.querySelector('button').focus();
+dialog.querySelector('button').onclick=()=>{dialog.remove();lower?.remove();};if(native)dialog.showModal();dialog.querySelector('button').focus();if(lower)lower.querySelector('button').focus();
 </script>)HTML";
             if (request.target() == "/control-change")
                 response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
@@ -1241,7 +1244,7 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                 "cancelled protocol I/O retires the disconnected owned context");
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
-void modal_browser_tests(bool headed, bool compatibility) {
+void modal_browser_tests(bool headed, bool compatibility, std::string_view only = {}) {
     PageFixture page;
     auto config = std::make_shared<Config>();
     config->runtime_mode = RuntimeMode::host;
@@ -1254,7 +1257,12 @@ void modal_browser_tests(bool headed, bool compatibility) {
     options.fixture_port = page.port();
     options.launch_diagnostics = browser_diagnostics;
     BrowserService browser(config, options);
-    for (const auto* route : {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root"}) {
+    bool exercised = false;
+    for (const auto* route : {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root",
+                              "/modal-overflow", "/covered-focus"}) {
+        if (!only.empty() && only != route)
+            continue;
+        exercised = true;
         auto value = initial_observation(
             browser, {{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + route}},
             "modal-owner");
@@ -1266,6 +1274,9 @@ void modal_browser_tests(bool headed, bool compatibility) {
             throw Error("Visible modal close button was omitted after background controls");
         };
         (void)close_control(value.data);
+        if (std::string_view(route) == "/modal-overflow")
+            require(value.data.at("dialogs").size() == 8 && json_bool(value.data, "dialogs_truncated"),
+                    "reported-dialog cap stays bounded while the later active modal is selected");
         require(json_string(value.data.at("active_dialog"), "name") == "Product details",
                 "native browser identifies the active modal by its labelled heading");
         require(json_string(value.data, "text").starts_with("Product details") &&
@@ -1309,6 +1320,7 @@ void modal_browser_tests(bool headed, bool compatibility) {
         require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
                 "modal fixture closes only its owned browser profile");
     }
+    require(exercised, "unknown modal fixture selection");
     std::cout << "native and ARIA modal observation, nested scrolling and close passed\n";
 }
 void continuation_budget_tests(bool compatibility) {
@@ -1730,8 +1742,9 @@ void session_allowance_tests() {
 }
 int main(int argc, char** argv) {
     try {
-        if (argc == 2 && std::string_view(argv[1]) == "--chromium-dialogs") {
-            modal_browser_tests(false, false);
+        if (argc >= 2 && std::string_view(argv[1]) == "--chromium-dialogs") {
+            require(argc <= 3, "unknown modal fixture arguments");
+            modal_browser_tests(false, false, argc == 3 ? argv[2] : "");
             return 0;
         }
         fixture_transport_tests();
