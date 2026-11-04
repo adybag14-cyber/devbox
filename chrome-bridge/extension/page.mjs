@@ -67,8 +67,10 @@ export function pageTask(request) {
     // A modal is often appended after a long conversation or catalogue. Find it
     // independently of the control/text response budgets, including open shadows.
     // These page declarations are observation hints, never permission decisions.
-    const dialogNodes=[],discoveryRoots=[document];let discoveryVisited=0,dialogsTruncated=false;
+    const dialogNodes=[],discoveryRoots=[document];let discoveryVisited=0,dialogsTruncated=false,hitModal,focusedModal,lastModal;
     const focused=active();
+    const describeDialog=e=>{const nativeModal=e.matches(':modal');return {node:e,info:{label:accessibleLabel(e),role:e.getAttribute('role')||'dialog',modal:nativeModal||e.getAttribute('aria-modal')==='true',native_modal:nativeModal,focused:containsComposed(e,focused),rect:rect(e)}};};
+    const hitDialog=e=>{const r=rect(e),x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));let hit=document.elementFromPoint(x,y);for(let depth=0;hit?.shadowRoot&&depth<32;++depth){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return containsComposed(e,hit);};
     discover:for(let index=0;index<discoveryRoots.length;++index){
       const walker=document.createTreeWalker(discoveryRoots[index],NodeFilter.SHOW_ELEMENT);let e;
       while((e=walker.nextNode())){
@@ -76,16 +78,16 @@ export function pageTask(request) {
         if(e.shadowRoot){if(discoveryRoots.length<32)discoveryRoots.push(e.shadowRoot);else dialogsTruncated=true;}
         if(!e.matches('dialog[open],[role="dialog"],[role="alertdialog"]')||!visible(e))continue;
         const r=rect(e);if(r.x+r.width<=0||r.y+r.height<=0||r.x>=innerWidth||r.y>=innerHeight)continue;
-        if(dialogNodes.length>=8){dialogsTruncated=true;continue;}
-        const nativeModal=e.matches(':modal');
-        dialogNodes.push({node:e,info:{label:accessibleLabel(e),role:e.getAttribute('role')||'dialog',modal:nativeModal||e.getAttribute('aria-modal')==='true',native_modal:nativeModal,focused:containsComposed(e,focused),rect:r}});
+        if(dialogNodes.length<8)dialogNodes.push(describeDialog(e));else dialogsTruncated=true;
+        if(e.matches(':modal')||e.getAttribute('aria-modal')==='true'){
+          lastModal=e;if(containsComposed(e,focused))focusedModal=e;if(hitDialog(e))hitModal=e;
+        }
       }
     }
-    const modals=dialogNodes.filter(d=>d.info.modal);
-    const selected=modals.findLast(d=>d.info.focused)??modals.findLast(d=>{
-      const r=d.info.rect,x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));
-      let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return containsComposed(d.node,hit);
-    })??modals.at(-1);
+    // Keep only three selection candidates beyond the eight-entry report.
+    // A hit-tested covering modal takes precedence over stale background focus.
+    const selectedNode=hitModal??focusedModal??lastModal;
+    const selected=dialogNodes.find(d=>d.node===selectedNode)??(selectedNode?describeDialog(selectedNode):undefined);
     const modal=selected?.node;
     root.__devboxNodes.clear();let id=0,visited=0,truncated=false;const elements=[],frames=[],roots=[modal??document];
     scan:for(let index=0;index<roots.length;++index){

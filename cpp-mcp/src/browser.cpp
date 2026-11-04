@@ -154,22 +154,25 @@ constexpr auto observe_script = R"JS((() => {
  const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
  const contains=(parent,node)=>{for(let steps=0;node&&steps<256;++steps){if(node===parent)return true;node=node.parentNode??node.host;}return false;};
  let focused=document.activeElement;while(focused?.shadowRoot?.activeElement)focused=focused.shadowRoot.activeElement;
- const dialogNodes=[],roots=[document];let dialogVisited=0,dialogs_truncated=false;
+ const dialogNodes=[],roots=[document];let dialogVisited=0,dialogs_truncated=false,hitModal,focusedModal,lastModal;
+ const describeDialog=e=>{const native=e.matches(':modal'),scope=e.getRootNode(),ids=(e.getAttribute('aria-labelledby')||'').trim().split(/\s+/).slice(0,8),r=e.getBoundingClientRect();
+  const labelled=ids.map(id=>clip(scope.getElementById?.(id)?.textContent,240)).join(' ').trim();
+  return {node:e,info:{name:clean(labelled||e.getAttribute('aria-label')),role:e.getAttribute('role')||'dialog',modal:native||e.getAttribute('aria-modal')==='true',native_modal:native,focused:contains(e,focused),x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}};
+ };
+ const hitDialog=e=>{const r=e.getBoundingClientRect(),x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));
+  let hit=document.elementFromPoint(x,y);for(let depth=0;hit?.shadowRoot&&depth<32;++depth){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return contains(e,hit);
+ };
  discover:for(let index=0;index<roots.length;++index){const scan=document.createTreeWalker(roots[index],NodeFilter.SHOW_ELEMENT);let e;
   while((e=scan.nextNode())){if(++dialogVisited>4000){dialogs_truncated=true;break discover;}
    if(e.shadowRoot){if(roots.length<32)roots.push(e.shadowRoot);else dialogs_truncated=true;}
    if(!e.matches('dialog[open],[role="dialog"],[role="alertdialog"]')||!visible(e))continue;
    const r=e.getBoundingClientRect();if(r.bottom<=0||r.right<=0||r.top>=innerHeight||r.left>=innerWidth)continue;
-   if(dialogNodes.length>=8){dialogs_truncated=true;continue;}
-   const native=e.matches(':modal'),scope=e.getRootNode(),ids=(e.getAttribute('aria-labelledby')||'').trim().split(/\s+/).slice(0,8);
-   const labelled=ids.map(id=>clip(scope.getElementById?.(id)?.textContent,240)).join(' ').trim();
-   dialogNodes.push({node:e,info:{name:clean(labelled||e.getAttribute('aria-label')),role:e.getAttribute('role')||'dialog',modal:native||e.getAttribute('aria-modal')==='true',native_modal:native,focused:contains(e,focused),x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}});
+   if(dialogNodes.length<8)dialogNodes.push(describeDialog(e));else dialogs_truncated=true;
+   if(e.matches(':modal')||e.getAttribute('aria-modal')==='true'){lastModal=e;if(contains(e,focused))focusedModal=e;if(hitDialog(e))hitModal=e;}
   }
  }
- const modals=dialogNodes.filter(d=>d.info.modal),selected=modals.findLast(d=>d.info.focused)??modals.findLast(d=>{
-  const r=d.node.getBoundingClientRect(),x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));
-  let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return contains(d.node,hit);
- })??modals.at(-1),modal=selected?.node,scope=modal??document;
+ const selectedNode=hitModal??focusedModal??lastModal;
+ const selected=dialogNodes.find(d=>d.node===selectedNode)??(selectedNode?describeDialog(selectedNode):undefined),modal=selected?.node,scope=modal??document;
  const all=scope.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="checkbox"],[role="tab"],[contenteditable="true"]');
  const controls=[];let examined=0,hidden=0;
  for(const e of all){if(++examined>4000)break;if(!visible(e)){hidden++;continue;}

@@ -11,8 +11,13 @@ scroll regions describe that modal. The dialog container itself is included when
 it scrolls. Closing the modal restores the ordinary document view. Full retained
 HTML remains available through the existing explicit HTML capture path.
 
-Discovery examines at most 4,000 elements, 32 document/shadow roots and eight
-visible dialogs. The existing 80-control, 12-scroll-region, 8,000-character text
+Discovery examines at most 4,000 elements and 32 document/shadow roots. The
+reported dialog list holds at most eight entries; three selection references
+preserve a later active modal without collecting an overflow list. Hit-tested
+covering modals take precedence over focus in an obscured lower modal.
+`active_dialog` can therefore describe a modal outside the reported list, with
+`dialogs_truncated` indicating the omitted entries.
+The existing 80-control, 12-scroll-region, 8,000-character text
 and 4,000-character viewport-text limits remain. Native and ARIA modal markers
 are page evidence; they never authorize input or approve an operation. Short
 dialogs count as usable content while challenge, access-denial, navigation and
