@@ -89,8 +89,8 @@ export function pageTask(request) {
     const modal=selected?.node;
     root.__devboxNodes.clear();let id=0,visited=0,truncated=false;const elements=[],frames=[],roots=[modal??document];
     scan:for(let index=0;index<roots.length;++index){
-      const walker=document.createTreeWalker(roots[index],NodeFilter.SHOW_ELEMENT);let e;
-      while((e=walker.nextNode())){
+      const walker=document.createTreeWalker(roots[index],NodeFilter.SHOW_ELEMENT);
+      for(let e=roots[index].nodeType===1?roots[index]:walker.nextNode();e;e=walker.nextNode()){
         if(++visited>20000||elements.length>=180){truncated=true;break scan;}
         if(e.shadowRoot){if(roots.length<32)roots.push(e.shadowRoot);else truncated=true;}
         if(e.localName==='iframe'&&frames.length<16)frames.push({title:e.title.slice(0,240),src:e.src.slice(0,2048),rect:rect(e)});

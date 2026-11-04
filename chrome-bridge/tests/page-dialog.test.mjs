@@ -27,7 +27,8 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     document.body.append(native);native.showModal();let r=inspect();
     const close=r.elements.find(e=>e.label==='Close details');
     if(close){const point=pageTask({action:'point',target_id:close.id});r.close_hit=document.elementFromPoint(point.x,point.y)?.id;}
-    snapshots.push(r);native.close();native.remove();snapshots.push(inspect());
+    snapshots.push(r);native.style.cssText='height:120px;overflow:auto';const long=document.createElement('div');long.style.height='1000px';long.textContent='Long modal contents';native.append(long);snapshots.push(inspect());
+    native.close();native.remove();snapshots.push(inspect());
     const hidden=document.createElement('div');hidden.setAttribute('role','dialog');hidden.setAttribute('aria-modal','true');hidden.style.display='none';hidden.textContent='Hidden permission';document.body.append(hidden);
     const host=document.createElement('div');document.body.append(host);const shadow=host.attachShadow({mode:'open'});
     shadow.innerHTML='<div role="alertdialog" aria-modal="true" aria-labelledby="warning-title" style="position:fixed;inset:100px;background:white;z-index:1000"><h2 id="warning-title">Confirm action</h2><p>Review the requested operation.</p><button>Cancel operation</button></div>';
@@ -47,7 +48,7 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     const encoded=result.stdout.match(/<pre id="result">([A-Za-z0-9+/=]+)<\/pre>/)?.[1];
     assert(encoded,'Browser did not return the fixture result');
     const output=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));assert.equal(output.error,undefined);
-    const [native,plain,shadow,nested,nonmodal,bounded]=output.snapshots;
+    const [native,scrollRoot,plain,shadow,nested,nonmodal,bounded]=output.snapshots;
     assert(native.elements.some(e=>e.label==='Close details'),'the existing observation must include the visible modal close button, even after 220 background controls');
     assert.equal(native.active_dialog?.label,'Details','a modal appended after 220 controls must be discovered');
     assert.match(native.text,/^Details\nOnly this status call needs approval/);
@@ -55,6 +56,7 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     assert.equal(native.close_hit,'close');
     assert(native.elements.some(e=>e.label==='Close details'));
     assert(!native.elements.some(e=>e.label.startsWith('Background ')),'inert background controls must not consume the active modal budget');
+    assert(scrollRoot.elements.some(e=>e.tag==='dialog'&&e.scroll?.height>e.scroll.client_height),'the active modal itself remains a discoverable scrolling target');
     assert.equal(plain.active_dialog,null);assert.equal(plain.text_scope,'rendered_document_prefix');
     assert(plain.elements.some(e=>e.label.startsWith('Background ')));
     assert.equal(shadow.active_dialog?.label,'Confirm action');
