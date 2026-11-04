@@ -93,6 +93,38 @@ int main() {
         require(js_length("a😀b") == 4, "UTF16 length");
         require(js_slice("a😀b", 1, 3) == "😀", "UTF16 slice");
         require(js_slice("a😀b", 1, 2) == "�", "lone surrogate replacement");
+        const auto check_slice = [](std::string_view input) {
+            const auto units = to_utf16(input);
+            const std::array<std::size_t, 9> bounds{0,
+                                                    1,
+                                                    2,
+                                                    7,
+                                                    31,
+                                                    units.size() / 2,
+                                                    units.size(),
+                                                    units.size() + 1,
+                                                    std::numeric_limits<std::size_t>::max()};
+            for (const auto start : bounds)
+                for (const auto end : bounds) {
+                    const auto first = std::min(start, units.size());
+                    const auto last = std::max(first, std::min(end, units.size()));
+                    const auto expected = from_utf16(std::u16string_view(units).substr(first, last - first));
+                    require(js_slice(input, start, end) == expected,
+                            "UTF16 slice preserves exact prefix/tail, malformed and boundary semantics");
+                }
+        };
+        for (const auto& input :
+             {std::string{}, std::string("ASCII log line\nwith a price of GBP 649"),
+              std::string("a\0b\0c", 5), std::string("prefix😀tail£"),
+              std::string("\xc0\xaf\xed\xa0\x80\xf0\x9f", 7), std::string(16384, 'x') + "😀\xff"})
+            check_slice(input);
+        std::mt19937 slice_random(0x51ce2026U);
+        for (unsigned trial = 0; trial < 128; ++trial) {
+            std::string input(slice_random() % 256, '\0');
+            for (auto& byte : input)
+                byte = static_cast<char>(slice_random() & 255U);
+            check_slice(input);
+        }
         require(sanitize_utf8(std::string("a\xf0\x9f", 3)) == "a�", "partial UTF8 sequence");
         require(utc_from_millis(0) == "1970-01-01T00:00:00.000Z", "UTC formatting");
         require(utc_from_millis(-1) == "1969-12-31T23:59:59.999Z" &&

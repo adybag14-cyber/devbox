@@ -270,6 +270,13 @@ std::size_t js_length(std::string_view value) {
     return to_utf16(value).size();
 }
 std::string js_slice(std::string_view value, std::size_t start, std::size_t end) {
+    if (end <= start)
+        return {};
+    // An ASCII prefix has identical byte and UTF16 indices. Inspect only the
+    // requested prefix: Unicode or malformed bytes beyond it cannot affect it.
+    const auto prefix = value.substr(0, std::min(end, value.size()));
+    if (std::all_of(prefix.begin(), prefix.end(), [](unsigned char c) { return c < 0x80; }))
+        return std::string(prefix.substr(std::min(start, prefix.size())));
     const auto units = to_utf16(value);
     start = std::min(start, units.size());
     end = std::max(start, std::min(end, units.size()));
