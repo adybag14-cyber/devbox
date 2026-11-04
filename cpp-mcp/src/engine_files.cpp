@@ -34,6 +34,24 @@ Json large_result(const std::string& summary, Json data, bool read) {
 Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
     const bool host = name.starts_with("windows_host_");
     const bool docker = !host && config_->runtime_mode == RuntimeMode::docker;
+    if (name == "devbox_read_text_range") {
+        if (docker)
+            return result_error(
+                "Native UTF-8 ranges require host mode; use devbox_read_large_file for Docker files.");
+        try {
+            auto value = isolated_filesystem("read_text_range", args, Millis(30000), cancel);
+            const auto truncated = json_bool(value, "truncated");
+            auto text = json_dump(value);
+            auto result =
+                result_explicit("Read a bounded UTF-8 text range.", std::move(value), std::move(text));
+            result["structuredContent"]["truncated"] = truncated;
+            return result;
+        } catch (const Cancelled&) {
+            throw;
+        } catch (const std::exception& error) {
+            return result_error(error.what());
+        }
+    }
     if (name == "devbox_read_files") {
         if (docker)
             return result_error(

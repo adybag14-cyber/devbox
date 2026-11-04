@@ -190,6 +190,8 @@ Json filesystem_operation(std::string_view operation, const Json& args) {
         return Json{{"text", read_text(path, json_uint(args, "max_bytes", 65536))}};
     if (operation == "read_large")
         return read_large(path, json_uint(args, "offset_bytes"), json_uint(args, "max_bytes", 262144));
+    if (operation == "read_text_range")
+        return read_text_range(path, json_uint(args, "offset_bytes"), json_uint(args, "max_bytes", 16384));
     if (operation == "write_large")
         return write_large(path, json_string(args, "content_base64"), json_bool(args, "append"),
                            json_bool(args, "create_dirs", true), optional_text(args, "expected_sha256"));

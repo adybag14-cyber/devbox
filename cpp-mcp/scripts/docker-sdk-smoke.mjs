@@ -116,6 +116,10 @@ try {
   assert.match(unsupportedBatch.summary, /require host mode/);
   assert(!JSON.stringify(unsupportedBatch).includes(hostOnlyText), 'Docker batch denial does not expose host file contents');
   outputs.push('Host-only batched text reads explicitly denied in Docker mode');
+  const unsupportedRange = await invoke('devbox_read_text_range', { path: hostOnlyPath }, false);
+  assert.match(unsupportedRange.summary, /require host mode/);
+  assert(!JSON.stringify(unsupportedRange).includes(hostOnlyText), 'Docker range denial does not expose host file contents');
+  outputs.push('Host-only UTF-8 ranges explicitly denied in Docker mode');
   assert.equal((await invoke('devbox_start')).data.running, true);
   const program = await invoke('devbox_run_program', { program: 'node', args: ['-e',
     'process.stdout.write(JSON.stringify({platform:process.platform,cwd:process.cwd(),args:process.argv.slice(1)}))',

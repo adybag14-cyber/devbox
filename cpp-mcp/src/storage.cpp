@@ -710,6 +710,58 @@ Json read_large(const fs::path& path, std::uint64_t offset, std::size_t max_byte
     result["content_base64"] = base64_encode(bytes);
     return result;
 }
+Json read_text_range(const fs::path& path, std::uint64_t offset, std::size_t max_bytes) {
+    if (max_bytes < 4 || max_bytes > 65536 || offset > 9007199254740991ULL)
+        throw Error("READ_TEXT_RANGE_LIMIT: use 4-65536 bytes and a safe nonnegative byte offset");
+    const auto requested = path_text(path);
+    if (!path.is_absolute() || requested.size() > 16384 || requested.find('\0') != std::string::npos)
+        throw Error("READ_TEXT_RANGE_PATH: use an absolute host path without NUL bytes");
+    DiskFile file(path);
+    if (file.missing)
+        throw Error("ENOENT: no such file or directory");
+    const auto size = file.size(), actual = std::min(offset, size);
+    const auto count = static_cast<std::size_t>(std::min<std::uint64_t>(size - actual, max_bytes));
+    file.seek(actual);
+    auto raw = read_exact(file, count);
+    if (raw.size() != count)
+        throw Error("READ_TEXT_RANGE_CHANGED: file shortened during the read; retry a fresh range");
+    if (actual && !raw.empty() && (static_cast<unsigned char>(raw.front()) & 0xc0) == 0x80)
+        throw Error("READ_TEXT_RANGE_OFFSET: start at a UTF-8 character boundary; use next_offset_bytes");
+    // A byte budget may cut the last scalar. Leave its complete encoding for
+    // the next request; malformed bytes are still rejected, never replaced.
+    if (!raw.empty() && actual + raw.size() < size) {
+        auto start = raw.size() - 1;
+        while (start && (static_cast<unsigned char>(raw[start]) & 0xc0) == 0x80)
+            --start;
+        const auto lead = static_cast<unsigned char>(raw[start]);
+        const std::size_t width = lead >= 0xc2 && lead <= 0xdf   ? 2
+                                  : lead >= 0xe0 && lead <= 0xef ? 3
+                                  : lead >= 0xf0 && lead <= 0xf4 ? 4
+                                                                 : 0;
+        if (width && raw.size() - start < width)
+            raw.resize(start);
+    }
+    if (sanitize_utf8(raw) != raw)
+        throw Error(
+            "READ_TEXT_RANGE_UTF8: input is not complete UTF-8; use devbox_read_large_file for exact bytes");
+    if (count && raw.empty())
+        throw Error("READ_TEXT_RANGE_UTF8: no complete UTF-8 character fits this range");
+    const auto next = actual + raw.size();
+    Json result{{"path", requested},
+                {"encoding", "utf-8"},
+                {"sampled_file_bytes", size},
+                {"offset_bytes_requested", offset},
+                {"offset_bytes", actual},
+                {"bytes_returned", raw.size()},
+                {"next_offset_bytes", next},
+                {"read_bytes_sha256", sha256(raw)},
+                {"utf8_boundary_adjusted", raw.size() < count},
+                {"eof", next >= size},
+                {"truncated", next < size},
+                {"atomic_snapshot", false}};
+    result["text"] = std::move(raw);
+    return result;
+}
 Json write_large(const fs::path& path, std::string_view content_base64, bool append, bool create_dirs,
                  const std::optional<std::string>& expected_sha256) {
     std::string normalized;
