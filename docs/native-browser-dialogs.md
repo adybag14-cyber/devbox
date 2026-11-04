@@ -55,3 +55,11 @@ fail on `ce7fa89` and pass with the bounded selection correction at
 browser-protocol/core suites pass on Windows and Linux. The extension's real
 Chrome fixtures reproduce both failures separately and pass after the matching
 correction, while the reported dialog list remains capped at eight entries.
+
+Readiness and visibility regressions at `540f868` reproduce empty-dialog
+premature readiness and transparent fallback selection. The corrected
+implementation at `55de69987a4a072b1fe3c6c8ad2ecda64dfe245a` passes all eight
+native flows and the protocol/core suites on Windows and Linux. The bridge's
+42 JavaScript checks include transparent elements, transparent shadow ancestors,
+and preservation of transparent intercepting and native blockers; its ten Rust
+checks also pass.
