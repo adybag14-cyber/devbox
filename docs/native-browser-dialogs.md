@@ -36,3 +36,11 @@ on Windows and Linux. Candidate `42cd7c88b` passed all four real-browser cases
 on Windows Chrome 156 and Linux Chrome 157. These are functional observations,
 not a browser-wide latency or site-access success-rate claim. Hosted platform
 qualification is separate from the local fixture results.
+
+Additional review fixtures reproduce a modal after eight visible nonmodal
+dialogs and an overlapping modal whose lower sibling retains focus. Both cases
+fail on `ce7fa89` and pass with the bounded selection correction at
+`01a912b5803f4b3d6277398e672584ccbafe002f`. All six native browser flows and the
+browser-protocol/core suites pass on Windows and Linux. The extension's real
+Chrome fixtures reproduce both failures separately and pass after the matching
+correction, while the reported dialog list remains capped at eight entries.

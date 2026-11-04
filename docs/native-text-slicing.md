@@ -5,7 +5,7 @@ execution-output excerpts, result budgets and job-log tails. Previously, even a
 200-character prefix required converting the entire input into a temporary
 UTF-16 string before converting the selected slice back to UTF-8.
 
-The 0.9.33 candidate first checks only the requested prefix. If that prefix is
+The measured 0.9.33 implementation first checks only the requested prefix. If that prefix is
 ASCII, its byte and UTF-16 indices are identical and the function copies the
 requested slice directly. Bytes after the requested end cannot affect that
 slice. Other input retains the existing conversion path. Empty or reversed
@@ -56,7 +56,8 @@ Windows 4 MiB case is 2.9% slower; Linux is 1.5% faster. The change is justified
 for bounded ASCII excerpts and tails, not as a universal Unicode speedup.
 The workstation was shared, own CPU jobs were serialized for measurement, and
 the pre-measurement CPU sample was 1%. Network, browser and model latency are
-outside this benchmark. The candidate has not changed either production service.
+outside this benchmark. These measurements were collected without changing
+either production service.
 
 Initial sources: baseline `d1dc48809098272bbd3134b81535e5282e8ad3ea`, candidate
 `92c3f203a07618a96d2441c7dc4b668afa190d20`. Controlled Windows sources: baseline
