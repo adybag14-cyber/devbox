@@ -5,34 +5,42 @@ A late dialog can otherwise lose its controls behind the 80-control response
 limit or its text behind a long document prefix. This affects agent interaction
 even when the screenshot correctly shows the popup.
 
-Observations expose `active_dialog`, `dialogs`, `dialogs_truncated`, `text_scope`
-and `controls_scope`. For an active modal, text, controls, frame metadata and
-scroll regions describe that modal. The dialog container itself is included when
-it scrolls. Closing the modal restores the ordinary document view. Full retained
-HTML remains available through the existing explicit HTML capture path.
+Observations keep `text` as the bounded document prefix used for page-status and
+challenge detection. `modal_text` reports the selected modal separately, and
+`viewport_text`, controls, frame metadata and scroll regions focus on that modal.
+The scopes and truncation fields make this distinction explicit. The dialog
+container itself is included when it scrolls. Closing the modal restores the
+ordinary control view. Full retained HTML remains available through explicit
+HTML capture.
 
 Discovery examines at most 4,000 elements and 32 document/shadow roots. The
 reported dialog list holds at most eight entries; three selection references
 preserve a later active modal without collecting an overflow list. Hit-tested
-covering modals take precedence over focus in an obscured lower modal.
+covering modals take precedence over focus in an obscured lower native modal.
+ARIA dialogs narrow the control scope only with hit-test evidence; a merely
+declared, clipped or non-intercepting ARIA dialog cannot hide the page controls.
+Native `:modal` elements remain fallback candidates because they block document
+interaction even when no sampled point hits them.
 `active_dialog` can therefore describe a modal outside the reported list, with
 `dialogs_truncated` indicating the omitted entries.
-The existing 80-control, 12-scroll-region, 8,000-character text
+The existing 80-control, 12-scroll-region, 8,000-character document/modal text
 and 4,000-character viewport-text limits remain. Native and ARIA modal markers
 are page evidence; they never authorize input or approve an operation. Short
 dialogs count as usable content while challenge, access-denial, navigation and
 loading classifications retain their precedence.
 
-The short-dialog exception requires nonblank text or at least one control.
-An empty or whitespace-only loading dialog remains insufficient content. A
-transparent ARIA dialog that does not intercept input is excluded from fallback
-selection, with ancestor opacity checked over at most 256 composed ancestors.
-Hit-tested blockers and native `:modal` elements remain selectable.
+`dialog_readable` indicates observed viewport text or opaque hit-tested controls.
+An empty or unreadable loading dialog remains insufficient content even when its
+background document has text. Control descriptors retain DOM state for backwards
+compatibility, so their mere presence does not establish readiness. Opacity checks
+for readiness inspect at most 256 composed ancestors. Document challenge, error,
+navigation and loading classifications retain priority.
 
-Text covers the selected root's light DOM. Descendant shadow-root text can be
-omitted; the returned `text_note` exposes that limit and points to the screenshot
-for the composed display. Locating a modal itself inside an open shadow root is
-supported, as exercised by the native and extension fixtures.
+Text and native control enumeration cover the selected root's light DOM.
+Descendant shadow-root text and native controls can be omitted; `text_note` and
+`controls_note` expose these limits and point to the screenshot for the composed
+display. Locating a modal itself inside an open shadow root is supported. The
+independent extension additionally enumerates controls in open shadow roots.
 
 The real Chromium regression includes a dialog appended after 220 background
 controls and a long catalogue. It exercises native and ARIA dialogs, an alert
@@ -63,3 +71,11 @@ native flows and the protocol/core suites on Windows and Linux. The bridge's
 42 JavaScript checks include transparent elements, transparent shadow ancestors,
 and preservation of transparent intercepting and native blockers; its ten Rust
 checks also pass.
+
+The document-status regression at `46f6641` reproduces a challenge marker in the
+document being hidden by a modal-only text view. The corrected implementation at
+`5e5863b2473194972cd1a4ce1655eebfcccdac88` passes eleven native browser flows on
+Windows and Linux, including the document challenge, clipped ARIA scope and
+unpainted-control readiness cases. Core/protocol suites pass on both platforms.
+The extension's 44 JavaScript checks include exact text-budget completeness and
+ordinary document context following modal text.

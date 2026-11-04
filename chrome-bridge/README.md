@@ -103,18 +103,19 @@ text comes first within the existing response budget. `active_dialog`, `dialogs`
 container remains available as an input target. Discovery is bounded to 20,000
 elements and 32 roots. The reported dialog list holds at most eight entries;
 three additional selection references keep a later active modal discoverable
-without an overflow list. Hit-tested covering modals take priority over focus
-behind them. Truncation is reported, and `active_dialog` can describe a modal
+without an overflow list. Hit-tested covering modals take priority over native
+fallbacks. ARIA dialogs require a hit-test result before narrowing the control
+scope; clipped or non-intercepting declarations cannot hide the page controls.
+Truncation is reported, and `active_dialog` can describe a modal
 outside the reported list. Page-provided dialog roles never grant permission or
 approve an action.
 
 Text extraction reads the selected root's light DOM. A dialog located inside an
 open shadow root is supported, but text inside its descendant shadow roots can
 be omitted even when their controls are listed. The returned `text_note` states
-this limit; use the screenshot for the composed display. Transparent ARIA dialogs
-that do not intercept input are excluded from fallback selection, including
-zero opacity inherited through ancestors. Hit-tested and native modal blockers
-remain represented regardless of opacity.
+this limit; use the screenshot for the composed display. Hit-tested and native
+modal blockers remain represented regardless of opacity. The text truncation
+flag distinguishes an exactly filled buffer from unread eligible text.
 
 The extension supports granted-tab discovery, same-origin tab creation,
 navigation/back/forward/reload, focus/close, bounded DOM text and element
