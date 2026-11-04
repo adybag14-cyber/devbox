@@ -64,10 +64,33 @@ export function pageTask(request) {
     return {base64:encoded,metadata:{capture_kind:'bounded_dom_serialization',truncated,retained_bytes:used,document_bytes:truncated?null:used,nodes_visited:nodes}};
   }
   if(request.action==='inspect') {
-    root.__devboxNodes.clear();let id=0,visited=0,truncated=false;const elements=[],frames=[],roots=[document];
-    scan:for(let index=0;index<roots.length;++index){
-      const walker=document.createTreeWalker(roots[index],NodeFilter.SHOW_ELEMENT);let e;
+    // A modal is often appended after a long conversation or catalogue. Find it
+    // independently of the control/text response budgets, including open shadows.
+    // These page declarations are observation hints, never permission decisions.
+    const dialogNodes=[],discoveryRoots=[document];let discoveryVisited=0,dialogsTruncated=false;
+    const focused=active();
+    discover:for(let index=0;index<discoveryRoots.length;++index){
+      const walker=document.createTreeWalker(discoveryRoots[index],NodeFilter.SHOW_ELEMENT);let e;
       while((e=walker.nextNode())){
+        if(++discoveryVisited>20000){dialogsTruncated=true;break discover;}
+        if(e.shadowRoot){if(discoveryRoots.length<32)discoveryRoots.push(e.shadowRoot);else dialogsTruncated=true;}
+        if(!e.matches('dialog[open],[role="dialog"],[role="alertdialog"]')||!visible(e))continue;
+        const r=rect(e);if(r.x+r.width<=0||r.y+r.height<=0||r.x>=innerWidth||r.y>=innerHeight)continue;
+        if(dialogNodes.length>=8){dialogsTruncated=true;continue;}
+        const nativeModal=e.matches(':modal');
+        dialogNodes.push({node:e,info:{label:accessibleLabel(e),role:e.getAttribute('role')||'dialog',modal:nativeModal||e.getAttribute('aria-modal')==='true',native_modal:nativeModal,focused:containsComposed(e,focused),rect:r}});
+      }
+    }
+    const modals=dialogNodes.filter(d=>d.info.modal);
+    const selected=modals.findLast(d=>d.info.focused)??modals.findLast(d=>{
+      const r=d.info.rect,x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));
+      let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return containsComposed(d.node,hit);
+    })??modals.at(-1);
+    const modal=selected?.node;
+    root.__devboxNodes.clear();let id=0,visited=0,truncated=false;const elements=[],frames=[],roots=[modal??document];
+    scan:for(let index=0;index<roots.length;++index){
+      const walker=document.createTreeWalker(roots[index],NodeFilter.SHOW_ELEMENT);
+      for(let e=roots[index].nodeType===1?roots[index]:walker.nextNode();e;e=walker.nextNode()){
         if(++visited>20000||elements.length>=180){truncated=true;break scan;}
         if(e.shadowRoot){if(roots.length<32)roots.push(e.shadowRoot);else truncated=true;}
         if(e.localName==='iframe'&&frames.length<16)frames.push({title:e.title.slice(0,240),src:e.src.slice(0,2048),rect:rect(e)});
@@ -80,10 +103,20 @@ export function pageTask(request) {
         elements.push({id:key,tag:e.localName,role:e.getAttribute('role'),label:(accessibleLabel(e)||(scrollable?(e.id||e.localName):e.innerText)||e.getAttribute('title')||e.getAttribute('placeholder')||e.getAttribute('name')||'').slice(0,240),type:e.getAttribute('type'),disabled:e.matches(':disabled'),rect:r,href:e.localName==='a'?String(e.href?.baseVal??e.href??'').slice(0,2048):undefined,value:'value'in e&&!['password','file'].includes(e.type)?String(e.value).slice(0,2048):undefined,checked:'checked'in e?e.checked:undefined,focused:e===active(),scroll:scrollable?{x:e.scrollLeft,y:e.scrollTop,width:e.scrollWidth,height:e.scrollHeight,client_width:e.clientWidth,client_height:e.clientHeight}:undefined});
       }
     }
-    const textWalker=document.createTreeWalker(document.body??document.documentElement,NodeFilter.SHOW_TEXT);let node,text='',textNodes=0;
-    while((node=textWalker.nextNode())&&text.length<12000&&++textNodes<20000){const e=node.parentElement;if(!e||['script','style','template','noscript'].includes(e.localName)||!visible(e))continue;const normalized=node.data.replace(/\s+/g,' ').trim();if(!normalized)continue;const separator=text?'\n':'';text+=separator+normalized.slice(0,Math.max(0,12000-text.length-separator.length));}
+    let text='',textNodes=0,textTruncated=false;
+    const readText=(scope,skip)=>{
+      const walker=document.createTreeWalker(scope,NodeFilter.SHOW_TEXT);let node;
+      while((node=walker.nextNode())){
+        if(text.length>=12000||++textNodes>20000){textTruncated=true;break;}
+        const e=node.parentElement;if(!e||(skip&&containsComposed(skip,e))||['script','style','template','noscript'].includes(e.localName)||!visible(e))continue;
+        const normalized=node.data.replace(/\s+/g,' ').trim();if(!normalized)continue;const separator=text?'\n':'',available=Math.max(0,12000-text.length-separator.length);
+        text+=separator+normalized.slice(0,available);if(normalized.length>available)textTruncated=true;
+      }
+    };
+    if(modal)readText(modal);
+    readText(document.body??document.documentElement,modal);
     const html=htmlPrefix();
-    return {url:location.href,title:document.title.slice(0,512),text,text_scope:'rendered_document_prefix',text_truncated:!!node,elements,elements_truncated:truncated,viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},scroll:{x:scrollX,y:scrollY},frames,html_base64:html.base64,html:html.metadata};
+    return {url:location.href,title:document.title.slice(0,512),active_dialog:selected?.info??null,dialogs:dialogNodes.map(d=>d.info),dialogs_truncated:dialogsTruncated,text,text_scope:modal?'active_dialog_then_rendered_document_prefix':'rendered_document_prefix',text_truncated:textTruncated,elements,elements_scope:modal?'active_dialog':'viewport',elements_truncated:truncated,viewport:{width:innerWidth,height:innerHeight,deviceScaleFactor:devicePixelRatio},scroll:{x:scrollX,y:scrollY},frames,html_base64:html.base64,html:html.metadata};
   }
   if(request.action==='point') {
     if(request.target_id) {const e=target(),r=rect(e);const x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}const label=hit?.closest('label');if(!hit||!(containsComposed(e,hit)||activatesLabel(label,hit,e)))throw new Error('TARGET_OBSCURED');return {x,y};}
