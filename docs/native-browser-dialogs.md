@@ -1,6 +1,6 @@
 # Native browser dialog observations
 
-The C++23 browser in 0.9.31 gives a visible modal its own observation scope.
+The C++23 browser gives a visible modal its own observation scope.
 A late dialog can otherwise lose its controls behind the 80-control response
 limit or its text behind a long document prefix. This affects agent interaction
 even when the screenshot correctly shows the popup.
