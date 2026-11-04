@@ -22,9 +22,10 @@ const fixture=String.raw`
   const sources=${JSON.stringify({baseline,candidate})};
   const evaluate=Object.fromEntries(Object.entries(sources).map(([name,source])=>[name,new Function('return '+source)]));
   const originalStyle=window.getComputedStyle.bind(window);
-  let styleCalls=0;
-  window.getComputedStyle=(...args)=>{++styleCalls;return originalStyle(...args);};
-  const inspect=name=>{styleCalls=0;const result=evaluate[name]();return {result,calls:styleCalls};};
+  const inspect=name=>{let styleCalls=0;const previous=window.getComputedStyle;
+    window.getComputedStyle=(...args)=>{++styleCalls;return originalStyle(...args);};
+    try{return {result:evaluate[name](),calls:styleCalls};}finally{window.getComputedStyle=previous;}
+  };
   const records=[];
   function page(kind){
     for(const modal of document.querySelectorAll(':modal'))modal.close();
@@ -53,6 +54,7 @@ const fixture=String.raw`
     page(kind);
     const a=inspect('baseline'),b=inspect('candidate');
     if(JSON.stringify(a.result)!==JSON.stringify(b.result))throw new Error('Observation differs: '+kind);
+    // Timed calls use the original browser API, without the counting wrapper.
     // Warm both functions on the same layout, then interleave ABBA blocks.
     for(let i=0;i<4;i++){evaluate.baseline();evaluate.candidate();}
     const trials=[],iterations=kind==='catalogue'||kind==='deep-visible-text'?4:64;
