@@ -664,6 +664,17 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                                   "</p><p>The requested product observation must retain its original "
                                   "image and HTML choices.</p><img src='/fixture-picture?capture=1'>";
             }
+            if (request.target() == "/modal-opacity-cache")
+                response.body() =
+                    R"HTML(<!doctype html><title>Opacity ancestry cache fixture</title><body><dialog id="modal" style="width:600px;height:350px"><button id="toggle">Toggle opacity</button><div id="depth"></div><div id="bounded" style="font:1px/1px monospace"></div></dialog><script>
+const depth=document.querySelector('#depth');let node=depth,shorter;
+// Leaf + 252 divs + depth container + dialog + body + html exceeds 256.
+for(let i=0;i<252;i++){const child=document.createElement('div');node.append(child);node=child;if(i===248)shorter=node;}
+const deep=document.createElement('span');deep.textContent='Deep hidden by bound';node.append(deep);
+const short=document.createElement('span');short.textContent='Shorter readable leaf';shorter.append(short);
+const bounded=document.querySelector('#bounded');for(let i=0;i<1400;i++){let parent=bounded;for(let j=0;j<6;j++){const child=document.createElement('span');parent.append(child);parent=child;}parent.textContent='x ';}
+document.querySelector('#toggle').onclick=()=>{depth.style.opacity=depth.style.opacity==='0'?'1':'0';};document.querySelector('#modal').showModal();
+</script>)HTML";
             if (request.target() == "/modal" || request.target() == "/aria-modal" ||
                 request.target() == "/shadow-modal" || request.target() == "/modal-scroll-root" ||
                 request.target() == "/modal-overflow" || request.target() == "/covered-focus" ||
@@ -1288,7 +1299,7 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
     for (const auto* route :
          {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root", "/modal-overflow", "/covered-focus",
           "/transparent-modal", "/transparent-modal-ancestor", "/modal-challenge", "/clipped-modal",
-          "/modal-hidden-control"}) {
+          "/modal-hidden-control", "/modal-opacity-cache"}) {
         if (!only.empty() && only != route)
             continue;
         exercised = true;
@@ -1296,6 +1307,35 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
             browser, {{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + route}},
             "modal-owner");
         const auto id = json_string(value.data, "session_id");
+        if (std::string_view(route) == "/modal-opacity-cache") {
+            require(json_string(value.data, "viewport_text").find("Deep hidden by bound") ==
+                            std::string::npos &&
+                        json_string(value.data, "viewport_text").find("Shorter readable leaf") !=
+                            std::string::npos,
+                    "an over-depth leaf cannot poison the cached state of its shorter ancestors");
+            require(json_string(value.data, "viewport_text").size() > 2000,
+                    "viewport text remains available after the bounded ancestry cache fills");
+            for (const bool visible : {false, true}) {
+                const auto button = value.data.at("controls").front();
+                require(json_string(button, "name") == "Toggle opacity", "owned opacity fixture control");
+                browser.perform({{"action", "click"},
+                                 {"session_id", id},
+                                 {"observation_id", value.data.at("observation_id")},
+                                 {"x", json_number(button, "x") + json_number(button, "width") / 2},
+                                 {"y", json_number(button, "y") + json_number(button, "height") / 2},
+                                 {"screenshot", false}},
+                                "modal-owner");
+                value = browser.perform({{"action", "observe"}, {"session_id", id}, {"screenshot", false}},
+                                        "modal-owner");
+                require((json_string(value.data, "viewport_text").find("Shorter readable leaf") !=
+                         std::string::npos) == visible,
+                        "each fresh observation reads changed opacity without retaining the prior cache");
+            }
+            browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
+            require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
+                    "opacity fixture closes only its owned profile");
+            continue;
+        }
         if (std::string_view(route) == "/modal-challenge") {
             require(json_string(value.data, "page_status") == "challenge_required" &&
                         json_bool(value.data, "possible_challenge"),

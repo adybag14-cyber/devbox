@@ -165,7 +165,20 @@ constexpr auto observe_script = R"JS((() => {
  const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
  const contains=(parent,node)=>{for(let steps=0;node&&steps<256;++steps){if(node===parent)return true;node=node.parentNode??node.host;}return false;};
  let focused=document.activeElement;while(focused?.shadowRoot?.activeElement)focused=focused.shadowRoot.activeElement;
- const paintedFallback=e=>{let n=e;for(let depth=0;n&&depth<256;++depth){if(Number(getComputedStyle(n).opacity)===0)return false;n=n.parentElement??n.getRootNode().host;}return !n;};
+ // Memoize shared opacity ancestry within this synchronous observation only.
+ // Positive depths preserve the 256-node limit; -1 means a proved blocked path.
+ const paintedDepths=new WeakMap();let paintedCount=0;
+ const paintedFallback=e=>{let n=e,depth=0;const path=[];
+  while(n){const known=paintedDepths.get(n);if(known!==undefined){depth=known;break;}
+   // An incomplete 256-node walk cannot classify its shorter ancestor suffixes.
+   if(path.length>=256)return false;
+   if(Number(getComputedStyle(n).opacity)===0){depth=-1;break;}
+   path.push(n);n=n.parentElement??n.getRootNode().host;
+  }
+  for(let i=path.length-1;i>=0;--i){depth=depth<0||depth>=256?-1:depth+1;
+   if(paintedCount<8192){paintedDepths.set(path[i],depth);++paintedCount;}}
+  return depth>0;
+ };
  const dialogNodes=[],roots=[document];let dialogVisited=0,dialogs_truncated=false,hitModal,focusedModal,lastModal;
  const describeDialog=e=>{const native=e.matches(':modal'),scope=e.getRootNode(),ids=(e.getAttribute('aria-labelledby')||'').trim().split(/\s+/).slice(0,8),r=e.getBoundingClientRect();
   const labelled=ids.map(id=>clip(scope.getElementById?.(id)?.textContent,240)).join(' ').trim();
