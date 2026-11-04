@@ -664,7 +664,9 @@ class OutputReader {
                 throw Error(windows_error(error));
             }
             pending_ = false;
-            progressed = progressed || count != 0;
+            if (!count)
+                continue;
+            progressed = true;
             const std::string_view bytes(buffer_.data(), count);
             capture.push(bytes);
             if (options.on_output)

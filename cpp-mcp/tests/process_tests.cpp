@@ -82,6 +82,11 @@ int child(int argc, char** argv) {
         std::cout << "END:" << input.size() << ':' << sha256(input);
         std::cerr << "ERR-END";
     } else if (mode == "stream-fragments") {
+#ifdef _WIN32
+        DWORD zero_bytes = 0;
+        if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), "", 0, &zero_bytes, nullptr))
+            return 91;
+#endif
         for (const auto size : {1U, 8191U, 16384U, 65537U}) {
             std::string bytes(size, '\0');
             for (std::size_t i = 0; i < bytes.size(); ++i)
@@ -247,6 +252,7 @@ int test_main(int argc, char** argv) {
             fragments.timeout = Millis(5000);
             fragments.max_capture_chars = 0;
             fragments.on_output = [&](OutputStream stream, std::string_view bytes) {
+                require(!bytes.empty(), "zero-byte pipe writes are not output callbacks");
                 (stream == OutputStream::stdout_stream ? stdout_bytes : stderr_bytes).append(bytes);
             };
             const auto result =
