@@ -46,7 +46,7 @@ jobs:
       - name: Extension policy and MCP checks
         shell: pwsh
         run: |
-          node --test chrome-bridge/tests/policy.test.mjs chrome-bridge/tests/state.test.mjs chrome-bridge/tests/controller.test.mjs
+          node --test chrome-bridge/tests/policy.test.mjs chrome-bridge/tests/state.test.mjs chrome-bridge/tests/controller.test.mjs chrome-bridge/tests/page-dialog.test.mjs
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           python chrome-bridge/tests/mcp-smoke.py chrome-bridge/target/release/devbox-chrome-bridge.exe
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
