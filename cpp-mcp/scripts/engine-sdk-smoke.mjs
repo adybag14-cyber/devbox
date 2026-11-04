@@ -83,6 +83,9 @@ try {
     if(value.eof)break;assert.equal(result.truncated,true);
   }
   assert.equal(assembled,rangeText,'native UTF-8 ranges preserve exact Unicode and NUL through the SDK');
+  const fullRange=await client.callTool({name:'devbox_read_text_range',arguments:{path:rangePath,max_bytes:64}});
+  assert.equal(fullRange.isError,false);assert.equal(fullRange.structuredContent.data.text,rangeText);
+  assert.equal(JSON.stringify(fullRange).split('A£🦀界').length-1,1,'the payload occurs only in structured data; text content carries metadata');
   const misaligned=await client.callTool({name:'devbox_read_text_range',arguments:{path:rangePath,offset_bytes:5,max_bytes:4}});
   assert.equal(misaligned.isError,true);assert(JSON.stringify(misaligned).includes('READ_TEXT_RANGE_OFFSET'));
   const upload={upload_id:'sdk_upload'};

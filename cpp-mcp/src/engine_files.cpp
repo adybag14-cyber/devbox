@@ -15,13 +15,15 @@ std::string payload(const Json& args) {
         throw Error("Either content or content_base64 is required.");
     return content ? base64_encode(*content) : *encoded;
 }
-Json large_result(const std::string& summary, Json data, bool read) {
+Json large_result(const std::string& summary, Json data, bool read,
+                  std::string_view payload_name = "content_base64") {
     Json metadata = Json::object();
     if (read) {
         for (auto it = data.begin(); it != data.end(); ++it)
-            if (it.key() != "content_base64")
+            if (it.key() != payload_name)
                 metadata[it.key()] = it.value();
-        metadata["content_base64_chars"] = data["content_base64"].get_ref<const std::string&>().size();
+        metadata[payload_name == "text" ? "text_utf8_bytes" : "content_base64_chars"] =
+            data.at(std::string(payload_name)).get_ref<const std::string&>().size();
     } else {
         for (const auto* key :
              {"path", "append", "previous_file_size", "final_file_size", "bytes_written", "content_sha256",
@@ -41,9 +43,7 @@ Json Engine::files(std::string name, const Json& args, const Cancel& cancel) {
         try {
             auto value = isolated_filesystem("read_text_range", args, Millis(30000), cancel);
             const auto truncated = json_bool(value, "truncated");
-            auto text = json_dump(value);
-            auto result =
-                result_explicit("Read a bounded UTF-8 text range.", std::move(value), std::move(text));
+            auto result = large_result("Read a bounded UTF-8 text range.", std::move(value), true, "text");
             result["structuredContent"]["truncated"] = truncated;
             return result;
         } catch (const Cancelled&) {
