@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -608,7 +609,8 @@ class OutputReader {
     NativeHandle& pipe_;
     NativeHandle event_;
     OVERLAPPED read_{};
-    std::array<char, 16384> buffer_;
+    static constexpr std::size_t buffer_size = 16384;
+    std::unique_ptr<char[]> buffer_ = std::make_unique_for_overwrite<char[]>(buffer_size);
     bool pending_ = false;
 
   public:
@@ -639,8 +641,7 @@ class OutputReader {
                 read_ = {};
                 read_.hEvent = event_.get();
                 ResetEvent(event_.get());
-                if (!ReadFile(pipe_.get(), buffer_.data(), static_cast<DWORD>(buffer_.size()), nullptr,
-                              &read_)) {
+                if (!ReadFile(pipe_.get(), buffer_.get(), static_cast<DWORD>(buffer_size), nullptr, &read_)) {
                     const auto error = GetLastError();
                     if (error == ERROR_BROKEN_PIPE) {
                         pipe_.reset();
@@ -667,7 +668,7 @@ class OutputReader {
             if (!count)
                 continue;
             progressed = true;
-            const std::string_view bytes(buffer_.data(), count);
+            const std::string_view bytes(buffer_.get(), count);
             capture.push(bytes);
             if (options.on_output)
                 options.on_output(stream, bytes);
@@ -946,14 +947,19 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
         // The timeout still bounds cancellation and deadline observation.
         std::array<HANDLE, 4> waits{};
         DWORD wait_count = 0;
+        const auto add_wait = [&](HANDLE handle) {
+            if (!handle)
+                return;
+            if (wait_count >= waits.size())
+                throw Error("Child I/O wait capacity exceeded");
+            waits.at(wait_count++) = handle;
+        };
         if (!exited)
-            waits[wait_count++] = process.get();
+            add_wait(process.get());
         if (write_pending)
-            waits[wait_count++] = writer.hEvent;
-        if (const auto event = stdout_reader.wait_handle())
-            waits[wait_count++] = event;
-        if (const auto event = stderr_reader.wait_handle())
-            waits[wait_count++] = event;
+            add_wait(writer.hEvent);
+        add_wait(stdout_reader.wait_handle());
+        add_wait(stderr_reader.wait_handle());
         if (wait_count) {
             const auto waited = WaitForMultipleObjects(wait_count, waits.data(), FALSE, 5);
             if (waited == WAIT_FAILED)
