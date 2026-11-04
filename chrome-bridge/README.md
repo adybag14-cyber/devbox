@@ -90,6 +90,13 @@ bounded JSON through stdin without starting a shell. It is disabled by default.
 
 ## Functionality and limits
 
+Observations identify visible native and ARIA modal dialogs, including open shadow
+roots. The active dialog's controls take priority over background controls, and its
+text comes first within the existing response budget. `active_dialog`, `dialogs`,
+`elements_scope` and `text_scope` make that focus explicit. Dialog discovery is
+bounded to 20,000 elements, 32 roots and eight visible dialogs; truncation is
+reported. Page-provided dialog roles never grant permission or approve an action.
+
 The extension supports granted-tab discovery, same-origin tab creation,
 navigation/back/forward/reload, focus/close, bounded DOM text and element
 references, screenshots, retained HTML byte ranges, click/double-click/move/
