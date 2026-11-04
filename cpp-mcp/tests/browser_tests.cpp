@@ -630,6 +630,17 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
                                   "</p><p>The requested product observation must retain its original "
                                   "image and HTML choices.</p><img src='/fixture-picture?capture=1'>";
             }
+            if (request.target() == "/modal" || request.target() == "/aria-modal")
+                response.body() =
+                    R"HTML(<!doctype html><title>Bounded modal observation fixture</title><body><section id="history"></section><script>
+const history=document.querySelector('#history');const text=document.createElement('p');text.textContent='Earlier product catalogue '.repeat(1000);history.append(text);
+for(let i=0;i<220;i++){const b=document.createElement('button');b.textContent='Background '+i;b.style.cssText='position:fixed;left:0;top:0';history.append(b);}
+const native=location.pathname==='/modal',dialog=document.createElement(native?'dialog':'div');
+dialog.id='details';dialog.setAttribute('aria-labelledby','dialog-title');dialog.style.cssText='position:fixed;left:300px;top:100px;width:500px;height:350px;margin:0;background:white;z-index:1000';
+if(!native){dialog.setAttribute('role','alertdialog');dialog.setAttribute('aria-modal','true');}
+dialog.innerHTML='<h2 id="dialog-title">Product details</h2><p>Review the selected phone variant before continuing.</p><button aria-label="Close details">Close details</button><div id="modal-panel" style="height:150px;overflow:auto"><div style="height:1200px">Scrollable product specifications</div></div>';
+document.body.append(dialog);dialog.querySelector('button').onclick=()=>dialog.remove();if(native)dialog.showModal();dialog.querySelector('button').focus();
+</script>)HTML";
             if (request.target() == "/control-change")
                 response.body() = R"HTML(<!doctype html><title>Stable click fixture</title>
 <style>button,a{display:block;width:200px;height:40px;margin:15px}</style>
@@ -1213,6 +1224,72 @@ void browser_tests(bool headed = false, bool compatibility = false) {
                 "cancelled protocol I/O retires the disconnected owned context");
     std::cout << "real Chromium rendering, image, HTML, scroll, click, ownership and bounds passed\n";
 }
+void modal_browser_tests(bool headed, bool compatibility) {
+    PageFixture page;
+    auto config = std::make_shared<Config>();
+    config->runtime_mode = RuntimeMode::host;
+    config->host_exec_enabled = true;
+    config->platform = Platform::detect();
+    BrowserOptions options;
+    options.headed = headed;
+    options.compatibility = compatibility;
+    options.software_rendering = headed;
+    options.fixture_port = page.port();
+    options.launch_diagnostics = browser_diagnostics;
+    BrowserService browser(config, options);
+    for (const auto* route : {"/modal", "/aria-modal"}) {
+        auto value = initial_observation(
+            browser, {{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + route}},
+            "modal-owner");
+        const auto id = json_string(value.data, "session_id");
+        auto close_control = [](const Json& data) {
+            for (const auto& control : data.at("controls"))
+                if (json_string(control, "name") == "Close details")
+                    return control;
+            throw Error("Visible modal close button was omitted after background controls");
+        };
+        (void)close_control(value.data);
+        require(json_string(value.data.at("active_dialog"), "name") == "Product details",
+                "native browser identifies the active modal by its labelled heading");
+        require(json_string(value.data, "text").starts_with("Product details") &&
+                    json_string(value.data, "viewport_text").starts_with("Product details"),
+                "modal text precedes the long background document in both text views");
+        require(value.data.at("controls").size() <= 80 && !value.image_base64.empty(),
+                "bounded modal controls and real screenshot are returned together");
+        for (const auto& control : value.data.at("controls"))
+            require(!json_string(control, "name").starts_with("Background "),
+                    "background controls do not consume modal response capacity");
+        require(!value.data.at("scroll_regions").empty(), "modal scroll region is exposed");
+        const auto region = value.data.at("scroll_regions").front();
+        auto scrolled = browser.perform({{"action", "scroll"},
+                                         {"session_id", id},
+                                         {"observation_id", value.data.at("observation_id")},
+                                         {"x", json_number(region, "x") + json_number(region, "width") / 2},
+                                         {"y", json_number(region, "y") + json_number(region, "height") / 2},
+                                         {"delta_y", 500},
+                                         {"screenshot", false}},
+                                        "modal-owner");
+        auto observed = browser.perform({{"action", "observe"}, {"session_id", id}, {"screenshot", false}},
+                                        "modal-owner");
+        require(json_number(observed.data.at("scroll_regions").front(), "scroll_top") > 300,
+                "a separate observation verifies scrolling within the modal");
+        const auto button = close_control(observed.data);
+        auto closed = browser.perform({{"action", "click"},
+                                       {"session_id", id},
+                                       {"observation_id", observed.data.at("observation_id")},
+                                       {"x", json_number(button, "x") + json_number(button, "width") / 2},
+                                       {"y", json_number(button, "y") + json_number(button, "height") / 2},
+                                       {"screenshot", false}},
+                                      "modal-owner");
+        require(closed.data.at("active_dialog").is_null() &&
+                    json_string(closed.data.at("controls").front(), "name").starts_with("Background "),
+                "closing the modal restores normal page observations");
+        browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
+        require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
+                "modal fixture closes only its owned browser profile");
+    }
+    std::cout << "native and ARIA modal observation, nested scrolling and close passed\n";
+}
 void continuation_budget_tests(bool compatibility) {
     PageFixture page;
     auto config = std::make_shared<Config>();
@@ -1632,6 +1709,10 @@ void session_allowance_tests() {
 }
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--chromium-dialogs") {
+            modal_browser_tests(false, false);
+            return 0;
+        }
         fixture_transport_tests();
         if (argc == 2 && std::string_view(argv[1]) == "--fixture-transport")
             return 0;
@@ -1644,6 +1725,7 @@ int main(int argc, char** argv) {
                     "unknown browser fixture option");
             const bool headed = mode == "--chromium-headed", compatibility = argc == 3;
             browser_tests(headed, compatibility);
+            modal_browser_tests(headed, compatibility);
             shared_browser_tests(headed, compatibility);
             if (!headed)
                 continuation_budget_tests(compatibility);
