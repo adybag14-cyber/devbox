@@ -1,11 +1,23 @@
 #include "devbox/allocator.hpp"
 #include "devbox/contract.hpp"
 #include <iostream>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 using namespace devbox;
 int main() {
     try {
+#ifdef _WIN32
+        if (!SetProcessAffinityMask(GetCurrentProcess(), 1))
+            throw Error("Cannot bind the benchmark to logical processor zero");
+        DWORD_PTR actual = 0, system = 0;
+        if (!GetProcessAffinityMask(GetCurrentProcess(), &actual, &system) || actual != 1)
+            throw Error("Benchmark CPU assignment was not applied");
+#endif
         std::cout << Json{{"build", build_snapshot()},
-                          {"scope", "Bounded UTF16-compatible text slicing; excludes network and model time"}}
+                          {"scope", "Bounded UTF16-compatible text slicing; excludes network and model time"},
+                          {"warmup_minimum_ms", 500},
+                          {"windows_logical_processor", 0}}
                          .dump()
                   << '\n';
         for (const std::size_t size : {131072U, 4194304U}) {
@@ -27,8 +39,11 @@ int main() {
                 const auto end = tail ? units.size() : 200;
                 const auto expected = from_utf16(std::u16string_view(units).substr(start, end - start));
                 const auto iterations = size > 131072 ? 16U : 128U;
-                if (js_slice(input, start, end) != expected)
-                    throw Error("Slice warm-up differs from reference UTF16 output");
+                const auto warm_until = Clock::now() + Millis(500);
+                do {
+                    if (js_slice(input, start, end) != expected)
+                        throw Error("Slice warm-up differs from reference UTF16 output");
+                } while (Clock::now() < warm_until);
                 for (unsigned trial = 0; trial < 5; ++trial) {
                     const auto before = allocator_counters();
                     const auto began = Clock::now();
