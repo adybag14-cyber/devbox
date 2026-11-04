@@ -85,6 +85,17 @@ callback exceptions, child/grandchild termination, exact multi-megabyte reads,
 write conflicts and idempotent replay. The public contract remains version 13.
 Required hosted qualification and deployment acceptance remain separate gates.
 
+The first hosted Windows analysis run subsequently found excessive automatic
+stack storage (C6262) and an unproved wait-array bound (C28020). The correction at
+`1cb70a1c62cfb2386ace9e364c578e3370ebeed0` allocates each 16 KiB reader buffer once
+on the heap and checks wait-array capacity before insertion. It does not suppress
+analysis findings or relax a gate. Focused MSVC compilation with analysis and
+ASAN options produces retained SARIF with zero findings, and the five affected
+Windows runtime suites pass. Full hosted qualification remains required.
+The timing table above is explicitly bound to the earlier measured source;
+remeasure the corrected shipping build before treating those numbers as its
+exact performance. The lifecycle and bounded-I/O design remain the same.
+
 Build the existing `devbox-filesystem-latency-bench` with
 `DEVBOX_BUILD_BENCHMARKS=ON`, then run it with a new absolute fixture directory and
 `--read-only`. This creates only its own fixture files and never targets production.
