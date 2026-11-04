@@ -1,4 +1,4 @@
-import {MAX_HTML, READ_ACTIONS, authorize, boundedInteger, validate, publicUrl} from './policy.mjs';
+import {MAX_HTML, READ_ACTIONS, authorize, boundedInteger, validate, publicUrl, grantActive} from './policy.mjs';
 import {BridgeState, ActionContext, LIMITS} from './state.mjs';
 import {pageTask} from './page.mjs';
 
@@ -62,13 +62,16 @@ export class ChromeBridge {
   async popup(message){
     if(message.action==='connect')this.connect();
     if(message.action==='grant'){
+      const duration=message.duration===undefined?'one_hour':message.duration;
+      if(!['one_hour','until_revoked'].includes(duration))throw new Error('INVALID_GRANT_DURATION');
       const [tab]=await this.chrome.tabs.query({active:true,currentWindow:true});
       if(!tab)throw new Error('NO_ACTIVE_TAB');
-      this.state.grant(tab.id,{origin:publicUrl(tab.url).origin,expires:Date.now()+3600000,nonce:random(),allow_new_tabs:message.allow_new_tabs===true});this.connect();
+      this.state.grant(tab.id,{origin:publicUrl(tab.url).origin,duration,expires:duration==='until_revoked'?null:Date.now()+3600000,nonce:random(),allow_new_tabs:message.allow_new_tabs===true});this.connect();
     }
+    if(message.action==='revoke_current'){const [tab]=await this.chrome.tabs.query({active:true,currentWindow:true});if(tab)await this.revoke(tab.id);}
     if(message.action==='revoke_all')for(const id of [...this.state.grants.keys()])await this.revoke(id);
-    for(const [id,grant]of this.state.grants)if(Date.now()>=grant.expires)await this.revoke(id);
-    return {connected:!!this.port&&this.nativeReady,native_version:this.nativeVersion,error:this.connectionError,grants:[...this.state.grants].map(([tab_id,grant])=>({tab_id,origin:grant.origin,expires:new Date(grant.expires).toISOString(),allow_new_tabs:grant.allow_new_tabs})),limits:LIMITS};
+    for(const [id,grant]of this.state.grants)if(!grantActive(grant))await this.revoke(id);
+    return {connected:!!this.port&&this.nativeReady,native_version:this.nativeVersion,error:this.connectionError,grants:[...this.state.grants].map(([tab_id,grant])=>({tab_id,origin:grant.origin,duration:grant.duration??'one_hour',expires:grant.expires===null?null:new Date(grant.expires).toISOString(),allow_new_tabs:grant.allow_new_tabs})),limits:LIMITS};
   }
   command(context,id,method,params={},input=false,dispatch=()=>{}){return context.run(()=>{dispatch();return this.chrome.debugger.sendCommand({tabId:id},method,params);},input);}
   async release(id,method,params){
@@ -134,9 +137,9 @@ export class ChromeBridge {
       if(!this.nativeReady)throw new Error('BRIDGE_NOT_READY');
       if(request.action==='tabs'){
         const tabs=[],errors=[];for(const [id,grant]of this.state.grants){
-          if(Date.now()>=grant.expires){await this.revoke(id);continue;}
-          const tabContext=new ActionContext(request,()=>this.port===destination&&this.state.grants.get(id)?.nonce===grant.nonce&&Date.now()<grant.expires);
-          try{const tab=await this.tabInfo(tabContext,id);authorize(grant,tab,{action:'tabs'});tabs.push({tab_id:id,title:tab.title,url:tab.url,active:tab.active,window_id:tab.windowId,grant_expires_at:new Date(grant.expires).toISOString()});}
+          if(!grantActive(grant)){await this.revoke(id);continue;}
+          const tabContext=new ActionContext(request,()=>this.port===destination&&this.state.grants.get(id)?.nonce===grant.nonce&&grantActive(grant));
+          try{const tab=await this.tabInfo(tabContext,id);authorize(grant,tab,{action:'tabs'});tabs.push({tab_id:id,title:tab.title,url:tab.url,active:tab.active,window_id:tab.windowId,grant_duration:grant.duration??'one_hour',grant_expires_at:grant.expires===null?null:new Date(grant.expires).toISOString()});}
           catch(error){if(String(error.message).startsWith('REQUEST_'))throw error;errors.push({tab_id:id,message:String(error.message).slice(0,1000)});if(/ORIGIN_CHANGED|TAB_NOT_GRANTED|No tab with id/.test(String(error.message))&&this.state.grants.get(id)?.nonce===grant.nonce)await this.revoke(id);}
         }
         return {ok:errors.length===0,data:{tabs,errors,ungranted_tabs_omitted:true},input_sent:false};
@@ -148,11 +151,11 @@ export class ChromeBridge {
       if(receipt){
         if(receipt.signature!==signature)throw new Error('REQUEST_ID_CONFLICT');
         const grant=this.state.grants.get(id);
-        if(!grant||grant.nonce!==receipt.grantNonce||Date.now()>=grant.expires)return {ok:receipt.response.ok,replayed:true,data:{details_expired:true,input_sent:receipt.response.data?.input_sent??receipt.response.input_sent??false,next:'Grant and observe before further actions'}};
+        if(!grantActive(grant)||grant.nonce!==receipt.grantNonce)return {ok:receipt.response.ok,replayed:true,data:{details_expired:true,input_sent:receipt.response.data?.input_sent??receipt.response.input_sent??false,next:'Grant and observe before further actions'}};
         return {...structuredClone(receipt.response),replayed:true};
       }
-      const grant=this.state.grants.get(id);if(!grant||Date.now()>=grant.expires)throw new Error('TAB_NOT_GRANTED: grant the tab in the extension popup');context.grantNonce=grant.nonce;
-      context.valid=()=>this.port===destination&&this.state.grants.get(id)?.nonce===grant.nonce&&Date.now()<grant.expires;
+      const grant=this.state.grants.get(id);if(!grantActive(grant))throw new Error('TAB_NOT_GRANTED: grant the tab in the extension popup');context.grantNonce=grant.nonce;
+      context.valid=()=>this.port===destination&&this.state.grants.get(id)?.nonce===grant.nonce&&grantActive(grant);
       const tab=await this.tabInfo(context,id);authorize(grant,tab,request,this.state.observations.get(id));
       if(request.action==='observe')return await this.observe(context,id,request.screenshot!==false);
       if(request.action==='screenshot'){await this.attach(context,id);await this.ensureOrigin(context,id);return {ok:true,data:{tab_id:id,url:tab.url,content_untrusted:true},image:await this.capture(context,id)};}

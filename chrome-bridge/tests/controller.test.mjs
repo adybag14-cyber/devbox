@@ -27,10 +27,46 @@ function fixture(){
 async function allowed(f){await f.bridge.popup({action:'grant',allow_new_tabs:true});const result=await f.call({action:'observe',tab_id:41,screenshot:false});assert(result.ok);return result.data.observation_id;}
 test('page messages cannot grant access; only the exact packaged popup sender can',async()=>{
  const f=fixture(),listener=f.api.runtime.onMessage.listeners[0];let replies=0;
- assert.equal(listener({action:'grant'},{id:'fixture',url:'https://example.test/'},()=>replies++),undefined);
+ assert.equal(listener({action:'grant',duration:'until_revoked'},{id:'fixture',url:'https://example.test/'},()=>replies++),undefined);
  assert.equal(f.bridge.state.grants.size,0);assert.equal(replies,0);
  await new Promise(resolve=>listener({action:'grant'},{id:'fixture',url:'chrome-extension://fixture/popup.html'},value=>{assert(!value.error);resolve();}));
  assert.equal(f.bridge.state.grants.size,1);
+});
+
+test('an explicitly unlimited tab remains usable after ten hours but observations still expire',async t=>{
+ let now=1700000000000;t.mock.method(Date,'now',()=>now);const f=fixture();
+ const granted=await f.bridge.popup({action:'grant',duration:'until_revoked'});
+ assert.equal(granted.grants[0].expires,null);assert.equal(granted.grants[0].duration,'until_revoked');
+ now+=10*3600000;
+ const listed=await f.call({action:'tabs'});assert(listed.ok);assert.equal(listed.data.tabs.length,1);
+ assert.equal(listed.data.tabs[0].grant_expires_at,null);assert.equal(listed.data.tabs[0].grant_duration,'until_revoked');
+ const first=await f.call({action:'observe',tab_id:41,screenshot:false});assert(first.ok);
+ now+=31000;
+ const stale=await f.call({action:'click',tab_id:41,observation_id:first.data.observation_id,request_id:'late-observation',x:10,y:20});
+ assert.equal(stale.error.code,'OBSERVATION_STALE');assert.equal(f.state.clicks,0);
+ const fresh=await f.call({action:'observe',tab_id:41,screenshot:false});assert(fresh.ok);
+ const clicked=await f.call({action:'click',tab_id:41,observation_id:fresh.data.observation_id,request_id:'fresh-after-ten-hours',x:10,y:20,screenshot:false});
+ assert(clicked.ok);assert.equal(f.state.clicks,1);
+ await f.bridge.popup({action:'revoke_current'});
+ assert.equal((await f.call({action:'observe',tab_id:41,screenshot:false})).error.code,'TAB_NOT_GRANTED');
+});
+
+test('one-hour grants retain their expiry and unknown duration cannot create a grant',async t=>{
+ let now=1700000000000;t.mock.method(Date,'now',()=>now);const f=fixture();
+ await assert.rejects(f.bridge.popup({action:'grant',duration:'forever'}),/INVALID_GRANT_DURATION/);
+ assert.equal(f.bridge.state.grants.size,0);
+ await f.bridge.popup({action:'grant'});assert.equal(f.bridge.state.grants.get(41).expires,now+3600000);
+ now+=3600000;assert.equal((await f.call({action:'tabs'})).data.tabs.length,0);
+});
+
+test('unlimited grants end on site changes and closing a tab; revoking one tab preserves another',async()=>{
+ const f=fixture();await f.bridge.popup({action:'grant',duration:'until_revoked',allow_new_tabs:true});
+ const observed=await f.call({action:'observe',tab_id:41,screenshot:false});
+ const created=await f.call({action:'open',tab_id:41,observation_id:observed.data.observation_id,request_id:'same-origin-child',url:'https://example.test/next'});assert(created.ok);
+ assert.equal(f.bridge.state.grants.get(42).expires,null);
+ await f.bridge.popup({action:'revoke_current'});assert(!f.bridge.state.grants.has(41));assert(f.bridge.state.grants.has(42));
+ f.api.tabs.onUpdated.emit(42,{url:'https://other.test/'});assert(!f.bridge.state.grants.has(42));
+ await f.bridge.popup({action:'grant',duration:'until_revoked'});f.api.tabs.onRemoved.emit(41);assert.equal(f.bridge.state.grants.size,0);
 });
 test('identical input retries recover receipts and conflicting IDs never execute',async()=>{
  const f=fixture(),observation_id=await allowed(f);
