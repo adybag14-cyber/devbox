@@ -393,6 +393,18 @@ void protocol_tests() {
                       {"active_dialog", {{"modal", true}}}};
     require(browser_page_status(modal_status, 200) == "content_available",
             "a short active dialog is usable rendered content");
+    modal_status["text"] = "";
+    modal_status["controls"] = Json::array();
+    require(browser_page_status(modal_status, 200) == "insufficient_content",
+            "an empty loading dialog does not prematurely finish observation");
+    modal_status["text"] = " \t\r\n";
+    require(browser_page_status(modal_status, 200) == "insufficient_content",
+            "a whitespace-only dialog has no readable content");
+    modal_status["controls"] = Json::array({{{"tag", "button"}, {"name", "Close"}}});
+    require(browser_page_status(modal_status, 200) == "content_available",
+            "an icon control makes a short dialog actionable without body text");
+    modal_status["text"] = "Choose a size";
+    modal_status["controls"] = Json::array();
     modal_status["active_dialog"] = nullptr;
     require(browser_page_status(modal_status, 200) == "insufficient_content",
             "a short ordinary document retains the insufficient-content signal");

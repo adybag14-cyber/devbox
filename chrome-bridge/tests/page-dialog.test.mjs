@@ -40,6 +40,10 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     const overflow=document.createElement('dialog');overflow.setAttribute('aria-label','Overflow modal');overflow.innerHTML='<button>Close overflow</button>';document.body.append(overflow);overflow.showModal();snapshots.push(inspect());overflow.close();overflow.remove();for(const d of reported)d.remove();
     const lower=document.createElement('div');lower.setAttribute('role','dialog');lower.setAttribute('aria-modal','true');lower.setAttribute('aria-label','Covered lower modal');lower.style.cssText='position:fixed;inset:150px;background:white;z-index:1000';lower.innerHTML='<button>Lower action</button>';document.body.append(lower);
     const upper=lower.cloneNode(true);upper.setAttribute('aria-label','Covering modal');upper.style.zIndex='1001';upper.querySelector('button').textContent='Upper action';document.body.append(upper);lower.querySelector('button').focus();snapshots.push(inspect());upper.remove();lower.remove();
+    const transparent=document.createElement('div');transparent.setAttribute('role','dialog');transparent.setAttribute('aria-modal','true');transparent.setAttribute('aria-label','Transparent dialog');transparent.style.cssText='position:fixed;inset:150px;opacity:0;pointer-events:none';transparent.innerHTML='<button>Hidden action</button>';document.body.append(transparent);snapshots.push(inspect());transparent.remove();
+    const ancestor=document.createElement('div');ancestor.style.cssText='opacity:0;pointer-events:none';document.body.append(ancestor);ancestor.attachShadow({mode:'open'}).innerHTML='<div role="dialog" aria-modal="true" aria-label="Transparent ancestor dialog" style="position:fixed;inset:150px"><button>Hidden shadow action</button></div>';snapshots.push(inspect());ancestor.remove();
+    transparent.style.pointerEvents='auto';transparent.setAttribute('aria-label','Transparent interceptor');document.body.append(transparent);snapshots.push(inspect());transparent.remove();
+    const invisibleNative=document.createElement('dialog');invisibleNative.setAttribute('aria-label','Transparent native modal');invisibleNative.style.cssText='width:300px;height:150px;opacity:0;pointer-events:none';invisibleNative.innerHTML='<button>Native blocker action</button>';document.body.append(invisibleNative);invisibleNative.showModal();snapshots.push(inspect());invisibleNative.close();invisibleNative.remove();
     background.replaceChildren();const many=document.createDocumentFragment();for(let i=0;i<20010;i++)many.append(document.createElement('div'));background.append(many);snapshots.push(inspect());
     return snapshots;
   `;
@@ -52,7 +56,7 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     const encoded=result.stdout.match(/<pre id="result">([A-Za-z0-9+/=]+)<\/pre>/)?.[1];
     assert(encoded,'Browser did not return the fixture result');
     const output=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));assert.equal(output.error,undefined);
-    const [native,scrollRoot,plain,shadow,nested,nonmodal,overflow,covered,bounded]=output.snapshots;
+    const [native,scrollRoot,plain,shadow,nested,nonmodal,overflow,covered,transparent,ancestor,interceptor,invisibleNative,bounded]=output.snapshots;
     assert(native.elements.some(e=>e.label==='Close details'),'the existing observation must include the visible modal close button, even after 220 background controls');
     assert.equal(native.active_dialog?.label,'Details','a modal appended after 220 controls must be discovered');
     assert.match(native.text,/^Details\nOnly this status call needs approval/);
@@ -79,6 +83,13 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     await t.test('a covering modal takes priority over focus behind it',()=>{
       assert.equal(covered.active_dialog?.label,'Covering modal');
       assert(covered.elements.some(e=>e.label==='Upper action'));assert(!covered.elements.some(e=>e.label==='Lower action'));
+    });
+    await t.test('transparent non-intercepting dialogs do not hide ordinary page controls',()=>{
+      for(const r of [transparent,ancestor]){assert.equal(r.active_dialog,null);assert(r.elements.some(e=>e.label.startsWith('Background ')));}
+    });
+    await t.test('transparent intercepting and native modals remain observable blockers',()=>{
+      assert.equal(interceptor.active_dialog?.label,'Transparent interceptor');
+      assert.equal(invisibleNative.active_dialog?.label,'Transparent native modal');assert.equal(invisibleNative.active_dialog.native_modal,true);
     });
     assert.equal(bounded.dialogs_truncated,true,'discovery must report its element bound');
     for(const r of output.snapshots){assert(r.elements.length<=180);assert(r.text.length<=12000);}
