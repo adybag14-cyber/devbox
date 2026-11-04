@@ -140,7 +140,8 @@ std::string browser_page_status(const Json& observation, int http_status) {
         return "navigation_unstable";
     if (json_string(observation, "ready_state") == "loading")
         return "loading";
-    if (text.size() < 80)
+    const auto dialog = observation.find("active_dialog");
+    if (text.size() < 80 && (dialog == observation.end() || !dialog->is_object()))
         return "insufficient_content";
     return "content_available";
 }
@@ -151,7 +152,25 @@ constexpr std::size_t html_limit = 2 * 1024 * 1024;
 constexpr auto observe_script = R"JS((() => {
  const clip=(v,n)=>String(v||'').slice(0,n), clean=v=>clip(v,240).replace(/\s+/g,' ').trim();
  const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return r.width>0&&r.height>0&&s.visibility!=='hidden'&&s.display!=='none';};
- const all=document.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="checkbox"],[role="tab"],[contenteditable="true"]');
+ const contains=(parent,node)=>{for(let steps=0;node&&steps<256;++steps){if(node===parent)return true;node=node.parentNode??node.host;}return false;};
+ let focused=document.activeElement;while(focused?.shadowRoot?.activeElement)focused=focused.shadowRoot.activeElement;
+ const dialogNodes=[],roots=[document];let dialogVisited=0,dialogs_truncated=false;
+ discover:for(let index=0;index<roots.length;++index){const scan=document.createTreeWalker(roots[index],NodeFilter.SHOW_ELEMENT);let e;
+  while((e=scan.nextNode())){if(++dialogVisited>4000){dialogs_truncated=true;break discover;}
+   if(e.shadowRoot){if(roots.length<32)roots.push(e.shadowRoot);else dialogs_truncated=true;}
+   if(!e.matches('dialog[open],[role="dialog"],[role="alertdialog"]')||!visible(e))continue;
+   const r=e.getBoundingClientRect();if(r.bottom<=0||r.right<=0||r.top>=innerHeight||r.left>=innerWidth)continue;
+   if(dialogNodes.length>=8){dialogs_truncated=true;continue;}
+   const native=e.matches(':modal'),scope=e.getRootNode(),ids=(e.getAttribute('aria-labelledby')||'').trim().split(/\s+/).slice(0,8);
+   const labelled=ids.map(id=>clip(scope.getElementById?.(id)?.textContent,240)).join(' ').trim();
+   dialogNodes.push({node:e,info:{name:clean(labelled||e.getAttribute('aria-label')),role:e.getAttribute('role')||'dialog',modal:native||e.getAttribute('aria-modal')==='true',native_modal:native,focused:contains(e,focused),x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}});
+  }
+ }
+ const modals=dialogNodes.filter(d=>d.info.modal),selected=modals.findLast(d=>d.info.focused)??modals.findLast(d=>{
+  const r=d.node.getBoundingClientRect(),x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));
+  let hit=document.elementFromPoint(x,y);while(hit?.shadowRoot){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return contains(d.node,hit);
+ })??modals.at(-1),modal=selected?.node,scope=modal??document;
+ const all=scope.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="checkbox"],[role="tab"],[contenteditable="true"]');
  const controls=[];let examined=0,hidden=0;
  for(const e of all){if(++examined>4000)break;if(!visible(e)){hidden++;continue;}
   const r=e.getBoundingClientRect();if(r.bottom<0||r.right<0||r.top>innerHeight||r.left>innerWidth)continue;
@@ -166,13 +185,13 @@ constexpr auto observe_script = R"JS((() => {
    width:Math.round(Math.min(innerWidth,r.right)-Math.max(0,r.left)),height:Math.round(Math.min(innerHeight,r.bottom)-Math.max(0,r.top))});
  }
  const scroll_regions=[];let scanned=0;
- for(const e of document.querySelectorAll('body *')){if(++scanned>4000||scroll_regions.length>=12)break;
+ for(const e of scope.querySelectorAll(modal?'*':'body *')){if(++scanned>4000||scroll_regions.length>=12)break;
   if(e.scrollHeight<=e.clientHeight+2||e.clientHeight<40||!visible(e))continue;
   const r=e.getBoundingClientRect(),s=getComputedStyle(e);if(!['auto','scroll'].includes(s.overflowY)||r.bottom<=0||r.top>=innerHeight)continue;
   scroll_regions.push({x:Math.round(r.left),y:Math.round(r.top),width:Math.round(r.width),height:Math.round(r.height),scroll_top:e.scrollTop,scroll_height:e.scrollHeight});
  }
  const viewport_parts=[];let visited=0,viewport_chars=0;
- const walker=document.createTreeWalker(document.body||document.documentElement,NodeFilter.SHOW_TEXT);
+ const walker=document.createTreeWalker(modal??document.body??document.documentElement,NodeFilter.SHOW_TEXT);
  while(walker.nextNode()) {if(++visited>6000||viewport_chars>=4000)break;const n=walker.currentNode,e=n.parentElement;
   if(!e||['SCRIPT','STYLE','NOSCRIPT'].includes(e.tagName)||!n.textContent.trim())continue;
   const range=document.createRange();range.selectNodeContents(n);const r=range.getBoundingClientRect();
@@ -180,12 +199,14 @@ constexpr auto observe_script = R"JS((() => {
   const s=getComputedStyle(e);if(s.visibility==='hidden'||s.display==='none')continue;
   const t=n.textContent.replace(/\s+/g,' ').trim().slice(0,4000-viewport_chars);viewport_parts.push(t);viewport_chars+=t.length;
  }
- const text=document.body?.innerText||'';
+ const text=(modal??document.body)?.innerText||'';
  return {url:location.href,title:clip(document.title,300),ready_state:document.readyState,
+  active_dialog:selected?.info??null,dialogs:dialogNodes.map(d=>d.info),dialogs_truncated,
+  text_scope:modal?'active_dialog':'rendered_document_prefix',controls_scope:modal?'active_dialog':'viewport',
   text:clip(text,8000),text_truncated:text.length>8000,viewport_text:viewport_parts.join('\n'),viewport_text_truncated:visited>6000||viewport_chars>=4000,
   controls,controls_truncated:examined>4000||controls.length===80,scroll_regions,
   viewport:{width:innerWidth,height:innerHeight,scroll_x:scrollX,scroll_y:scrollY,document_width:document.documentElement.scrollWidth,document_height:document.documentElement.scrollHeight},
-  frames:Array.from(document.querySelectorAll('iframe')).slice(0,20).map(e=>({src:clip(e.src,500),title:clip(e.title,120)})),
+  frames:Array.from(scope.querySelectorAll('iframe')).slice(0,20).map(e=>({src:clip(e.src,500),title:clip(e.title,120)})),
   frames_note:'Text and controls describe the top frame; cross-origin frame pixels are present in the screenshot.'};
 })())JS";
 constexpr auto html_script =

@@ -386,6 +386,20 @@ void protocol_tests() {
                                  {"navigation_stable", true}},
                                 200) == "content_available",
             "mentioning an error inside an ordinary article does not make it a soft-404");
+    Json modal_status{{"title", "Product page"},
+                      {"text", "Choose a size"},
+                      {"ready_state", "complete"},
+                      {"navigation_stable", true},
+                      {"active_dialog", {{"modal", true}}}};
+    require(browser_page_status(modal_status, 200) == "content_available",
+            "a short active dialog is usable rendered content");
+    modal_status["active_dialog"] = nullptr;
+    require(browser_page_status(modal_status, 200) == "insufficient_content",
+            "a short ordinary document retains the insufficient-content signal");
+    modal_status["active_dialog"] = {{"modal", true}};
+    modal_status["text"] = "Verify you are human";
+    require(browser_page_status(modal_status, 200) == "challenge_required",
+            "a dialog never suppresses the challenge classification");
     ProtocolFixture fixture([](auto& socket) {
         auto first = receive(socket);
         send(socket, {{"method", "Page.test"}, {"params", Json::object()}});
@@ -1254,6 +1268,10 @@ void modal_browser_tests(bool headed, bool compatibility) {
         require(json_string(value.data, "text").starts_with("Product details") &&
                     json_string(value.data, "viewport_text").starts_with("Product details"),
                 "modal text precedes the long background document in both text views");
+        require(json_string(value.data, "text_scope") == "active_dialog" &&
+                    json_string(value.data, "controls_scope") == "active_dialog" &&
+                    json_string(value.data, "text").find("Earlier product catalogue") == std::string::npos,
+                "observations explicitly scope the bounded response to the active dialog");
         require(value.data.at("controls").size() <= 80 && !value.image_base64.empty(),
                 "bounded modal controls and real screenshot are returned together");
         for (const auto& control : value.data.at("controls"))
