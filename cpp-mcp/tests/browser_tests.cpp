@@ -659,10 +659,12 @@ for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>docu
             if (request.target() == "/modal" || request.target() == "/aria-modal" ||
                 request.target() == "/shadow-modal" || request.target() == "/modal-scroll-root" ||
                 request.target() == "/modal-overflow" || request.target() == "/covered-focus" ||
-                request.target() == "/transparent-modal" || request.target() == "/transparent-modal-ancestor")
+                request.target() == "/transparent-modal" ||
+                request.target() == "/transparent-modal-ancestor" || request.target() == "/modal-challenge")
                 response.body() =
                     R"HTML(<!doctype html><title>Bounded modal observation fixture</title><body><section id="history"></section><script>
 const history=document.querySelector('#history');const text=document.createElement('p');text.textContent='Earlier product catalogue '.repeat(1000);history.append(text);
+if(location.pathname==='/modal-challenge'){const marker=document.createElement('p');marker.textContent='Verify you are human';history.prepend(marker);}
 for(let i=0;i<220;i++){const b=document.createElement('button');b.textContent='Background '+i;b.style.cssText='position:fixed;left:0;top:0';history.append(b);}
 const rootScroll=location.pathname==='/modal-scroll-root',native=location.pathname==='/modal'||location.pathname==='/modal-overflow'||rootScroll,dialog=document.createElement(native?'dialog':'div');
 dialog.id='details';dialog.setAttribute('aria-labelledby','dialog-title');dialog.style.cssText='position:fixed;left:300px;top:100px;width:500px;height:350px;margin:0;background:white;z-index:1000';
@@ -1274,7 +1276,7 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
     bool exercised = false;
     for (const auto* route :
          {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root", "/modal-overflow", "/covered-focus",
-          "/transparent-modal", "/transparent-modal-ancestor"}) {
+          "/transparent-modal", "/transparent-modal-ancestor", "/modal-challenge"}) {
         if (!only.empty() && only != route)
             continue;
         exercised = true;
@@ -1282,6 +1284,15 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
             browser, {{"action", "open"}, {"url", "http://127.0.0.1:" + std::to_string(page.port()) + route}},
             "modal-owner");
         const auto id = json_string(value.data, "session_id");
+        if (std::string_view(route) == "/modal-challenge") {
+            require(json_string(value.data, "page_status") == "challenge_required" &&
+                        json_bool(value.data, "possible_challenge"),
+                    "a modal never hides document-level challenge evidence");
+            browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
+            require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
+                    "challenge fixture closes its owned profile");
+            continue;
+        }
         if (std::string_view(route).starts_with("/transparent-modal")) {
             require(value.data.at("active_dialog").is_null() &&
                         json_string(value.data, "controls_scope") == "viewport" &&

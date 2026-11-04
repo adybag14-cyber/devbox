@@ -21,7 +21,7 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     for(let i=0;i<220;i++){const b=document.createElement('button');b.textContent='Background '+i;b.style.cssText='position:fixed;left:0;top:0';background.append(b);}
     document.body.append(background);
     const snapshots=[];
-    const inspect=()=>{const r=pageTask({action:'inspect'});return {text:r.text,text_scope:r.text_scope,elements:r.elements,active_dialog:r.active_dialog,dialogs:r.dialogs,dialogs_truncated:r.dialogs_truncated};};
+    const inspect=()=>{const r=pageTask({action:'inspect'});return {text:r.text,text_scope:r.text_scope,text_truncated:r.text_truncated,elements:r.elements,active_dialog:r.active_dialog,dialogs:r.dialogs,dialogs_truncated:r.dialogs_truncated};};
     const native=document.createElement('dialog');native.setAttribute('aria-labelledby','details-title');
     native.innerHTML='<h2 id="details-title">Details</h2><p>Only this status call needs approval.</p><button id="close">Close details</button>';
     document.body.append(native);native.showModal();let r=inspect();
@@ -44,7 +44,10 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     const ancestor=document.createElement('div');ancestor.style.cssText='opacity:0;pointer-events:none';document.body.append(ancestor);ancestor.attachShadow({mode:'open'}).innerHTML='<div role="dialog" aria-modal="true" aria-label="Transparent ancestor dialog" style="position:fixed;inset:150px"><button>Hidden shadow action</button></div>';snapshots.push(inspect());ancestor.remove();
     transparent.style.pointerEvents='auto';transparent.setAttribute('aria-label','Transparent interceptor');document.body.append(transparent);snapshots.push(inspect());transparent.remove();
     const invisibleNative=document.createElement('dialog');invisibleNative.setAttribute('aria-label','Transparent native modal');invisibleNative.style.cssText='width:300px;height:150px;opacity:0;pointer-events:none';invisibleNative.innerHTML='<button>Native blocker action</button>';document.body.append(invisibleNative);invisibleNative.showModal();snapshots.push(inspect());invisibleNative.close();invisibleNative.remove();
+    transparent.style.cssText='position:fixed;inset:150px;opacity:1;clip-path:inset(100%)';transparent.setAttribute('aria-label','Clipped dialog');document.body.append(transparent);snapshots.push(inspect());transparent.remove();
     background.replaceChildren();const many=document.createDocumentFragment();for(let i=0;i<20010;i++)many.append(document.createElement('div'));background.append(many);snapshots.push(inspect());
+    const exact=document.createElement('dialog');exact.style.width='300px';exact.textContent='x'.repeat(12000);document.body.replaceChildren(exact);exact.showModal();snapshots.push(inspect());
+    const extra=document.createElement('p');extra.textContent='Additional readable text';document.body.append(extra);snapshots.push(inspect());exact.close();
     return snapshots;
   `;
   const run=`const pageTask=(${pageTask.toString()});let result;try{result={snapshots:(()=>{${program}})()};}catch(e){result={error:String(e.stack||e)};}const output=document.createElement('pre');output.id='result';output.textContent=btoa(unescape(encodeURIComponent(JSON.stringify(result))));document.body.replaceChildren(output);`;
@@ -56,10 +59,11 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     const encoded=result.stdout.match(/<pre id="result">([A-Za-z0-9+/=]+)<\/pre>/)?.[1];
     assert(encoded,'Browser did not return the fixture result');
     const output=JSON.parse(Buffer.from(encoded,'base64').toString('utf8'));assert.equal(output.error,undefined);
-    const [native,scrollRoot,plain,shadow,nested,nonmodal,overflow,covered,transparent,ancestor,interceptor,invisibleNative,bounded]=output.snapshots;
+    const [native,scrollRoot,plain,shadow,nested,nonmodal,overflow,covered,transparent,ancestor,interceptor,invisibleNative,clipped,bounded,exact,extra]=output.snapshots;
     assert(native.elements.some(e=>e.label==='Close details'),'the existing observation must include the visible modal close button, even after 220 background controls');
     assert.equal(native.active_dialog?.label,'Details','a modal appended after 220 controls must be discovered');
     assert.match(native.text,/^Details\nOnly this status call needs approval/);
+    assert(native.text.includes('Earlier conversation'),'document context follows modal text');
     assert.equal(native.text_scope,'active_dialog_then_rendered_document_prefix');
     assert.equal(native.close_hit,'close');
     assert(native.elements.some(e=>e.label==='Close details'));
@@ -90,6 +94,12 @@ test('real Chrome observations prioritize visible modal dialogs on crowded pages
     await t.test('transparent intercepting and native modals remain observable blockers',()=>{
       assert.equal(interceptor.active_dialog?.label,'Transparent interceptor');
       assert.equal(invisibleNative.active_dialog?.label,'Transparent native modal');assert.equal(invisibleNative.active_dialog.native_modal,true);
+    });
+    await t.test('a clipped ARIA dialog does not narrow the visible page scope',()=>{
+      assert.equal(clipped.active_dialog,null);assert(clipped.elements.some(e=>e.label.startsWith('Background ')));
+    });
+    await t.test('an exact text budget is complete until another eligible node remains',()=>{
+      assert.equal(exact.text.length,12000);assert.equal(exact.text_truncated,false);assert.equal(extra.text_truncated,true);
     });
     assert.equal(bounded.dialogs_truncated,true,'discovery must report its element bound');
     for(const r of output.snapshots){assert(r.elements.length<=180);assert(r.text.length<=12000);}
