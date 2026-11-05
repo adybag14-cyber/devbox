@@ -36,6 +36,54 @@ compatibility, so their mere presence does not establish readiness. Opacity chec
 for readiness inspect at most 256 composed ancestors. Document challenge, error,
 navigation and loading classifications retain priority.
 
+Version 0.9.43 adds an optional `interaction_point` to each control descriptor.
+The bounding rectangle remains unchanged. A clipped or partly covered button
+can have an inaccessible rectangle centre while an edge remains clickable.
+The browser probes the centre first, then up to eight inset edge/corner points,
+using real hit testing (including open shadow roots), with at most 192 control
+probes per observation. Zero-opacity controls or ancestors have no hint. Ordinary unobscured
+controls need just the original single hit test.
+
+Prefer the reported point when present, using that observation's ID. A null
+point means the bounded probe found no coordinate; it does not prove that the
+control is invisible or wholly covered. `interaction_points_truncated` reports
+probe-budget exhaustion. Points are recomputed on every observation and never
+authorize input or establish success; verify the effect after an action.
+Modal selection, control-count limits and input guards are unchanged.
+
+The compiled correction at `17dbd663b83881a2c9709855222a1a2b3441e87d` passes
+fifteen real-Chromium modal flows plus core/browser-protocol suites on Windows
+and Linux. Fixtures verify clipped controls, independent post-input observations,
+pane scrolling, transparent controls and probe-budget exhaustion. The nested-card
+regression fails at `a1ad997060d76e56566cfb99c99db262199871b5`: a card's original
+point activates its child button. Corrected points avoid a different recognised
+interactive descendant; the card and its nested button each retain a point that
+independently activates their own action. Each flow closes only its own profile.
+
+[All 512 final timing samples](benchmarks/browser-hit-points-final-20261105.json)
+compare the exact embedded observation with 0.9.42 in eight A/B/B/A blocks per
+fixture. Existing fields remain equal after excluding only the new point,
+probe-truncation metadata and changed control guidance. The earlier 448-sample
+record remains retained separately. These are local headless Chrome script
+timings, excluding transport, image capture, network and model time. Background
+system activity is not isolated; small differences are not general speedups.
+
+| Fixture | Windows baseline → candidate | Linux baseline → candidate |
+| --- | ---: | ---: |
+| Small form | 0.1117 → 0.1094 ms | 0.1313 → 0.1281 ms |
+| 2,500-item catalogue | 25.1500 → 24.9000 ms | 26.2750 → 27.3625 ms |
+| Nested text | 6.1500 → 5.7125 ms | 5.2875 → 5.2375 ms |
+| Native modal | 0.0750 → 0.0719 ms | 0.0555 → 0.0578 ms |
+| Transparent ancestor | 0.0250 → 0.0281 ms | 0.0172 → 0.0187 ms |
+| Sixteen clipped controls | 0.3203 → 0.4680 ms | 0.2703 → 0.3867 ms |
+| Eighty covered controls | 1.0711 → 1.3211 ms | 0.8914 → 1.0195 ms |
+| Eight cards with nested buttons | 0.2117 → 0.2164 ms | 0.1844 → 0.1711 ms |
+
+Extra hit tests have a bounded cost and improve targeting; this is not a claim
+that every page becomes faster. Hosted qualification and release-boundary
+acceptance remain separate gates. This draft follow-up is outside the fixed
+0.9.42 candidate.
+
 Text and native control enumeration cover the selected root's light DOM.
 Descendant shadow-root text and native controls can be omitted; `text_note` and
 `controls_note` expose these limits and point to the screenshot for the composed

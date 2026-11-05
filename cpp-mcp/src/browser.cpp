@@ -184,8 +184,21 @@ constexpr auto observe_script = R"JS((() => {
   const labelled=ids.map(id=>clip(scope.getElementById?.(id)?.textContent,240)).join(' ').trim();
   return {node:e,info:{name:clean(labelled||e.getAttribute('aria-label')),role:e.getAttribute('role')||'dialog',modal:native||e.getAttribute('aria-modal')==='true',native_modal:native,focused:contains(e,focused),x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}};
  };
- const hitDialog=e=>{const r=e.getBoundingClientRect(),x=Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),y=Math.max(0,Math.min(innerHeight-1,r.y+r.height/2));
-  let hit=document.elementFromPoint(x,y);for(let depth=0;hit?.shadowRoot&&depth<32;++depth){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return contains(e,hit);
+ const controlSelector='a[href],button,input,select,textarea,[role="button"],[role="checkbox"],[role="tab"],[contenteditable="true"]';
+ const pointHits=(e,x,y,controlOnly=false)=>{
+  let hit=document.elementFromPoint(x,y);for(let depth=0;hit?.shadowRoot&&depth<32;++depth){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}
+  if(!controlOnly)return contains(e,hit);
+  // A point inside a card can belong to its nested button or link. Preserve
+  // the exact intended control, while allowing non-interactive descendants.
+  for(let depth=0;hit&&depth<256;++depth){if(hit===e)return true;if(hit.matches?.(controlSelector))return false;hit=hit.parentNode??hit.host;}return false;
+ };
+ const hitDialog=e=>{const r=e.getBoundingClientRect();return pointHits(e,Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),Math.max(0,Math.min(innerHeight-1,r.y+r.height/2)));};
+ let pointProbes=0,interaction_points_truncated=false;
+ const controlPoint=(e,r)=>{const left=Math.max(0,r.left),right=Math.min(innerWidth,r.right),top=Math.max(0,r.top),bottom=Math.min(innerHeight,r.bottom);
+  if(left>=right||top>=bottom)return null;
+  const dx=Math.min(1,(right-left)/4),dy=Math.min(1,(bottom-top)/4),xs=[(left+right)/2,left+dx,right-dx],ys=[(top+bottom)/2,top+dy,bottom-dy];
+  for(const y of ys)for(const x of xs){if(pointProbes>=192){interaction_points_truncated=true;return null;}++pointProbes;if(pointHits(e,x,y,true))return {x,y};}
+  return null;
  };
  discover:for(let index=0;index<roots.length;++index){const scan=document.createTreeWalker(roots[index],NodeFilter.SHOW_ELEMENT);let e;
   while((e=scan.nextNode())){if(++dialogVisited>4000){dialogs_truncated=true;break discover;}
@@ -198,15 +211,17 @@ constexpr auto observe_script = R"JS((() => {
  }
  const selectedNode=hitModal??focusedModal??lastModal;
  const selected=dialogNodes.find(d=>d.node===selectedNode)??(selectedNode?describeDialog(selectedNode):undefined),modal=selected?.node,scope=modal??document;
- const all=scope.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="checkbox"],[role="tab"],[contenteditable="true"]');
+ const all=scope.querySelectorAll(controlSelector);
  const controls=[];let examined=0,hidden=0,readableControls=0;
  for(const e of all){if(++examined>4000)break;if(!visible(e)){hidden++;continue;}
   const r=e.getBoundingClientRect();if(r.bottom<0||r.right<0||r.top>innerHeight||r.left>innerWidth)continue;
   if(controls.length>=80)break;
   const type=(e.type||'').toLowerCase(); const privateValue=type==='password'||type==='file'||e.autocomplete==='one-time-code';
   const activationLink=e.tagName==='A'?null:e.closest('a[href]');
-  if(paintedFallback(e)&&hitDialog(e))++readableControls;
+  const interaction_point=paintedFallback(e)?controlPoint(e,r):null;
+  if(interaction_point)++readableControls;
   controls.push({tag:e.tagName.toLowerCase(),role:e.getAttribute('role')||'',type,
+   interaction_point,
    name:clean(e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.innerText||e.getAttribute('placeholder')||e.getAttribute('title')),
    href:e.tagName==='A'?clip(e.href,1000):undefined,disabled:!!e.disabled,checked:typeof e.checked==='boolean'?e.checked:undefined,
    activation_href:activationLink?clip(activationLink.href,1000):undefined,
@@ -236,9 +251,9 @@ constexpr auto observe_script = R"JS((() => {
   modal_text:modal?clip(modalText,8000):null,modal_text_scope:modal?'active_dialog_light_dom':null,modal_text_truncated:modalText.length>8000,
   dialog_readable:modal?(viewport_parts.length>0||readableControls>0):null,
   text_note:'Text may omit content inside descendant shadow roots; use the screenshot for the composed display.',
-  controls_note:'Native control descriptors retain light-DOM state; dialog_readable reflects viewport evidence. Descendant shadow controls may be omitted; use the screenshot for those controls.',
+  controls_note:'Prefer interaction_point when present: it hit-tests inside the control. Null means the bounded probe found no point, not proof of invisibility. Rectangles retain light-DOM geometry; descendant shadow controls may be omitted. Use the screenshot and a fresh observation to verify effects.',
   text:clip(text,8000),text_truncated:text.length>8000,viewport_text:viewport_parts.join('\n'),viewport_text_truncated:visited>6000||viewport_chars>=4000,
-  controls,controls_truncated:examined>4000||controls.length===80,scroll_regions,
+  controls,controls_truncated:examined>4000||controls.length===80,interaction_points_truncated,scroll_regions,
   viewport:{width:innerWidth,height:innerHeight,scroll_x:scrollX,scroll_y:scrollY,document_width:document.documentElement.scrollWidth,document_height:document.documentElement.scrollHeight},
   frames:Array.from(scope.querySelectorAll('iframe')).slice(0,20).map(e=>({src:clip(e.src,500),title:clip(e.title,120)})),
   frames_note:'Text and controls describe the top frame; cross-origin frame pixels are present in the screenshot.'};
