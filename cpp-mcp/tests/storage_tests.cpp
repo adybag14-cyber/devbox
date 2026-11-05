@@ -1,3 +1,4 @@
+#include "../src/text_range.hpp"
 #include "devbox/storage.hpp"
 #include <fstream>
 #include <future>
@@ -91,6 +92,29 @@ void batch_read_checks(const fs::path& root) {
             "all batch operations preserve source bytes");
 }
 void text_range_checks(const fs::path& root) {
+    constexpr auto top = detail::text_range_max_offset;
+    const auto at_end = detail::text_range_boundary("", top, 4);
+    require(at_end.eof && at_end.bytes == 0, "EOF at the safe integer limit is representable");
+    const auto exact_end = detail::text_range_boundary("abc", top - 3, 4);
+    require(exact_end.eof && exact_end.bytes == 3, "a final ASCII range may end at the safe limit");
+    const auto capped = detail::text_range_boundary("abcd", top - 3, 4);
+    require(!capped.eof && capped.bytes == 3 && top - 3 + capped.bytes == top,
+            "a continuation offset never exceeds the safe integer limit");
+    rejects([&] { detail::text_range_boundary("d", top, 4); }, "READ_TEXT_RANGE_LIMIT");
+    rejects([&] { detail::text_range_boundary("\xe7\x95\x8c", top - 2, 4); }, "READ_TEXT_RANGE_LIMIT");
+    rejects([&] { detail::text_range_boundary("", top + 1, 4); }, "READ_TEXT_RANGE_LIMIT");
+    // Differential EOF coverage against the existing UTF-8 sanitizer, without
+    // creating 65,536 files or encoding the decoder's branches in the test.
+    for (unsigned first = 0; first < 256; ++first)
+        for (unsigned second = 0; second < 256; ++second) {
+            const std::string bytes{static_cast<char>(first), static_cast<char>(second)};
+            if (sanitize_utf8(bytes) == bytes) {
+                const auto result = detail::text_range_boundary(bytes, 0, 4);
+                require(result.eof && result.bytes == bytes.size(), "valid two-byte EOF is unchanged");
+            } else {
+                rejects([&] { detail::text_range_boundary(bytes, 0, 4); }, "READ_TEXT_RANGE_UTF8");
+            }
+        }
     const auto path = root / "utf8-range.txt";
     const std::string part = "\xef\xbb\xbf"
                              "A\xc2\xa3"
@@ -146,6 +170,8 @@ void text_range_checks(const fs::path& root) {
     for (const auto& partial : {std::string("\xf0\x80"), std::string("\xe0\x80"), std::string("\xed\xa0"),
                                 std::string("\xf4\x90")}) {
         write_file(invalid, "ab" + partial + "\x80\x80");
+        rejects([&] { read_text_range(invalid, 0, 4); }, "READ_TEXT_RANGE_UTF8");
+        write_file(invalid, "abc" + partial + "\x80\x80");
         rejects([&] { read_text_range(invalid, 0, 4); }, "READ_TEXT_RANGE_UTF8");
     }
     for (const auto& scalar : {std::string("\xe0\xa0\x80"), std::string("\xed\x9f\xbf"),

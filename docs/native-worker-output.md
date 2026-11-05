@@ -2,7 +2,7 @@
 
 The C++23 filesystem worker retains its process isolation, byte and shape limits,
 deadlines, cancellation acknowledgement and atomic-write preconditions. The
-0.9.40 integration candidate includes the output-completion change developed
+0.9.42 integration candidate includes the output-completion change developed
 in 0.9.38, reducing result-copying and changing Windows output readiness handling.
 
 The worker moves its result into the response envelope, and the parent moves the
@@ -84,7 +84,7 @@ boundaries, delayed output and stdout continuing after stderr closes. Existing
 cases cover simultaneous large stdin/stdout/stderr, pending-write cancellation,
 callback exceptions, child/grandchild termination, exact multi-megabyte reads,
 write conflicts and idempotent replay. This transport change does not change the
-public contract. The separate text-range action in the 0.9.40 integration advances
+public contract. The separate text-range action in the 0.9.42 integration advances
 the combined contract to version 14 with 59 tools.
 Required hosted qualification and deployment acceptance remain separate gates.
 

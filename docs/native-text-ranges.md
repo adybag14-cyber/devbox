@@ -24,6 +24,11 @@ any complete UTF-8 scalar. To continue, pass the returned `next_offset_bytes`;
 do not add the requested budget yourself, because a final partial scalar may
 have been deferred to the next range.
 
+The continuation offset also stays within the maximum safe JSON integer,
+9,007,199,254,740,991. A range is shortened at that bound; if content remains but
+no complete scalar fits, `READ_TEXT_RANGE_LIMIT` is returned instead of a page
+that cannot advance. A real EOF at the bound still returns an empty complete page.
+
 The structured result contains readable `text`, its `encoding`, the sampled
 file length as an advisory metadata sample, requested and actual offsets,
 `bytes_returned`, `next_offset_bytes`,
@@ -32,7 +37,10 @@ only once, in structured data; the MCP text-content block carries metadata,
 following the existing large-file response convention. The hash covers only
 the returned raw bytes, not the whole file.
 
-Offsets inside a UTF-8 scalar and malformed/incomplete UTF-8 are errors. Use
+Offsets inside a UTF-8 scalar and malformed/incomplete UTF-8 are errors. Continue
+from the returned offset after a valid partial scalar is deferred. Every
+observed byte of a scalar beginning within the range is validated, including
+the lookahead byte. Use
 `devbox_read_large_file` for binary data or other encodings. Empty files and reads
 beyond EOF return empty text, explicit EOF and the unchanged requested offset;
 missing files remain errors. EOF is determined from bounded reads with one byte
@@ -78,4 +86,8 @@ engine, filesystem-worker and core tests plus the official MCP SDK smoke test on
 Windows and Linux. Added cases exercise real zero-length procfs metadata,
 overreported sysfs lengths, exact-budget EOF, unchanged past-EOF offsets, invalid
 partial UTF-8 and valid scalar edge values. The 0.9.40 integration includes these
-corrections; its combined-source qualification is required separately.
+corrections. Follow-up 0.9.42 bounds both requested and returned offsets and
+validates observed lookahead before deferring a scalar. Its private boundary
+helper is shared by the file reader and arithmetic/UTF-8 regressions, so testing
+the JSON integer limit does not require creating a multi-petabyte sparse file.
+Combined-source qualification is required separately.
