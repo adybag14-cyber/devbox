@@ -22,6 +22,9 @@ const fixture=String.raw`
   const sources=${JSON.stringify({baseline,candidate})};
   const evaluate=Object.fromEntries(Object.entries(sources).map(([name,source])=>[name,new Function('return '+source)]));
   const originalStyle=window.getComputedStyle.bind(window);
+  // Hit-point metadata is intentionally new. Compare every existing value;
+  // dedicated compiled fixtures verify the new coordinates and probe limits.
+  const comparable=result=>{const {controls_note,interaction_points_truncated,...value}=result;return JSON.stringify({...value,controls:value.controls.map(({interaction_point,...control})=>control)});};
   const inspect=name=>{let styleCalls=0;const previous=window.getComputedStyle;
     window.getComputedStyle=(...args)=>{++styleCalls;return originalStyle(...args);};
     try{return {result:evaluate[name](),calls:styleCalls};}finally{window.getComputedStyle=previous;}
@@ -53,7 +56,7 @@ const fixture=String.raw`
   for(const kind of ['small-form','catalogue','deep-visible-text','native-modal','transparent-ancestor']){
     page(kind);
     const a=inspect('baseline'),b=inspect('candidate');
-    if(JSON.stringify(a.result)!==JSON.stringify(b.result))throw new Error('Observation differs: '+kind);
+    if(comparable(a.result)!==comparable(b.result))throw new Error('Observation differs: '+kind);
     // Timed calls use the original browser API, without the counting wrapper.
     // Warm both functions on the same layout, then interleave ABBA blocks.
     for(let i=0;i<4;i++){evaluate.baseline();evaluate.candidate();}
@@ -70,7 +73,7 @@ const fixture=String.raw`
   for(const state of ['opacity:1','opacity:0','opacity:1;display:none','opacity:1;display:block']){
     document.querySelector('#changing').style.cssText=state;
     const a=inspect('baseline'),b=inspect('candidate');
-    if(JSON.stringify(a.result)!==JSON.stringify(b.result))throw new Error('Fresh style differs: '+state);
+    if(comparable(a.result)!==comparable(b.result))throw new Error('Fresh style differs: '+state);
     changes.push({state,viewport_text:b.result.viewport_text,controls:b.result.controls.length});
   }
   const depthChecks=[];
@@ -81,7 +84,7 @@ const fixture=String.raw`
     // DOM order first tests the deepest leaf, then a shorter suffix of that path.
     const short=document.createElement('span');short.textContent='Shorter leaf';shorter.append(short);
     const a=inspect('baseline'),b=inspect('candidate');
-    if(JSON.stringify(a.result)!==JSON.stringify(b.result))throw new Error('Depth-bound output differs: '+count);
+    if(comparable(a.result)!==comparable(b.result))throw new Error('Depth-bound output differs: '+count);
     depthChecks.push({ancestors:count,viewport_text:b.result.viewport_text});
   }
   document.body.replaceChildren();
@@ -93,7 +96,7 @@ const fixture=String.raw`
   }
   document.body.style.font='1px/1px monospace';
   const boundedA=inspect('baseline'),boundedB=inspect('candidate');
-  if(JSON.stringify(boundedA.result)!==JSON.stringify(boundedB.result))throw new Error('Cache-bound output differs');
+  if(comparable(boundedA.result)!==comparable(boundedB.result))throw new Error('Cache-bound output differs');
   const bounded={baseline_style_calls:boundedA.calls,candidate_style_calls:boundedB.calls,viewport_chars:boundedB.result.viewport_text.length};
   return {user_agent:navigator.userAgent,records,changes,depth_checks:depthChecks,cache_bound:bounded};
 `;
@@ -114,7 +117,7 @@ try{
   }
   assert.equal(output.changes[0].viewport_text,output.changes[3].viewport_text);
   assert.equal(output.changes[1].viewport_text,'');assert.equal(output.changes[2].viewport_text,'');
-  console.log(JSON.stringify({baseline_revision:revision,baseline_script_sha256:hash(baseline),candidate_script_sha256:hash(candidate),scope:'Embedded native observation only; excludes CDP, image capture, network and model time',...output},null,2));
+  console.log(JSON.stringify({baseline_revision:revision,baseline_script_sha256:hash(baseline),candidate_script_sha256:hash(candidate),comparison_excludes:['controls_note','interaction_points_truncated','controls[].interaction_point'],scope:'Embedded native observation only; excludes CDP, image capture, network and model time',...output},null,2));
 }finally{
   assert.equal(dirname(resolve(directory)),parent);assert(basename(directory).startsWith('devbox-style-benchmark-'));assert(!lstatSync(directory).isSymbolicLink());
   rmSync(directory,{recursive:true,force:true,maxRetries:5,retryDelay:100});
