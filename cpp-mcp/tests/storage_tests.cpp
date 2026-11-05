@@ -1,6 +1,9 @@
+#include "../src/text_range.hpp"
 #include "devbox/storage.hpp"
+#include <fstream>
 #include <future>
 #include <iostream>
+#include <limits>
 #include <thread>
 #ifndef _WIN32
 #include <pthread.h>
@@ -88,6 +91,135 @@ void batch_read_checks(const fs::path& root) {
                 read_file(empty).empty(),
             "all batch operations preserve source bytes");
 }
+void text_range_checks(const fs::path& root) {
+    constexpr auto top = detail::text_range_max_offset;
+    const auto at_end = detail::text_range_boundary("", top, 4);
+    require(at_end.eof && at_end.bytes == 0, "EOF at the safe integer limit is representable");
+    const auto exact_end = detail::text_range_boundary("abc", top - 3, 4);
+    require(exact_end.eof && exact_end.bytes == 3, "a final ASCII range may end at the safe limit");
+    const auto capped = detail::text_range_boundary("abcd", top - 3, 4);
+    require(!capped.eof && capped.bytes == 3 && top - 3 + capped.bytes == top,
+            "a continuation offset never exceeds the safe integer limit");
+    rejects([&] { detail::text_range_boundary("d", top, 4); }, "READ_TEXT_RANGE_LIMIT");
+    rejects([&] { detail::text_range_boundary("\xe7\x95\x8c", top - 2, 4); }, "READ_TEXT_RANGE_LIMIT");
+    rejects([&] { detail::text_range_boundary("", top + 1, 4); }, "READ_TEXT_RANGE_LIMIT");
+    // Differential EOF coverage against the existing UTF-8 sanitizer, without
+    // creating 65,536 files or encoding the decoder's branches in the test.
+    for (unsigned first = 0; first < 256; ++first)
+        for (unsigned second = 0; second < 256; ++second) {
+            const std::string bytes{static_cast<char>(first), static_cast<char>(second)};
+            if (sanitize_utf8(bytes) == bytes) {
+                const auto result = detail::text_range_boundary(bytes, 0, 4);
+                require(result.eof && result.bytes == bytes.size(), "valid two-byte EOF is unchanged");
+            } else {
+                rejects([&] { detail::text_range_boundary(bytes, 0, 4); }, "READ_TEXT_RANGE_UTF8");
+            }
+        }
+    const auto path = root / "utf8-range.txt";
+    const std::string part = "\xef\xbb\xbf"
+                             "A\xc2\xa3"
+                             "\xf0\x9f\xa6\x80"
+                             "\xe7\x95\x8c"
+                             "\r\n" +
+                             std::string("\0tail", 5);
+    const auto content = part + part + part;
+    write_file(path, content);
+    for (const std::size_t limit : {4, 5, 6, 7, 8, 9, 11, 16, 64, 65536}) {
+        std::string assembled;
+        std::uint64_t offset = 0;
+        for (;;) {
+            const auto range = read_text_range(path, offset, limit);
+            const auto text = json_string(range, "text");
+            const auto next = json_uint(range, "next_offset_bytes");
+            require(text.size() <= limit && !text.empty() && next == offset + text.size() &&
+                        range["read_bytes_sha256"] == sha256(text) &&
+                        range["bytes_returned"] == text.size() &&
+                        range["sampled_file_bytes"] == content.size() && range["atomic_snapshot"] == false &&
+                        range["encoding"] == "utf-8" && sanitize_utf8(text) == text,
+                    "text pages are bounded exact UTF8 with progress and byte digests");
+            assembled += text;
+            offset = next;
+            if (json_bool(range, "eof"))
+                break;
+            require(json_bool(range, "truncated"), "a remaining range is explicit");
+        }
+        require(assembled == content, "paging never loses BOM, multibyte scalars, CRLF or NUL");
+    }
+    const auto first = read_text_range(path, 0, 5);
+    require(first["text"] == content.substr(0, 4) && first["next_offset_bytes"] == 4 &&
+                first["utf8_boundary_adjusted"] == true,
+            "a cut scalar is deferred to the next exact byte offset");
+    rejects([&] { read_text_range(path, 5, 4); }, "READ_TEXT_RANGE_OFFSET");
+    const auto past = read_text_range(path, 10000, 4);
+    require(past["text"] == "" && past["eof"] == true && past["offset_bytes"] == 10000 &&
+                past["next_offset_bytes"] == 10000 && past["offset_bytes_requested"] == 10000 &&
+                past["read_bytes_sha256"] == sha256(""),
+            "past-EOF reads preserve their requested offset and empty digest");
+    rejects([&] { read_text_range(path, 0, 3); }, "READ_TEXT_RANGE_LIMIT");
+    rejects([&] { read_text_range(path, 0, 65537); }, "READ_TEXT_RANGE_LIMIT");
+    rejects([&] { read_text_range(path, std::numeric_limits<std::uint64_t>::max(), 4); },
+            "READ_TEXT_RANGE_LIMIT");
+    rejects([&] { read_text_range("relative.txt"); }, "READ_TEXT_RANGE_PATH");
+    rejects([&] { read_text_range(root / "missing-range"); }, "ENOENT");
+    const auto invalid = root / "invalid-range.bin";
+    for (const auto& bytes : {std::string("\xff"), std::string("x\xc0\xaf"), std::string("\xed\xa0\x80"),
+                              std::string("\xf4\x90\x80\x80"), std::string("x\xf0\x9f")}) {
+        write_file(invalid, bytes);
+        rejects([&] { read_text_range(invalid); }, "READ_TEXT_RANGE_UTF8");
+    }
+    for (const auto& partial : {std::string("\xf0\x80"), std::string("\xe0\x80"), std::string("\xed\xa0"),
+                                std::string("\xf4\x90")}) {
+        write_file(invalid, "ab" + partial + "\x80\x80");
+        rejects([&] { read_text_range(invalid, 0, 4); }, "READ_TEXT_RANGE_UTF8");
+        write_file(invalid, "abc" + partial + "\x80\x80");
+        rejects([&] { read_text_range(invalid, 0, 4); }, "READ_TEXT_RANGE_UTF8");
+    }
+    for (const auto& scalar : {std::string("\xe0\xa0\x80"), std::string("\xed\x9f\xbf"),
+                               std::string("\xf0\x90\x80\x80"), std::string("\xf4\x8f\xbf\xbf")}) {
+        write_file(invalid, "ab" + scalar + "tail");
+        const auto cut = read_text_range(invalid, 0, 4);
+        const auto rest = read_text_range(invalid, json_uint(cut, "next_offset_bytes"));
+        require(cut["text"] == "ab" && cut["utf8_boundary_adjusted"] == true && cut["eof"] == false &&
+                    rest["text"] == scalar + "tail" && rest["eof"] == true,
+                "valid UTF8 edge scalars are deferred and recovered exactly");
+    }
+    write_file(invalid, "abcd");
+    require(read_text_range(invalid, 0, 4)["eof"] == true,
+            "lookahead distinguishes exact-budget EOF from remaining bytes");
+    write_file(invalid, "abcde");
+    require(read_text_range(invalid, 0, 4)["eof"] == false,
+            "lookahead detects the first byte beyond the response budget");
+#ifdef __linux__
+    for (const auto& virtual_path :
+         {fs::path("/proc/sys/kernel/ostype"), fs::path("/sys/kernel/uevent_seqnum")}) {
+        require(fs::exists(virtual_path), "Linux virtual-file regression fixture is available");
+        std::ifstream input(virtual_path, std::ios::binary);
+        const std::string expected((std::istreambuf_iterator<char>(input)), {});
+        require(!expected.empty(), "virtual fixture has readable bytes");
+        const auto range = read_text_range(virtual_path, 0, 65536);
+        // uevent_seqnum can change; do not compare values from separate reads.
+        require(!json_string(range, "text").empty() && range["eof"] == true &&
+                    range["bytes_returned"] == json_string(range, "text").size() &&
+                    range["sampled_file_bytes"] != range["bytes_returned"],
+                "virtual-file EOF follows actual reads rather than reported size");
+        if (virtual_path == fs::path("/proc/sys/kernel/ostype")) {
+            const auto first_page = read_text_range(virtual_path, 0, 4);
+            const auto last_page =
+                read_text_range(virtual_path, json_uint(first_page, "next_offset_bytes"), 4);
+            require(json_string(first_page, "text") + json_string(last_page, "text") == expected &&
+                        first_page["eof"] == false && last_page["eof"] == true,
+                    "zero-size procfs files support exact byte continuation");
+        }
+    }
+#endif
+    write_file(invalid, "");
+    require(read_text_range(invalid)["eof"] == true, "empty UTF8 files are complete");
+    write_file(invalid, std::string(65540, 'q'));
+    require(read_text_range(invalid)["bytes_returned"] == 16384 &&
+                read_text_range(invalid, 0, 65536)["bytes_returned"] == 65536,
+            "default and maximum range budgets remain bounded");
+    require(read_file(path) == content, "text range reads never modify the file");
+}
 #ifndef _WIN32
 void small_stack_file_io(const fs::path& root) {
     struct State {
@@ -149,6 +281,7 @@ int run(int argc, char** argv) {
     });
     try {
         batch_read_checks(root);
+        text_range_checks(root);
 #ifndef _WIN32
         small_stack_file_io(root);
 #endif

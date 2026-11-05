@@ -614,8 +614,11 @@ const save=document.createElement('button');save.innerText='Store fixture state'
 </script>)HTML";
             response.body() +=
                 R"HTML(<script>const flag=document.createElement('p');flag.textContent='Fixture webdriver='+navigator.webdriver;document.body.appendChild(flag);</script>)HTML";
-            response.body() += R"HTML(<p id="image-state">Fixture image pending</p><script>
-for(let n=0;n<33;n++){const image=new Image(8,8);if(n===0){image.onload=()=>document.querySelector('#image-state').innerText='Fixture image loaded';image.onerror=()=>document.querySelector('#image-state').innerText='Fixture image omitted';}image.src='/fixture-picture?i='+n;document.body.appendChild(image);}
+            response.body() +=
+                R"HTML(<p id="image-state">Fixture image pending</p><p id="image-details"></p><script>
+const imageStates=Array(33).fill('pending');
+function imageResult(n,state){imageStates[n]=state;document.querySelector('#image-details').innerText='Fixture image states: '+imageStates.map((state,index)=>index+':'+state).join(' ');if(n===0)document.querySelector('#image-state').innerText='Fixture image '+state;}
+for(let n=0;n<33;n++){const image=new Image(8,8);image.onload=()=>imageResult(n,'loaded');image.onerror=()=>imageResult(n,'omitted');image.src='/fixture-picture?i='+n;document.body.appendChild(image);}
 </script>)HTML";
             if (request.target().starts_with("/fixture-picture")) {
                 ++picture_requests;
@@ -1713,7 +1716,16 @@ void shared_browser_tests(bool headed, bool compatibility) {
         const auto full_until = Clock::now() + Millis(10000);
         while (page.picture_requests < pictures_before + 33 ||
                json_string(second.data, "text").find("Fixture image loaded") == std::string::npos) {
-            require(Clock::now() < full_until, "full-mode fixture image requests settle");
+            if (Clock::now() >= full_until) {
+                std::cerr << "Shared full-mode image evidence: "
+                          << Json{{"requests", page.picture_requests.load()},
+                                  {"expected", pictures_before + 33},
+                                  {"network", second.data.at("network")},
+                                  {"text", json_string(second.data, "text")}}
+                                 .dump()
+                          << '\n';
+                throw Error("full-mode fixture image requests settle");
+            }
             second = shared.perform({{"action", "observe"},
                                      {"session_id", second.data.at("session_id")},
                                      {"wait_ms", 100},
@@ -1842,6 +1854,10 @@ void session_allowance_tests() {
 }
 int main(int argc, char** argv) {
     try {
+        if (argc == 2 && std::string_view(argv[1]) == "--chromium-shared") {
+            shared_browser_tests(false, false);
+            return 0;
+        }
         if (argc >= 2 && std::string_view(argv[1]) == "--chromium-dialogs") {
             require(argc <= 3, "unknown modal fixture arguments");
             modal_browser_tests(false, false, argc == 3 ? argv[2] : "");

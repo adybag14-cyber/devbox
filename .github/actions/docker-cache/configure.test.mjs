@@ -32,8 +32,8 @@ test('a transient daemon probe timeout does not consume the remaining readiness 
   }, timeout => { timeouts.push(timeout); clock += 100; return '28.0.4\n'; },
   { now: () => clock, sleep: async ms => { clock += ms; } });
   assert.equal(version, '28.0.4');
-  assert.deepEqual(timeouts, [3000, 3000, 5000]);
-  assert(clock < 10000);
+  assert.deepEqual(timeouts, [10000, 10000, 5000]);
+  assert(clock > 10000 && clock < 60000);
 });
 
 test('persistent probe failures stop at the total deadline and retain their cause', async () => {
@@ -43,14 +43,14 @@ test('persistent probe failures stop at the total deadline and retain their caus
     timeouts.push(timeout); clock += timeout; throw failure;
   }, () => { throw new Error('version must not be queried before mirror acknowledgement'); },
   { now: () => clock, sleep: async ms => { clock += ms; } }), error => error.cause === failure);
-  assert.deepEqual(timeouts, [3000, 3000, 3000, 250]);
-  assert.equal(clock, 10000);
+  assert.deepEqual(timeouts, [10000, 10000, 10000, 10000, 10000, 8750]);
+  assert.equal(clock, 60000);
 });
 
 test('version probing uses the remaining budget and late success is rejected', async () => {
   let clock = 0;
   await assert.rejects(waitForRegistryCache('https://mirror.gcr.io', () => {
-    clock = 9999; return ['https://mirror.gcr.io'];
+    clock = 59999; return ['https://mirror.gcr.io'];
   }, timeout => { assert.equal(timeout, 1); clock += 2; return 'late'; },
   { now: () => clock, sleep: async ms => { clock += ms; } }), /before its deadline/);
 });
@@ -61,5 +61,5 @@ test('an unrelated mirror does not qualify the daemon', async () => {
     () => { ++versionCalls; return '28.0.4'; },
     { now: () => clock, sleep: async ms => { clock += ms; } }), /before its deadline/);
   assert.equal(versionCalls, 0);
-  assert.equal(clock, 10000);
+  assert.equal(clock, 60000);
 });

@@ -26,6 +26,34 @@ function fixture(){
   return {api,state,bridge,call,port,popup};
 }
 async function allowed(f){await f.popup({action:'grant',allow_new_tabs:true});const result=await f.call({action:'observe',tab_id:41,screenshot:false});assert(result.ok);return result.data.observation_id;}
+
+test('suspended background page timers cannot strand a completed input',async()=>{
+ const f=fixture(),observation_id=await allowed(f);f.state.tabs.get(41).active=false;
+ const send=f.api.debugger.sendCommand;let pageWaits=0;
+ f.api.debugger.sendCommand=async(source,method,params)=>{
+  if(method==='Runtime.evaluate'&&params.expression.startsWith('new Promise')){pageWaits++;return new Promise(()=>{});}
+  return send(source,method,params);
+ };
+ const request={action:'click',tab_id:41,observation_id,request_id:'background-settle',x:10,y:20,screenshot:false};
+ const result=await f.bridge.handle({...request,_bridge_deadline_unix_ms:Date.now()+1000});
+ assert(result.ok,JSON.stringify(result));assert.equal(result.data.text,'counter 1');
+ assert.equal(f.state.clicks,1);assert.equal(pageWaits,0);assert.equal(f.state.tabs.get(41).active,false);
+ const replay=await f.call(request);assert(replay.replayed);assert.equal(f.state.clicks,1);
+});
+
+test('cancellation during post-input settling retains uncertainty and never repeats input',async()=>{
+ const f=fixture(),observation_id=await allowed(f),send=f.api.debugger.sendCommand,id='settle-cancel';
+ f.api.debugger.sendCommand=async(source,method,params)=>{
+  const value=await send(source,method,params);
+  if(method==='Input.dispatchMouseEvent'&&params.type==='mouseReleased')setTimeout(()=>f.port.onMessage.emit({control:'cancel',id}),5);
+  return value;
+ };
+ const request={action:'click',tab_id:41,observation_id,request_id:id,x:10,y:20,screenshot:false};
+ const result=await f.bridge.handle({...request,id,_bridge_deadline_unix_ms:Date.now()+1000});
+ assert.equal(result.error.code,'REQUEST_CANCELLED');assert.equal(result.input_sent,true);
+ assert.equal(result.outcome,'unknown');assert.equal(result.automatic_input_replay_allowed,false);
+ const replay=await f.call(request);assert(replay.replayed);assert.equal(f.state.clicks,1);
+});
 test('revocation stays bound to the popup tab when another tab becomes active',async()=>{
  const f=fixture();await f.popup({action:'grant'});
  f.state.tabs.set(42,{id:42,url:'https://example.test/other',active:true,windowId:1});
@@ -202,7 +230,7 @@ test('origin mismatches revoke grants in both initial reads and mutation checks'
 
 test('post-input context destruction retries only the observation',async()=>{
  const f=fixture(),observation_id=await allowed(f),original=f.api.debugger.sendCommand;let destroyed=false;
- f.api.debugger.sendCommand=async(source,method,params)=>{if(method==='Runtime.evaluate'&&params.expression.startsWith('new Promise')&&!destroyed){destroyed=true;throw new Error('Cannot find context with specified id');}return original(source,method,params);};
+ f.api.debugger.sendCommand=async(source,method,params)=>{if(method==='Runtime.evaluate'&&params.expression.includes('"action":"inspect"')&&f.state.clicks>0&&!destroyed){destroyed=true;throw new Error('Cannot find context with specified id');}return original(source,method,params);};
  const result=await f.call({action:'click',tab_id:41,observation_id,request_id:'navigate-once',x:10,y:20,screenshot:false});
- assert(result.ok&&result.data.recovered_after_navigation);assert.equal(f.state.clicks,1);
+ assert(destroyed);assert(result.ok&&result.data.recovered_after_navigation);assert.equal(f.state.clicks,1);
 });

@@ -3,6 +3,7 @@
 #include "devbox/process.hpp"
 #include "devbox/scoped_thread.hpp"
 #include <csignal>
+#include <cstdio>
 #include <cstdlib>
 #include <iostream>
 #include <thread>
@@ -80,6 +81,25 @@ int child(int argc, char** argv) {
         const std::string input((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
         std::cout << "END:" << input.size() << ':' << sha256(input);
         std::cerr << "ERR-END";
+    } else if (mode == "stream-fragments") {
+#ifdef _WIN32
+        DWORD zero_bytes = 0;
+        if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), "", 0, &zero_bytes, nullptr))
+            return 91;
+#endif
+        for (const auto size : {1U, 8191U, 16384U, 65537U}) {
+            std::string bytes(size, '\0');
+            for (std::size_t i = 0; i < bytes.size(); ++i)
+                bytes[i] = static_cast<char>(i % 251);
+            std::cout.write(bytes.data(), bytes.size());
+            std::cout.flush();
+            std::this_thread::sleep_for(Millis(2));
+            std::cerr.write(bytes.data(), bytes.size());
+            std::cerr.flush();
+        }
+        std::fclose(stderr);
+        std::this_thread::sleep_for(Millis(2));
+        std::cout << "END-FRAGMENTS" << std::flush;
     } else if (mode == "sleep") {
         std::cout << "ready" << std::flush;
         std::this_thread::sleep_for(Millis(10000));
@@ -222,6 +242,24 @@ int test_main(int argc, char** argv) {
                 spawn_process(path_text(executable_path()), {"--child", "stdin-delayed"}, options);
             require(value.stdout_text == std::to_string(size) + ':' + sha256(*options.input),
                     "closing completed stdin preserves buffered data for a delayed reader");
+        }
+        {
+            std::string expected, stdout_bytes, stderr_bytes;
+            for (const auto size : {1U, 8191U, 16384U, 65537U})
+                for (std::size_t i = 0; i < size; ++i)
+                    expected.push_back(static_cast<char>(i % 251));
+            ProcessOptions fragments;
+            fragments.timeout = Millis(5000);
+            fragments.max_capture_chars = 0;
+            fragments.on_output = [&](OutputStream stream, std::string_view bytes) {
+                require(!bytes.empty(), "zero-byte pipe writes are not output callbacks");
+                (stream == OutputStream::stdout_stream ? stdout_bytes : stderr_bytes).append(bytes);
+            };
+            const auto result =
+                spawn_process(path_text(executable_path()), {"--child", "stream-fragments"}, fragments);
+            require(result.exit_code == 0 && stdout_bytes == expected + "END-FRAGMENTS" &&
+                        stderr_bytes == expected,
+                    "delayed binary fragments preserve both streams and stdout continues after stderr EOF");
         }
         for (const bool cancel_pending : {false, true}) {
             ProcessOptions options;

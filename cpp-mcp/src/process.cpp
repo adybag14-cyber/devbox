@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -558,26 +559,18 @@ namespace {
 struct Pipe {
     NativeHandle parent, child;
 };
-Pipe output_pipe() {
-    SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
-    HANDLE read = nullptr, write = nullptr;
-    if (!CreatePipe(&read, &write, &security, 65536))
-        throw Error(windows_error());
-    Pipe pipe{NativeHandle(read), NativeHandle(write)};
-    if (!SetHandleInformation(pipe.parent.get(), HANDLE_FLAG_INHERIT, 0))
-        throw Error(windows_error());
-    return pipe;
-}
-Pipe input_pipe() {
-    const auto name = wide("\\\\.\\pipe\\devbox-cpp-stdin-" + uuid());
-    NativeHandle server(CreateNamedPipeW(
-        name.c_str(), PIPE_ACCESS_OUTBOUND | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
-        PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 65536, 65536, 0, nullptr));
+Pipe overlapped_pipe(bool input) {
+    const auto name = wide(std::string("\\\\.\\pipe\\devbox-cpp-") + (input ? "stdin-" : "output-") + uuid());
+    NativeHandle server(CreateNamedPipeW(name.c_str(),
+                                         (input ? PIPE_ACCESS_OUTBOUND : PIPE_ACCESS_INBOUND) |
+                                             FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE,
+                                         PIPE_TYPE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 65536,
+                                         65536, 0, nullptr));
     if (!server)
         throw Error(windows_error());
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
-    NativeHandle child(
-        CreateFileW(name.c_str(), GENERIC_READ, 0, &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    NativeHandle child(CreateFileW(name.c_str(), input ? GENERIC_READ : GENERIC_WRITE, 0, &security,
+                                   OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!child)
         throw Error(windows_error());
     // The client has already connected synchronously. ERROR_PIPE_CONNECTED is expected.
@@ -598,6 +591,12 @@ Pipe input_pipe() {
     }
     return {std::move(server), std::move(child)};
 }
+Pipe output_pipe() {
+    return overlapped_pipe(false);
+}
+Pipe input_pipe() {
+    return overlapped_pipe(true);
+}
 Pipe empty_input() {
     SECURITY_ATTRIBUTES security{sizeof(security), nullptr, TRUE};
     NativeHandle child(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &security,
@@ -606,43 +605,82 @@ Pipe empty_input() {
         throw Error(windows_error());
     return {NativeHandle(), std::move(child)};
 }
-bool read_available(NativeHandle& pipe, CaptureAccumulator& capture, OutputStream stream,
-                    const ProcessOptions& options) {
-    std::vector<char> buffer(16384);
-    bool progressed = false;
-    // Bound each pass so continuously chatty children cannot starve cancellation or stderr.
-    for (int pass = 0; pipe && pass < 16; ++pass) {
-        DWORD available = 0;
-        if (!PeekNamedPipe(pipe.get(), nullptr, 0, nullptr, &available, nullptr)) {
-            if (GetLastError() == ERROR_BROKEN_PIPE) {
-                pipe.reset();
-                return progressed;
-            }
+class OutputReader {
+    NativeHandle& pipe_;
+    NativeHandle event_;
+    OVERLAPPED read_{};
+    static constexpr std::size_t buffer_size = 16384;
+    std::unique_ptr<char[]> buffer_ = std::make_unique_for_overwrite<char[]>(buffer_size);
+    bool pending_ = false;
+
+  public:
+    explicit OutputReader(NativeHandle& pipe)
+        : pipe_(pipe), event_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {
+        if (!event_)
             throw Error(windows_error());
-        }
-        if (!available)
-            return progressed;
-        DWORD count = 0;
-        if (!ReadFile(pipe.get(), buffer.data(),
-                      std::min<DWORD>(available, static_cast<DWORD>(buffer.size())), &count, nullptr)) {
-            if (GetLastError() == ERROR_BROKEN_PIPE) {
-                pipe.reset();
-                return progressed;
-            }
-            throw Error(windows_error());
-        }
-        progressed = progressed || count != 0;
-        const std::string_view bytes(buffer.data(), count);
-        capture.push(bytes);
-        if (options.on_output)
-            options.on_output(stream, bytes);
     }
-    return progressed;
-}
+    OutputReader(const OutputReader&) = delete;
+    OutputReader& operator=(const OutputReader&) = delete;
+    ~OutputReader() {
+        // The kernel must release the OVERLAPPED and its buffer before either
+        // can leave scope, including callback failures and forced termination.
+        if (pending_ && pipe_) {
+            CancelIoEx(pipe_.get(), &read_);
+            DWORD count = 0;
+            GetOverlappedResult(pipe_.get(), &read_, &count, TRUE);
+        }
+    }
+    HANDLE wait_handle() const {
+        return pending_ ? event_.get() : nullptr;
+    }
+    bool drain(CaptureAccumulator& capture, OutputStream stream, const ProcessOptions& options) {
+        bool progressed = false;
+        // Preserve the per-stream pass bound and cancellation/stderr fairness.
+        for (int pass = 0; pipe_ && pass < 16; ++pass) {
+            if (!pending_) {
+                read_ = {};
+                read_.hEvent = event_.get();
+                ResetEvent(event_.get());
+                if (!ReadFile(pipe_.get(), buffer_.get(), static_cast<DWORD>(buffer_size), nullptr, &read_)) {
+                    const auto error = GetLastError();
+                    if (error == ERROR_BROKEN_PIPE) {
+                        pipe_.reset();
+                        return progressed;
+                    }
+                    if (error != ERROR_IO_PENDING)
+                        throw Error(windows_error(error));
+                }
+                pending_ = true;
+            }
+            DWORD count = 0;
+            if (!GetOverlappedResult(pipe_.get(), &read_, &count, FALSE)) {
+                const auto error = GetLastError();
+                if (error == ERROR_IO_INCOMPLETE)
+                    return progressed;
+                pending_ = false;
+                if (error == ERROR_BROKEN_PIPE) {
+                    pipe_.reset();
+                    return progressed;
+                }
+                throw Error(windows_error(error));
+            }
+            pending_ = false;
+            if (!count)
+                continue;
+            progressed = true;
+            const std::string_view bytes(buffer_.get(), count);
+            capture.push(bytes);
+            if (options.on_output)
+                options.on_output(stream, bytes);
+        }
+        return progressed;
+    }
+};
 RawProcessResult run_native(std::string_view file, const std::vector<std::string>& args,
                             const ProcessOptions& options, const Cancel& cancel, CaptureAccumulator& out,
                             CaptureAccumulator& err, bool& process_started) {
     auto stdout_pipe = output_pipe(), stderr_pipe = output_pipe();
+    OutputReader stdout_reader(stdout_pipe.parent), stderr_reader(stderr_pipe.parent);
     auto stdin_pipe = options.input && !options.input->empty() ? input_pipe() : empty_input();
     const auto resolved = find_program(file, options.env ? &*options.env : nullptr);
     std::string program = resolved ? path_text(*resolved) : std::string(file);
@@ -835,10 +873,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
     result.pid = information.dwProcessId;
     std::optional<Clock::time_point> exited, forced;
     while (true) {
-        const auto stdout_progress =
-            read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options);
-        const auto stderr_progress =
-            read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options);
+        const auto stdout_progress = stdout_reader.drain(out, OutputStream::stdout_stream, options);
+        const auto stderr_progress = stderr_reader.drain(err, OutputStream::stderr_stream, options);
         // Advance immediately while the pipe accepts input. The bounded pass
         // preserves stdout/stderr and cancellation service between write bursts.
         for (int pass = 0; stdin_pipe.parent && pass < 16; ++pass) {
@@ -891,8 +927,8 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
             // The child can close its final pipe handles between the earlier
             // reads and this exit observation. Recheck now instead of adding
             // a timer tick to an already completed process.
-            read_available(stdout_pipe.parent, out, OutputStream::stdout_stream, options);
-            read_available(stderr_pipe.parent, err, OutputStream::stderr_stream, options);
+            stdout_reader.drain(out, OutputStream::stdout_stream, options);
+            stderr_reader.drain(err, OutputStream::stderr_stream, options);
         }
         if (!exited && !forced &&
             ((cancel && cancel->cancelled()) || (options.timeout && now - started >= *options.timeout))) {
@@ -905,18 +941,27 @@ RawProcessResult run_native(std::string_view file, const std::vector<std::string
             break;
         if (forced && !exited && now - *forced >= options.termination_grace)
             break;
-        if (!exited) {
-            // Poll only when no pipe made progress. A full bounded output pass
-            // can leave the child blocked behind more readable bytes; sleeping
-            // here throttles large responses by the Windows timer quantum.
-            if (stdout_progress || stderr_progress || (stdin_pipe.parent && !write_pending))
-                continue;
-            // A process handle signals as soon as the owned child exits. Avoid
-            // delaying a completed child until the next coarse Windows timer
-            // tick; retain the bounded interval for pipe and cancellation work.
-            // A pending stdin completion also makes work ready immediately.
-            const HANDLE waits[]{process.get(), writer.hEvent};
-            const auto waited = WaitForMultipleObjects(write_pending ? 2 : 1, waits, FALSE, 5);
+        if (stdout_progress || stderr_progress || (!exited && stdin_pipe.parent && !write_pending))
+            continue;
+        // Wake on newly available output as well as process/input completion.
+        // The timeout still bounds cancellation and deadline observation.
+        std::array<HANDLE, 4> waits{};
+        DWORD wait_count = 0;
+        const auto add_wait = [&](HANDLE handle) {
+            if (!handle)
+                return;
+            if (wait_count >= waits.size())
+                throw Error("Child I/O wait capacity exceeded");
+            waits.at(wait_count++) = handle;
+        };
+        if (!exited)
+            add_wait(process.get());
+        if (write_pending)
+            add_wait(writer.hEvent);
+        add_wait(stdout_reader.wait_handle());
+        add_wait(stderr_reader.wait_handle());
+        if (wait_count) {
+            const auto waited = WaitForMultipleObjects(wait_count, waits.data(), FALSE, 5);
             if (waited == WAIT_FAILED)
                 throw Error(windows_error());
         } else if (cancel && !cancel->cancelled())

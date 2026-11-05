@@ -5,7 +5,8 @@ opacity for every text node and readable control separately. A page with many
 text leaves under the same deep wrapper hierarchy repeated the same ancestor
 work thousands of times.
 
-Version 0.9.37 memoizes opacity ancestry during one observation. A positive cache
+The ancestry change developed in 0.9.37 and included in the 0.9.42 integration
+memoizes opacity ancestry during one observation. A positive cache
 entry records the number of elements to the composed root; a negative entry
 records a proved zero-opacity or over-depth path. Keeping the depth preserves
 the existing 256-element bound. An incomplete walk that hits the bound does not

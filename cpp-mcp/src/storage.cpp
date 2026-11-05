@@ -1,4 +1,5 @@
 #include "devbox/storage.hpp"
+#include "text_range.hpp"
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -708,6 +709,48 @@ Json read_large(const fs::path& path, std::uint64_t offset, std::size_t max_byte
                 {"eof", actual + bytes.size() >= size},
                 {"content_sha256", sha256(bytes)}};
     result["content_base64"] = base64_encode(bytes);
+    return result;
+}
+Json read_text_range(const fs::path& path, std::uint64_t offset, std::size_t max_bytes) {
+    const auto budget = detail::text_range_budget(offset, max_bytes);
+    const auto requested = path_text(path);
+    if (!path.is_absolute() || requested.size() > 16384 || requested.find('\0') != std::string::npos)
+        throw Error("READ_TEXT_RANGE_PATH: use an absolute host path without NUL bytes");
+    DiskFile file(path);
+    if (file.missing)
+        throw Error("ENOENT: no such file or directory");
+    const auto size = file.size();
+    // procfs and sysfs can report zero or a page-sized st_size unrelated to
+    // their readable content. Use bounded reads plus one byte of lookahead,
+    // preserving the requested offset even beyond EOF on every platform.
+    file.seek(offset);
+    std::string raw(budget + 1, '\0');
+    std::size_t read = 0;
+    while (read < raw.size()) {
+        const auto count = file.read(std::span(raw).subspan(read));
+        if (!count)
+            break;
+        read += count;
+    }
+    if (file.size() < size)
+        throw Error("READ_TEXT_RANGE_CHANGED: file shortened during the read; retry a fresh range");
+    raw.resize(read);
+    const auto boundary = detail::text_range_boundary(raw, offset, max_bytes);
+    raw.resize(boundary.bytes);
+    const auto next = offset + raw.size();
+    Json result{{"path", requested},
+                {"encoding", "utf-8"},
+                {"sampled_file_bytes", size},
+                {"offset_bytes_requested", offset},
+                {"offset_bytes", offset},
+                {"bytes_returned", raw.size()},
+                {"next_offset_bytes", next},
+                {"read_bytes_sha256", sha256(raw)},
+                {"utf8_boundary_adjusted", boundary.adjusted},
+                {"eof", boundary.eof},
+                {"truncated", !boundary.eof},
+                {"atomic_snapshot", false}};
+    result["text"] = std::move(raw);
     return result;
 }
 Json write_large(const fs::path& path, std::string_view content_base64, bool append, bool create_dirs,

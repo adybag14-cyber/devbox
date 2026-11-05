@@ -112,7 +112,14 @@ export class ChromeBridge {
     const tree=await this.command(context,id,'Page.getFrameTree');
     if(publicUrl(tree.frameTree.frame.url).origin!==this.state.grants.get(id)?.origin)throw new Error('ORIGIN_CHANGED');
   }
-  async settle(context,id){await this.command(context,id,'Runtime.evaluate',{contextId:await this.world(context,id),expression:'new Promise(resolve=>{let done=false;const finish=()=>{if(!done){done=true;resolve(true)}};requestAnimationFrame(()=>requestAnimationFrame(finish));setTimeout(finish,250)})',returnByValue:true,awaitPromise:true});}
+  async settle(context){
+    // Page animation frames and timers may stop in a background/frozen tab.
+    // Keep this brief yield in the extension, under the existing request and
+    // grant guards. The following observation, not the delay, verifies effects.
+    let timer;
+    try{await context.run(()=>new Promise(resolve=>{timer=setTimeout(resolve,32);}));}
+    finally{clearTimeout(timer);}
+  }
   async capture(context,id){
     const image=await this.command(context,id,'Page.captureScreenshot',{format:'jpeg',quality:65,fromSurface:true,captureBeyondViewport:false});
     if(typeof image.data!=='string'||image.data.length>4*1024*1024)throw new Error('IMAGE_LIMIT');

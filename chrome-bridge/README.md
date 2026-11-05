@@ -26,6 +26,23 @@ popup checkbox. Buttons revoke either the current tab or all tabs. Untrusted pag
 content cannot grant access. Neither duration changes the 30-second observation
 freshness requirement, bounded action deadlines, origin checks or replay protection.
 
+After input, version 0.2.13 yields briefly in the extension before taking a new
+observation. It does not await animation frames or timers inside the page, which
+Chrome can suspend for background or frozen tabs. This avoids stranding an
+already-dispatched input behind the page scheduler. The yield does not prove an
+action succeeded: scroll still compares fresh positions, and all other effects
+must be checked in the returned observation. It neither focuses nor unfreezes
+the tab. Cancellation and revocation remain active throughout; unknown outcomes
+must never be replayed automatically.
+
+Controller regression tests cover suspended page timers, post-input cancellation,
+receipt replay and context destruction. A separate real-Chrome test freezes only
+an owned headless fixture, proves its page timer is suspended, and verifies that
+settling completes without unfreezing it. It uses no signed-in profile. This
+demonstrates the scheduler failure mode; it does not establish the exact cause of
+every historical background-tab timeout. See [Chrome's background scheduling
+documentation](https://developer.chrome.com/blog/background_tabs).
+
 The native host communicates through a local Windows named pipe with an explicit
 current-user/SYSTEM ACL and remote clients rejected. It validates bounded JSON
 frames, uses operation deadlines, and does not log page contents or tokens.
