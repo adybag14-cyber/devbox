@@ -36,6 +36,21 @@ compatibility, so their mere presence does not establish readiness. Opacity chec
 for readiness inspect at most 256 composed ancestors. Document challenge, error,
 navigation and loading classifications retain priority.
 
+Version 0.9.43 adds an optional `interaction_point` to each control descriptor.
+The bounding rectangle remains unchanged. A clipped or partly covered button
+can have an inaccessible rectangle centre while an edge remains clickable.
+The browser probes the centre first, then up to eight inset edge/corner points,
+using real hit testing (including open shadow roots), with at most 192 control
+probes per observation. Opaque ancestry is still required. Ordinary unobscured
+controls need just the original single hit test.
+
+Prefer the reported point when present, using that observation's ID. A null
+point means the bounded probe found no coordinate; it does not prove that the
+control is invisible or wholly covered. `interaction_points_truncated` reports
+probe-budget exhaustion. Points are recomputed on every observation and never
+authorize input or establish success; verify the effect after an action.
+Modal selection, control-count limits and input guards are unchanged.
+
 Text and native control enumeration cover the selected root's light DOM.
 Descendant shadow-root text and native controls can be omitted; `text_note` and
 `controls_note` expose these limits and point to the screenshot for the composed
