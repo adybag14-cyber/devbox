@@ -51,35 +51,38 @@ probe-budget exhaustion. Points are recomputed on every observation and never
 authorize input or establish success; verify the effect after an action.
 Modal selection, control-count limits and input guards are unchanged.
 
-The compiled change at `720817f3582e02439ba15830cc257d7e67e13ecc` passes fourteen
-real-Chromium modal flows plus core/browser-protocol suites on Windows and Linux.
-The two new flows click a partially clipped button through its reported point,
-verify the changed label in a separate observation, verify pane scrolling and
-new coordinates, and check that covered controls exhaust the probe budget
-without fabricated points. Each flow closes its own profile.
+The compiled correction at `17dbd663b83881a2c9709855222a1a2b3441e87d` passes
+fifteen real-Chromium modal flows plus core/browser-protocol suites on Windows
+and Linux. Fixtures verify clipped controls, independent post-input observations,
+pane scrolling, transparent controls and probe-budget exhaustion. The nested-card
+regression fails at `a1ad997060d76e56566cfb99c99db262199871b5`: a card's original
+point activates its child button. Corrected points avoid a different recognised
+interactive descendant; the card and its nested button each retain a point that
+independently activates their own action. Each flow closes only its own profile.
 
-[All 448 timing samples](benchmarks/browser-hit-points-20261105.json) compare
-the embedded observation with 0.9.42 on the same fixtures in eight A/B/B/A blocks.
-Existing observation fields remain equal after excluding only the new point,
-probe-truncation metadata and changed control guidance. These are local headless
-Chrome script timings; they exclude transport, image capture, network and model
-time. Background system activity is not isolated. The Linux run followed Git's
-automatic housekeeping notice. Small differences are not general speedup claims.
+[All 512 final timing samples](benchmarks/browser-hit-points-final-20261105.json)
+compare the exact embedded observation with 0.9.42 in eight A/B/B/A blocks per
+fixture. Existing fields remain equal after excluding only the new point,
+probe-truncation metadata and changed control guidance. The earlier 448-sample
+record remains retained separately. These are local headless Chrome script
+timings, excluding transport, image capture, network and model time. Background
+system activity is not isolated; small differences are not general speedups.
 
 | Fixture | Windows baseline → candidate | Linux baseline → candidate |
 | --- | ---: | ---: |
-| Small form | 0.1258 → 0.1289 ms | 0.1453 → 0.1320 ms |
-| 2,500-item catalogue | 26.2750 → 26.7125 ms | 20.1750 → 19.8625 ms |
-| Nested text | 7.2875 → 6.9375 ms | 4.1000 → 4.2875 ms |
-| Native modal | 0.0805 → 0.0719 ms | 0.0391 → 0.0398 ms |
-| Transparent ancestor | 0.0281 → 0.0273 ms | 0.0172 → 0.0156 ms |
-| Sixteen clipped controls | 0.3375 → 0.5211 ms | 0.2047 → 0.2953 ms |
-| Eighty covered controls | 1.1766 → 1.3430 ms | 0.7055 → 0.8102 ms |
+| Small form | 0.1117 → 0.1094 ms | 0.1313 → 0.1281 ms |
+| 2,500-item catalogue | 25.1500 → 24.9000 ms | 26.2750 → 27.3625 ms |
+| Nested text | 6.1500 → 5.7125 ms | 5.2875 → 5.2375 ms |
+| Native modal | 0.0750 → 0.0719 ms | 0.0555 → 0.0578 ms |
+| Transparent ancestor | 0.0250 → 0.0281 ms | 0.0172 → 0.0187 ms |
+| Sixteen clipped controls | 0.3203 → 0.4680 ms | 0.2703 → 0.3867 ms |
+| Eighty covered controls | 1.0711 → 1.3211 ms | 0.8914 → 1.0195 ms |
+| Eight cards with nested buttons | 0.2117 → 0.2164 ms | 0.1844 → 0.1711 ms |
 
-The extra probing costs about 0.09–0.18 ms in these clipped/covered fixture
-medians. This is a bounded usability improvement, not a claim that every page
-becomes faster. Hosted qualification and release-boundary acceptance remain
-separate gates; this change is outside the fixed 0.9.42 candidate.
+Extra hit tests have a bounded cost and improve targeting; this is not a claim
+that every page becomes faster. Hosted qualification and release-boundary
+acceptance remain separate gates. This draft follow-up is outside the fixed
+0.9.42 candidate.
 
 Text and native control enumeration cover the selected root's light DOM.
 Descendant shadow-root text and native controls can be omitted; `text_note` and
