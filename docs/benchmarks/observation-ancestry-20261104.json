@@ -1,0 +1,1841 @@
+{
+  "schema": 1,
+  "measured_date": "2026-11-04",
+  "runtime_source": "48a6facba8fd9105cc90c79f654d389d99678ab3",
+  "benchmark_script_sha256": "2038f570530c372e4cc0d9c2dff90aaab987413f36e48203b45aa7b5de34db3c",
+  "timing_instrumentation": "none; style-call counting is separate",
+  "platforms": {
+    "windows": {
+      "baseline_revision": "fdaa79d47f24ce1cb44d28372d6e6971b81bc7e2",
+      "baseline_script_sha256": "e9e8c6738541a617e272cc74b728880ecd623b7ea5bb3af8a6e72da8354e0f2e",
+      "candidate_script_sha256": "578488c95d4e249064fcce0e5f8402a9d6a054daa5ad52c6748a6ae0c9edefb1",
+      "scope": "Embedded native observation only; excludes CDP, image capture, network and model time",
+      "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36",
+      "records": [
+        {
+          "fixture": "small-form",
+          "baseline_style_calls": 104,
+          "candidate_style_calls": 42,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 16,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 13,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 10.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 10.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 10.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 9.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 8.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 10.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 10.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 8.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 10.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 11.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 11.900000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 8.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 8.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 11.100000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 11.099999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 9.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 8.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 10.100000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 10.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 8.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 10.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 12,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 11,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 9.899999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 11.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 12.400000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 12.5,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 10.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 9.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 12.600000001490116,
+              "iterations": 64
+            }
+          ],
+          "observation_sha256": "85c4e9ad56b987ec762859176b84e8837bd768a24c30604c8ec7b2eee24b49b4",
+          "baseline_median_ms": 0.17343749999417923,
+          "candidate_median_ms": 0.15312500001164153
+        },
+        {
+          "fixture": "catalogue",
+          "baseline_style_calls": 3078,
+          "candidate_style_calls": 2673,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 118.39999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 114.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 107.89999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 117.19999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 103.10000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 138,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 102.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 133,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 105.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 124.89999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 129.60000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 128.5,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 136.5,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 134.60000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 135.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 130.09999999776483,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 141.5,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 124.5,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 126.19999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 129.30000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 141.89999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 103.20000000298023,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 113.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 119.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 121.30000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 128.09999999776483,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 117.20000000298023,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 120.19999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 113.89999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 140.30000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 98.39999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 123.80000000074506,
+              "iterations": 4
+            }
+          ],
+          "observation_sha256": "54789b77c6be4a7ac308deb9397de04c84f9aae65bba86d7d33753989e037733",
+          "baseline_median_ms": 30.637500000186265,
+          "candidate_median_ms": 31.174999999813735
+        },
+        {
+          "fixture": "deep-visible-text",
+          "baseline_style_calls": 68000,
+          "candidate_style_calls": 2066,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 152,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 23.199999999254942,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 21.800000000745058,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 139.89999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 143.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 32.900000002235174,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 25.199999999254942,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 134.19999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 148,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 35,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 24,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 137.19999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 160.40000000223517,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 28,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 26,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 132.30000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 151.39999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 27.600000001490116,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 24.399999998509884,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 170.10000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 155.19999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 25,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 29.900000002235174,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 143.5,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 145.39999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 28.899999998509884,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 24.200000002980232,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 151.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 133,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 24.899999998509884,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 25.5,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 154.5,
+              "iterations": 4
+            }
+          ],
+          "observation_sha256": "f7b364af24d211fe98d4fe9cb572924be8e784527fcb7e66ed3a35c928c498ff",
+          "baseline_median_ms": 36.674999999813735,
+          "candidate_median_ms": 6.337499999906868
+        },
+        {
+          "fixture": "native-modal",
+          "baseline_style_calls": 29,
+          "candidate_style_calls": 16,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 5.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 5,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 4.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4.400000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 9.5,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 7.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 4.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4.900000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4.5,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 4.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 5.899999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 5.400000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 5.299999997019768,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 5.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 5.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 4,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 4,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 4,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 7.899999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 7.400000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 15.200000002980232,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 3.7999999970197678,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 3.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 3.400000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 3.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 3.5,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 3.5,
+              "iterations": 64
+            }
+          ],
+          "observation_sha256": "9740adea4a4fa78431183805ff4a7e8f6f126706d386383fa40edf225d15f5bb",
+          "baseline_median_ms": 0.07187499999417923,
+          "candidate_median_ms": 0.06796874999417923
+        },
+        {
+          "fixture": "transparent-ancestor",
+          "baseline_style_calls": 13,
+          "candidate_style_calls": 11,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.3999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.6000000014901161,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.3999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.6000000014901161,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.2999999970197678,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.4000000022351742,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.3999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.1000000014901161,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.5,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.5,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.8999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.3999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.9000000022351742,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 10.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.8999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.8999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.9000000022351742,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.6000000014901161,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.5,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 9.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.400000002235174,
+              "iterations": 64
+            }
+          ],
+          "observation_sha256": "3ce11bc4eed4b90d6a32b726b531d1b736361a4948b4068cb0523d860699e839",
+          "baseline_median_ms": 0.025000000023283064,
+          "candidate_median_ms": 0.025781250005820766
+        }
+      ],
+      "changes": [
+        {
+          "state": "opacity:1",
+          "viewport_text": "Changing text\nChange",
+          "controls": 1
+        },
+        {
+          "state": "opacity:0",
+          "viewport_text": "",
+          "controls": 1
+        },
+        {
+          "state": "opacity:1;display:none",
+          "viewport_text": "",
+          "controls": 0
+        },
+        {
+          "state": "opacity:1;display:block",
+          "viewport_text": "Changing text\nChange",
+          "controls": 1
+        }
+      ],
+      "depth_checks": [
+        {
+          "ancestors": 252,
+          "viewport_text": "Deep leaf\nShorter leaf"
+        },
+        {
+          "ancestors": 253,
+          "viewport_text": "Deep leaf\nShorter leaf"
+        },
+        {
+          "ancestors": 254,
+          "viewport_text": "Shorter leaf"
+        },
+        {
+          "ancestors": 255,
+          "viewport_text": "Shorter leaf"
+        },
+        {
+          "ancestors": 256,
+          "viewport_text": "Shorter leaf"
+        },
+        {
+          "ancestors": 257,
+          "viewport_text": "Shorter leaf"
+        },
+        {
+          "ancestors": 258,
+          "viewport_text": "Shorter leaf"
+        }
+      ],
+      "cache_bound": {
+        "baseline_style_calls": 13500,
+        "candidate_style_calls": 10502,
+        "viewport_chars": 2999
+      }
+    },
+    "linux": {
+      "baseline_revision": "fdaa79d47f24ce1cb44d28372d6e6971b81bc7e2",
+      "baseline_script_sha256": "e9e8c6738541a617e272cc74b728880ecd623b7ea5bb3af8a6e72da8354e0f2e",
+      "candidate_script_sha256": "578488c95d4e249064fcce0e5f8402a9d6a054daa5ad52c6748a6ae0c9edefb1",
+      "scope": "Embedded native observation only; excludes CDP, image capture, network and model time",
+      "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/157.0.0.0 Safari/537.36",
+      "records": [
+        {
+          "fixture": "small-form",
+          "baseline_style_calls": 104,
+          "candidate_style_calls": 42,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 18.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 10.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 13.5,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 12.900000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 12.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 10.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 12,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 12.5,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 12.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 10,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 14.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 17,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 16.899999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 16.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 12,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 10.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 9.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 8.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 7.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 9.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 9.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 8,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 7.700000002980232,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 9.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 9.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 7.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 7.5,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 8.900000002235174,
+              "iterations": 64
+            }
+          ],
+          "observation_sha256": "2fb491d33dd26ed7f0a0e396f876edd340951f7e3ffa8fad117c81311a16f753",
+          "baseline_median_ms": 0.19140625,
+          "candidate_median_ms": 0.16093750001164153
+        },
+        {
+          "fixture": "catalogue",
+          "baseline_style_calls": 3078,
+          "candidate_style_calls": 2673,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 89.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 85,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 75.79999999701977,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 72.10000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 71.19999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 68.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 66.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 82.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 69.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 67.90000000223517,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 69.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 67.09999999776483,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 64.20000000298023,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 75.09999999776483,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 65.30000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 66.30000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 70,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 65.30000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 63.399999998509884,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 75.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 65.60000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 68.39999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 67.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 66,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 70,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 74.60000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 69.09999999776483,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 72.60000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 70.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 65.39999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 68.5,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 76.89999999850988,
+              "iterations": 4
+            }
+          ],
+          "observation_sha256": "52110337b7ece6a28bc89bffe8644c60359d5de8c5a9c5d48efb9113031e4c58",
+          "baseline_median_ms": 17.600000000093132,
+          "candidate_median_ms": 17.112499999813735
+        },
+        {
+          "fixture": "deep-visible-text",
+          "baseline_style_calls": 68000,
+          "candidate_style_calls": 2066,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 81.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.900000002235174,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.299999997019768,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 83.10000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 88.60000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 16.399999998509884,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.899999998509884,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 82.40000000223517,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 82.80000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 17,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 15.199999999254942,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 82.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 92.89999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 16.900000002235174,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.300000000745058,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 83.29999999701977,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 82.60000000149012,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 15.600000001490116,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.699999999254942,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 82.39999999850988,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 96.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 20.900000002235174,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 14.800000000745058,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 82.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 83.19999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 15.699999999254942,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 16,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 81.69999999925494,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 92.30000000074506,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 15.800000000745058,
+              "iterations": 4
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 15.600000001490116,
+              "iterations": 4
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 81.89999999850988,
+              "iterations": 4
+            }
+          ],
+          "observation_sha256": "f396db5061daad8592ec324f58597a4e570118e86826e320d18b096c152ef335",
+          "baseline_median_ms": 20.6875,
+          "candidate_median_ms": 3.900000000372529
+        },
+        {
+          "fixture": "native-modal",
+          "baseline_style_calls": 29,
+          "candidate_style_calls": 16,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 3,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 3.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 4.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 4,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 3.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.5,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 3.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.2000000029802322,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.5,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.5,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.2999999970197678,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.600000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 3.100000001490116,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.699999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.400000002235174,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 3.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.2000000029802322,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.5,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.2000000029802322,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.5,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.599999997764826,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.300000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 2.399999998509884,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 2.5,
+              "iterations": 64
+            }
+          ],
+          "observation_sha256": "b4048306a0f617639e584c66d22dc8f53dea025167ab94091d8a900609ae7146",
+          "baseline_median_ms": 0.0398437499825377,
+          "candidate_median_ms": 0.037499999976716936
+        },
+        {
+          "fixture": "transparent-ancestor",
+          "baseline_style_calls": 13,
+          "candidate_style_calls": 11,
+          "trials": [
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.1000000014901161,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.1000000014901161,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.0999999977648258,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.1000000014901161,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.0999999977648258,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 0.9000000022351742,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.800000000745058,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 0.8999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 0.8000000007450581,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.0999999977648258,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 0.9000000022351742,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 0.8999999985098839,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 0.9000000022351742,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.0999999977648258,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1,
+              "iterations": 64
+            },
+            {
+              "name": "candidate",
+              "elapsed_ms": 1.199999999254942,
+              "iterations": 64
+            },
+            {
+              "name": "baseline",
+              "elapsed_ms": 1.6000000014901161,
+              "iterations": 64
+            }
+          ],
+          "observation_sha256": "de20ffc8885791e3eade859c1062c48235247d0fbb6a5d4b57c68ab7472b2d60",
+          "baseline_median_ms": 0.015625,
+          "candidate_median_ms": 0.015625
+        }
+      ],
+      "changes": [
+        {
+          "state": "opacity:1",
+          "viewport_text": "Changing text\nChange",
+          "controls": 1
+        },
+        {
+          "state": "opacity:0",
+          "viewport_text": "",
+          "controls": 1
+        },
+        {
+          "state": "opacity:1;display:none",
+          "viewport_text": "",
+          "controls": 0
+        },
+        {
+          "state": "opacity:1;display:block",
+          "viewport_text": "Changing text\nChange",
+          "controls": 1
+        }
+      ],
+      "depth_checks": [
+        {
+          "ancestors": 252,
+          "viewport_text": "Deep leaf\nShorter leaf"
+        },
+        {
+          "ancestors": 253,
+          "viewport_text": "Deep leaf\nShorter leaf"
+        },
+        {
+          "ancestors": 254,
+          "viewport_text": "Shorter leaf"
+        },
+        {
+          "ancestors": 255,
+          "viewport_text": "Shorter leaf"
+        },
+        {
+          "ancestors": 256,
+          "viewport_text": "Shorter leaf"
+        },
+        {
+          "ancestors": 257,
+          "viewport_text": "Shorter leaf"
+        },
+        {
+          "ancestors": 258,
+          "viewport_text": "Shorter leaf"
+        }
+      ],
+      "cache_bound": {
+        "baseline_style_calls": 13500,
+        "candidate_style_calls": 10502,
+        "viewport_chars": 2999
+      }
+    }
+  }
+}
