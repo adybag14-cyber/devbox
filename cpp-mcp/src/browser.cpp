@@ -184,15 +184,20 @@ constexpr auto observe_script = R"JS((() => {
   const labelled=ids.map(id=>clip(scope.getElementById?.(id)?.textContent,240)).join(' ').trim();
   return {node:e,info:{name:clean(labelled||e.getAttribute('aria-label')),role:e.getAttribute('role')||'dialog',modal:native||e.getAttribute('aria-modal')==='true',native_modal:native,focused:contains(e,focused),x:Math.round(r.x),y:Math.round(r.y),width:Math.round(r.width),height:Math.round(r.height)}};
  };
- const pointHits=(e,x,y)=>{
-  let hit=document.elementFromPoint(x,y);for(let depth=0;hit?.shadowRoot&&depth<32;++depth){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}return contains(e,hit);
+ const controlSelector='a[href],button,input,select,textarea,[role="button"],[role="checkbox"],[role="tab"],[contenteditable="true"]';
+ const pointHits=(e,x,y,controlOnly=false)=>{
+  let hit=document.elementFromPoint(x,y);for(let depth=0;hit?.shadowRoot&&depth<32;++depth){const child=hit.shadowRoot.elementFromPoint(x,y);if(!child||child===hit)break;hit=child;}
+  if(!controlOnly)return contains(e,hit);
+  // A point inside a card can belong to its nested button or link. Preserve
+  // the exact intended control, while allowing non-interactive descendants.
+  for(let depth=0;hit&&depth<256;++depth){if(hit===e)return true;if(hit.matches?.(controlSelector))return false;hit=hit.parentNode??hit.host;}return false;
  };
  const hitDialog=e=>{const r=e.getBoundingClientRect();return pointHits(e,Math.max(0,Math.min(innerWidth-1,r.x+r.width/2)),Math.max(0,Math.min(innerHeight-1,r.y+r.height/2)));};
  let pointProbes=0,interaction_points_truncated=false;
  const controlPoint=(e,r)=>{const left=Math.max(0,r.left),right=Math.min(innerWidth,r.right),top=Math.max(0,r.top),bottom=Math.min(innerHeight,r.bottom);
   if(left>=right||top>=bottom)return null;
   const dx=Math.min(1,(right-left)/4),dy=Math.min(1,(bottom-top)/4),xs=[(left+right)/2,left+dx,right-dx],ys=[(top+bottom)/2,top+dy,bottom-dy];
-  for(const y of ys)for(const x of xs){if(pointProbes>=192){interaction_points_truncated=true;return null;}++pointProbes;if(pointHits(e,x,y))return {x,y};}
+  for(const y of ys)for(const x of xs){if(pointProbes>=192){interaction_points_truncated=true;return null;}++pointProbes;if(pointHits(e,x,y,true))return {x,y};}
   return null;
  };
  discover:for(let index=0;index<roots.length;++index){const scan=document.createTreeWalker(roots[index],NodeFilter.SHOW_ELEMENT);let e;
@@ -206,7 +211,7 @@ constexpr auto observe_script = R"JS((() => {
  }
  const selectedNode=hitModal??focusedModal??lastModal;
  const selected=dialogNodes.find(d=>d.node===selectedNode)??(selectedNode?describeDialog(selectedNode):undefined),modal=selected?.node,scope=modal??document;
- const all=scope.querySelectorAll('a[href],button,input,select,textarea,[role="button"],[role="checkbox"],[role="tab"],[contenteditable="true"]');
+ const all=scope.querySelectorAll(controlSelector);
  const controls=[];let examined=0,hidden=0,readableControls=0;
  for(const e of all){if(++examined>4000)break;if(!visible(e)){hidden++;continue;}
   const r=e.getBoundingClientRect();if(r.bottom<0||r.right<0||r.top>innerHeight||r.left>innerWidth)continue;

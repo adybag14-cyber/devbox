@@ -1335,6 +1335,22 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
             require(json_string(observed.data, "viewport_text").find("Outer option selected") !=
                         std::string::npos,
                     "a proposed card point must not activate its nested button");
+            const auto nested = observed.data.at("controls").at(1);
+            require(json_string(nested, "name") == "Nested action" &&
+                        nested.at("interaction_point").is_object(),
+                    "nested button retains its own point");
+            browser.perform({{"action", "click"},
+                             {"session_id", id},
+                             {"observation_id", observed.data.at("observation_id")},
+                             {"x", nested.at("interaction_point").at("x")},
+                             {"y", nested.at("interaction_point").at("y")},
+                             {"screenshot", false}},
+                            "modal-owner");
+            const auto after_nested = browser.perform(
+                {{"action", "observe"}, {"session_id", id}, {"screenshot", false}}, "modal-owner");
+            require(json_string(after_nested.data, "viewport_text").find("Nested option selected") !=
+                        std::string::npos,
+                    "the nested button point independently targets its own action");
             browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
             require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
                     "nested-control fixture closes its owned profile");
