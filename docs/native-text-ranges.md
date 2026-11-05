@@ -72,3 +72,10 @@ Registry regeneration verifies both frozen legacy profiles, scopes, aliases and
 generated documentation. Required hosted qualification and actual ChatGPT
 connector refresh/acceptance remain separate release gates. This development
 branch is not part of the fixed 0.9.36 production candidate.
+
+Review corrections at `5a9c12864067c9d3d8812cf88e034eace978b036` passed storage,
+engine, filesystem-worker and core tests plus the official MCP SDK smoke test on
+Windows and Linux. Added cases exercise real zero-length procfs metadata,
+overreported sysfs lengths, exact-budget EOF, unchanged past-EOF offsets, invalid
+partial UTF-8 and valid scalar edge values. The 0.9.40 integration includes these
+corrections; its combined-source qualification is required separately.

@@ -1,8 +1,9 @@
 # Native worker output transport
 
 The C++23 filesystem worker retains its process isolation, byte and shape limits,
-deadlines, cancellation acknowledgement and atomic-write preconditions. Version
-0.9.38 reduces result-copying and changes Windows output readiness handling.
+deadlines, cancellation acknowledgement and atomic-write preconditions. The
+0.9.40 integration candidate includes the output-completion change developed
+in 0.9.38, reducing result-copying and changing Windows output readiness handling.
 
 The worker moves its result into the response envelope, and the parent moves the
 parsed value out of that envelope. Large base64 strings and nested checkpoints
@@ -82,7 +83,9 @@ The new stream fixture verifies exact binary fragments around the pipe-buffer
 boundaries, delayed output and stdout continuing after stderr closes. Existing
 cases cover simultaneous large stdin/stdout/stderr, pending-write cancellation,
 callback exceptions, child/grandchild termination, exact multi-megabyte reads,
-write conflicts and idempotent replay. The public contract remains version 13.
+write conflicts and idempotent replay. This transport change does not change the
+public contract. The separate text-range action in the 0.9.40 integration advances
+the combined contract to version 14 with 59 tools.
 Required hosted qualification and deployment acceptance remain separate gates.
 
 The first hosted Windows analysis run subsequently found excessive automatic
