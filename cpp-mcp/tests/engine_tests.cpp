@@ -429,6 +429,17 @@ int main(int argc, char** argv) {
                                  {"offset_bytes", 6},
                                  {"max_bytes", 4}}))["content_base64"] == base64_encode("beta"),
                 "large byte range MCP roundtrip");
+        const auto range =
+            data(invoke(base, "devbox_read_text_range",
+                        Json{{"path", path_text(file)}, {"offset_bytes", 6}, {"max_bytes", 4}}));
+        require(range["text"] == "beta" && range["next_offset_bytes"] == 10 &&
+                    range["read_bytes_sha256"] == sha256("beta") && range["truncated"] == true &&
+                    !range.contains("content_base64"),
+                "native text ranges deliver readable exact bytes through MCP without base64");
+        require(json_bool(
+                    invoke(base, "devbox_read_text_range", Json{{"path", path_text(file)}, {"max_bytes", 3}}),
+                    "isError"),
+                "text range schema rejects budgets too small for a Unicode scalar");
         const auto binary = root / "binary.bin";
         require(data(invoke(base, "devbox_write_large_file",
                             Json{{"path", path_text(binary)}, {"content_base64", "AAH/"}}))["verified"] ==

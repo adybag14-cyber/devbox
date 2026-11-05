@@ -710,6 +710,81 @@ Json read_large(const fs::path& path, std::uint64_t offset, std::size_t max_byte
     result["content_base64"] = base64_encode(bytes);
     return result;
 }
+Json read_text_range(const fs::path& path, std::uint64_t offset, std::size_t max_bytes) {
+    if (max_bytes < 4 || max_bytes > 65536 || offset > 9007199254740991ULL)
+        throw Error("READ_TEXT_RANGE_LIMIT: use 4-65536 bytes and a safe nonnegative byte offset");
+    const auto requested = path_text(path);
+    if (!path.is_absolute() || requested.size() > 16384 || requested.find('\0') != std::string::npos)
+        throw Error("READ_TEXT_RANGE_PATH: use an absolute host path without NUL bytes");
+    DiskFile file(path);
+    if (file.missing)
+        throw Error("ENOENT: no such file or directory");
+    const auto size = file.size();
+    // procfs and sysfs can report zero or a page-sized st_size unrelated to
+    // their readable content. Use bounded reads plus one byte of lookahead,
+    // preserving the requested offset even beyond EOF on every platform.
+    file.seek(offset);
+    std::string raw(max_bytes + 1, '\0');
+    std::size_t read = 0;
+    while (read < raw.size()) {
+        const auto count = file.read(std::span(raw).subspan(read));
+        if (!count)
+            break;
+        read += count;
+    }
+    if (file.size() < size)
+        throw Error("READ_TEXT_RANGE_CHANGED: file shortened during the read; retry a fresh range");
+    const bool more = read > max_bytes;
+    const auto count = std::min(read, max_bytes);
+    raw.resize(count);
+    if (offset && !raw.empty() && (static_cast<unsigned char>(raw.front()) & 0xc0) == 0x80)
+        throw Error("READ_TEXT_RANGE_OFFSET: start at a UTF-8 character boundary; use next_offset_bytes");
+    // A byte budget may cut the last scalar. Leave its complete encoding for
+    // the next request; malformed bytes are still rejected, never replaced.
+    if (!raw.empty() && more) {
+        auto start = raw.size() - 1;
+        while (start && (static_cast<unsigned char>(raw[start]) & 0xc0) == 0x80)
+            --start;
+        const auto lead = static_cast<unsigned char>(raw[start]);
+        const std::size_t width = lead >= 0xc2 && lead <= 0xdf   ? 2
+                                  : lead >= 0xe0 && lead <= 0xef ? 3
+                                  : lead >= 0xf0 && lead <= 0xf4 ? 4
+                                                                 : 0;
+        if (width && raw.size() - start < width) {
+            // A partial scalar can already be invalid: E0/ED/F0/F4 have
+            // tighter second-byte bounds than an ordinary continuation.
+            for (auto i = start + 1; i < raw.size(); ++i) {
+                const auto byte = static_cast<unsigned char>(raw[i]);
+                if ((byte & 0xc0) != 0x80 ||
+                    (i == start + 1 && ((lead == 0xe0 && byte < 0xa0) || (lead == 0xed && byte > 0x9f) ||
+                                        (lead == 0xf0 && byte < 0x90) || (lead == 0xf4 && byte > 0x8f))))
+                    throw Error("READ_TEXT_RANGE_UTF8: malformed partial UTF-8 scalar");
+            }
+            raw.resize(start);
+        }
+    }
+    if (sanitize_utf8(raw) != raw)
+        throw Error(
+            "READ_TEXT_RANGE_UTF8: input is not complete UTF-8; use devbox_read_large_file for exact bytes");
+    if (count && raw.empty())
+        throw Error("READ_TEXT_RANGE_UTF8: no complete UTF-8 character fits this range");
+    const auto next = offset + raw.size();
+    const bool eof = !more && raw.size() == count;
+    Json result{{"path", requested},
+                {"encoding", "utf-8"},
+                {"sampled_file_bytes", size},
+                {"offset_bytes_requested", offset},
+                {"offset_bytes", offset},
+                {"bytes_returned", raw.size()},
+                {"next_offset_bytes", next},
+                {"read_bytes_sha256", sha256(raw)},
+                {"utf8_boundary_adjusted", raw.size() < count},
+                {"eof", eof},
+                {"truncated", !eof},
+                {"atomic_snapshot", false}};
+    result["text"] = std::move(raw);
+    return result;
+}
 Json write_large(const fs::path& path, std::string_view content_base64, bool append, bool create_dirs,
                  const std::optional<std::string>& expected_sha256) {
     std::string normalized;

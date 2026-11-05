@@ -72,6 +72,22 @@ try {
   assert.equal(limitedBatch.structuredContent.data.files[0].text,'alph');
   assert.equal(limitedBatch.structuredContent.data.files[1].status,'skipped');
   assert.deepEqual(await Promise.all(textPaths.map(file=>readFile(file,'utf8'))),textValues,'batch reads never modify inputs');
+  const rangePath=path.join(workspace,'utf8-range.txt'),rangeText='\ufeffA£🦀界\r\n\u0000tail';
+  await writeFile(rangePath,rangeText);let offset=0,assembled='';
+  for(;;){
+    const result=await invoke('devbox_read_text_range',{path:rangePath,offset_bytes:offset,max_bytes:5});
+    const value=result.data;assert(!('content_base64' in value));assert(value.text.length>0);
+    assert.equal(value.bytes_returned,Buffer.byteLength(value.text));assert(value.bytes_returned<=5);
+    assert.equal(value.read_bytes_sha256,hash(value.text));assert.equal(value.next_offset_bytes,offset+value.bytes_returned);
+    assembled+=value.text;offset=value.next_offset_bytes;
+    if(value.eof)break;assert.equal(result.truncated,true);
+  }
+  assert.equal(assembled,rangeText,'native UTF-8 ranges preserve exact Unicode and NUL through the SDK');
+  const fullRange=await client.callTool({name:'devbox_read_text_range',arguments:{path:rangePath,max_bytes:64}});
+  assert.equal(fullRange.isError,false);assert.equal(fullRange.structuredContent.data.text,rangeText);
+  assert.equal(JSON.stringify(fullRange).split('A£🦀界').length-1,1,'the payload occurs only in structured data; text content carries metadata');
+  const misaligned=await client.callTool({name:'devbox_read_text_range',arguments:{path:rangePath,offset_bytes:5,max_bytes:4}});
+  assert.equal(misaligned.isError,true);assert(JSON.stringify(misaligned).includes('READ_TEXT_RANGE_OFFSET'));
   const upload={upload_id:'sdk_upload'};
   const begin={...upload,action:'begin',path:'uploaded.bin',total_bytes:uploadBytes.length,sha256:hash(uploadBytes),expected_file_sha256:'missing'};
   if(capabilities.data.artifact_uploads.supported){

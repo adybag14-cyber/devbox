@@ -52,6 +52,7 @@ std::string read_text(const fs::path& path, std::size_t max_bytes);
 Json read_text_batch(std::span<const std::string> paths, std::size_t max_bytes_per_file = 8192,
                      std::size_t max_total_bytes = 65536, const Cancel& cancel = {});
 Json read_large(const fs::path& path, std::uint64_t offset, std::size_t max_bytes);
+Json read_text_range(const fs::path& path, std::uint64_t offset = 0, std::size_t max_bytes = 16384);
 Json write_large(const fs::path& path, std::string_view content_base64, bool append, bool create_dirs,
                  const std::optional<std::string>& expected_sha256 = {});
 struct ListOptions {

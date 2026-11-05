@@ -253,8 +253,9 @@ ToolContract::ToolContract(const Config& config) {
                 set("path", "default", path_text(config.devbox_workspace_path));
             set("max_output_chars", "default", config.command_output_limit_chars);
             set("max_output_chars", "maximum", config.command_output_limit_chars);
-            set("max_bytes", "maximum",
-                std::min<std::uint64_t>(config.max_mcp_transfer_chars, max_safe_integer));
+            if (name != "devbox_read_text_range")
+                set("max_bytes", "maximum",
+                    std::min<std::uint64_t>(config.max_mcp_transfer_chars, max_safe_integer));
             set("content_max_bytes", "maximum",
                 std::min<std::uint64_t>(config.max_mcp_transfer_chars, max_safe_integer));
             const double wait = std::min(85.0, config.max_wait_seconds);
