@@ -88,6 +88,12 @@ try {
   assert.equal(JSON.stringify(fullRange).split('A£🦀界').length-1,1,'the payload occurs only in structured data; text content carries metadata');
   const misaligned=await client.callTool({name:'devbox_read_text_range',arguments:{path:rangePath,offset_bytes:5,max_bytes:4}});
   assert.equal(misaligned.isError,true);assert(JSON.stringify(misaligned).includes('READ_TEXT_RANGE_OFFSET'));
+  const invalidRangePath=path.join(workspace,'invalid-utf8-range.bin');
+  await writeFile(invalidRangePath,Buffer.from([0x61,0x62,0x63,0xe0,0x80,0x80]));
+  const invalidLookahead=await client.callTool({name:'devbox_read_text_range',arguments:{path:invalidRangePath,max_bytes:4}});
+  assert.equal(invalidLookahead.isError,true);assert(JSON.stringify(invalidLookahead).includes('READ_TEXT_RANGE_UTF8'));
+  const pastRange=await invoke('devbox_read_text_range',{path:rangePath,offset_bytes:10000,max_bytes:4});
+  assert.equal(pastRange.data.text,'');assert.equal(pastRange.data.eof,true);assert.equal(pastRange.data.next_offset_bytes,10000);
   const upload={upload_id:'sdk_upload'};
   const begin={...upload,action:'begin',path:'uploaded.bin',total_bytes:uploadBytes.length,sha256:hash(uploadBytes),expected_file_sha256:'missing'};
   if(capabilities.data.artifact_uploads.supported){
