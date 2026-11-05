@@ -1,4 +1,5 @@
 #include "devbox/storage.hpp"
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <limits>
@@ -126,9 +127,10 @@ void text_range_checks(const fs::path& root) {
             "a cut scalar is deferred to the next exact byte offset");
     rejects([&] { read_text_range(path, 5, 4); }, "READ_TEXT_RANGE_OFFSET");
     const auto past = read_text_range(path, 10000, 4);
-    require(past["text"] == "" && past["eof"] == true && past["offset_bytes"] == content.size() &&
-                past["offset_bytes_requested"] == 10000 && past["read_bytes_sha256"] == sha256(""),
-            "past-EOF reads report their clamped offset and empty digest");
+    require(past["text"] == "" && past["eof"] == true && past["offset_bytes"] == 10000 &&
+                past["next_offset_bytes"] == 10000 && past["offset_bytes_requested"] == 10000 &&
+                past["read_bytes_sha256"] == sha256(""),
+            "past-EOF reads preserve their requested offset and empty digest");
     rejects([&] { read_text_range(path, 0, 3); }, "READ_TEXT_RANGE_LIMIT");
     rejects([&] { read_text_range(path, 0, 65537); }, "READ_TEXT_RANGE_LIMIT");
     rejects([&] { read_text_range(path, std::numeric_limits<std::uint64_t>::max(), 4); },
@@ -141,6 +143,49 @@ void text_range_checks(const fs::path& root) {
         write_file(invalid, bytes);
         rejects([&] { read_text_range(invalid); }, "READ_TEXT_RANGE_UTF8");
     }
+    for (const auto& partial : {std::string("\xf0\x80"), std::string("\xe0\x80"), std::string("\xed\xa0"),
+                                std::string("\xf4\x90")}) {
+        write_file(invalid, "ab" + partial + "\x80\x80");
+        rejects([&] { read_text_range(invalid, 0, 4); }, "READ_TEXT_RANGE_UTF8");
+    }
+    for (const auto& scalar : {std::string("\xe0\xa0\x80"), std::string("\xed\x9f\xbf"),
+                               std::string("\xf0\x90\x80\x80"), std::string("\xf4\x8f\xbf\xbf")}) {
+        write_file(invalid, "ab" + scalar + "tail");
+        const auto cut = read_text_range(invalid, 0, 4);
+        const auto rest = read_text_range(invalid, json_uint(cut, "next_offset_bytes"));
+        require(cut["text"] == "ab" && cut["utf8_boundary_adjusted"] == true && cut["eof"] == false &&
+                    rest["text"] == scalar + "tail" && rest["eof"] == true,
+                "valid UTF8 edge scalars are deferred and recovered exactly");
+    }
+    write_file(invalid, "abcd");
+    require(read_text_range(invalid, 0, 4)["eof"] == true,
+            "lookahead distinguishes exact-budget EOF from remaining bytes");
+    write_file(invalid, "abcde");
+    require(read_text_range(invalid, 0, 4)["eof"] == false,
+            "lookahead detects the first byte beyond the response budget");
+#ifdef __linux__
+    for (const auto& virtual_path :
+         {fs::path("/proc/sys/kernel/ostype"), fs::path("/sys/kernel/uevent_seqnum")}) {
+        require(fs::exists(virtual_path), "Linux virtual-file regression fixture is available");
+        std::ifstream input(virtual_path, std::ios::binary);
+        const std::string expected((std::istreambuf_iterator<char>(input)), {});
+        require(!expected.empty(), "virtual fixture has readable bytes");
+        const auto range = read_text_range(virtual_path, 0, 65536);
+        // uevent_seqnum can change; do not compare values from separate reads.
+        require(!json_string(range, "text").empty() && range["eof"] == true &&
+                    range["bytes_returned"] == json_string(range, "text").size() &&
+                    range["sampled_file_bytes"] != range["bytes_returned"],
+                "virtual-file EOF follows actual reads rather than reported size");
+        if (virtual_path == fs::path("/proc/sys/kernel/ostype")) {
+            const auto first_page = read_text_range(virtual_path, 0, 4);
+            const auto last_page =
+                read_text_range(virtual_path, json_uint(first_page, "next_offset_bytes"), 4);
+            require(json_string(first_page, "text") + json_string(last_page, "text") == expected &&
+                        first_page["eof"] == false && last_page["eof"] == true,
+                    "zero-size procfs files support exact byte continuation");
+        }
+    }
+#endif
     write_file(invalid, "");
     require(read_text_range(invalid)["eof"] == true, "empty UTF8 files are complete");
     write_file(invalid, std::string(65540, 'q'));

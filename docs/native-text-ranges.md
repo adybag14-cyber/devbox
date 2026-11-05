@@ -25,7 +25,8 @@ do not add the requested budget yourself, because a final partial scalar may
 have been deferred to the next range.
 
 The structured result contains readable `text`, its `encoding`, the sampled
-file length, requested and actual offsets, `bytes_returned`, `next_offset_bytes`,
+file length as an advisory metadata sample, requested and actual offsets,
+`bytes_returned`, `next_offset_bytes`,
 `read_bytes_sha256`, `eof`, `truncated` and `utf8_boundary_adjusted`. Text appears
 only once, in structured data; the MCP text-content block carries metadata,
 following the existing large-file response convention. The hash covers only
@@ -33,9 +34,14 @@ the returned raw bytes, not the whole file.
 
 Offsets inside a UTF-8 scalar and malformed/incomplete UTF-8 are errors. Use
 `devbox_read_large_file` for binary data or other encodings. Empty files and reads
-beyond EOF return empty text and an explicit EOF/clamped offset; missing files
-remain errors. Separate ranges are independent observations, not an atomic
-snapshot. If a file is shortened during a read, retry with a fresh observation.
+beyond EOF return empty text, explicit EOF and the unchanged requested offset;
+missing files remain errors. EOF is determined from bounded reads with one byte
+of lookahead, not the sampled file length. This also supports Linux procfs/sysfs
+files whose metadata length is zero or larger than their readable content.
+Separate ranges are independent observations, not an atomic snapshot. A detected
+metadata size decrease during the read returns `READ_TEXT_RANGE_CHANGED`; retry
+with a fresh observation. Same-size rewrites or changes between calls are not
+detected by this check.
 
 No preliminary `devbox_file_state` call is needed merely to find the file length
 or continue reading. Obtain a full-file version separately when it is needed for
