@@ -54,15 +54,18 @@ const fixture=String.raw`
       document.body.innerHTML=Array.from({length:16},(_,i)=>'<div style="height:40px;overflow:auto"><div style="padding-top:30px"><button style="display:flex;align-items:flex-start;width:220px;height:60px">Clipped option '+i+'</button></div></div>').join('');
     }else if(kind==='covered-controls'){
       document.body.innerHTML='<div style="position:relative;width:500px;height:300px"><div style="display:grid;grid-template-columns:repeat(10,50px)">'+Array.from({length:80},(_,i)=>'<button style="width:50px;height:30px">Option '+i+'</button>').join('')+'</div><div style="position:absolute;inset:0;background:white">Covering overlay</div></div>';
+    }else if(kind==='nested-controls'){
+      document.body.innerHTML=Array.from({length:8},(_,i)=>'<div role="button" aria-label="Outer '+i+'" style="position:relative;width:500px;height:80px;background:lightgray"><span>Outer '+i+'</span><button aria-label="Nested '+i+'" style="position:absolute;left:200px;top:25px;width:100px;height:30px">Nested '+i+'</button></div>').join('');
     }
     document.body.getBoundingClientRect();
   }
-  for(const kind of ['small-form','catalogue','deep-visible-text','native-modal','transparent-ancestor','clipped-controls','covered-controls']){
+  for(const kind of ['small-form','catalogue','deep-visible-text','native-modal','transparent-ancestor','clipped-controls','covered-controls','nested-controls']){
     page(kind);
     const a=inspect('baseline'),b=inspect('candidate');
     if(comparable(a.result)!==comparable(b.result))throw new Error('Observation differs: '+kind);
     if(kind==='clipped-controls'&&(b.result.controls.length!==16||b.result.controls.some(c=>!c.interaction_point)))throw new Error('Clipped controls lack proved points');
     if(kind==='covered-controls'&&(!b.result.interaction_points_truncated||b.result.controls.some(c=>c.interaction_point)))throw new Error('Covered-control probe budget differs');
+    if(kind==='nested-controls'&&b.result.controls.some(c=>{const p=c.interaction_point,target=p&&document.elementFromPoint(p.x,p.y)?.closest('button,[role="button"]');return !target||target.getAttribute('aria-label')!==c.name;}))throw new Error('Point activates a different nested control');
     // Timed calls use the original browser API, without the counting wrapper.
     // Warm both functions on the same layout, then interleave ABBA blocks.
     for(let i=0;i<4;i++){evaluate.baseline();evaluate.candidate();}
