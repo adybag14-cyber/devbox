@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {existsSync,mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {existsSync,mkdtempSync,rmSync} from 'node:fs';
 import {dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {ChromeBridge} from '../extension/controller.mjs';
 import {ActionContext} from '../extension/state.mjs';
+import {waitForDevToolsEndpoint} from './devtools-endpoint.mjs';
 
 // A real Chrome scheduler regression, using only a private headless profile.
 // Node hosts the extension controller; the page's timers run in real Chrome.
@@ -26,10 +27,7 @@ test('real frozen Chrome cannot hold the extension settling deadline', {timeout:
   });
  }
  try{
-  const end=Date.now()+12000,portFile=join(profile,'DevToolsActivePort');
-  while(!existsSync(portFile)){assert.equal(child.exitCode,null,stderr);assert(Date.now()<end,'Chrome startup deadline: '+stderr);await delay(25);}
-  const [port,path]=readFileSync(portFile,'utf8').trim().split(/\r?\n/);
-  assert(/^\d+$/.test(port)&&path.startsWith('/devtools/browser/'));
+  const {port,path}=await waitForDevToolsEndpoint(join(profile,'DevToolsActivePort'),{alive:()=>{assert.equal(child.exitCode,null,stderr);return true;}});
   socket=new WebSocket(`ws://127.0.0.1:${port}${path}`);
   await new Promise((resolve,reject)=>{socket.addEventListener('open',resolve,{once:true});socket.addEventListener('error',reject,{once:true});});
   socket.addEventListener('message',event=>{const value=JSON.parse(event.data),wait=pending.get(value.id);if(!wait)return;pending.delete(value.id);clearTimeout(wait.timer);if(value.error)wait.reject(new Error(value.error.message));else wait.resolve(value.result);});
@@ -56,7 +54,9 @@ test('real frozen Chrome cannot hold the extension settling deadline', {timeout:
   console.log(JSON.stringify({frozenPageTimer:false,settlingCompleted:true,elapsedMs:performance.now()-started,profile:'isolated headless'}));
  }finally{
   if(socket?.readyState===WebSocket.OPEN)try{await command('Browser.close');}catch{}
-  await Promise.race([exited,delay(3000)]);
+  let exitTimer;
+  try{await Promise.race([exited,new Promise(resolve=>{exitTimer=setTimeout(resolve,3000);})]);}
+  finally{clearTimeout(exitTimer);}
   if(child.exitCode===null){child.kill();await exited;}
   socket?.close();for(const wait of pending.values()){clearTimeout(wait.timer);wait.reject(new Error('Owned test browser closed'));}pending.clear();
   assert.equal(dirname(profile),parent);rmSync(profile,{recursive:true,force:true,maxRetries:5,retryDelay:100});
