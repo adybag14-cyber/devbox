@@ -22,17 +22,22 @@ Clock::time_point browser_connection_deadline(bool shared, Clock::time_point ope
     // peer bound; neither case can extend the caller's overall allowance.
     return std::min(operation_deadline, now + Millis(shared ? 3000 : 10000));
 }
-bool browser_click_controls_match(const Json& previous, const Json& current, double x, double y) {
+bool browser_controls_match(const Json& previous, const Json& current,
+                            std::optional<std::pair<double, double>> click) {
     if (previous == current)
         return true;
     if (!previous.is_array() || !current.is_array() || previous.size() != current.size())
         return false;
-    const auto contains_point = [x, y](const Json& control) {
+    const auto contains_point = [click](const Json& control) {
+        if (!click)
+            return false;
+        const auto [x, y] = *click;
         const auto left = json_number(control, "x"), top = json_number(control, "y");
         const auto width = json_number(control, "width"), height = json_number(control, "height");
         return width > 0 && height > 0 && x >= left && x < left + width && y >= top && y < top + height;
     };
     bool unchanged_target = false;
+    bool ignored_href = false;
     for (std::size_t i = 0; i < previous.size(); ++i) {
         const auto& before = previous[i];
         const auto& after = current[i];
@@ -40,21 +45,30 @@ bool browser_click_controls_match(const Json& previous, const Json& current, dou
             unchanged_target = unchanged_target || contains_point(before);
             continue;
         }
+        if (!before.is_object() || !after.is_object() || contains_point(before) || contains_point(after))
+            return false;
+        auto before_link = before, after_link = after;
+        before_link.erase("interaction_point");
+        after_link.erase("interaction_point");
+        if (before_link == after_link)
+            continue;
         // Retail sites can asynchronously populate unrelated help-link URLs.
         // Ignore only that field, only outside the click, and only when every
         // target/position/state remains otherwise identical.
-        if (json_string(before, "tag") != "a" || json_string(after, "tag") != "a" ||
-            !before.contains("href") || !after.contains("href") || contains_point(before) ||
-            contains_point(after))
+        if (!click || json_string(before, "tag") != "a" || json_string(after, "tag") != "a" ||
+            !before.contains("href") || !after.contains("href"))
             return false;
-        auto before_link = before, after_link = after;
         before_link.erase("href");
         after_link.erase("href");
         if (before_link != after_link)
             return false;
+        ignored_href = true;
     }
     // Blank/non-control clicks retain the complete original snapshot guard.
-    return unchanged_target;
+    return !ignored_href || unchanged_target;
+}
+bool browser_click_controls_match(const Json& previous, const Json& current, double x, double y) {
+    return browser_controls_match(previous, current, std::pair{x, y});
 }
 bool browser_process_arguments_match(std::string_view command, std::string_view executable,
                                      std::string_view profile, bool require_compatibility) {
@@ -218,8 +232,8 @@ constexpr auto observe_script = R"JS((() => {
   if(controls.length>=80)break;
   const type=(e.type||'').toLowerCase(); const privateValue=type==='password'||type==='file'||e.autocomplete==='one-time-code';
   const activationLink=e.tagName==='A'?null:e.closest('a[href]');
-  const interaction_point=paintedFallback(e)?controlPoint(e,r):null;
-  if(interaction_point)++readableControls;
+  const painted=paintedFallback(e),interaction_point=painted?controlPoint(e,r):null;
+  if(interaction_point||(modal&&!readableControls&&painted&&interaction_points_truncated&&hitDialog(e)))++readableControls;
   controls.push({tag:e.tagName.toLowerCase(),role:e.getAttribute('role')||'',type,
    interaction_point,
    name:clean(e.getAttribute('aria-label')||e.labels?.[0]?.innerText||e.innerText||e.getAttribute('placeholder')||e.getAttribute('title')),
@@ -1437,7 +1451,7 @@ BrowserObservation BrowserService::perform(const Json& args, std::string_view pr
     if (action == "click")
         stale = stale || !browser_click_controls_match(session.last["controls"], current["controls"], x, y);
     else if (action != "scroll")
-        stale = stale || current["controls"] != session.last["controls"];
+        stale = stale || !browser_controls_match(session.last["controls"], current["controls"]);
     if (stale)
         throw Error("BROWSER_STALE_OBSERVATION: page or targets changed; observe again");
     session.observation.clear();

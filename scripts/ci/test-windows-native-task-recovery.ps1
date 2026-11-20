@@ -44,6 +44,16 @@ try {
     if (-not $mismatchRejected -or (Export-ScheduledTask -TaskName $taskName) -ne $original) {
         throw 'Wrong executable digest was not refused without mutation.'
     }
+    $wrongCase = $parameters.Clone()
+    $wrongCase.ExpectedArguments = $arguments.ToUpperInvariant()
+    $rejected = $false
+    try { & $installer @wrongCase -Apply } catch { $rejected = $_.Exception.Message -match 'action identity' }
+    if (-not $rejected) { throw 'Argument spelling mismatch was accepted.' }
+    Disable-ScheduledTask -TaskName $taskName | Out-Null
+    $rejected = $false
+    try { & $installer @parameters -Apply } catch { $rejected = $_.Exception.Message -match 'enabled IgnoreNew' }
+    if (-not $rejected) { throw 'Disabled fixture task was accepted.' }
+    Enable-ScheduledTask -TaskName $taskName | Out-Null
     & $installer @parameters -Apply | Set-Content -LiteralPath (Join-Path $fixture 'installed.json')
     $installed = Export-ScheduledTask -TaskName $taskName
     & $installer @parameters -Apply | Set-Content -LiteralPath (Join-Path $fixture 'reapplied.json')

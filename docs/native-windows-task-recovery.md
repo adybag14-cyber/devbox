@@ -22,11 +22,14 @@ new production task, binary rebuild or change to the native configuration is nee
 ```powershell
 $root = 'C:\Users\adyba\docker-chatgpt-devbox'
 $config = Get-Content -Raw -LiteralPath "$root\run\native\config.json" | ConvertFrom-Json
+# Use the argument spelling and quoting from the independently verified deployment.
+# This example uses the native generator's spelling for this space-free root.
+$expectedArguments = 'manage run --root C:\Users\adyba\docker-chatgpt-devbox'
 ./scripts/Enable-DevboxNativeTaskRecovery.ps1 `
     -TaskName DevboxNative-Production `
     -ExpectedExecutable $config.current.file `
     -ExpectedSha256 $config.current.sha256 `
-    -ExpectedArguments ('manage run --root "' + $root + '"') `
+    -ExpectedArguments $expectedArguments `
     -EvidenceDirectory C:\Users\adyba\devbox-task-recovery-evidence `
     -Apply -EnableTaskHistory
 ```
