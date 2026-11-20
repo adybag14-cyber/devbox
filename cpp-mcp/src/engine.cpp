@@ -381,6 +381,16 @@ asio::awaitable<Json> Engine::call_tool(std::string name, Json arguments, Cancel
         auto& pool = name.find("write") != name.npos ? atomic_ : files_;
         auto pending = pool.run([this, name, args, cancel] { return files(name, args, cancel); }, cancel);
         co_return co_await std::move(pending);
+    } catch (const QueueTimeout& e) {
+        auto execution = e.details;
+        execution.erase("label");
+        execution["admitted"] = false;
+        execution["slot"] = nullptr;
+        co_return with_outcome(result_error(e.what(), Json{{"code", "EXECUTION_QUEUE_TIMEOUT"},
+                                                           {"execution", std::move(execution)}}),
+                               ToolOutcome::QueueTimeout);
+    } catch (const QueueCancelled& e) {
+        co_return with_outcome(result_error(e.what()), ToolOutcome::Cancelled);
     } catch (const ParameterError& e) {
         co_return with_outcome(
             Json{{"content", Json::array({Json{{"type", "text"}, {"text", e.what()}}})}, {"isError", true}},

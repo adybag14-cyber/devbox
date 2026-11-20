@@ -385,6 +385,7 @@ int main(int argc, char** argv) {
                     "draining permits compact observation while refusing new execution");
             (void)operator_admission(*config, "resume");
         }
+        config->exec_queue_timeout_ms = 1000;
         auto engine = std::make_shared<Engine>(config);
         HttpServer server(config, engine);
         const auto base = "http://127.0.0.1:" + std::to_string(server.start());
@@ -489,6 +490,22 @@ int main(int argc, char** argv) {
         require(json_bool(invoke(base, "devbox_read_file", Json{{"path", path_text(root / "absent")}}),
                           "isError"),
                 "missing text file error envelope");
+        {
+            ExecutionScheduler scheduler(SchedulerConfig::from(*config));
+            std::vector<ExecutionLease> blockers;
+            for (std::size_t i = 0; i < config->exec_max_concurrent; ++i)
+                blockers.push_back(scheduler.acquire({}));
+            const auto busy =
+                invoke(base, "devbox_run_program", Json{{"program", program}, {"args", {"--probe", "0"}}});
+            const auto& details = busy.at("structuredContent").at("data");
+            const auto& execution = details.at("execution");
+            require(json_bool(busy, "isError") && details.at("code") == "EXECUTION_QUEUE_TIMEOUT" &&
+                        execution.at("admitted") == false && execution.at("slot").is_null() &&
+                        execution.at("pool") == "execution" && !execution.contains("label") &&
+                        json_uint(execution, "queue_wait_ms") >= config->exec_queue_timeout_ms &&
+                        !busy.contains("_devboxTelemetryOutcome"),
+                    "queue saturation is distinguishable from a started process timing out");
+        }
         auto direct =
             invoke(base, "devbox_run_program", Json{{"program", program}, {"args", {"--probe", "0"}}});
         require(direct["structuredContent"]["stdout"] == "probe-out" &&

@@ -1,0 +1,324 @@
+{
+  "sources": {
+    "baseline": "6dfb0a24e83b986f135158fd41fb58374efdf4e7",
+    "candidate": "e3790de5278edd12ade42f103676f80a475b57f1"
+  },
+  "binary_sha256": {
+    "baseline": "decb82bd26ae5e0de6e10962fead40bd8accf08b5ad4d93aaff6cfdc1a5afa52",
+    "candidate": "4d99cc36680a22dc00b8aa773f3512768e46988456837221c2720efb3ed24aff"
+  },
+  "compiler": "MSVC 19.52.37029.0",
+  "order": [
+    "baseline",
+    "candidate",
+    "candidate",
+    "baseline"
+  ],
+  "benchmark": "cpp-mcp/benchmarks/text_slice.cpp",
+  "cases": [
+    {
+      "kind": "ascii_prefix",
+      "input_bytes": 131072,
+      "output_sha256": "e53f83799d3e71ee8b5a3ef258a7814946c0490c1f1f890a988454f49d472d9c",
+      "iterations": 128,
+      "baseline": {
+        "ms": [
+          0.0116,
+          0.0125,
+          0.0124,
+          0.0125,
+          0.0123,
+          0.0117,
+          0.0117,
+          0.0117,
+          0.0118,
+          0.0117
+        ],
+        "allocated_bytes": 26624,
+        "median_ms": 0.01175
+      },
+      "candidate": {
+        "ms": [
+          0.0127,
+          0.0129,
+          0.0128,
+          0.0128,
+          0.0127,
+          0.0127,
+          0.0126,
+          0.0126,
+          0.0125,
+          0.0125
+        ],
+        "allocated_bytes": 26624,
+        "median_ms": 0.0127
+      }
+    },
+    {
+      "kind": "ascii_tail",
+      "input_bytes": 131072,
+      "output_sha256": "e53f83799d3e71ee8b5a3ef258a7814946c0490c1f1f890a988454f49d472d9c",
+      "iterations": 128,
+      "baseline": {
+        "ms": [
+          3.507,
+          3.5288,
+          3.4956,
+          3.5441,
+          3.6739,
+          3.6122,
+          3.5511,
+          4.3599,
+          3.4199,
+          3.3747
+        ],
+        "allocated_bytes": 26624,
+        "median_ms": 3.53645
+      },
+      "candidate": {
+        "ms": [
+          3.6434,
+          3.6803,
+          3.6365,
+          3.6917,
+          3.5761,
+          3.7863,
+          3.8745,
+          3.8958,
+          3.8602,
+          3.9306
+        ],
+        "allocated_bytes": 26624,
+        "median_ms": 3.739
+      }
+    },
+    {
+      "kind": "unicode_after_prefix",
+      "input_bytes": 131078,
+      "output_sha256": "e53f83799d3e71ee8b5a3ef258a7814946c0490c1f1f890a988454f49d472d9c",
+      "iterations": 128,
+      "baseline": {
+        "ms": [
+          0.0114,
+          0.0115,
+          0.0116,
+          0.0115,
+          0.0114,
+          0.0116,
+          0.0118,
+          0.0117,
+          0.0116,
+          0.0116
+        ],
+        "allocated_bytes": 26624,
+        "median_ms": 0.0116
+      },
+      "candidate": {
+        "ms": [
+          0.0128,
+          0.0129,
+          0.0128,
+          0.0128,
+          0.0128,
+          0.0124,
+          0.0126,
+          0.0125,
+          0.0125,
+          0.0125
+        ],
+        "allocated_bytes": 26624,
+        "median_ms": 0.0127
+      }
+    },
+    {
+      "kind": "unicode_prefix",
+      "input_bytes": 131074,
+      "output_sha256": "c9c33c3b771a1f975b5a955245827bdd81778d34de0f52d91535f58cf6e0b739",
+      "iterations": 128,
+      "baseline": {
+        "ms": [
+          27.0674,
+          26.7915,
+          26.3199,
+          26.7686,
+          25.9188,
+          25.6476,
+          25.7816,
+          25.7576,
+          25.8928,
+          25.9704
+        ],
+        "allocated_bytes": 129261568,
+        "median_ms": 25.9446
+      },
+      "candidate": {
+        "ms": [
+          0.1151,
+          0.0759,
+          0.0757,
+          0.0758,
+          0.0759,
+          0.0726,
+          0.0728,
+          0.0727,
+          0.0727,
+          0.0724
+        ],
+        "allocated_bytes": 83328,
+        "median_ms": 0.07425000000000001
+      }
+    },
+    {
+      "kind": "ascii_prefix",
+      "input_bytes": 4194304,
+      "output_sha256": "e53f83799d3e71ee8b5a3ef258a7814946c0490c1f1f890a988454f49d472d9c",
+      "iterations": 16,
+      "baseline": {
+        "ms": [
+          0.0014,
+          0.0015,
+          0.0015,
+          0.0014,
+          0.0014,
+          0.0015,
+          0.0016,
+          0.0015,
+          0.0015,
+          0.0015
+        ],
+        "allocated_bytes": 3328,
+        "median_ms": 0.0015
+      },
+      "candidate": {
+        "ms": [
+          0.0016,
+          0.0018,
+          0.0017,
+          0.0016,
+          0.0017,
+          0.0016,
+          0.0017,
+          0.0017,
+          0.0016,
+          0.0016
+        ],
+        "allocated_bytes": 3328,
+        "median_ms": 0.00165
+      }
+    },
+    {
+      "kind": "ascii_tail",
+      "input_bytes": 4194304,
+      "output_sha256": "d41474cb06dd1f12608e133701ea319e181c052350a1855dd970f6f369eb8361",
+      "iterations": 16,
+      "baseline": {
+        "ms": [
+          15.1314,
+          14.9305,
+          15.0462,
+          15.5416,
+          14.8441,
+          14.1066,
+          14.3039,
+          14.2295,
+          14.0747,
+          14.1324
+        ],
+        "allocated_bytes": 3328,
+        "median_ms": 14.574
+      },
+      "candidate": {
+        "ms": [
+          15.8333,
+          14.4886,
+          14.495,
+          14.3113,
+          14.201,
+          14.4613,
+          14.4226,
+          14.4904,
+          14.3384,
+          14.5593
+        ],
+        "allocated_bytes": 3328,
+        "median_ms": 14.47495
+      }
+    },
+    {
+      "kind": "unicode_after_prefix",
+      "input_bytes": 4194310,
+      "output_sha256": "e53f83799d3e71ee8b5a3ef258a7814946c0490c1f1f890a988454f49d472d9c",
+      "iterations": 16,
+      "baseline": {
+        "ms": [
+          0.0015,
+          0.0016,
+          0.0015,
+          0.0015,
+          0.0015,
+          0.0015,
+          0.0016,
+          0.0015,
+          0.0015,
+          0.0015
+        ],
+        "allocated_bytes": 3328,
+        "median_ms": 0.0015
+      },
+      "candidate": {
+        "ms": [
+          0.0016,
+          0.0017,
+          0.0017,
+          0.0016,
+          0.0016,
+          0.0016,
+          0.0017,
+          0.0018,
+          0.0017,
+          0.0017
+        ],
+        "allocated_bytes": 3328,
+        "median_ms": 0.0017
+      }
+    },
+    {
+      "kind": "unicode_prefix",
+      "input_bytes": 4194306,
+      "output_sha256": "c9c33c3b771a1f975b5a955245827bdd81778d34de0f52d91535f58cf6e0b739",
+      "iterations": 16,
+      "baseline": {
+        "ms": [
+          161.5666,
+          160.6639,
+          159.2525,
+          162.5466,
+          157.8416,
+          136.6264,
+          136.1331,
+          137.4315,
+          136.5972,
+          135.5522
+        ],
+        "allocated_bytes": 413680896,
+        "median_ms": 147.63655
+      },
+      "candidate": {
+        "ms": [
+          0.009,
+          0.0091,
+          0.009,
+          0.009,
+          0.0091,
+          0.0096,
+          0.0097,
+          0.0096,
+          0.0097,
+          0.0096
+        ],
+        "allocated_bytes": 10416,
+        "median_ms": 0.00935
+      }
+    }
+  ]
+}

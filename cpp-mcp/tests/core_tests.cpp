@@ -95,6 +95,7 @@ int main() {
         require(js_slice("a😀b", 1, 2) == "�", "lone surrogate replacement");
         const auto check_slice = [](std::string_view input) {
             const auto units = to_utf16(input);
+            require(js_length(input) == units.size(), "UTF16 length agrees with full conversion");
             const std::array<std::size_t, 9> bounds{0,
                                                     1,
                                                     2,

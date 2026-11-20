@@ -40,6 +40,9 @@ Json with_outcome(Json result, ToolOutcome outcome) {
     case ToolOutcome::TimedOut:
         name = "timed_out";
         break;
+    case ToolOutcome::QueueTimeout:
+        name = "queue_timeout";
+        break;
     case ToolOutcome::PolicyDenied:
         name = "policy_denied";
         break;
@@ -55,7 +58,7 @@ Json with_outcome(Json result, ToolOutcome outcome) {
 std::string result_outcome(const Json& result) {
     const auto name = json_string(result, "_devboxTelemetryOutcome");
     for (const auto allowed :
-         {"cancelled", "timed_out", "policy_denied", "invalid_arguments", "process_failure"})
+         {"cancelled", "timed_out", "queue_timeout", "policy_denied", "invalid_arguments", "process_failure"})
         if (name == allowed)
             return name;
     return {};
@@ -149,7 +152,8 @@ ShapedOutput shape_output(std::string_view text, std::string mode, std::size_t m
                            suffix;
         }
     }
-    const auto limit = std::max<std::size_t>(100, max_chars), length = js_length(out.text);
+    const auto limit = std::max<std::size_t>(100, max_chars);
+    const auto length = out.truncated ? js_length(out.text) : out.original_chars;
     if (length <= limit)
         return out;
     out.truncated = true;

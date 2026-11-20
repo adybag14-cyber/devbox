@@ -64,3 +64,23 @@ Initial sources: baseline `d1dc48809098272bbd3134b81535e5282e8ad3ea`, candidate
 `aed44c843fefc10e034ecf04ce0d6f7019ade59d`, candidate
 `2bf2c89be47b013cf61e7c112493ed7de2c62b2e`. The runtime source was verified
 unchanged between the original and controlled versions on each side.
+
+## Unicode excerpts
+
+The native helper now decodes through the requested end and encodes only the
+selected UTF-16 units. It uses the same decoder for malformed input. Selecting
+one half of a surrogate pair produces U+FFFD. Counting units for output
+metadata also uses the decoder and needs no intermediate UTF-16 buffer.
+
+On Windows with MSVC 19.52, the median time for 16 excerpts of 200 units from
+a 4 MiB buffer beginning with a pound sign fell from 147.637 ms to 0.00935 ms.
+The same batch requested 413,680,896 bytes before and 10,416 bytes after.
+For 128 excerpts from a 128 KiB buffer, the median fell from 25.945 ms to
+0.07425 ms. The 4 MiB ASCII prefix batch took 0.00150 ms before and 0.00165 ms
+after. The two implementations produced identical output hashes in all eight
+cases, and retained bytes were unchanged across each trial.
+
+The benchmark measures the slice helper on one shared Windows machine. Each
+executable ran twice in A/B/B/A order and each case had five timed trials per
+process after warm-up. Timings are totals for each batch of excerpts.
+[Measurements, executable hashes and source revisions](benchmarks/unicode-slices-20261120.json)
