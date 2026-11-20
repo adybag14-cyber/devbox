@@ -212,6 +212,18 @@ void protocol_tests() {
                                         {"y", 10},
                                         {"width", 60},
                                         {"height", 20}}});
+    auto with_points = controls;
+    with_points[0]["interaction_point"] = Json{{"x", 115}, {"y", 115}};
+    with_points[1]["interaction_point"] = Json{{"x", 25.1}, {"y", 15}};
+    auto shifted = with_points;
+    shifted[1]["interaction_point"]["x"] = 25.2;
+    require(browser_click_controls_match(with_points, shifted, 115, 115) &&
+                browser_controls_match(with_points, shifted),
+            "fractional hint movement on an unrelated control permits stable input");
+    require(!browser_click_controls_match(with_points, shifted, 25, 15),
+            "hint changes on the clicked control require a fresh observation");
+    shifted[1]["disabled"] = true;
+    require(!browser_controls_match(with_points, shifted), "typing guard still checks structural fields");
     auto help_updated = controls;
     help_updated[1]["href"] = "https://example.com/new";
     require(browser_click_controls_match(controls, help_updated, 115, 115),
@@ -685,13 +697,13 @@ document.querySelector('#toggle').onclick=()=>{depth.style.opacity=depth.style.o
                 request.target() == "/transparent-modal-ancestor" || request.target() == "/modal-challenge" ||
                 request.target() == "/clipped-modal" || request.target() == "/modal-hidden-control" ||
                 request.target() == "/modal-clipped-control" || request.target() == "/modal-point-budget" ||
-                request.target() == "/modal-nested-control")
+                request.target() == "/modal-nested-control" || request.target() == "/modal-icon-budget")
                 response.body() =
                     R"HTML(<!doctype html><title>Bounded modal observation fixture</title><body><section id="history"></section><script>
 const history=document.querySelector('#history');const text=document.createElement('p');text.textContent='Earlier product catalogue '.repeat(1000);history.append(text);
 if(location.pathname==='/modal-challenge'){const marker=document.createElement('p');marker.textContent='Verify you are human';history.prepend(marker);}
 for(let i=0;i<220;i++){const b=document.createElement('button');b.textContent='Background '+i;b.style.cssText='position:fixed;left:0;top:0';history.append(b);}
-const rootScroll=location.pathname==='/modal-scroll-root',native=location.pathname==='/modal'||location.pathname==='/modal-overflow'||rootScroll,dialog=document.createElement(native?'dialog':'div');
+const rootScroll=location.pathname==='/modal-scroll-root',native=location.pathname==='/modal'||location.pathname==='/modal-overflow'||location.pathname==='/modal-icon-budget'||rootScroll,dialog=document.createElement(native?'dialog':'div');
 dialog.id='details';dialog.setAttribute('aria-labelledby','dialog-title');dialog.style.cssText='position:fixed;left:300px;top:100px;width:500px;height:350px;margin:0;background:white;z-index:1000';
 if(!native){dialog.setAttribute('role','alertdialog');dialog.setAttribute('aria-modal','true');}
 dialog.innerHTML='<h2 id="dialog-title">Product details</h2><p>Review the selected phone variant before continuing.</p><button aria-label="Close details">Close details</button><div id="modal-panel" style="height:150px;overflow:auto"><div style="height:1200px">Scrollable product specifications</div></div>';
@@ -701,6 +713,12 @@ if(location.pathname==='/shadow-modal'||location.pathname==='/transparent-modal-
 if(location.pathname==='/transparent-modal'){dialog.style.opacity='0';dialog.style.pointerEvents='none';}
 if(location.pathname==='/clipped-modal')dialog.style.clipPath='inset(100%)';
 if(location.pathname==='/modal-hidden-control')dialog.innerHTML='<button aria-label="Close details" style="opacity:0"> </button>';
+if(location.pathname==='/modal-icon-budget'){
+  dialog.innerHTML='<div style="position:relative;width:400px">'+
+    '<button aria-label="Covered icon" style="width:20px;height:20px"></button>'.repeat(24)+
+    '<div style="position:absolute;inset:0;background:white"></div></div>'+
+    '<button aria-label="Close" style="width:40px;height:40px"></button>';
+}
 if(location.pathname==='/modal-clipped-control')dialog.innerHTML='<h2 id="dialog-title">Product details</h2><p>Only the top of the option is visible.</p><div style="height:60px;overflow:auto"><div style="padding-top:40px;height:100px;box-sizing:border-box"><button id="partial" style="display:flex;align-items:flex-start;width:220px;height:60px">Confirm clipped option</button></div></div><button style="opacity:0">Invisible option</button>';
 if(location.pathname==='/modal-point-budget'){dialog.innerHTML='<div style="display:grid;grid-template-columns:repeat(10,50px)">'+Array.from({length:80},(_,i)=>'<button style="width:50px;height:30px">Option '+i+'</button>').join('')+'</div><div style="position:absolute;inset:0;background:white;z-index:1">Covering fixture overlay</div>';}
 if(location.pathname==='/modal-nested-control')dialog.innerHTML='<h2 id="dialog-title">Product details</h2><div id="outer" role="button" tabindex="0" aria-label="Outer card" style="position:relative;width:300px;height:140px;background:lightgray"><span>Outer card</span><button id="inner" aria-label="Nested action" style="position:absolute;left:80px;top:40px;width:140px;height:60px">Nested action</button></div><p id="outcome">Ready</p>';
@@ -1310,7 +1328,7 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
          {"/modal", "/aria-modal", "/shadow-modal", "/modal-scroll-root", "/modal-overflow", "/covered-focus",
           "/transparent-modal", "/transparent-modal-ancestor", "/modal-challenge", "/clipped-modal",
           "/modal-hidden-control", "/modal-opacity-cache", "/modal-clipped-control", "/modal-point-budget",
-          "/modal-nested-control"}) {
+          "/modal-nested-control", "/modal-icon-budget"}) {
         if (!only.empty() && only != route)
             continue;
         exercised = true;
@@ -1354,6 +1372,15 @@ void modal_browser_tests(bool headed, bool compatibility, std::string_view only 
             browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
             require(!fs::exists(fs::temp_directory_path() / ("devbox-browser-" + id)),
                     "nested-control fixture closes its owned profile");
+            continue;
+        }
+        if (std::string_view(route) == "/modal-icon-budget") {
+            require(json_bool(value.data, "interaction_points_truncated") &&
+                        value.data.at("controls").back().at("interaction_point").is_null() &&
+                        json_bool(value.data, "dialog_readable") &&
+                        json_string(value.data, "page_status") != "insufficient_content",
+                    "an exposed icon after the hint budget still establishes dialog readiness");
+            browser.perform({{"action", "close"}, {"session_id", id}}, "modal-owner");
             continue;
         }
         if (std::string_view(route) == "/modal-point-budget") {

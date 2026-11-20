@@ -5,6 +5,8 @@ namespace devbox {
 std::string browser_page_status(const Json& observation, int http_status = 0);
 std::string browser_normalize_url(std::string_view supplied);
 bool browser_click_controls_match(const Json& previous, const Json& current, double x, double y);
+bool browser_controls_match(const Json& previous, const Json& current,
+                            std::optional<std::pair<double, double>> click = std::nullopt);
 // Internal launch policy, never an MCP argument: fresh owned debuggers receive
 // bounded cold-start slack; shared endpoints retain the short stale-peer limit.
 Clock::time_point browser_connection_deadline(bool shared, Clock::time_point operation_deadline,
