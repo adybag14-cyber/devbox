@@ -1,6 +1,7 @@
 #include "devbox/native.hpp"
 #include "devbox/result.hpp"
 #include "devbox/telemetry.hpp"
+#include <algorithm>
 #include <boost/asio/io_context.hpp>
 #include <future>
 #include <iostream>
@@ -164,6 +165,11 @@ int main() {
             usage.finished(classified,
                            with_outcome(result_process("classified", {}, "", "", 137, false), outcome));
         }
+        const auto queued = usage.started("host_exec", Json::object(), Json::object());
+        usage.finished(queued, with_outcome(result_error("queue remained saturated",
+                                                         Json{{"execution", {{"queue_wait_ms", 15},
+                                                                               {"slot", nullptr}}}}),
+                                            ToolOutcome::QueueTimeout));
         const auto waited = usage.started("devbox_wait", Json{{"seconds", 10}}, Json::object());
         usage.finished(waited, result_success("done"));
         for (const auto& value : Json::array({"bad", Json::object(), Json::array(), nullptr, false})) {
@@ -215,6 +221,14 @@ int main() {
                 "canary secrets excluded from arguments, field names, context, summaries and errors before "
                 "enqueue");
         const auto first_finish = Json::parse(split(log, '\n')[1]);
+        const auto events = split(log, '\n', false);
+        require(std::any_of(events.begin(), events.end(), [&](const auto& line) {
+                    const auto event = Json::parse(line);
+                    return json_string(event, "invocation_id") == queued &&
+                           json_string(event, "outcome") == "queue_timeout" &&
+                           json_uint(event, "queue_wait_us") == 15000 && !event.contains("post_admission_us") &&
+                           event.at("execution_slot").is_null();
+                }), "queue timeout records waiting time without inventing post-admission work");
         require(first_finish["owned_process_wall_us"] == 4000 &&
                     first_finish["owned_process_timing_resolution_us"] == 1000 &&
                     first_finish["nonprocess_after_admission_us"] == 0,

@@ -403,7 +403,8 @@ void UsageTelemetry::finished(const std::string& id, const Json& response) {
         member(execution, "queue_wait_ms").is_number_integer()) {
         const auto queue_us = json_uint(execution, "queue_wait_ms") * 1000;
         event["queue_wait_us"] = queue_us;
-        event["post_admission_us"] = total_us > queue_us ? total_us - queue_us : 0;
+        if (event["outcome"] != "queue_timeout")
+            event["post_admission_us"] = total_us > queue_us ? total_us - queue_us : 0;
     }
     const auto& process_time = member(response, "_devboxTelemetryChildWorkMs");
     if (process_time.is_number_unsigned() && process_time.get<std::uint64_t>() <= UINT64_MAX / 1000) {

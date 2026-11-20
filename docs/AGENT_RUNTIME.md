@@ -92,6 +92,13 @@ Execution slots and runner admission are separate bounds:
 
 Heavy capacity is weighted capacity, not a promise of five simultaneous heavy jobs. The existing disk-pressure policy can further constrain heavy/I/O work. Admission is serialized across server processes and fails before spawning excess runners. Replaying a known operation remains possible when the admission pool is full.
 
+When an MCP execution request reaches its scheduler deadline before acquiring a
+slot, `structuredContent.data.code` is `EXECUTION_QUEUE_TIMEOUT`. Its
+`execution` object reports `admitted: false`, a null `slot`, the pool, resource
+class, requested weight and measured queue wait in milliseconds. The caller
+can retry after capacity becomes available. Usage records classify this case as
+`queue_timeout` and omit post-admission time.
+
 Cancellation is `cancel_requested` while a verified runner or child is alive. A completed cancellation is reported only after the host processes are observed stopped. Job status exposes fresh child PIDs and flags stale heartbeats even when the runner remains alive. A runner refuses to resurrect a job already marked terminal.
 
 Legacy Docker cancellation stays pending while the local runner or child remains alive. Once those local processes stop, the job becomes terminal `interrupted`, with `workloadTerminationVerified: false` and an explicit explanation. This releases local runner admission without claiming the workload inside a shared container stopped. Durable host submission does not offer a Docker workload-termination guarantee.
