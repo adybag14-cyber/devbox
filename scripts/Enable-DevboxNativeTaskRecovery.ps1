@@ -12,10 +12,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$before = Export-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
 $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
 $actions = @($task.Actions)
 if ($actions.Count -ne 1 -or $actions[0].Execute -ne $ExpectedExecutable -or
-    $actions[0].Arguments -ne $ExpectedArguments) {
+    $actions[0].Arguments -cne $ExpectedArguments) {
     throw 'Task action identity changed; refusing to modify recovery.'
 }
 if ((Get-FileHash -LiteralPath $ExpectedExecutable -Algorithm SHA256).Hash -ne $ExpectedSha256) {
@@ -23,11 +24,10 @@ if ((Get-FileHash -LiteralPath $ExpectedExecutable -Algorithm SHA256).Hash -ne $
 }
 if ($task.Settings.MultipleInstances -ne 'IgnoreNew' -or
     $task.Settings.ExecutionTimeLimit -ne 'PT0S' -or
-    $task.Settings.AllowHardTerminate -or $task.State -eq 'Disabled') {
+    $task.Settings.AllowHardTerminate -or $task.State -eq 'Disabled' -or -not $task.Settings.Enabled) {
     throw 'Recovery requires an enabled IgnoreNew task without hard termination or a runtime limit.'
 }
 
-$before = Export-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
 $beforeInfo = $task | Get-ScheduledTaskInfo
 $recoveryId = 'DevboxNativeRecovery'
 $existing = @($task.Triggers | Where-Object Id -EQ $recoveryId)
@@ -62,7 +62,7 @@ if ($Apply) {
     # Native manage run reads desired state before starting any frontend.
     if ($changed) {
         $current = Export-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
-        if ($current -ne $before) { throw 'Task definition changed during preparation.' }
+        if ($current -cne $before) { throw 'Task definition changed during preparation.' }
         $triggers = @($task.Triggers | Where-Object { $null -ne $_ }) + @($trigger)
         Set-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Trigger $triggers | Out-Null
     }

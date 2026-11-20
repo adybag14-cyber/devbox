@@ -40,8 +40,11 @@ Version 0.9.43 adds an optional `interaction_point` to each control descriptor.
 The bounding rectangle remains unchanged. A clipped or partly covered button
 can have an inaccessible rectangle centre while an edge remains clickable.
 The browser probes the centre first, then up to eight inset edge/corner points,
-using real hit testing (including open shadow roots), with at most 192 control
-probes per observation. Zero-opacity controls or ancestors have no hint. Ordinary unobscured
+using real hit testing (including open shadow roots), with at most 192 probes
+for coordinate hints per observation. If a modal exhausts that budget before
+any readable control is found, the observer checks the centres of the remaining
+visible controls until it finds one. The existing 80-control limit bounds this
+readiness check. Zero-opacity controls or ancestors have no hint. Ordinary unobscured
 controls need just the original single hit test.
 
 Prefer the reported point when present, using that observation's ID. A null
