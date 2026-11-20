@@ -264,23 +264,36 @@ std::string from_utf16(std::u16string_view value) {
 std::string sanitize_utf8(std::string_view value) {
     return from_utf16(to_utf16(value));
 }
+namespace {
+std::size_t ascii_prefix_length(std::string_view text) {
+    const auto first = std::find_if(text.begin(), text.end(), [](unsigned char c) { return c >= 0x80; });
+    return static_cast<std::size_t>(first - text.begin());
+}
+} // namespace
 std::size_t js_length(std::string_view value) {
-    if (std::all_of(value.begin(), value.end(), [](unsigned char c) { return c < 0x80; }))
-        return value.size();
-    return to_utf16(value).size();
+    auto units = ascii_prefix_length(value);
+    for (auto byte = units; byte < value.size();)
+        units += next_rune(value, byte) > 0xffff ? 2 : 1;
+    return units;
 }
 std::string js_slice(std::string_view value, std::size_t start, std::size_t end) {
-    if (end <= start)
+    if (end <= start || start >= value.size())
         return {};
-    // An ASCII prefix has identical byte and UTF16 indices. Inspect only the
-    // requested prefix: Unicode or malformed bytes beyond it cannot affect it.
-    const auto prefix = value.substr(0, std::min(end, value.size()));
-    if (std::all_of(prefix.begin(), prefix.end(), [](unsigned char c) { return c < 0x80; }))
-        return std::string(prefix.substr(std::min(start, prefix.size())));
-    const auto units = to_utf16(value);
-    start = std::min(start, units.size());
-    end = std::max(start, std::min(end, units.size()));
-    return from_utf16(std::u16string_view(units).substr(start, end - start));
+    const auto ascii = ascii_prefix_length(value.substr(0, end));
+    std::string result;
+    if (start < ascii)
+        result.assign(value.substr(start, ascii - start));
+    auto unit = ascii;
+    for (auto byte = ascii; byte < value.size() && unit < end;) {
+        const auto rune = next_rune(value, byte);
+        const auto next = unit + (rune > 0xffff ? 2 : 1);
+        if (next > start) {
+            // A slice containing only one half of a surrogate pair encodes as U+FFFD.
+            append_utf8(result, unit < start || next > end ? 0xfffd : rune);
+        }
+        unit = next;
+    }
+    return result;
 }
 fs::path path_from_utf8(std::string_view value) {
     return fs::path(std::u8string_view(reinterpret_cast<const char8_t*>(value.data()), value.size()));

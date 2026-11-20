@@ -149,7 +149,8 @@ ShapedOutput shape_output(std::string_view text, std::string mode, std::size_t m
                            suffix;
         }
     }
-    const auto limit = std::max<std::size_t>(100, max_chars), length = js_length(out.text);
+    const auto limit = std::max<std::size_t>(100, max_chars);
+    const auto length = out.truncated ? js_length(out.text) : out.original_chars;
     if (length <= limit)
         return out;
     out.truncated = true;
