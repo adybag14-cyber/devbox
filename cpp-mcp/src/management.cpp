@@ -8,6 +8,8 @@
 #include "devbox/state_coordinator.hpp"
 #include "devbox/state_store.hpp"
 #include <algorithm>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
 #include <charconv>
 #include <csignal>
 #include <cstdio>
@@ -392,11 +394,81 @@ std::unique_ptr<Child> launch(const fs::path& root, const Json& config, const Js
     };
     return launch_owned(json_string(candidate, "file"), {}, std::move(options), generation);
 }
+struct CloudflaredMetrics {
+    std::size_t address_argument;
+    bool joined;
+    std::uint16_t preferred_port;
+    std::uint16_t active_port;
+};
+
+std::optional<CloudflaredMetrics> cloudflared_metrics(const Json& spec) {
+    const auto file = path_from_utf8(json_string(spec, "program"));
+    const auto executable = lower(path_text(file.filename()));
+    if (executable != "cloudflared" && executable != "cloudflared.exe")
+        return std::nullopt;
+
+    const auto readiness = json_string(spec, "readinessUrl");
+    constexpr std::string_view prefix = "http://127.0.0.1:";
+    constexpr std::string_view suffix = "/ready";
+    if (!readiness.starts_with(prefix) || !readiness.ends_with(suffix) ||
+        readiness.size() <= prefix.size() + suffix.size())
+        return std::nullopt;
+    const auto port_text =
+        std::string_view(readiness).substr(prefix.size(), readiness.size() - prefix.size() - suffix.size());
+    std::uint16_t port = 0;
+    const auto [end, error] = std::from_chars(port_text.data(), port_text.data() + port_text.size(), port);
+    if (error != std::errc{} || end != port_text.data() + port_text.size() || !port)
+        return std::nullopt;
+
+    const auto address = "127.0.0.1:" + std::string(port_text);
+    const auto args = json_strings(spec, "args");
+    std::optional<CloudflaredMetrics> result;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        if (args[i] == "--metrics") {
+            if (result || ++i == args.size() || args[i] != address)
+                return std::nullopt;
+            result = CloudflaredMetrics{i, false, port, port};
+        } else if (args[i].starts_with("--metrics=")) {
+            if (result || args[i].substr(std::string_view("--metrics=").size()) != address)
+                return std::nullopt;
+            result = CloudflaredMetrics{i, true, port, port};
+        }
+    }
+    return result;
+}
+
+std::uint16_t cloudflared_metrics_port(std::uint16_t preferred) {
+    namespace asio = boost::asio;
+    using Tcp = asio::ip::tcp;
+    asio::io_context context;
+    Tcp::acceptor socket(context);
+    socket.open(Tcp::v4());
+#ifdef _WIN32
+    BOOL exclusive = TRUE;
+    if (::setsockopt(socket.native_handle(), SOL_SOCKET, SO_EXCLUSIVEADDRUSE,
+                     reinterpret_cast<const char*>(&exclusive), sizeof(exclusive)) != 0)
+        throw Error("Unable to probe exclusive cloudflared metrics binding");
+#endif
+    const auto loopback = asio::ip::address_v4::loopback();
+    boost::system::error_code error;
+    socket.bind({loopback, preferred}, error);
+    if (!error)
+        return preferred;
+    if (error != asio::error::address_in_use && error != asio::error::access_denied)
+        throw Error("Cloudflared metrics bind probe failed: " + error.message());
+
+    // Port zero asks the OS for an available loopback port outside any exclusions.
+    // Release the probe before starting cloudflared. A launch race re-enters normal backoff.
+    socket.bind({loopback, 0});
+    return socket.local_endpoint().port();
+}
+
 // Optional operator-configured sidecars (for example cloudflared). A failed
 // sidecar is repaired independently and cannot cause a healthy MCP restart.
 class Companions {
     struct Entry {
         Json spec;
+        std::optional<CloudflaredMetrics> metrics;
         std::unique_ptr<Child> child;
         Clock::time_point retry = Clock::now();
         unsigned failures = 0;
@@ -413,6 +485,7 @@ class Companions {
         for (const auto& spec : config.value("companions", Json::array())) {
             Entry entry;
             entry.spec = spec;
+            entry.metrics = cloudflared_metrics(spec);
             const auto name = json_string(spec, "name");
             for (const auto& old : prior.value("companions", Json::array())) {
                 if (json_string(old, "name") != name || !old.contains("process") ||
@@ -430,6 +503,9 @@ class Companions {
                 entry.child->generation = json_string(identity, "generation");
                 entry.child->adopted = true;
                 entry.child->stop_grace = Millis(8000);
+                const auto metrics_port = json_uint(old, "metricsPort");
+                if (entry.metrics && metrics_port > 0 && metrics_port <= UINT16_MAX)
+                    entry.metrics->active_port = static_cast<std::uint16_t>(metrics_port);
             }
             entries_.push_back(std::move(entry));
         }
@@ -483,7 +559,16 @@ class Companions {
                     options.on_output = [this, name](OutputStream, std::string_view data) {
                         log(root_, name + ": " + std::string(data));
                     };
-                    entry.child = launch_owned(path_text(file), json_strings(entry.spec, "args"), options);
+                    auto args = json_strings(entry.spec, "args");
+                    if (entry.metrics) {
+                        auto& metrics = *entry.metrics;
+                        metrics.active_port = cloudflared_metrics_port(metrics.preferred_port);
+                        if (metrics.active_port != metrics.preferred_port) {
+                            const auto address = "127.0.0.1:" + std::to_string(metrics.active_port);
+                            args[metrics.address_argument] = metrics.joined ? "--metrics=" + address : address;
+                        }
+                    }
+                    entry.child = launch_owned(path_text(file), args, options);
                     entry.error.clear();
                 } catch (const std::exception& error) {
                     entry.error = error.what();
@@ -492,10 +577,14 @@ class Companions {
                         Clock::now() + Millis(std::min(60000U, 1000U << std::min(entry.failures, 6U)));
                 }
             }
-            bool healthy = entry.child && entry.child->alive();
+            const bool alive = entry.child && entry.child->alive();
+            bool healthy = alive;
             if (healthy && entry.spec.contains("readinessUrl")) {
                 try {
-                    healthy = http_request("GET", json_string(entry.spec, "readinessUrl"), {}, Json::object(),
+                    const auto readiness_url =
+                        entry.metrics ? "http://127.0.0.1:" + std::to_string(entry.metrics->active_port) + "/ready"
+                                      : json_string(entry.spec, "readinessUrl");
+                    healthy = http_request("GET", readiness_url, {}, Json::object(),
                                            Millis(1000), 4096, {}, true)
                                   .status == 200;
                 } catch (...) {
@@ -504,8 +593,8 @@ class Companions {
             }
             if (healthy && Clock::now() - entry.child->started >= Millis(30000))
                 entry.failures = 0;
-            entry.unhealthy_probes = healthy ? 0 : entry.unhealthy_probes + 1;
-            if (!healthy && entry.child && entry.child->alive() && entry.unhealthy_probes >= 3) {
+            entry.unhealthy_probes = healthy || !alive ? 0 : entry.unhealthy_probes + 1;
+            if (entry.unhealthy_probes >= 3) {
                 entry.child->stop();
                 entry.child.reset();
                 ++entry.failures;
@@ -517,6 +606,8 @@ class Companions {
                                  {"healthy", healthy},
                                  {"error", entry.error},
                                  {"process", entry.child ? entry.child->identity() : Json()}});
+            if (entry.metrics)
+                value.back()["metricsPort"] = entry.metrics->active_port;
             // Explicit ordering permits a display/tunnel prerequisite without
             // invoking a shell or a second orchestration runtime.
             if (json_bool(entry.spec, "requiredBeforeNext"))

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {access, mkdtemp, mkdir, open, readFile, readlink, rename, writeFile, rm} from 'node:fs/promises';
+import {access, chmod, copyFile, mkdtemp, mkdir, open, readFile, readlink, rename, writeFile, rm} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import net from 'node:net';
 import os from 'node:os';
@@ -65,6 +65,7 @@ const launchForeground=()=>{
   exit.catch(()=>{});
 };
 let counter = 0;
+const occupiedMetrics = net.createServer(socket => socket.destroy());
 const rpc = async (name, args = {}) => {
   const response = await fetch(`http://127.0.0.1:${port}/mcp`, {method:'POST', headers:{'content-type':'application/json', accept:'application/json, text/event-stream'},
     body:JSON.stringify({jsonrpc:'2.0', id:++counter, method:'tools/call', params:{name, arguments:args}}), signal:AbortSignal.timeout(30000)});
@@ -80,8 +81,24 @@ try {
   const environment = path.join(fixture,'config.env');
   await writeFile(environment, `ENABLE_HOST_EXEC=true\nDEVBOX_AUTO_START=false\nHOST_PROGRAM_ALLOWLIST_REPLACE=true\nHOST_PROGRAM_ALLOWLIST=node\nNODE_EXE=${process.execPath}\n`);
   const companionFile=path.join(fixture,'companions.json'),companionEffect=path.join(fixture,'companion-starts');
-  await writeFile(companionFile,JSON.stringify([{name:'owned-fixture',program:process.execPath,
-    args:['-e',"require('fs').appendFileSync(process.argv[1],'x');setInterval(()=>{},1000)",companionEffect]}]));
+  await new Promise((resolve, reject) => {
+    occupiedMetrics.once('error', reject);
+    occupiedMetrics.listen(0, '127.0.0.1', resolve);
+  });
+  const preferredMetricsPort = occupiedMetrics.address().port;
+  const metricsAddress = '127.0.0.1:' + preferredMetricsPort;
+  const cloudflaredFixture = path.join(fixture, process.platform==='win32' ? 'cloudflared.exe' : 'cloudflared');
+  await copyFile(process.execPath, cloudflaredFixture);
+  if (process.platform!=='win32') await chmod(cloudflaredFixture, 0o755);
+  const metricsArgs = process.platform==='win32' ? ['--metrics',metricsAddress] : ['--metrics='+metricsAddress];
+  const metricsServer = "const port = Number(process.argv.at(-1).split(':').at(-1));" +
+    "require('http').createServer((req,res)=>res.end('cloudflared fixture ready')).listen(port,'127.0.0.1');";
+  await writeFile(companionFile,JSON.stringify([
+    {name:'owned-fixture',program:process.execPath,
+      args:['-e',"require('fs').appendFileSync(process.argv[1],'x');setInterval(()=>{},1000)",companionEffect]},
+    {name:'tunnel-fixture',program:cloudflaredFixture,args:['-e',metricsServer,'--',...metricsArgs],
+      readinessUrl:'http://'+metricsAddress+'/ready'},
+  ]));
   const initialized = await invoke('init', '--binary', binary, '--allow-local-build', '--port', String(port), '--env-file', environment,'--companions',companionFile);
   assert.equal(initialized.policy,'local-development');
   // An incidental download receipt blocked the former Git-checkout launcher
@@ -102,8 +119,17 @@ try {
   const startupMs = performance.now()-startedAt;
   assert.equal(first.owner.pid,foreground.pid);
   const companionBy=performance.now()+10000;
-  while(!(first.companions?.[0]?.healthy) && performance.now()<companionBy) {await delay(100);first=await invoke('status');}
+  while(!(first.companions?.[0]?.healthy && first.companions?.[1]?.healthy) && performance.now()<companionBy) {
+    await delay(100);first=await invoke('status');
+  }
   assert.equal(first.companions[0].healthy,true);const companionPid=first.companions[0].process.pid;
+  const tunnelFixture = first.companions[1];
+  assert.equal(tunnelFixture.healthy,true,JSON.stringify(tunnelFixture));
+  assert(tunnelFixture.metricsPort>0);
+  assert.notEqual(tunnelFixture.metricsPort,preferredMetricsPort,'the occupied metrics port must be bypassed');
+  const metricsReply = await fetch('http://127.0.0.1:'+tunnelFixture.metricsPort+'/ready',
+    {signal:AbortSignal.timeout(3000)});
+  assert.equal(await metricsReply.text(),'cloudflared fixture ready');
   if(process.platform==='linux') {
     // Stall only this fixture's identity-checked frontend. Its supervisor must
     // preserve unconfirmed work, then report recovery without replacing it.
@@ -191,6 +217,7 @@ try {
   assert.equal(restarted.healthy,true); assert.equal(await readFile(file,'utf8'),'native-core-effect');
   assert.equal(await readFile(incidentalFile,'utf8'),incidentalContent,'incidental metadata does not block startup or restart');
   assert.equal(restarted.companions[0].process.pid,companionPid,'frontend restart preserves healthy companion');
+  assert.equal(restarted.companions[1].process.pid,tunnelFixture.process.pid,'frontend restart preserves the recovered tunnel');
   const longWait=rpc('devbox_wait',{seconds:10}); longWait.catch(()=>{}); await delay(500);
   await assert.rejects(invoke('stop','--timeout-ms','2000'), /DRAIN_BUSY_OR_UNCONFIRMED/);
   await longWait;
@@ -382,6 +409,8 @@ try {
     ...(process.platform==='win32'?[]:['service signal shutdown and foreground restart without replay']),
     'persistent explicit operator stop']}));
 } finally {
+  if (occupiedMetrics.listening)
+    await new Promise(resolve => occupiedMetrics.close(resolve));
   try { if((await invoke('status')).running) await invoke('stop'); } catch(error) { console.error(String(error)); }
   if(foreground && foreground.exitCode===null) {
     // Only this fixture's owned child, never a name/group lookup.
