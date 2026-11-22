@@ -73,6 +73,11 @@ Companion failures do not restart a healthy MCP frontend. Existing externally
 managed services are not adopted by name. A recovered owned companion must match
 its recorded birth identity, executable path and pinned hash.
 
+When a cloudflared companion has matching loopback metrics and readiness addresses
+at `127.0.0.1`, the supervisor uses an OS-assigned port if the configured port is
+occupied or reserved. It probes `/ready` on the selected port and reports that
+port in the companion's status.
+
 ## Lifecycle and updates
 
 The MCP `devbox_status` response includes a `build` object from the running
